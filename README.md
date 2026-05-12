@@ -6,9 +6,36 @@ Connect a JavaScript / Node.js application to [Patchstack](https://patchstack.co
 
 Copy and paste this prompt into any AI coding assistant (Cursor, v0, Bolt, Lovable, Claude Code, etc.):
 
-> Add `@patchstack/connect` to this project as a dev dependency. Run `npx @patchstack/connect init <SITE_UUID>` once to save the site UUID, then add `"prebuild": "patchstack-connect scan"` to `package.json` `scripts` so dependencies are reported to Patchstack on every build. Replace `<SITE_UUID>` with the UUID from the Patchstack dashboard.
+> Add `@patchstack/connect` to this project as a dev dependency, then add `"prebuild": "patchstack-connect scan"` to `package.json` `scripts`. The first time the script runs, Patchstack provisions a site automatically from the lockfile and saves the new site UUID to `.patchstackrc.json` — no dashboard signup or manual UUID required. Commit `.patchstackrc.json` so every developer / CI run targets the same site.
 
-## Quick start
+## Quick start (zero configuration)
+
+```bash
+npm install --save-dev @patchstack/connect
+npx @patchstack/connect scan
+```
+
+That's it. The first `scan`:
+
+1. Reads your `package-lock.json`.
+2. POSTs the package list to Patchstack with **no** UUID.
+3. Patchstack provisions a fresh site and returns its UUID.
+4. The connector writes the UUID to `.patchstackrc.json` so the next `scan` targets the same site.
+
+Then wire it into builds:
+
+```jsonc
+// package.json
+{
+  "scripts": {
+    "prebuild": "patchstack-connect scan"
+  }
+}
+```
+
+## Quick start (existing site)
+
+If you already created an "Application" site in the Patchstack dashboard, pre-seed the UUID:
 
 ```bash
 npm install --save-dev @patchstack/connect
@@ -16,13 +43,14 @@ npx @patchstack/connect init <your-site-uuid>
 npx @patchstack/connect scan
 ```
 
-Get your site UUID from the Patchstack dashboard: create a new site with type **Application**, then copy the UUID shown on the site's settings page.
-
 ## CLI
 
 ```
-patchstack-connect init <site-uuid>                Save the site UUID to .patchstackrc.json
-patchstack-connect scan   [options]                Scan the lockfile and POST to Patchstack
+patchstack-connect scan   [options]                Scan the lockfile and POST to Patchstack.
+                                                   If no UUID is configured the server provisions
+                                                   one and the connector persists it.
+patchstack-connect init   <site-uuid>              Optional: pre-seed .patchstackrc.json with
+                                                   an existing site UUID
 patchstack-connect status [options]                Show current configuration
 patchstack-connect help                            Print help
 

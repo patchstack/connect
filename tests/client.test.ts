@@ -16,6 +16,12 @@ describe('buildEndpointUrl', () => {
   it('url-encodes the uuid', () => {
     expect(buildEndpointUrl('https://example.com', 'a b')).toBe('https://example.com/a%20b');
   });
+
+  it('returns the bare base when no uuid is provided', () => {
+    expect(buildEndpointUrl('https://example.com/x')).toBe('https://example.com/x');
+    expect(buildEndpointUrl('https://example.com/x', null)).toBe('https://example.com/x');
+    expect(buildEndpointUrl('https://example.com/x', '')).toBe('https://example.com/x');
+  });
 });
 
 describe('postManifest', () => {
@@ -98,6 +104,26 @@ describe('postManifest', () => {
 
     const [, init] = fetchMock.mock.calls[0] as [string, RequestInit];
     expect(init.signal).toBeInstanceOf(AbortSignal);
+  });
+
+  it('posts to the bare endpoint when siteUuid is null and returns the uuid the server assigns', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(
+      new Response(
+        JSON.stringify({ uuid: 'cc02a05b-b7db-41b9-bd81-bfcebb09f84a', stored: true, manifest_id: 1, checksum: 'abc123abc123' }),
+        { status: 200, headers: { 'Content-Type': 'application/json' } },
+      ),
+    );
+    vi.stubGlobal('fetch', fetchMock);
+
+    const result = await postManifest(
+      { siteUuid: null, endpoint: 'https://example.com/monitor/pulse/manifest', timeoutMs: 30_000 },
+      { ecosystem: 'npm', packages: [{ name: 'lodash', version: '4.17.21' }] },
+    );
+
+    const [calledUrl] = fetchMock.mock.calls[0] as [string, RequestInit];
+    expect(calledUrl).toBe('https://example.com/monitor/pulse/manifest');
+    expect(result.uuid).toBe('cc02a05b-b7db-41b9-bd81-bfcebb09f84a');
+    expect(result.stored).toBe(true);
   });
 
   it('maps a TimeoutError to NETWORK_TIMEOUT', async () => {
