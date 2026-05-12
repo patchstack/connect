@@ -28,10 +28,13 @@ declare class PatchstackError extends Error {
     constructor(message: string, code: 'CONFIG_MISSING' | 'CONFIG_INVALID' | 'LOCKFILE_NOT_FOUND' | 'LOCKFILE_UNSUPPORTED' | 'LOCKFILE_PARSE_ERROR' | 'NETWORK_ERROR' | 'NETWORK_TIMEOUT' | 'SITE_NOT_FOUND' | 'VALIDATION_ERROR' | 'SERVER_ERROR', cause?: unknown | undefined);
 }
 
+type LockfileFilename = 'package-lock.json' | 'bun.lock' | 'bun.lockb' | 'yarn.lock' | 'pnpm-lock.yaml';
+type DetectionStrategy = 'npm-lockfile' | 'node-modules-walk';
 interface DetectedLockfile {
     ecosystem: 'npm';
     filePath: string;
-    filename: 'package-lock.json' | 'yarn.lock' | 'pnpm-lock.yaml';
+    filename: LockfileFilename;
+    strategy: DetectionStrategy;
 }
 declare function detectLockfile(cwd: string): Promise<DetectedLockfile>;
 declare function scanLockfile(cwd: string): Promise<Manifest>;
