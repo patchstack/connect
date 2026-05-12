@@ -6,7 +6,17 @@ import type { Config, Manifest, StoreManifestResponse } from './types.js';
 
 export { scanLockfile, detectLockfile } from './parsers/index.js';
 export { buildWirePayload, compareVersions } from './normalize.js';
-export { postManifest, buildEndpointUrl, DEFAULT_ENDPOINT } from './client.js';
+export {
+  postManifest,
+  redeemIntegrationToken,
+  buildEndpointUrl,
+  buildManifestEndpoint,
+  buildRedeemUrl,
+  DEFAULT_ENDPOINT,
+  DEFAULT_API_BASE_URL,
+  DEFAULT_TIMEOUT_MS,
+  type RedeemIntegrationTokenOptions,
+} from './client.js';
 export { resolveConfig, writeConfigFile } from './config.js';
 export {
   PatchstackError,
@@ -14,6 +24,7 @@ export {
   type Ecosystem,
   type Manifest,
   type PackageEntry,
+  type RedeemIntegrationTokenResponse,
   type StoreManifestResponse,
 } from './types.js';
 

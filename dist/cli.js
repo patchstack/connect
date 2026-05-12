@@ -1,5 +1,9 @@
 #!/usr/bin/env node
 
+// src/cli.ts
+import { readFile as readFile3, writeFile as writeFile2 } from "fs/promises";
+import path4 from "path";
+
 // src/parsers/index.ts
 import { access } from "fs/promises";
 import path2 from "path";
@@ -244,11 +248,89 @@ function compareSegments(a, b) {
 }
 
 // src/client.ts
-var DEFAULT_ENDPOINT = "https://app.patchstack.com/monitor/pulse/manifest";
+var DEFAULT_API_BASE_URL = "https://app.patchstack.com/monitor";
+var DEFAULT_ENDPOINT = `${DEFAULT_API_BASE_URL}/pulse/manifest`;
 var DEFAULT_TIMEOUT_MS = 3e4;
 function buildEndpointUrl(base, siteUuid) {
   const trimmed = base.replace(/\/$/, "");
   return `${trimmed}/${encodeURIComponent(siteUuid)}`;
+}
+function buildRedeemUrl(apiBaseUrl) {
+  const trimmed = apiBaseUrl.replace(/\/$/, "");
+  return `${trimmed}/pulse/integration/redeem`;
+}
+function buildManifestEndpoint(apiBaseUrl) {
+  const trimmed = apiBaseUrl.replace(/\/$/, "");
+  return `${trimmed}/pulse/manifest`;
+}
+async function redeemIntegrationToken(token, options = {}) {
+  const apiBaseUrl = options.apiBaseUrl ?? DEFAULT_API_BASE_URL;
+  const timeoutMs = options.timeoutMs ?? DEFAULT_TIMEOUT_MS;
+  const url = buildRedeemUrl(apiBaseUrl);
+  const body = { token };
+  if (options.url !== void 0 && options.url !== "") body.url = options.url;
+  if (options.appType !== void 0 && options.appType !== "") body.app_type = options.appType;
+  let response;
+  try {
+    response = await fetch(url, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Accept: "application/json",
+        "User-Agent": "@patchstack/connect"
+      },
+      body: JSON.stringify(body),
+      signal: AbortSignal.timeout(timeoutMs)
+    });
+  } catch (cause) {
+    if (isTimeoutError(cause)) {
+      throw new PatchstackError(
+        `Patchstack request to ${url} timed out after ${timeoutMs}ms.`,
+        "NETWORK_TIMEOUT",
+        cause
+      );
+    }
+    throw new PatchstackError(
+      `Could not reach Patchstack at ${url}. Check your network connection.`,
+      "NETWORK_ERROR",
+      cause
+    );
+  }
+  const text = await response.text();
+  let parsed = null;
+  try {
+    parsed = text.length > 0 ? JSON.parse(text) : null;
+  } catch {
+    parsed = null;
+  }
+  if (response.status === 404) {
+    throw new PatchstackError(
+      parsed?.error ?? "Integration token not recognised. Generate a fresh one from the Patchstack dashboard.",
+      "TOKEN_INVALID"
+    );
+  }
+  if (response.status === 410) {
+    throw new PatchstackError(
+      parsed?.error ?? "Integration token has already been used or expired. Generate a fresh one from the Patchstack dashboard.",
+      "TOKEN_USED_OR_EXPIRED"
+    );
+  }
+  if (response.status === 422) {
+    throw new PatchstackError(
+      parsed?.error ?? "Patchstack rejected the token redemption request.",
+      "VALIDATION_ERROR"
+    );
+  }
+  if (response.status < 200 || response.status >= 300) {
+    throw new PatchstackError(
+      `Patchstack returned ${response.status}: ${text.slice(0, 200)}`,
+      "SERVER_ERROR"
+    );
+  }
+  if (parsed === null || typeof parsed.uuid !== "string" || parsed.uuid.length === 0) {
+    throw new PatchstackError("Patchstack did not return a site UUID for the integration token.", "SERVER_ERROR");
+  }
+  return { uuid: parsed.uuid, site_id: parsed.site_id };
 }
 async function postManifest(config, payload) {
   const url = buildEndpointUrl(config.endpoint, config.siteUuid);
@@ -398,10 +480,19 @@ function isUuid(value) {
 var HELP = `@patchstack/connect \u2014 scan your lockfile and report packages to Patchstack.
 
 Usage:
+  patchstack-connect bootstrap <token>               One-shot: redeem an integration token, save config,
+                                                     add the prebuild script, and run the first scan
   patchstack-connect init <site-uuid>                Save the site UUID to .patchstackrc.json
   patchstack-connect scan   [options]                Scan lockfile and POST to Patchstack
   patchstack-connect status [options]                Show current configuration
   patchstack-connect help                            Print this message
+
+Options (for bootstrap):
+  --api-url <url>         API base URL (default: https://app.patchstack.com/monitor)
+  --url <url>             Optional site URL to register (e.g. https://my-app.lovable.app)
+  --app-type <type>       Optional app type label (e.g. lovable, bolt-diy)
+  --skip-prebuild         Do not patch package.json
+  --skip-scan             Do not run an initial scan after bootstrap
 
 Options (for scan and status):
   --site-uuid <uuid>      Override the configured site UUID
@@ -411,17 +502,18 @@ Options (for scan and status):
 Environment:
   PATCHSTACK_SITE_UUID    Site UUID
   PATCHSTACK_ENDPOINT     API endpoint (default: https://app.patchstack.com/monitor/pulse/manifest)
+  PATCHSTACK_API_URL      API base URL (default: https://app.patchstack.com/monitor)
   PATCHSTACK_TIMEOUT_MS   Request timeout in ms (default: 30000)
 
 Precedence: CLI flag > environment variable > .patchstackrc.json.
 
 Examples:
+  npx @patchstack/connect bootstrap ac963c7608a8c527aac8a14bd92c0e519b84ff63400063a4e10e7e6c02b308d3
   npx @patchstack/connect init 550e8400-e29b-41d4-a716-446655440000
   npx @patchstack/connect scan
   npx @patchstack/connect scan --dry-run
-  npx @patchstack/connect scan --site-uuid 550e8400-...-446655440000
 `;
-var VALUE_FLAGS = /* @__PURE__ */ new Set(["site-uuid", "endpoint"]);
+var VALUE_FLAGS = /* @__PURE__ */ new Set(["site-uuid", "endpoint", "api-url", "url", "app-type"]);
 function parseArgs(argv) {
   const args = argv.slice(2);
   const positional = [];
@@ -530,6 +622,88 @@ async function runStatus(args) {
     throw err;
   }
 }
+async function patchPackageJsonPrebuild(cwd) {
+  const target = path4.join(cwd, "package.json");
+  let raw;
+  try {
+    raw = await readFile3(target, "utf8");
+  } catch {
+    return "skipped \u2014 no package.json in current directory";
+  }
+  const indentMatch = raw.match(/\n([ \t]+)\S/);
+  const indent = indentMatch?.[1] ?? "  ";
+  const newline = raw.endsWith("\n") ? "\n" : "";
+  let pkg;
+  try {
+    pkg = JSON.parse(raw);
+  } catch {
+    return "skipped \u2014 package.json is not valid JSON";
+  }
+  const scripts = pkg.scripts ?? {};
+  if (typeof scripts.prebuild === "string" && scripts.prebuild.includes("patchstack-connect")) {
+    return "unchanged \u2014 prebuild already calls patchstack-connect";
+  }
+  if (typeof scripts.prebuild === "string" && scripts.prebuild.length > 0) {
+    return `skipped \u2014 package.json scripts.prebuild already exists ("${scripts.prebuild}"). Add "patchstack-connect scan" to it manually.`;
+  }
+  scripts.prebuild = "patchstack-connect scan";
+  pkg.scripts = scripts;
+  await writeFile2(target, JSON.stringify(pkg, null, indent) + newline, "utf8");
+  return 'patched \u2014 added "prebuild": "patchstack-connect scan"';
+}
+async function runBootstrap(args) {
+  const token = args.positional[0];
+  if (!token) {
+    console.error("Error: integration token is required.\n");
+    console.error("Usage: patchstack-connect bootstrap <token>");
+    return 1;
+  }
+  const apiBaseUrl = getStringFlag(args.flags, "api-url") ?? process.env.PATCHSTACK_API_URL ?? DEFAULT_API_BASE_URL;
+  const siteUrl = getStringFlag(args.flags, "url");
+  const appType = getStringFlag(args.flags, "app-type");
+  const skipPrebuild = args.flags.get("skip-prebuild") === true;
+  const skipScan = args.flags.get("skip-scan") === true;
+  console.log(`Redeeming integration token at ${apiBaseUrl}\u2026`);
+  const redeem = await redeemIntegrationToken(token, {
+    apiBaseUrl,
+    url: siteUrl,
+    appType,
+    timeoutMs: DEFAULT_TIMEOUT_MS
+  });
+  const manifestEndpoint = buildManifestEndpoint(apiBaseUrl);
+  const configPath = await writeConfigFile(process.cwd(), {
+    siteUuid: redeem.uuid,
+    endpoint: manifestEndpoint
+  });
+  console.log(`Created Pulse site (id ${redeem.site_id}, uuid ${redeem.uuid}).`);
+  console.log(`Wrote ${configPath}`);
+  if (!skipPrebuild) {
+    const result = await patchPackageJsonPrebuild(process.cwd());
+    console.log(`package.json: ${result}`);
+  }
+  if (skipScan) {
+    console.log("");
+    console.log("Skipping initial scan (--skip-scan).");
+    return 0;
+  }
+  console.log("");
+  console.log("Running first scan\u2026");
+  const config = await resolveConfig({ cwd: process.cwd() });
+  const manifest = await scanLockfile(process.cwd());
+  const { payload, stats } = buildWirePayload(manifest);
+  console.log(
+    `Found ${payload.packages.length} unique package versions across ${stats.uniqueNames} package names in ${manifest.ecosystem} lockfile.`
+  );
+  const response = await postManifest(config, payload);
+  if (response.stored) {
+    console.log(`Stored manifest #${response.manifest_id} (checksum ${response.checksum}).`);
+  } else if (response.reason === "duplicate") {
+    console.log("Manifest unchanged since last scan \u2014 nothing to store.");
+  } else {
+    console.log(`Server response: ${response.message ?? JSON.stringify(response)}`);
+  }
+  return 0;
+}
 async function main() {
   const args = parseArgs(process.argv);
   if (args.flags.has("help") || args.command === "help" || args.command === null) {
@@ -537,6 +711,8 @@ async function main() {
     return 0;
   }
   switch (args.command) {
+    case "bootstrap":
+      return runBootstrap(args);
     case "init":
       return runInit(args);
     case "scan":

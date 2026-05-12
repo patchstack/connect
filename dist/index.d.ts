@@ -22,10 +22,14 @@ interface StoreManifestResponse {
     message?: string;
     error?: string;
 }
+interface RedeemIntegrationTokenResponse {
+    uuid: string;
+    site_id: number;
+}
 declare class PatchstackError extends Error {
-    readonly code: 'CONFIG_MISSING' | 'CONFIG_INVALID' | 'LOCKFILE_NOT_FOUND' | 'LOCKFILE_UNSUPPORTED' | 'LOCKFILE_PARSE_ERROR' | 'NETWORK_ERROR' | 'NETWORK_TIMEOUT' | 'SITE_NOT_FOUND' | 'VALIDATION_ERROR' | 'SERVER_ERROR';
+    readonly code: 'CONFIG_MISSING' | 'CONFIG_INVALID' | 'LOCKFILE_NOT_FOUND' | 'LOCKFILE_UNSUPPORTED' | 'LOCKFILE_PARSE_ERROR' | 'NETWORK_ERROR' | 'NETWORK_TIMEOUT' | 'SITE_NOT_FOUND' | 'VALIDATION_ERROR' | 'SERVER_ERROR' | 'TOKEN_INVALID' | 'TOKEN_USED_OR_EXPIRED' | 'BOOTSTRAP_FAILED';
     readonly cause?: unknown | undefined;
-    constructor(message: string, code: 'CONFIG_MISSING' | 'CONFIG_INVALID' | 'LOCKFILE_NOT_FOUND' | 'LOCKFILE_UNSUPPORTED' | 'LOCKFILE_PARSE_ERROR' | 'NETWORK_ERROR' | 'NETWORK_TIMEOUT' | 'SITE_NOT_FOUND' | 'VALIDATION_ERROR' | 'SERVER_ERROR', cause?: unknown | undefined);
+    constructor(message: string, code: 'CONFIG_MISSING' | 'CONFIG_INVALID' | 'LOCKFILE_NOT_FOUND' | 'LOCKFILE_UNSUPPORTED' | 'LOCKFILE_PARSE_ERROR' | 'NETWORK_ERROR' | 'NETWORK_TIMEOUT' | 'SITE_NOT_FOUND' | 'VALIDATION_ERROR' | 'SERVER_ERROR' | 'TOKEN_INVALID' | 'TOKEN_USED_OR_EXPIRED' | 'BOOTSTRAP_FAILED', cause?: unknown | undefined);
 }
 
 interface DetectedLockfile {
@@ -56,8 +60,19 @@ interface NormalizeResult {
 declare function buildWirePayload(manifest: Manifest): NormalizeResult;
 declare function compareVersions(a: string, b: string): number;
 
+declare const DEFAULT_API_BASE_URL = "https://app.patchstack.com/monitor";
 declare const DEFAULT_ENDPOINT = "https://app.patchstack.com/monitor/pulse/manifest";
+declare const DEFAULT_TIMEOUT_MS = 30000;
 declare function buildEndpointUrl(base: string, siteUuid: string): string;
+declare function buildRedeemUrl(apiBaseUrl: string): string;
+declare function buildManifestEndpoint(apiBaseUrl: string): string;
+interface RedeemIntegrationTokenOptions {
+    apiBaseUrl?: string;
+    url?: string;
+    appType?: string;
+    timeoutMs?: number;
+}
+declare function redeemIntegrationToken(token: string, options?: RedeemIntegrationTokenOptions): Promise<RedeemIntegrationTokenResponse>;
 declare function postManifest(config: Config, payload: WirePayload): Promise<StoreManifestResponse>;
 
 interface ConfigFile {
@@ -86,4 +101,4 @@ interface ScanAndReportResult {
 }
 declare function scanAndReport(options?: ScanAndReportOptions): Promise<ScanAndReportResult>;
 
-export { type Config, DEFAULT_ENDPOINT, type Ecosystem, type Manifest, type PackageEntry, PatchstackError, type ScanAndReportOptions, type ScanAndReportResult, type StoreManifestResponse, buildEndpointUrl, buildWirePayload, compareVersions, detectLockfile, postManifest, resolveConfig, scanAndReport, scanLockfile, writeConfigFile };
+export { type Config, DEFAULT_API_BASE_URL, DEFAULT_ENDPOINT, DEFAULT_TIMEOUT_MS, type Ecosystem, type Manifest, type PackageEntry, PatchstackError, type RedeemIntegrationTokenOptions, type RedeemIntegrationTokenResponse, type ScanAndReportOptions, type ScanAndReportResult, type StoreManifestResponse, buildEndpointUrl, buildManifestEndpoint, buildRedeemUrl, buildWirePayload, compareVersions, detectLockfile, postManifest, redeemIntegrationToken, resolveConfig, scanAndReport, scanLockfile, writeConfigFile };

@@ -1,16 +1,33 @@
+import { readFile, writeFile } from 'node:fs/promises';
+import path from 'node:path';
 import { scanLockfile } from './parsers/index.js';
 import { buildWirePayload } from './normalize.js';
-import { postManifest } from './client.js';
+import {
+  buildManifestEndpoint,
+  DEFAULT_API_BASE_URL,
+  DEFAULT_TIMEOUT_MS,
+  postManifest,
+  redeemIntegrationToken,
+} from './client.js';
 import { resolveConfig, writeConfigFile } from './config.js';
 import { PatchstackError } from './types.js';
 
 const HELP = `@patchstack/connect — scan your lockfile and report packages to Patchstack.
 
 Usage:
+  patchstack-connect bootstrap <token>               One-shot: redeem an integration token, save config,
+                                                     add the prebuild script, and run the first scan
   patchstack-connect init <site-uuid>                Save the site UUID to .patchstackrc.json
   patchstack-connect scan   [options]                Scan lockfile and POST to Patchstack
   patchstack-connect status [options]                Show current configuration
   patchstack-connect help                            Print this message
+
+Options (for bootstrap):
+  --api-url <url>         API base URL (default: https://app.patchstack.com/monitor)
+  --url <url>             Optional site URL to register (e.g. https://my-app.lovable.app)
+  --app-type <type>       Optional app type label (e.g. lovable, bolt-diy)
+  --skip-prebuild         Do not patch package.json
+  --skip-scan             Do not run an initial scan after bootstrap
 
 Options (for scan and status):
   --site-uuid <uuid>      Override the configured site UUID
@@ -20,18 +37,19 @@ Options (for scan and status):
 Environment:
   PATCHSTACK_SITE_UUID    Site UUID
   PATCHSTACK_ENDPOINT     API endpoint (default: https://app.patchstack.com/monitor/pulse/manifest)
+  PATCHSTACK_API_URL      API base URL (default: https://app.patchstack.com/monitor)
   PATCHSTACK_TIMEOUT_MS   Request timeout in ms (default: 30000)
 
 Precedence: CLI flag > environment variable > .patchstackrc.json.
 
 Examples:
+  npx @patchstack/connect bootstrap ac963c7608a8c527aac8a14bd92c0e519b84ff63400063a4e10e7e6c02b308d3
   npx @patchstack/connect init 550e8400-e29b-41d4-a716-446655440000
   npx @patchstack/connect scan
   npx @patchstack/connect scan --dry-run
-  npx @patchstack/connect scan --site-uuid 550e8400-...-446655440000
 `;
 
-const VALUE_FLAGS = new Set(['site-uuid', 'endpoint']);
+const VALUE_FLAGS = new Set(['site-uuid', 'endpoint', 'api-url', 'url', 'app-type']);
 
 interface ParsedArgs {
   command: string | null;
@@ -158,6 +176,110 @@ async function runStatus(args: ParsedArgs): Promise<number> {
   }
 }
 
+/**
+ * Try to add `"prebuild": "patchstack-connect scan"` to package.json scripts.
+ * Returns a short description of the result for logging.
+ */
+async function patchPackageJsonPrebuild(cwd: string): Promise<string> {
+  const target = path.join(cwd, 'package.json');
+  let raw: string;
+  try {
+    raw = await readFile(target, 'utf8');
+  } catch {
+    return 'skipped — no package.json in current directory';
+  }
+
+  // Best-effort indent detection: look at the first indented line.
+  const indentMatch = raw.match(/\n([ \t]+)\S/);
+  const indent = indentMatch?.[1] ?? '  ';
+  const newline = raw.endsWith('\n') ? '\n' : '';
+
+  let pkg: Record<string, unknown>;
+  try {
+    pkg = JSON.parse(raw) as Record<string, unknown>;
+  } catch {
+    return 'skipped — package.json is not valid JSON';
+  }
+
+  const scripts = (pkg.scripts ?? {}) as Record<string, string>;
+  if (typeof scripts.prebuild === 'string' && scripts.prebuild.includes('patchstack-connect')) {
+    return 'unchanged — prebuild already calls patchstack-connect';
+  }
+  if (typeof scripts.prebuild === 'string' && scripts.prebuild.length > 0) {
+    return `skipped — package.json scripts.prebuild already exists ("${scripts.prebuild}"). Add "patchstack-connect scan" to it manually.`;
+  }
+
+  scripts.prebuild = 'patchstack-connect scan';
+  pkg.scripts = scripts;
+
+  await writeFile(target, JSON.stringify(pkg, null, indent) + newline, 'utf8');
+  return 'patched — added "prebuild": "patchstack-connect scan"';
+}
+
+async function runBootstrap(args: ParsedArgs): Promise<number> {
+  const token = args.positional[0];
+  if (!token) {
+    console.error('Error: integration token is required.\n');
+    console.error('Usage: patchstack-connect bootstrap <token>');
+    return 1;
+  }
+
+  const apiBaseUrl =
+    getStringFlag(args.flags, 'api-url') ?? process.env.PATCHSTACK_API_URL ?? DEFAULT_API_BASE_URL;
+  const siteUrl = getStringFlag(args.flags, 'url');
+  const appType = getStringFlag(args.flags, 'app-type');
+  const skipPrebuild = args.flags.get('skip-prebuild') === true;
+  const skipScan = args.flags.get('skip-scan') === true;
+
+  console.log(`Redeeming integration token at ${apiBaseUrl}…`);
+  const redeem = await redeemIntegrationToken(token, {
+    apiBaseUrl,
+    url: siteUrl,
+    appType,
+    timeoutMs: DEFAULT_TIMEOUT_MS,
+  });
+
+  const manifestEndpoint = buildManifestEndpoint(apiBaseUrl);
+  const configPath = await writeConfigFile(process.cwd(), {
+    siteUuid: redeem.uuid,
+    endpoint: manifestEndpoint,
+  });
+
+  console.log(`Created Pulse site (id ${redeem.site_id}, uuid ${redeem.uuid}).`);
+  console.log(`Wrote ${configPath}`);
+
+  if (!skipPrebuild) {
+    const result = await patchPackageJsonPrebuild(process.cwd());
+    console.log(`package.json: ${result}`);
+  }
+
+  if (skipScan) {
+    console.log('');
+    console.log('Skipping initial scan (--skip-scan).');
+    return 0;
+  }
+
+  console.log('');
+  console.log('Running first scan…');
+  const config = await resolveConfig({ cwd: process.cwd() });
+  const manifest = await scanLockfile(process.cwd());
+  const { payload, stats } = buildWirePayload(manifest);
+
+  console.log(
+    `Found ${payload.packages.length} unique package versions across ${stats.uniqueNames} package names in ${manifest.ecosystem} lockfile.`,
+  );
+
+  const response = await postManifest(config, payload);
+  if (response.stored) {
+    console.log(`Stored manifest #${response.manifest_id} (checksum ${response.checksum}).`);
+  } else if (response.reason === 'duplicate') {
+    console.log('Manifest unchanged since last scan — nothing to store.');
+  } else {
+    console.log(`Server response: ${response.message ?? JSON.stringify(response)}`);
+  }
+  return 0;
+}
+
 async function main(): Promise<number> {
   const args = parseArgs(process.argv);
 
@@ -167,6 +289,8 @@ async function main(): Promise<number> {
   }
 
   switch (args.command) {
+    case 'bootstrap':
+      return runBootstrap(args);
     case 'init':
       return runInit(args);
     case 'scan':

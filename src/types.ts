@@ -27,6 +27,11 @@ export interface StoreManifestResponse {
   error?: string;
 }
 
+export interface RedeemIntegrationTokenResponse {
+  uuid: string;
+  site_id: number;
+}
+
 export class PatchstackError extends Error {
   constructor(
     message: string,
@@ -40,7 +45,10 @@ export class PatchstackError extends Error {
       | 'NETWORK_TIMEOUT'
       | 'SITE_NOT_FOUND'
       | 'VALIDATION_ERROR'
-      | 'SERVER_ERROR',
+      | 'SERVER_ERROR'
+      | 'TOKEN_INVALID'
+      | 'TOKEN_USED_OR_EXPIRED'
+      | 'BOOTSTRAP_FAILED',
     public readonly cause?: unknown,
   ) {
     super(message);
