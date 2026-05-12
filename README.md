@@ -71,7 +71,7 @@ Precedence (highest wins):
 Environment variables:
 
 - `PATCHSTACK_SITE_UUID` — the site UUID from your Patchstack dashboard
-- `PATCHSTACK_ENDPOINT` — override the API endpoint (default `https://app.patchstack.com/monitor/pulse/manifest`)
+- `PATCHSTACK_ENDPOINT` — override the API endpoint (default `http://api.patchstack.com/monitor/pulse/manifest`)
 - `PATCHSTACK_TIMEOUT_MS` — request timeout in milliseconds (default `30000`)
 
 `.patchstackrc.json` example:

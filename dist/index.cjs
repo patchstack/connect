@@ -427,7 +427,7 @@ function compareSegments(a, b) {
 }
 
 // src/client.ts
-var DEFAULT_ENDPOINT = "https://app.patchstack.com/monitor/pulse/manifest";
+var DEFAULT_ENDPOINT = "http://api.patchstack.com/monitor/pulse/manifest";
 var DEFAULT_TIMEOUT_MS = 3e4;
 function buildEndpointUrl(base, siteUuid) {
   const trimmed = base.replace(/\/$/, "");

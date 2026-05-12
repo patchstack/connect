@@ -1,7 +1,7 @@
 import { PatchstackError, type Config, type StoreManifestResponse } from './types.js';
 import type { WirePayload } from './normalize.js';
 
-export const DEFAULT_ENDPOINT = 'https://app.patchstack.com/monitor/pulse/manifest';
+export const DEFAULT_ENDPOINT = 'http://api.patchstack.com/monitor/pulse/manifest';
 export const DEFAULT_TIMEOUT_MS = 30_000;
 
 export function buildEndpointUrl(base: string, siteUuid?: string | null): string {

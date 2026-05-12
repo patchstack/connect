@@ -4,8 +4,8 @@ import { PatchstackError } from '../src/types.js';
 
 describe('buildEndpointUrl', () => {
   it('joins base and uuid cleanly', () => {
-    expect(buildEndpointUrl('https://app.patchstack.com/monitor/pulse/manifest', 'abc')).toBe(
-      'https://app.patchstack.com/monitor/pulse/manifest/abc',
+    expect(buildEndpointUrl('http://api.patchstack.com/monitor/pulse/manifest', 'abc')).toBe(
+      'http://api.patchstack.com/monitor/pulse/manifest/abc',
     );
   });
 
