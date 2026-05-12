@@ -101,7 +101,7 @@ function isDirectV2(pkgPath) {
 }
 
 // src/parsers/node_modules.ts
-import { readFile as readFile2, readdir, stat } from "fs/promises";
+import { lstat, readFile as readFile2, readdir, stat } from "fs/promises";
 import path2 from "path";
 async function walkNodeModules(cwd) {
   const root = path2.join(cwd, "node_modules");
@@ -139,6 +139,9 @@ async function walk(dir, acc, depth) {
       continue;
     }
     const fullPath = path2.join(dir, name);
+    if (!await isPlainDirectory(fullPath)) {
+      continue;
+    }
     if (name.startsWith("@")) {
       let subNames;
       try {
@@ -151,6 +154,9 @@ async function walk(dir, acc, depth) {
           continue;
         }
         const scopedDir = path2.join(fullPath, sub);
+        if (!await isPlainDirectory(scopedDir)) {
+          continue;
+        }
         await readPackage(scopedDir, depth, acc);
         await walkNested(scopedDir, acc, depth);
       }
@@ -187,15 +193,18 @@ async function readPackage(pkgDir, depth, acc) {
 }
 async function walkNested(pkgDir, acc, depth) {
   const nested = path2.join(pkgDir, "node_modules");
-  try {
-    const info = await stat(nested);
-    if (!info.isDirectory()) {
-      return;
-    }
-  } catch {
+  if (!await isPlainDirectory(nested)) {
     return;
   }
   await walk(nested, acc, depth + 1);
+}
+async function isPlainDirectory(dir) {
+  try {
+    const info = await lstat(dir);
+    return info.isDirectory() && !info.isSymbolicLink();
+  } catch {
+    return false;
+  }
 }
 
 // src/parsers/index.ts
