@@ -99,7 +99,31 @@ npm run build
 
 ## Release process
 
-Pull requests run typecheck, tests, build, package verification, and a production dependency audit in GitHub Actions. Publishing runs when a GitHub Release is published and uses `npm publish --provenance --access public`, so configure npm trusted publishing for this repository before cutting a release.
+Pull requests run typecheck, tests, build, package verification, and a production dependency audit in GitHub Actions.
+
+Publishing runs when a GitHub Release is published. The release tag must match the package version in `package.json` with a leading `v`. For example, `package.json` version `0.2.0` must be released with tag `v0.2.0`; otherwise the workflow fails before publishing.
+
+To publish a release:
+
+1. Bump the package version, for example `npm version 0.2.0 --no-git-tag-version`.
+2. Commit `package.json` and `package-lock.json`.
+3. Merge the version bump to `main`.
+4. Create and publish a GitHub Release tagged `v0.2.0`.
+5. The `Publish` workflow verifies the package, then runs `npm publish --provenance --access public`.
+
+Before the first release, configure npm trusted publishing for this package:
+
+1. Merge `.github/workflows/publish.yml` to `main`.
+2. Open the `@patchstack/connect` package settings on npmjs.com.
+3. In **Trusted publishing**, choose **GitHub Actions**.
+4. Configure:
+   - Organization/user: `patchstack`
+   - Repository: `connect`
+   - Workflow filename: `publish.yml`
+   - Environment name: `npm`
+5. In GitHub repository settings, create an `npm` environment. Optional but recommended: require reviewer approval for that environment.
+
+Do not add an npm publish token to GitHub secrets for this workflow. Trusted publishing uses GitHub OIDC short-lived credentials. After the first trusted publish succeeds, npm recommends setting package publishing access to require two-factor authentication and disallow tokens.
 
 ## License
 
