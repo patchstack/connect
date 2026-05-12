@@ -1,14 +1,17 @@
 import { scanLockfile } from './parsers/index.js';
 import { buildWirePayload } from './normalize.js';
 import { postManifest } from './client.js';
-import { resolveConfig, writeConfigFile } from './config.js';
+import { persistSiteUuid, resolveConfig, writeConfigFile } from './config.js';
 import { PatchstackError } from './types.js';
 
 const HELP = `@patchstack/connect — scan your lockfile and report packages to Patchstack.
 
 Usage:
-  patchstack-connect init <site-uuid>                Save the site UUID to .patchstackrc.json
-  patchstack-connect scan   [options]                Scan lockfile and POST to Patchstack
+  patchstack-connect scan   [options]                Scan lockfile and POST to Patchstack.
+                                                     If no UUID is configured, the server
+                                                     provisions one and we persist it.
+  patchstack-connect init   <site-uuid>              Optional: pre-seed .patchstackrc.json
+                                                     with an existing site UUID
   patchstack-connect status [options]                Show current configuration
   patchstack-connect help                            Print this message
 
@@ -25,9 +28,9 @@ Environment:
 Precedence: CLI flag > environment variable > .patchstackrc.json.
 
 Examples:
-  npx @patchstack/connect init 550e8400-e29b-41d4-a716-446655440000
   npx @patchstack/connect scan
   npx @patchstack/connect scan --dry-run
+  npx @patchstack/connect init 550e8400-e29b-41d4-a716-446655440000
   npx @patchstack/connect scan --site-uuid 550e8400-...-446655440000
 `;
 
@@ -118,7 +121,12 @@ async function runScan(args: ParsedArgs): Promise<number> {
 
   if (dryRun) {
     console.log('');
-    console.log('--dry-run: not posting to Patchstack. Payload preview:');
+    if (config.siteUuid === null) {
+      console.log('--dry-run: no site UUID configured. A real run would provision one.');
+    } else {
+      console.log(`--dry-run: not posting to Patchstack (site UUID ${config.siteUuid}).`);
+    }
+    console.log('Payload preview:');
     const preview = JSON.stringify(payload, null, 2).split('\n');
     console.log(preview.slice(0, Math.min(preview.length, 30)).join('\n'));
     if (preview.length > 30) {
@@ -127,7 +135,20 @@ async function runScan(args: ParsedArgs): Promise<number> {
     return 0;
   }
 
+  const provisioning = config.siteUuid === null;
+  if (provisioning) {
+    console.log('No site UUID configured — provisioning a new Patchstack site from this manifest…');
+  }
+
   const response = await postManifest(config, payload);
+
+  // The server always returns the UUID. If we didn't have one, persist it so
+  // every subsequent scan targets the same site.
+  if (provisioning && response.uuid !== undefined && response.uuid.length > 0) {
+    const target = await persistSiteUuid(process.cwd(), response.uuid);
+    console.log(`Provisioned site ${response.uuid}. Saved UUID to ${target}.`);
+  }
+
   if (response.stored) {
     console.log(`Stored manifest #${response.manifest_id} (checksum ${response.checksum}).`);
   } else if (response.reason === 'duplicate') {
@@ -139,23 +160,15 @@ async function runScan(args: ParsedArgs): Promise<number> {
 }
 
 async function runStatus(args: ParsedArgs): Promise<number> {
-  try {
-    const config = await resolveConfig({
-      cwd: process.cwd(),
-      cliSiteUuid: getStringFlag(args.flags, 'site-uuid'),
-      cliEndpoint: getStringFlag(args.flags, 'endpoint'),
-    });
-    console.log(`Site UUID:  ${config.siteUuid}`);
-    console.log(`Endpoint:   ${config.endpoint}`);
-    console.log(`Timeout:    ${config.timeoutMs}ms`);
-    return 0;
-  } catch (err) {
-    if (err instanceof PatchstackError && err.code === 'CONFIG_MISSING') {
-      console.log('Not configured. Run `patchstack-connect init <site-uuid>` to get started.');
-      return 0;
-    }
-    throw err;
-  }
+  const config = await resolveConfig({
+    cwd: process.cwd(),
+    cliSiteUuid: getStringFlag(args.flags, 'site-uuid'),
+    cliEndpoint: getStringFlag(args.flags, 'endpoint'),
+  });
+  console.log(`Site UUID:  ${config.siteUuid ?? '(none yet — the next `scan` will provision one)'}`);
+  console.log(`Endpoint:   ${config.endpoint}`);
+  console.log(`Timeout:    ${config.timeoutMs}ms`);
+  return 0;
 }
 
 async function main(): Promise<number> {

@@ -13,12 +13,19 @@ export interface Manifest {
 }
 
 export interface Config {
-  siteUuid: string;
+  /**
+   * The site UUID. `null` means we don't have one yet — `postManifest` will then
+   * post to the bare endpoint, the server will provision a fresh site, and the
+   * UUID it returns should be persisted via `persistSiteUuid()`.
+   */
+  siteUuid: string | null;
   endpoint: string;
   timeoutMs: number;
 }
 
 export interface StoreManifestResponse {
+  /** The UUID of the site the manifest was stored against. Always returned. */
+  uuid?: string;
   stored: boolean;
   manifest_id?: number;
   checksum?: string;
