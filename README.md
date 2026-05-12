@@ -97,6 +97,10 @@ npm test
 npm run build
 ```
 
+## Release process
+
+Pull requests run typecheck, tests, build, package verification, and a production dependency audit in GitHub Actions. Publishing runs when a GitHub Release is published and uses `npm publish --provenance --access public`, so configure npm trusted publishing for this repository before cutting a release.
+
 ## License
 
 MIT
