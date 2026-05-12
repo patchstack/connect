@@ -15,6 +15,7 @@ export interface Manifest {
 export interface Config {
   siteUuid: string;
   endpoint: string;
+  timeoutMs: number;
 }
 
 export interface StoreManifestResponse {
@@ -31,10 +32,12 @@ export class PatchstackError extends Error {
     message: string,
     public readonly code:
       | 'CONFIG_MISSING'
+      | 'CONFIG_INVALID'
       | 'LOCKFILE_NOT_FOUND'
       | 'LOCKFILE_UNSUPPORTED'
       | 'LOCKFILE_PARSE_ERROR'
       | 'NETWORK_ERROR'
+      | 'NETWORK_TIMEOUT'
       | 'SITE_NOT_FOUND'
       | 'VALIDATION_ERROR'
       | 'SERVER_ERROR',

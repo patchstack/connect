@@ -1,13 +1,14 @@
 import { readFile, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { PatchstackError, type Config } from './types.js';
-import { DEFAULT_ENDPOINT } from './client.js';
+import { DEFAULT_ENDPOINT, DEFAULT_TIMEOUT_MS } from './client.js';
 
 const CONFIG_FILENAME = '.patchstackrc.json';
 
 interface ConfigFile {
   siteUuid?: string;
   endpoint?: string;
+  timeoutMs?: number;
 }
 
 export interface ResolveConfigOptions {
@@ -32,6 +33,8 @@ export async function resolveConfig(options: ResolveConfigOptions): Promise<Conf
     fromFile.endpoint ??
     DEFAULT_ENDPOINT;
 
+  const timeoutMs = fromEnv.timeoutMs ?? fromFile.timeoutMs ?? DEFAULT_TIMEOUT_MS;
+
   if (siteUuid === null || siteUuid.length === 0) {
     throw new PatchstackError(
       'No site UUID configured. Run `patchstack-connect init <site-uuid>` or set PATCHSTACK_SITE_UUID.',
@@ -42,11 +45,11 @@ export async function resolveConfig(options: ResolveConfigOptions): Promise<Conf
   if (!isUuid(siteUuid)) {
     throw new PatchstackError(
       `Site UUID "${siteUuid}" does not look like a valid UUID.`,
-      'CONFIG_MISSING',
+      'CONFIG_INVALID',
     );
   }
 
-  return { siteUuid, endpoint };
+  return { siteUuid, endpoint, timeoutMs };
 }
 
 export async function writeConfigFile(cwd: string, config: ConfigFile): Promise<string> {
@@ -58,19 +61,48 @@ export async function writeConfigFile(cwd: string, config: ConfigFile): Promise<
 
 async function readConfigFile(cwd: string): Promise<ConfigFile> {
   const target = path.join(cwd, CONFIG_FILENAME);
+  let raw: string;
   try {
-    const raw = await readFile(target, 'utf8');
-    const parsed = JSON.parse(raw) as ConfigFile;
-    return parsed;
-  } catch {
-    return {};
+    raw = await readFile(target, 'utf8');
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code === 'ENOENT') {
+      return {};
+    }
+    throw new PatchstackError(
+      `Could not read ${target}: ${(err as Error).message}`,
+      'CONFIG_INVALID',
+      err,
+    );
+  }
+
+  try {
+    return JSON.parse(raw) as ConfigFile;
+  } catch (err) {
+    throw new PatchstackError(
+      `Config file ${target} contains invalid JSON.`,
+      'CONFIG_INVALID',
+      err,
+    );
   }
 }
 
 function readEnv(): ConfigFile {
+  const timeoutRaw = process.env.PATCHSTACK_TIMEOUT_MS;
+  let timeoutMs: number | undefined;
+  if (timeoutRaw !== undefined && timeoutRaw.length > 0) {
+    const parsed = Number(timeoutRaw);
+    if (!Number.isFinite(parsed) || parsed <= 0) {
+      throw new PatchstackError(
+        `PATCHSTACK_TIMEOUT_MS must be a positive number; got "${timeoutRaw}".`,
+        'CONFIG_INVALID',
+      );
+    }
+    timeoutMs = parsed;
+  }
   return {
     siteUuid: process.env.PATCHSTACK_SITE_UUID ?? undefined,
     endpoint: process.env.PATCHSTACK_ENDPOINT ?? undefined,
+    timeoutMs,
   };
 }
 

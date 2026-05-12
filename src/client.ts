@@ -2,6 +2,7 @@ import { PatchstackError, type Config, type StoreManifestResponse } from './type
 import type { WirePayload } from './normalize.js';
 
 export const DEFAULT_ENDPOINT = 'https://app.patchstack.com/monitor/pulse/manifest';
+export const DEFAULT_TIMEOUT_MS = 30_000;
 
 export function buildEndpointUrl(base: string, siteUuid: string): string {
   const trimmed = base.replace(/\/$/, '');
@@ -13,6 +14,7 @@ export async function postManifest(
   payload: WirePayload,
 ): Promise<StoreManifestResponse> {
   const url = buildEndpointUrl(config.endpoint, config.siteUuid);
+  const timeoutMs = config.timeoutMs;
 
   let response: Response;
   try {
@@ -24,8 +26,16 @@ export async function postManifest(
         'User-Agent': '@patchstack/connect',
       },
       body: JSON.stringify(payload),
+      signal: AbortSignal.timeout(timeoutMs),
     });
   } catch (cause) {
+    if (isTimeoutError(cause)) {
+      throw new PatchstackError(
+        `Patchstack request to ${url} timed out after ${timeoutMs}ms. Override with PATCHSTACK_TIMEOUT_MS.`,
+        'NETWORK_TIMEOUT',
+        cause,
+      );
+    }
     throw new PatchstackError(
       `Could not reach Patchstack at ${url}. Check your network connection.`,
       'NETWORK_ERROR',
@@ -67,4 +77,11 @@ export async function postManifest(
   }
 
   return body;
+}
+
+function isTimeoutError(cause: unknown): boolean {
+  if (cause instanceof Error) {
+    return cause.name === 'TimeoutError' || cause.name === 'AbortError';
+  }
+  return false;
 }

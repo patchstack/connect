@@ -7,43 +7,74 @@ import { PatchstackError } from './types.js';
 const HELP = `@patchstack/connect — scan your lockfile and report packages to Patchstack.
 
 Usage:
-  patchstack-connect init <site-uuid>       Save the site UUID to .patchstackrc.json
-  patchstack-connect scan [--dry-run]       Scan lockfile and POST to Patchstack
-  patchstack-connect status                 Show current configuration
-  patchstack-connect help                   Print this message
+  patchstack-connect init <site-uuid>                Save the site UUID to .patchstackrc.json
+  patchstack-connect scan   [options]                Scan lockfile and POST to Patchstack
+  patchstack-connect status [options]                Show current configuration
+  patchstack-connect help                            Print this message
+
+Options (for scan and status):
+  --site-uuid <uuid>      Override the configured site UUID
+  --endpoint <url>        Override the API endpoint
+  --dry-run               (scan only) Show the payload without posting
 
 Environment:
-  PATCHSTACK_SITE_UUID    Site UUID (overrides .patchstackrc.json)
-  PATCHSTACK_ENDPOINT     Override the API endpoint (default: https://app.patchstack.com/monitor/pulse/manifest)
+  PATCHSTACK_SITE_UUID    Site UUID
+  PATCHSTACK_ENDPOINT     API endpoint (default: https://app.patchstack.com/monitor/pulse/manifest)
+  PATCHSTACK_TIMEOUT_MS   Request timeout in ms (default: 30000)
+
+Precedence: CLI flag > environment variable > .patchstackrc.json.
 
 Examples:
   npx @patchstack/connect init 550e8400-e29b-41d4-a716-446655440000
   npx @patchstack/connect scan
-  PATCHSTACK_SITE_UUID=... npx @patchstack/connect scan --dry-run
+  npx @patchstack/connect scan --dry-run
+  npx @patchstack/connect scan --site-uuid 550e8400-...-446655440000
 `;
+
+const VALUE_FLAGS = new Set(['site-uuid', 'endpoint']);
 
 interface ParsedArgs {
   command: string | null;
   positional: string[];
-  flags: Set<string>;
+  flags: Map<string, string | true>;
 }
 
 function parseArgs(argv: string[]): ParsedArgs {
   const args = argv.slice(2);
   const positional: string[] = [];
-  const flags = new Set<string>();
-  for (const arg of args) {
-    if (arg.startsWith('--')) {
-      flags.add(arg.slice(2));
-    } else {
+  const flags = new Map<string, string | true>();
+
+  for (let i = 0; i < args.length; i++) {
+    const arg = args[i]!;
+    if (!arg.startsWith('--')) {
       positional.push(arg);
+      continue;
+    }
+    const stripped = arg.slice(2);
+    const eqIdx = stripped.indexOf('=');
+    if (eqIdx !== -1) {
+      flags.set(stripped.slice(0, eqIdx), stripped.slice(eqIdx + 1));
+      continue;
+    }
+    const next = args[i + 1];
+    if (VALUE_FLAGS.has(stripped) && next !== undefined && !next.startsWith('--')) {
+      flags.set(stripped, next);
+      i++;
+    } else {
+      flags.set(stripped, true);
     }
   }
+
   return {
     command: positional.shift() ?? null,
     positional,
     flags,
   };
+}
+
+function getStringFlag(flags: Map<string, string | true>, name: string): string | undefined {
+  const value = flags.get(name);
+  return typeof value === 'string' ? value : undefined;
 }
 
 async function runInit(args: ParsedArgs): Promise<number> {
@@ -66,8 +97,12 @@ async function runInit(args: ParsedArgs): Promise<number> {
 }
 
 async function runScan(args: ParsedArgs): Promise<number> {
-  const dryRun = args.flags.has('dry-run');
-  const config = await resolveConfig({ cwd: process.cwd() });
+  const dryRun = args.flags.get('dry-run') === true;
+  const config = await resolveConfig({
+    cwd: process.cwd(),
+    cliSiteUuid: getStringFlag(args.flags, 'site-uuid'),
+    cliEndpoint: getStringFlag(args.flags, 'endpoint'),
+  });
   const manifest = await scanLockfile(process.cwd());
   const { payload, stats } = buildWirePayload(manifest);
 
@@ -103,11 +138,16 @@ async function runScan(args: ParsedArgs): Promise<number> {
   return 0;
 }
 
-async function runStatus(): Promise<number> {
+async function runStatus(args: ParsedArgs): Promise<number> {
   try {
-    const config = await resolveConfig({ cwd: process.cwd() });
-    console.log(`Site UUID: ${config.siteUuid}`);
-    console.log(`Endpoint:  ${config.endpoint}`);
+    const config = await resolveConfig({
+      cwd: process.cwd(),
+      cliSiteUuid: getStringFlag(args.flags, 'site-uuid'),
+      cliEndpoint: getStringFlag(args.flags, 'endpoint'),
+    });
+    console.log(`Site UUID:  ${config.siteUuid}`);
+    console.log(`Endpoint:   ${config.endpoint}`);
+    console.log(`Timeout:    ${config.timeoutMs}ms`);
     return 0;
   } catch (err) {
     if (err instanceof PatchstackError && err.code === 'CONFIG_MISSING') {
@@ -132,7 +172,7 @@ async function main(): Promise<number> {
     case 'scan':
       return runScan(args);
     case 'status':
-      return runStatus();
+      return runStatus(args);
     default:
       console.error(`Unknown command: ${args.command}\n`);
       console.error(HELP);

@@ -33,7 +33,7 @@ describe('postManifest', () => {
     vi.stubGlobal('fetch', fetchMock);
 
     const result = await postManifest(
-      { siteUuid: 'uuid', endpoint: 'https://example.com' },
+      { siteUuid: 'uuid', endpoint: 'https://example.com', timeoutMs: 30_000 },
       { ecosystem: 'npm', packages: [{ name: 'lodash', version: '4.17.21' }] },
     );
     expect(result.stored).toBe(true);
@@ -50,7 +50,7 @@ describe('postManifest', () => {
 
     await expect(
       postManifest(
-        { siteUuid: 'uuid', endpoint: 'https://example.com' },
+        { siteUuid: 'uuid', endpoint: 'https://example.com', timeoutMs: 30_000 },
         { ecosystem: 'npm', packages: [] },
       ),
     ).rejects.toMatchObject({ code: 'SITE_NOT_FOUND' });
@@ -68,7 +68,7 @@ describe('postManifest', () => {
 
     await expect(
       postManifest(
-        { siteUuid: 'uuid', endpoint: 'https://example.com' },
+        { siteUuid: 'uuid', endpoint: 'https://example.com', timeoutMs: 30_000 },
         { ecosystem: 'npm', packages: [] },
       ),
     ).rejects.toMatchObject({ code: 'VALIDATION_ERROR' });
@@ -79,9 +79,37 @@ describe('postManifest', () => {
 
     await expect(
       postManifest(
-        { siteUuid: 'uuid', endpoint: 'https://example.com' },
+        { siteUuid: 'uuid', endpoint: 'https://example.com', timeoutMs: 30_000 },
         { ecosystem: 'npm', packages: [] },
       ),
     ).rejects.toBeInstanceOf(PatchstackError);
+  });
+
+  it('passes an AbortSignal with the configured timeout', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(
+      new Response(JSON.stringify({ stored: true }), { status: 200 }),
+    );
+    vi.stubGlobal('fetch', fetchMock);
+
+    await postManifest(
+      { siteUuid: 'uuid', endpoint: 'https://example.com', timeoutMs: 12345 },
+      { ecosystem: 'npm', packages: [] },
+    );
+
+    const [, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+    expect(init.signal).toBeInstanceOf(AbortSignal);
+  });
+
+  it('maps a TimeoutError to NETWORK_TIMEOUT', async () => {
+    const timeoutErr = new Error('Aborted');
+    timeoutErr.name = 'TimeoutError';
+    vi.stubGlobal('fetch', vi.fn().mockRejectedValue(timeoutErr));
+
+    await expect(
+      postManifest(
+        { siteUuid: 'uuid', endpoint: 'https://example.com', timeoutMs: 1 },
+        { ecosystem: 'npm', packages: [] },
+      ),
+    ).rejects.toMatchObject({ code: 'NETWORK_TIMEOUT' });
   });
 });

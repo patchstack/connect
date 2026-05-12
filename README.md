@@ -21,17 +21,22 @@ Get your site UUID from the Patchstack dashboard: create a new site with type **
 ## CLI
 
 ```
-patchstack-connect init <site-uuid>       Save the site UUID to .patchstackrc.json
-patchstack-connect scan [--dry-run]       Scan the lockfile and POST to Patchstack
-patchstack-connect status                 Show current configuration
-patchstack-connect help                   Print help
+patchstack-connect init <site-uuid>                Save the site UUID to .patchstackrc.json
+patchstack-connect scan   [options]                Scan the lockfile and POST to Patchstack
+patchstack-connect status [options]                Show current configuration
+patchstack-connect help                            Print help
+
+Options (for scan and status):
+  --site-uuid <uuid>      Override the configured site UUID
+  --endpoint <url>        Override the API endpoint
+  --dry-run               (scan only) Print the payload without posting
 ```
 
 ## Configuration
 
 Precedence (highest wins):
 
-1. CLI flag
+1. CLI flag (`--site-uuid`, `--endpoint`)
 2. Environment variable
 3. `.patchstackrc.json` in the current directory
 
@@ -39,6 +44,7 @@ Environment variables:
 
 - `PATCHSTACK_SITE_UUID` — the site UUID from your Patchstack dashboard
 - `PATCHSTACK_ENDPOINT` — override the API endpoint (default `https://app.patchstack.com/monitor/pulse/manifest`)
+- `PATCHSTACK_TIMEOUT_MS` — request timeout in milliseconds (default `30000`)
 
 `.patchstackrc.json` example:
 
