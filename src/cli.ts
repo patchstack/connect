@@ -22,7 +22,7 @@ Options (for scan and status):
 
 Environment:
   PATCHSTACK_SITE_UUID    Site UUID
-  PATCHSTACK_ENDPOINT     API endpoint (default: https://app.patchstack.com/monitor/pulse/manifest)
+  PATCHSTACK_ENDPOINT     API endpoint (default: http://api.patchstack.com/monitor/pulse/manifest)
   PATCHSTACK_TIMEOUT_MS   Request timeout in ms (default: 30000)
 
 Precedence: CLI flag > environment variable > .patchstackrc.json.

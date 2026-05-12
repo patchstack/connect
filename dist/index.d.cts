@@ -66,7 +66,7 @@ interface NormalizeResult {
 declare function buildWirePayload(manifest: Manifest): NormalizeResult;
 declare function compareVersions(a: string, b: string): number;
 
-declare const DEFAULT_ENDPOINT = "https://app.patchstack.com/monitor/pulse/manifest";
+declare const DEFAULT_ENDPOINT = "http://api.patchstack.com/monitor/pulse/manifest";
 declare function buildEndpointUrl(base: string, siteUuid?: string | null): string;
 declare function postManifest(config: Config, payload: WirePayload): Promise<StoreManifestResponse>;
 
