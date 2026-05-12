@@ -45,8 +45,8 @@ __export(src_exports, {
 module.exports = __toCommonJS(src_exports);
 
 // src/parsers/index.ts
-var import_promises2 = require("fs/promises");
-var import_node_path2 = __toESM(require("path"), 1);
+var import_promises3 = require("fs/promises");
+var import_node_path3 = __toESM(require("path"), 1);
 
 // src/types.ts
 var PatchstackError = class extends Error {
@@ -146,20 +146,150 @@ function isDirectV2(pkgPath) {
   return nmCount === 1;
 }
 
+// src/parsers/node_modules.ts
+var import_promises2 = require("fs/promises");
+var import_node_path2 = __toESM(require("path"), 1);
+async function walkNodeModules(cwd) {
+  const root = import_node_path2.default.join(cwd, "node_modules");
+  try {
+    const info = await (0, import_promises2.stat)(root);
+    if (!info.isDirectory()) {
+      throw new PatchstackError(
+        `${root} exists but is not a directory.`,
+        "LOCKFILE_NOT_FOUND"
+      );
+    }
+  } catch (cause) {
+    if (cause instanceof PatchstackError) {
+      throw cause;
+    }
+    throw new PatchstackError(
+      `node_modules/ not found at ${cwd}. Install dependencies first (e.g. \`bun install\` or \`npm install\`).`,
+      "LOCKFILE_NOT_FOUND",
+      cause
+    );
+  }
+  const entries = [];
+  await walk(root, entries, 0);
+  return entries;
+}
+async function walk(dir, acc, depth) {
+  let names;
+  try {
+    names = await (0, import_promises2.readdir)(dir);
+  } catch {
+    return;
+  }
+  for (const name of names) {
+    if (name.startsWith(".")) {
+      continue;
+    }
+    const fullPath = import_node_path2.default.join(dir, name);
+    if (!await isPlainDirectory(fullPath)) {
+      continue;
+    }
+    if (name.startsWith("@")) {
+      let subNames;
+      try {
+        subNames = await (0, import_promises2.readdir)(fullPath);
+      } catch {
+        continue;
+      }
+      for (const sub of subNames) {
+        if (sub.startsWith(".")) {
+          continue;
+        }
+        const scopedDir = import_node_path2.default.join(fullPath, sub);
+        if (!await isPlainDirectory(scopedDir)) {
+          continue;
+        }
+        await readPackage(scopedDir, depth, acc);
+        await walkNested(scopedDir, acc, depth);
+      }
+      continue;
+    }
+    await readPackage(fullPath, depth, acc);
+    await walkNested(fullPath, acc, depth);
+  }
+}
+async function readPackage(pkgDir, depth, acc) {
+  let raw;
+  try {
+    raw = await (0, import_promises2.readFile)(import_node_path2.default.join(pkgDir, "package.json"), "utf8");
+  } catch {
+    return;
+  }
+  let parsed;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    return;
+  }
+  if (typeof parsed.name !== "string" || parsed.name.length === 0) {
+    return;
+  }
+  if (typeof parsed.version !== "string" || parsed.version.length === 0) {
+    return;
+  }
+  acc.push({
+    name: parsed.name,
+    version: parsed.version,
+    direct: depth === 0
+  });
+}
+async function walkNested(pkgDir, acc, depth) {
+  const nested = import_node_path2.default.join(pkgDir, "node_modules");
+  if (!await isPlainDirectory(nested)) {
+    return;
+  }
+  await walk(nested, acc, depth + 1);
+}
+async function isPlainDirectory(dir) {
+  try {
+    const info = await (0, import_promises2.lstat)(dir);
+    return info.isDirectory() && !info.isSymbolicLink();
+  } catch {
+    return false;
+  }
+}
+
 // src/parsers/index.ts
 async function detectLockfile(cwd) {
-  const npmLock = import_node_path2.default.join(cwd, "package-lock.json");
+  const npmLock = import_node_path3.default.join(cwd, "package-lock.json");
   if (await exists(npmLock)) {
-    return { ecosystem: "npm", filePath: npmLock, filename: "package-lock.json" };
+    return {
+      ecosystem: "npm",
+      filePath: npmLock,
+      filename: "package-lock.json",
+      strategy: "npm-lockfile"
+    };
   }
-  const yarnLock = import_node_path2.default.join(cwd, "yarn.lock");
+  const bunLock = import_node_path3.default.join(cwd, "bun.lock");
+  if (await exists(bunLock)) {
+    return {
+      ecosystem: "npm",
+      filePath: bunLock,
+      filename: "bun.lock",
+      strategy: "node-modules-walk"
+    };
+  }
+  const bunLockB = import_node_path3.default.join(cwd, "bun.lockb");
+  if (await exists(bunLockB)) {
+    return {
+      ecosystem: "npm",
+      filePath: bunLockB,
+      filename: "bun.lockb",
+      strategy: "node-modules-walk"
+    };
+  }
+  const yarnLock = import_node_path3.default.join(cwd, "yarn.lock");
   if (await exists(yarnLock)) {
     throw new PatchstackError(
       "yarn.lock detected but not yet supported. Run `npm install` to generate a package-lock.json, or open an issue at github.com/patchstack/connect.",
       "LOCKFILE_UNSUPPORTED"
     );
   }
-  const pnpmLock = import_node_path2.default.join(cwd, "pnpm-lock.yaml");
+  const pnpmLock = import_node_path3.default.join(cwd, "pnpm-lock.yaml");
   if (await exists(pnpmLock)) {
     throw new PatchstackError(
       "pnpm-lock.yaml detected but not yet supported. Open an issue at github.com/patchstack/connect to request support.",
@@ -167,18 +297,26 @@ async function detectLockfile(cwd) {
     );
   }
   throw new PatchstackError(
-    `No lockfile found in ${cwd}. Expected one of: package-lock.json, yarn.lock, pnpm-lock.yaml.`,
+    `No lockfile found in ${cwd}. Expected one of: package-lock.json, bun.lock, bun.lockb, yarn.lock, pnpm-lock.yaml.`,
     "LOCKFILE_NOT_FOUND"
   );
 }
 async function scanLockfile(cwd) {
   const detected = await detectLockfile(cwd);
-  const packages = await parseNpmLockfile(detected.filePath);
+  const packages = await runStrategy(detected, cwd);
   return { ecosystem: detected.ecosystem, packages };
+}
+async function runStrategy(detected, cwd) {
+  switch (detected.strategy) {
+    case "npm-lockfile":
+      return parseNpmLockfile(detected.filePath);
+    case "node-modules-walk":
+      return walkNodeModules(cwd);
+  }
 }
 async function exists(filePath) {
   try {
-    await (0, import_promises2.access)(filePath);
+    await (0, import_promises3.access)(filePath);
     return true;
   } catch {
     return false;
@@ -361,8 +499,8 @@ function isTimeoutError(cause) {
 }
 
 // src/config.ts
-var import_promises3 = require("fs/promises");
-var import_node_path3 = __toESM(require("path"), 1);
+var import_promises4 = require("fs/promises");
+var import_node_path4 = __toESM(require("path"), 1);
 var CONFIG_FILENAME = ".patchstackrc.json";
 async function resolveConfig(options) {
   const fromFile = await readConfigFile(options.cwd);
@@ -385,16 +523,16 @@ async function resolveConfig(options) {
   return { siteUuid, endpoint, timeoutMs };
 }
 async function writeConfigFile(cwd, config) {
-  const target = import_node_path3.default.join(cwd, CONFIG_FILENAME);
+  const target = import_node_path4.default.join(cwd, CONFIG_FILENAME);
   const content = JSON.stringify(config, null, 2) + "\n";
-  await (0, import_promises3.writeFile)(target, content, "utf8");
+  await (0, import_promises4.writeFile)(target, content, "utf8");
   return target;
 }
 async function readConfigFile(cwd) {
-  const target = import_node_path3.default.join(cwd, CONFIG_FILENAME);
+  const target = import_node_path4.default.join(cwd, CONFIG_FILENAME);
   let raw;
   try {
-    raw = await (0, import_promises3.readFile)(target, "utf8");
+    raw = await (0, import_promises4.readFile)(target, "utf8");
   } catch (err) {
     if (err.code === "ENOENT") {
       return {};

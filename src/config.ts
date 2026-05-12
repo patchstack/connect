@@ -15,6 +15,13 @@ export interface ResolveConfigOptions {
   cwd: string;
   cliSiteUuid?: string;
   cliEndpoint?: string;
+  /**
+   * When true, resolveConfig throws CONFIG_MISSING if no site UUID is configured.
+   * Defaults to false: callers that can run without a UUID (the first `scan` after
+   * `npm install`) just get `siteUuid: null` back and learn the UUID from the
+   * server response.
+   */
+  requireSiteUuid?: boolean;
 }
 
 export async function resolveConfig(options: ResolveConfigOptions): Promise<Config> {
@@ -35,21 +42,25 @@ export async function resolveConfig(options: ResolveConfigOptions): Promise<Conf
 
   const timeoutMs = fromEnv.timeoutMs ?? fromFile.timeoutMs ?? DEFAULT_TIMEOUT_MS;
 
-  if (siteUuid === null || siteUuid.length === 0) {
-    throw new PatchstackError(
-      'No site UUID configured. Run `patchstack-connect init <site-uuid>` or set PATCHSTACK_SITE_UUID.',
-      'CONFIG_MISSING',
-    );
-  }
-
-  if (!isUuid(siteUuid)) {
+  if (siteUuid !== null && siteUuid.length > 0 && !isUuid(siteUuid)) {
     throw new PatchstackError(
       `Site UUID "${siteUuid}" does not look like a valid UUID.`,
       'CONFIG_INVALID',
     );
   }
 
-  return { siteUuid, endpoint, timeoutMs };
+  if (options.requireSiteUuid && (siteUuid === null || siteUuid.length === 0)) {
+    throw new PatchstackError(
+      'No site UUID configured. Run `patchstack-connect scan` to provision one, or set PATCHSTACK_SITE_UUID.',
+      'CONFIG_MISSING',
+    );
+  }
+
+  return {
+    siteUuid: siteUuid === null || siteUuid.length === 0 ? null : siteUuid,
+    endpoint,
+    timeoutMs,
+  };
 }
 
 export async function writeConfigFile(cwd: string, config: ConfigFile): Promise<string> {
@@ -57,6 +68,15 @@ export async function writeConfigFile(cwd: string, config: ConfigFile): Promise<
   const content = JSON.stringify(config, null, 2) + '\n';
   await writeFile(target, content, 'utf8');
   return target;
+}
+
+/**
+ * Merge a new siteUuid into the existing `.patchstackrc.json` (or create it).
+ * Preserves any `endpoint` / `timeoutMs` the user already wrote.
+ */
+export async function persistSiteUuid(cwd: string, siteUuid: string): Promise<string> {
+  const existing = await readConfigFile(cwd);
+  return writeConfigFile(cwd, { ...existing, siteUuid });
 }
 
 async function readConfigFile(cwd: string): Promise<ConfigFile> {

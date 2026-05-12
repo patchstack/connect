@@ -1,13 +1,13 @@
 import { scanLockfile } from './parsers/index.js';
 import { buildWirePayload } from './normalize.js';
 import { postManifest } from './client.js';
-import { resolveConfig } from './config.js';
+import { persistSiteUuid, resolveConfig } from './config.js';
 import type { Config, Manifest, StoreManifestResponse } from './types.js';
 
 export { scanLockfile, detectLockfile } from './parsers/index.js';
 export { buildWirePayload, compareVersions } from './normalize.js';
 export { postManifest, buildEndpointUrl, DEFAULT_ENDPOINT } from './client.js';
-export { resolveConfig, writeConfigFile } from './config.js';
+export { persistSiteUuid, resolveConfig, writeConfigFile } from './config.js';
 export {
   PatchstackError,
   type Config,
@@ -38,6 +38,13 @@ export async function scanAndReport(
   const manifest = await scanLockfile(cwd);
   const { payload, stats } = buildWirePayload(manifest);
   const response = await postManifest(config, payload);
+
+  // First-run convenience: if we didn't have a UUID and the server provisioned
+  // one for us, persist it so subsequent runs target the same site.
+  if (config.siteUuid === null && response.uuid !== undefined && response.uuid.length > 0) {
+    await persistSiteUuid(cwd, response.uuid);
+  }
+
   return {
     manifest,
     response,

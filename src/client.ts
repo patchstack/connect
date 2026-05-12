@@ -4,9 +4,11 @@ import type { WirePayload } from './normalize.js';
 export const DEFAULT_ENDPOINT = 'https://app.patchstack.com/monitor/pulse/manifest';
 export const DEFAULT_TIMEOUT_MS = 30_000;
 
-export function buildEndpointUrl(base: string, siteUuid: string): string {
+export function buildEndpointUrl(base: string, siteUuid?: string | null): string {
   const trimmed = base.replace(/\/$/, '');
-  return `${trimmed}/${encodeURIComponent(siteUuid)}`;
+  return siteUuid !== undefined && siteUuid !== null && siteUuid.length > 0
+    ? `${trimmed}/${encodeURIComponent(siteUuid)}`
+    : trimmed;
 }
 
 export async function postManifest(
