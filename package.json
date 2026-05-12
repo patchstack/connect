@@ -1,6 +1,6 @@
 {
   "name": "@patchstack/connect",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Patchstack connector for JavaScript applications. Scans your lockfile and reports installed packages to Patchstack for vulnerability monitoring.",
   "keywords": [
     "patchstack",
