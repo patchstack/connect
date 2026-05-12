@@ -10,11 +10,18 @@ interface Manifest {
     packages: PackageEntry[];
 }
 interface Config {
-    siteUuid: string;
+    /**
+     * The site UUID. `null` means we don't have one yet — `postManifest` will then
+     * post to the bare endpoint, the server will provision a fresh site, and the
+     * UUID it returns should be persisted via `persistSiteUuid()`.
+     */
+    siteUuid: string | null;
     endpoint: string;
     timeoutMs: number;
 }
 interface StoreManifestResponse {
+    /** The UUID of the site the manifest was stored against. Always returned. */
+    uuid?: string;
     stored: boolean;
     manifest_id?: number;
     checksum?: string;
@@ -60,7 +67,7 @@ declare function buildWirePayload(manifest: Manifest): NormalizeResult;
 declare function compareVersions(a: string, b: string): number;
 
 declare const DEFAULT_ENDPOINT = "https://app.patchstack.com/monitor/pulse/manifest";
-declare function buildEndpointUrl(base: string, siteUuid: string): string;
+declare function buildEndpointUrl(base: string, siteUuid?: string | null): string;
 declare function postManifest(config: Config, payload: WirePayload): Promise<StoreManifestResponse>;
 
 interface ConfigFile {
@@ -72,9 +79,21 @@ interface ResolveConfigOptions {
     cwd: string;
     cliSiteUuid?: string;
     cliEndpoint?: string;
+    /**
+     * When true, resolveConfig throws CONFIG_MISSING if no site UUID is configured.
+     * Defaults to false: callers that can run without a UUID (the first `scan` after
+     * `npm install`) just get `siteUuid: null` back and learn the UUID from the
+     * server response.
+     */
+    requireSiteUuid?: boolean;
 }
 declare function resolveConfig(options: ResolveConfigOptions): Promise<Config>;
 declare function writeConfigFile(cwd: string, config: ConfigFile): Promise<string>;
+/**
+ * Merge a new siteUuid into the existing `.patchstackrc.json` (or create it).
+ * Preserves any `endpoint` / `timeoutMs` the user already wrote.
+ */
+declare function persistSiteUuid(cwd: string, siteUuid: string): Promise<string>;
 
 interface ScanAndReportOptions {
     cwd?: string;
@@ -89,4 +108,4 @@ interface ScanAndReportResult {
 }
 declare function scanAndReport(options?: ScanAndReportOptions): Promise<ScanAndReportResult>;
 
-export { type Config, DEFAULT_ENDPOINT, type Ecosystem, type Manifest, type PackageEntry, PatchstackError, type ScanAndReportOptions, type ScanAndReportResult, type StoreManifestResponse, buildEndpointUrl, buildWirePayload, compareVersions, detectLockfile, postManifest, resolveConfig, scanAndReport, scanLockfile, writeConfigFile };
+export { type Config, DEFAULT_ENDPOINT, type Ecosystem, type Manifest, type PackageEntry, PatchstackError, type ScanAndReportOptions, type ScanAndReportResult, type StoreManifestResponse, buildEndpointUrl, buildWirePayload, compareVersions, detectLockfile, persistSiteUuid, postManifest, resolveConfig, scanAndReport, scanLockfile, writeConfigFile };

@@ -386,7 +386,7 @@ var DEFAULT_ENDPOINT = "https://app.patchstack.com/monitor/pulse/manifest";
 var DEFAULT_TIMEOUT_MS = 3e4;
 function buildEndpointUrl(base, siteUuid) {
   const trimmed = base.replace(/\/$/, "");
-  return `${trimmed}/${encodeURIComponent(siteUuid)}`;
+  return siteUuid !== void 0 && siteUuid !== null && siteUuid.length > 0 ? `${trimmed}/${encodeURIComponent(siteUuid)}` : trimmed;
 }
 async function postManifest(config, payload) {
   const url = buildEndpointUrl(config.endpoint, config.siteUuid);
@@ -464,25 +464,33 @@ async function resolveConfig(options) {
   const siteUuid = options.cliSiteUuid ?? fromEnv.siteUuid ?? fromFile.siteUuid ?? null;
   const endpoint = options.cliEndpoint ?? fromEnv.endpoint ?? fromFile.endpoint ?? DEFAULT_ENDPOINT;
   const timeoutMs = fromEnv.timeoutMs ?? fromFile.timeoutMs ?? DEFAULT_TIMEOUT_MS;
-  if (siteUuid === null || siteUuid.length === 0) {
-    throw new PatchstackError(
-      "No site UUID configured. Run `patchstack-connect init <site-uuid>` or set PATCHSTACK_SITE_UUID.",
-      "CONFIG_MISSING"
-    );
-  }
-  if (!isUuid(siteUuid)) {
+  if (siteUuid !== null && siteUuid.length > 0 && !isUuid(siteUuid)) {
     throw new PatchstackError(
       `Site UUID "${siteUuid}" does not look like a valid UUID.`,
       "CONFIG_INVALID"
     );
   }
-  return { siteUuid, endpoint, timeoutMs };
+  if (options.requireSiteUuid && (siteUuid === null || siteUuid.length === 0)) {
+    throw new PatchstackError(
+      "No site UUID configured. Run `patchstack-connect scan` to provision one, or set PATCHSTACK_SITE_UUID.",
+      "CONFIG_MISSING"
+    );
+  }
+  return {
+    siteUuid: siteUuid === null || siteUuid.length === 0 ? null : siteUuid,
+    endpoint,
+    timeoutMs
+  };
 }
 async function writeConfigFile(cwd, config) {
   const target = path4.join(cwd, CONFIG_FILENAME);
   const content = JSON.stringify(config, null, 2) + "\n";
   await writeFile(target, content, "utf8");
   return target;
+}
+async function persistSiteUuid(cwd, siteUuid) {
+  const existing = await readConfigFile(cwd);
+  return writeConfigFile(cwd, { ...existing, siteUuid });
 }
 async function readConfigFile(cwd) {
   const target = path4.join(cwd, CONFIG_FILENAME);
@@ -536,8 +544,11 @@ function isUuid(value) {
 var HELP = `@patchstack/connect \u2014 scan your lockfile and report packages to Patchstack.
 
 Usage:
-  patchstack-connect init <site-uuid>                Save the site UUID to .patchstackrc.json
-  patchstack-connect scan   [options]                Scan lockfile and POST to Patchstack
+  patchstack-connect scan   [options]                Scan lockfile and POST to Patchstack.
+                                                     If no UUID is configured, the server
+                                                     provisions one and we persist it.
+  patchstack-connect init   <site-uuid>              Optional: pre-seed .patchstackrc.json
+                                                     with an existing site UUID
   patchstack-connect status [options]                Show current configuration
   patchstack-connect help                            Print this message
 
@@ -554,9 +565,9 @@ Environment:
 Precedence: CLI flag > environment variable > .patchstackrc.json.
 
 Examples:
-  npx @patchstack/connect init 550e8400-e29b-41d4-a716-446655440000
   npx @patchstack/connect scan
   npx @patchstack/connect scan --dry-run
+  npx @patchstack/connect init 550e8400-e29b-41d4-a716-446655440000
   npx @patchstack/connect scan --site-uuid 550e8400-...-446655440000
 `;
 var VALUE_FLAGS = /* @__PURE__ */ new Set(["site-uuid", "endpoint"]);
@@ -631,7 +642,12 @@ async function runScan(args) {
   }
   if (dryRun) {
     console.log("");
-    console.log("--dry-run: not posting to Patchstack. Payload preview:");
+    if (config.siteUuid === null) {
+      console.log("--dry-run: no site UUID configured. A real run would provision one.");
+    } else {
+      console.log(`--dry-run: not posting to Patchstack (site UUID ${config.siteUuid}).`);
+    }
+    console.log("Payload preview:");
     const preview = JSON.stringify(payload, null, 2).split("\n");
     console.log(preview.slice(0, Math.min(preview.length, 30)).join("\n"));
     if (preview.length > 30) {
@@ -639,7 +655,15 @@ async function runScan(args) {
     }
     return 0;
   }
+  const provisioning = config.siteUuid === null;
+  if (provisioning) {
+    console.log("No site UUID configured \u2014 provisioning a new Patchstack site from this manifest\u2026");
+  }
   const response = await postManifest(config, payload);
+  if (provisioning && response.uuid !== void 0 && response.uuid.length > 0) {
+    const target = await persistSiteUuid(process.cwd(), response.uuid);
+    console.log(`Provisioned site ${response.uuid}. Saved UUID to ${target}.`);
+  }
   if (response.stored) {
     console.log(`Stored manifest #${response.manifest_id} (checksum ${response.checksum}).`);
   } else if (response.reason === "duplicate") {
@@ -650,23 +674,15 @@ async function runScan(args) {
   return 0;
 }
 async function runStatus(args) {
-  try {
-    const config = await resolveConfig({
-      cwd: process.cwd(),
-      cliSiteUuid: getStringFlag(args.flags, "site-uuid"),
-      cliEndpoint: getStringFlag(args.flags, "endpoint")
-    });
-    console.log(`Site UUID:  ${config.siteUuid}`);
-    console.log(`Endpoint:   ${config.endpoint}`);
-    console.log(`Timeout:    ${config.timeoutMs}ms`);
-    return 0;
-  } catch (err) {
-    if (err instanceof PatchstackError && err.code === "CONFIG_MISSING") {
-      console.log("Not configured. Run `patchstack-connect init <site-uuid>` to get started.");
-      return 0;
-    }
-    throw err;
-  }
+  const config = await resolveConfig({
+    cwd: process.cwd(),
+    cliSiteUuid: getStringFlag(args.flags, "site-uuid"),
+    cliEndpoint: getStringFlag(args.flags, "endpoint")
+  });
+  console.log(`Site UUID:  ${config.siteUuid ?? "(none yet \u2014 the next `scan` will provision one)"}`);
+  console.log(`Endpoint:   ${config.endpoint}`);
+  console.log(`Timeout:    ${config.timeoutMs}ms`);
+  return 0;
 }
 async function main() {
   const args = parseArgs(process.argv);

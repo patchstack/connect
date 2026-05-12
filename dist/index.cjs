@@ -36,6 +36,7 @@ __export(src_exports, {
   buildWirePayload: () => buildWirePayload,
   compareVersions: () => compareVersions,
   detectLockfile: () => detectLockfile,
+  persistSiteUuid: () => persistSiteUuid,
   postManifest: () => postManifest,
   resolveConfig: () => resolveConfig,
   scanAndReport: () => scanAndReport,
@@ -430,7 +431,7 @@ var DEFAULT_ENDPOINT = "https://app.patchstack.com/monitor/pulse/manifest";
 var DEFAULT_TIMEOUT_MS = 3e4;
 function buildEndpointUrl(base, siteUuid) {
   const trimmed = base.replace(/\/$/, "");
-  return `${trimmed}/${encodeURIComponent(siteUuid)}`;
+  return siteUuid !== void 0 && siteUuid !== null && siteUuid.length > 0 ? `${trimmed}/${encodeURIComponent(siteUuid)}` : trimmed;
 }
 async function postManifest(config, payload) {
   const url = buildEndpointUrl(config.endpoint, config.siteUuid);
@@ -508,25 +509,33 @@ async function resolveConfig(options) {
   const siteUuid = options.cliSiteUuid ?? fromEnv.siteUuid ?? fromFile.siteUuid ?? null;
   const endpoint = options.cliEndpoint ?? fromEnv.endpoint ?? fromFile.endpoint ?? DEFAULT_ENDPOINT;
   const timeoutMs = fromEnv.timeoutMs ?? fromFile.timeoutMs ?? DEFAULT_TIMEOUT_MS;
-  if (siteUuid === null || siteUuid.length === 0) {
-    throw new PatchstackError(
-      "No site UUID configured. Run `patchstack-connect init <site-uuid>` or set PATCHSTACK_SITE_UUID.",
-      "CONFIG_MISSING"
-    );
-  }
-  if (!isUuid(siteUuid)) {
+  if (siteUuid !== null && siteUuid.length > 0 && !isUuid(siteUuid)) {
     throw new PatchstackError(
       `Site UUID "${siteUuid}" does not look like a valid UUID.`,
       "CONFIG_INVALID"
     );
   }
-  return { siteUuid, endpoint, timeoutMs };
+  if (options.requireSiteUuid && (siteUuid === null || siteUuid.length === 0)) {
+    throw new PatchstackError(
+      "No site UUID configured. Run `patchstack-connect scan` to provision one, or set PATCHSTACK_SITE_UUID.",
+      "CONFIG_MISSING"
+    );
+  }
+  return {
+    siteUuid: siteUuid === null || siteUuid.length === 0 ? null : siteUuid,
+    endpoint,
+    timeoutMs
+  };
 }
 async function writeConfigFile(cwd, config) {
   const target = import_node_path4.default.join(cwd, CONFIG_FILENAME);
   const content = JSON.stringify(config, null, 2) + "\n";
   await (0, import_promises4.writeFile)(target, content, "utf8");
   return target;
+}
+async function persistSiteUuid(cwd, siteUuid) {
+  const existing = await readConfigFile(cwd);
+  return writeConfigFile(cwd, { ...existing, siteUuid });
 }
 async function readConfigFile(cwd) {
   const target = import_node_path4.default.join(cwd, CONFIG_FILENAME);
@@ -583,6 +592,9 @@ async function scanAndReport(options = {}) {
   const manifest = await scanLockfile(cwd);
   const { payload, stats } = buildWirePayload(manifest);
   const response = await postManifest(config, payload);
+  if (config.siteUuid === null && response.uuid !== void 0 && response.uuid.length > 0) {
+    await persistSiteUuid(cwd, response.uuid);
+  }
   return {
     manifest,
     response,
@@ -599,6 +611,7 @@ async function scanAndReport(options = {}) {
   buildWirePayload,
   compareVersions,
   detectLockfile,
+  persistSiteUuid,
   postManifest,
   resolveConfig,
   scanAndReport,
