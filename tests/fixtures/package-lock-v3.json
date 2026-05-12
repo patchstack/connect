@@ -1,0 +1,39 @@
+{
+  "name": "example-app",
+  "version": "1.0.0",
+  "lockfileVersion": 3,
+  "requires": true,
+  "packages": {
+    "": {
+      "name": "example-app",
+      "version": "1.0.0",
+      "dependencies": {
+        "axios": "^1.6.0",
+        "lodash": "^4.17.21"
+      }
+    },
+    "node_modules/axios": {
+      "version": "1.6.0",
+      "resolved": "https://registry.npmjs.org/axios/-/axios-1.6.0.tgz",
+      "dependencies": {
+        "follow-redirects": "^1.15.0"
+      }
+    },
+    "node_modules/follow-redirects": {
+      "version": "1.15.3"
+    },
+    "node_modules/lodash": {
+      "version": "4.17.21"
+    },
+    "node_modules/some-pkg/node_modules/lodash": {
+      "version": "4.17.15"
+    },
+    "node_modules/@scope/pkg": {
+      "version": "2.1.0"
+    },
+    "node_modules/linked-workspace": {
+      "link": true,
+      "resolved": "packages/linked-workspace"
+    }
+  }
+}
