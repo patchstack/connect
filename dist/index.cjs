@@ -428,7 +428,7 @@ function compareSegments(a, b) {
 }
 
 // src/client.ts
-var DEFAULT_ENDPOINT = "http://api.patchstack.com/monitor/pulse/manifest";
+var DEFAULT_ENDPOINT = "https://api.patchstack.com/monitor/pulse/manifest";
 var DEFAULT_TIMEOUT_MS = 3e4;
 function buildEndpointUrl(base, siteUuid) {
   const trimmed = base.replace(/\/$/, "");
@@ -436,7 +436,7 @@ function buildEndpointUrl(base, siteUuid) {
 }
 function buildClaimUrl(endpoint, siteUuid) {
   const origin = new URL(endpoint).origin;
-  return `${origin}/claim?site=${encodeURIComponent(siteUuid)}`;
+  return `${origin}/monitor/claim?site=${encodeURIComponent(siteUuid)}`;
 }
 async function postManifest(config, payload) {
   const url = buildEndpointUrl(config.endpoint, config.siteUuid);
