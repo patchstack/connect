@@ -1,7 +1,7 @@
 import { PatchstackError, type Config, type StoreManifestResponse } from './types.js';
 import type { WirePayload } from './normalize.js';
 
-export const DEFAULT_ENDPOINT = 'http://api.patchstack.com/monitor/pulse/manifest';
+export const DEFAULT_ENDPOINT = 'https://api.patchstack.com/monitor/pulse/manifest';
 export const DEFAULT_TIMEOUT_MS = 30_000;
 
 export function buildEndpointUrl(base: string, siteUuid?: string | null): string {
@@ -13,14 +13,14 @@ export function buildEndpointUrl(base: string, siteUuid?: string | null): string
 
 /**
  * Build the claim URL for a site. The claim page lives on the same origin as
- * the API endpoint, at `/claim?site=<uuid>`. Using the API endpoint's origin
- * (rather than a hard-coded https://app.patchstack.com) means staging, ngrok
- * tunnels and local dev environments all produce a claim URL on the same host
- * the connector is already talking to.
+ * the API endpoint, at `/monitor/claim?site=<uuid>`. Using the API endpoint's
+ * origin (rather than a hard-coded https://api.patchstack.com) means staging,
+ * ngrok tunnels and local dev environments all produce a claim URL on the same
+ * host the connector is already talking to.
  */
 export function buildClaimUrl(endpoint: string, siteUuid: string): string {
   const origin = new URL(endpoint).origin;
-  return `${origin}/claim?site=${encodeURIComponent(siteUuid)}`;
+  return `${origin}/monitor/claim?site=${encodeURIComponent(siteUuid)}`;
 }
 
 export async function postManifest(

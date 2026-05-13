@@ -25,39 +25,39 @@ describe('buildEndpointUrl', () => {
 });
 
 describe('buildClaimUrl', () => {
-  it('uses the API endpoint origin plus /claim?site=<uuid>', () => {
+  it('uses the API endpoint origin plus /monitor/claim?site=<uuid>', () => {
     expect(
       buildClaimUrl('https://app.patchstack.com/monitor/pulse/manifest', 'abc-def'),
-    ).toBe('https://app.patchstack.com/claim?site=abc-def');
+    ).toBe('https://app.patchstack.com/monitor/claim?site=abc-def');
   });
 
   it('preserves staging origins (ngrok)', () => {
     expect(
       buildClaimUrl('https://3ad1-18-170-248-162.ngrok-free.app/monitor/pulse/manifest', 'xyz'),
-    ).toBe('https://3ad1-18-170-248-162.ngrok-free.app/claim?site=xyz');
+    ).toBe('https://3ad1-18-170-248-162.ngrok-free.app/monitor/claim?site=xyz');
   });
 
   it('drops the manifest path from the API endpoint', () => {
     expect(
       buildClaimUrl('https://example.com/some/deep/path', 'abc'),
-    ).toBe('https://example.com/claim?site=abc');
+    ).toBe('https://example.com/monitor/claim?site=abc');
   });
 
   it('handles a trailing slash on the endpoint', () => {
     expect(
       buildClaimUrl('https://example.com/monitor/pulse/manifest/', 'abc'),
-    ).toBe('https://example.com/claim?site=abc');
+    ).toBe('https://example.com/monitor/claim?site=abc');
   });
 
   it('url-encodes the uuid', () => {
     expect(buildClaimUrl('https://example.com/x', 'a b')).toBe(
-      'https://example.com/claim?site=a%20b',
+      'https://example.com/monitor/claim?site=a%20b',
     );
   });
 
   it('preserves the scheme (http vs https) of the API endpoint', () => {
     expect(buildClaimUrl('http://localhost:8001/monitor/pulse/manifest', 'abc')).toBe(
-      'http://localhost:8001/claim?site=abc',
+      'http://localhost:8001/monitor/claim?site=abc',
     );
   });
 });
