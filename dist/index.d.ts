@@ -70,10 +70,10 @@ declare const DEFAULT_ENDPOINT = "http://api.patchstack.com/monitor/pulse/manife
 declare function buildEndpointUrl(base: string, siteUuid?: string | null): string;
 /**
  * Build the claim URL for a site. The claim page lives on the same origin as
- * the API endpoint, at `/claim?site=<uuid>`. Using the API endpoint's origin
- * (rather than a hard-coded https://app.patchstack.com) means staging, ngrok
- * tunnels and local dev environments all produce a claim URL on the same host
- * the connector is already talking to.
+ * the API endpoint, at `/monitor/claim?site=<uuid>`. Using the API endpoint's
+ * origin (rather than a hard-coded https://api.patchstack.com) means staging,
+ * ngrok tunnels and local dev environments all produce a claim URL on the same
+ * host the connector is already talking to.
  */
 declare function buildClaimUrl(endpoint: string, siteUuid: string): string;
 declare function postManifest(config: Config, payload: WirePayload): Promise<StoreManifestResponse>;

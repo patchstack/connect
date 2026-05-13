@@ -388,7 +388,7 @@ function buildEndpointUrl(base, siteUuid) {
 }
 function buildClaimUrl(endpoint, siteUuid) {
   const origin = new URL(endpoint).origin;
-  return `${origin}/claim?site=${encodeURIComponent(siteUuid)}`;
+  return `${origin}/monitor/claim?site=${encodeURIComponent(siteUuid)}`;
 }
 async function postManifest(config, payload) {
   const url = buildEndpointUrl(config.endpoint, config.siteUuid);
