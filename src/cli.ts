@@ -1,6 +1,6 @@
 import { scanLockfile } from './parsers/index.js';
 import { buildWirePayload } from './normalize.js';
-import { postManifest } from './client.js';
+import { buildClaimUrl, postManifest } from './client.js';
 import { persistSiteUuid, resolveConfig, writeConfigFile } from './config.js';
 import { PatchstackError } from './types.js';
 
@@ -156,6 +156,16 @@ async function runScan(args: ParsedArgs): Promise<number> {
   } else {
     console.log(`Server response: ${response.message ?? JSON.stringify(response)}`);
   }
+
+  // On the first scan (provisioning), surface the claim URL so the user can
+  // attach this site to their Patchstack account. `npx @patchstack/connect status`
+  // re-displays it any time.
+  if (provisioning && response.uuid !== undefined && response.uuid.length > 0) {
+    console.log('');
+    console.log('Claim this site to view vulnerability reports in your Patchstack dashboard:');
+    console.log(`  ${buildClaimUrl(config.endpoint, response.uuid)}`);
+  }
+
   return 0;
 }
 
@@ -168,6 +178,9 @@ async function runStatus(args: ParsedArgs): Promise<number> {
   console.log(`Site UUID:  ${config.siteUuid ?? '(none yet — the next `scan` will provision one)'}`);
   console.log(`Endpoint:   ${config.endpoint}`);
   console.log(`Timeout:    ${config.timeoutMs}ms`);
+  if (config.siteUuid !== null) {
+    console.log(`Claim URL:  ${buildClaimUrl(config.endpoint, config.siteUuid)}`);
+  }
   return 0;
 }
 

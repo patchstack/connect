@@ -388,6 +388,10 @@ function buildEndpointUrl(base, siteUuid) {
   const trimmed = base.replace(/\/$/, "");
   return siteUuid !== void 0 && siteUuid !== null && siteUuid.length > 0 ? `${trimmed}/${encodeURIComponent(siteUuid)}` : trimmed;
 }
+function buildClaimUrl(endpoint, siteUuid) {
+  const origin = new URL(endpoint).origin;
+  return `${origin}/claim?site=${encodeURIComponent(siteUuid)}`;
+}
 async function postManifest(config, payload) {
   const url = buildEndpointUrl(config.endpoint, config.siteUuid);
   const timeoutMs = config.timeoutMs;
@@ -671,6 +675,11 @@ async function runScan(args) {
   } else {
     console.log(`Server response: ${response.message ?? JSON.stringify(response)}`);
   }
+  if (provisioning && response.uuid !== void 0 && response.uuid.length > 0) {
+    console.log("");
+    console.log("Claim this site to view vulnerability reports in your Patchstack dashboard:");
+    console.log(`  ${buildClaimUrl(config.endpoint, response.uuid)}`);
+  }
   return 0;
 }
 async function runStatus(args) {
@@ -682,6 +691,9 @@ async function runStatus(args) {
   console.log(`Site UUID:  ${config.siteUuid ?? "(none yet \u2014 the next `scan` will provision one)"}`);
   console.log(`Endpoint:   ${config.endpoint}`);
   console.log(`Timeout:    ${config.timeoutMs}ms`);
+  if (config.siteUuid !== null) {
+    console.log(`Claim URL:  ${buildClaimUrl(config.endpoint, config.siteUuid)}`);
+  }
   return 0;
 }
 async function main() {
