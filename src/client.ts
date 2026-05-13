@@ -11,6 +11,18 @@ export function buildEndpointUrl(base: string, siteUuid?: string | null): string
     : trimmed;
 }
 
+/**
+ * Build the claim URL for a site. The claim page lives on the same origin as
+ * the API endpoint, at `/claim?site=<uuid>`. Using the API endpoint's origin
+ * (rather than a hard-coded https://app.patchstack.com) means staging, ngrok
+ * tunnels and local dev environments all produce a claim URL on the same host
+ * the connector is already talking to.
+ */
+export function buildClaimUrl(endpoint: string, siteUuid: string): string {
+  const origin = new URL(endpoint).origin;
+  return `${origin}/claim?site=${encodeURIComponent(siteUuid)}`;
+}
+
 export async function postManifest(
   config: Config,
   payload: WirePayload,

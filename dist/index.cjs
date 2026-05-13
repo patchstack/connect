@@ -32,6 +32,7 @@ var src_exports = {};
 __export(src_exports, {
   DEFAULT_ENDPOINT: () => DEFAULT_ENDPOINT,
   PatchstackError: () => PatchstackError,
+  buildClaimUrl: () => buildClaimUrl,
   buildEndpointUrl: () => buildEndpointUrl,
   buildWirePayload: () => buildWirePayload,
   compareVersions: () => compareVersions,
@@ -433,6 +434,10 @@ function buildEndpointUrl(base, siteUuid) {
   const trimmed = base.replace(/\/$/, "");
   return siteUuid !== void 0 && siteUuid !== null && siteUuid.length > 0 ? `${trimmed}/${encodeURIComponent(siteUuid)}` : trimmed;
 }
+function buildClaimUrl(endpoint, siteUuid) {
+  const origin = new URL(endpoint).origin;
+  return `${origin}/claim?site=${encodeURIComponent(siteUuid)}`;
+}
 async function postManifest(config, payload) {
   const url = buildEndpointUrl(config.endpoint, config.siteUuid);
   const timeoutMs = config.timeoutMs;
@@ -607,6 +612,7 @@ async function scanAndReport(options = {}) {
 0 && (module.exports = {
   DEFAULT_ENDPOINT,
   PatchstackError,
+  buildClaimUrl,
   buildEndpointUrl,
   buildWirePayload,
   compareVersions,

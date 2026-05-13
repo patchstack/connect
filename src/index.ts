@@ -6,7 +6,7 @@ import type { Config, Manifest, StoreManifestResponse } from './types.js';
 
 export { scanLockfile, detectLockfile } from './parsers/index.js';
 export { buildWirePayload, compareVersions } from './normalize.js';
-export { postManifest, buildEndpointUrl, DEFAULT_ENDPOINT } from './client.js';
+export { postManifest, buildClaimUrl, buildEndpointUrl, DEFAULT_ENDPOINT } from './client.js';
 export { persistSiteUuid, resolveConfig, writeConfigFile } from './config.js';
 export {
   PatchstackError,

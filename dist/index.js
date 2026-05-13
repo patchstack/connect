@@ -386,6 +386,10 @@ function buildEndpointUrl(base, siteUuid) {
   const trimmed = base.replace(/\/$/, "");
   return siteUuid !== void 0 && siteUuid !== null && siteUuid.length > 0 ? `${trimmed}/${encodeURIComponent(siteUuid)}` : trimmed;
 }
+function buildClaimUrl(endpoint, siteUuid) {
+  const origin = new URL(endpoint).origin;
+  return `${origin}/claim?site=${encodeURIComponent(siteUuid)}`;
+}
 async function postManifest(config, payload) {
   const url = buildEndpointUrl(config.endpoint, config.siteUuid);
   const timeoutMs = config.timeoutMs;
@@ -559,6 +563,7 @@ async function scanAndReport(options = {}) {
 export {
   DEFAULT_ENDPOINT,
   PatchstackError,
+  buildClaimUrl,
   buildEndpointUrl,
   buildWirePayload,
   compareVersions,

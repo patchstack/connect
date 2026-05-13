@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { buildEndpointUrl, postManifest } from '../src/client.js';
+import { buildClaimUrl, buildEndpointUrl, postManifest } from '../src/client.js';
 import { PatchstackError } from '../src/types.js';
 
 describe('buildEndpointUrl', () => {
@@ -21,6 +21,44 @@ describe('buildEndpointUrl', () => {
     expect(buildEndpointUrl('https://example.com/x')).toBe('https://example.com/x');
     expect(buildEndpointUrl('https://example.com/x', null)).toBe('https://example.com/x');
     expect(buildEndpointUrl('https://example.com/x', '')).toBe('https://example.com/x');
+  });
+});
+
+describe('buildClaimUrl', () => {
+  it('uses the API endpoint origin plus /claim?site=<uuid>', () => {
+    expect(
+      buildClaimUrl('https://app.patchstack.com/monitor/pulse/manifest', 'abc-def'),
+    ).toBe('https://app.patchstack.com/claim?site=abc-def');
+  });
+
+  it('preserves staging origins (ngrok)', () => {
+    expect(
+      buildClaimUrl('https://3ad1-18-170-248-162.ngrok-free.app/monitor/pulse/manifest', 'xyz'),
+    ).toBe('https://3ad1-18-170-248-162.ngrok-free.app/claim?site=xyz');
+  });
+
+  it('drops the manifest path from the API endpoint', () => {
+    expect(
+      buildClaimUrl('https://example.com/some/deep/path', 'abc'),
+    ).toBe('https://example.com/claim?site=abc');
+  });
+
+  it('handles a trailing slash on the endpoint', () => {
+    expect(
+      buildClaimUrl('https://example.com/monitor/pulse/manifest/', 'abc'),
+    ).toBe('https://example.com/claim?site=abc');
+  });
+
+  it('url-encodes the uuid', () => {
+    expect(buildClaimUrl('https://example.com/x', 'a b')).toBe(
+      'https://example.com/claim?site=a%20b',
+    );
+  });
+
+  it('preserves the scheme (http vs https) of the API endpoint', () => {
+    expect(buildClaimUrl('http://localhost:8001/monitor/pulse/manifest', 'abc')).toBe(
+      'http://localhost:8001/claim?site=abc',
+    );
   });
 });
 

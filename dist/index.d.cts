@@ -68,6 +68,14 @@ declare function compareVersions(a: string, b: string): number;
 
 declare const DEFAULT_ENDPOINT = "http://api.patchstack.com/monitor/pulse/manifest";
 declare function buildEndpointUrl(base: string, siteUuid?: string | null): string;
+/**
+ * Build the claim URL for a site. The claim page lives on the same origin as
+ * the API endpoint, at `/claim?site=<uuid>`. Using the API endpoint's origin
+ * (rather than a hard-coded https://app.patchstack.com) means staging, ngrok
+ * tunnels and local dev environments all produce a claim URL on the same host
+ * the connector is already talking to.
+ */
+declare function buildClaimUrl(endpoint: string, siteUuid: string): string;
 declare function postManifest(config: Config, payload: WirePayload): Promise<StoreManifestResponse>;
 
 interface ConfigFile {
@@ -108,4 +116,4 @@ interface ScanAndReportResult {
 }
 declare function scanAndReport(options?: ScanAndReportOptions): Promise<ScanAndReportResult>;
 
-export { type Config, DEFAULT_ENDPOINT, type Ecosystem, type Manifest, type PackageEntry, PatchstackError, type ScanAndReportOptions, type ScanAndReportResult, type StoreManifestResponse, buildEndpointUrl, buildWirePayload, compareVersions, detectLockfile, persistSiteUuid, postManifest, resolveConfig, scanAndReport, scanLockfile, writeConfigFile };
+export { type Config, DEFAULT_ENDPOINT, type Ecosystem, type Manifest, type PackageEntry, PatchstackError, type ScanAndReportOptions, type ScanAndReportResult, type StoreManifestResponse, buildClaimUrl, buildEndpointUrl, buildWirePayload, compareVersions, detectLockfile, persistSiteUuid, postManifest, resolveConfig, scanAndReport, scanLockfile, writeConfigFile };
