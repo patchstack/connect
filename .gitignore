@@ -3,9 +3,7 @@ node_modules
 # used to exercise the node-modules walker. Keep those tracked.
 !tests/fixtures/**/node_modules
 !tests/fixtures/**/node_modules/**
-# dist/ is committed pre-npm-publish so consumers can `npm install github:patchstack/connect`
-# in sandboxed environments (WebContainer/StackBlitz/Bolt/Lovable) where the `prepare`
-# script can't run `tsup`. Remove this exception once the package is published to npm.
+dist
 *.log
 .DS_Store
 .env
