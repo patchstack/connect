@@ -1,0 +1,64 @@
+lockfileVersion: '9.0'
+
+settings:
+  autoInstallPeers: true
+  excludeLinksFromLockfile: false
+
+importers:
+
+  .:
+    dependencies:
+      axios:
+        specifier: ^1.6.0
+        version: 1.6.0
+      '@scope/pkg':
+        specifier: 2.1.0
+        version: 2.1.0
+      react-dom:
+        specifier: ^18.2.0
+        version: 18.2.0(react@18.2.0)
+    devDependencies:
+      vitest:
+        specifier: ^3.0.0
+        version: 3.0.0
+
+packages:
+
+  '@scope/pkg@2.1.0':
+    resolution: {integrity: sha512-fake==}
+    engines: {node: '>=18'}
+
+  axios@1.6.0:
+    resolution: {integrity: sha512-fake==}
+
+  follow-redirects@1.15.3:
+    resolution: {integrity: sha512-fake==}
+
+  react@18.2.0:
+    resolution: {integrity: sha512-fake==}
+
+  'react-dom@18.2.0(react@18.2.0)':
+    resolution: {integrity: sha512-fake==}
+    peerDependencies:
+      react: ^18.2.0
+
+  vitest@3.0.0:
+    resolution: {integrity: sha512-fake==}
+
+snapshots:
+
+  axios@1.6.0:
+    dependencies:
+      follow-redirects: 1.15.3
+
+  follow-redirects@1.15.3: {}
+
+  react@18.2.0: {}
+
+  'react-dom@18.2.0(react@18.2.0)':
+    dependencies:
+      react: 18.2.0
+
+  vitest@3.0.0: {}
+
+  '@scope/pkg@2.1.0': {}

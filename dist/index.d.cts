@@ -36,7 +36,7 @@ declare class PatchstackError extends Error {
 }
 
 type LockfileFilename = 'package-lock.json' | 'bun.lock' | 'bun.lockb' | 'yarn.lock' | 'pnpm-lock.yaml';
-type DetectionStrategy = 'npm-lockfile' | 'node-modules-walk';
+type DetectionStrategy = 'npm-lockfile' | 'node-modules-walk' | 'pnpm-lockfile';
 interface DetectedLockfile {
     ecosystem: 'npm';
     filePath: string;

@@ -207,6 +207,258 @@ async function isPlainDirectory(dir) {
   }
 }
 
+// src/parsers/pnpm.ts
+import { readFile as readFile3 } from "fs/promises";
+async function parsePnpmLockfile(lockfilePath) {
+  let raw;
+  try {
+    raw = await readFile3(lockfilePath, "utf8");
+  } catch (cause) {
+    throw new PatchstackError(
+      `Could not read lockfile at ${lockfilePath}`,
+      "LOCKFILE_NOT_FOUND",
+      cause
+    );
+  }
+  const lines = raw.split(/\r?\n/);
+  const directNames = collectDirectDepNames(lines);
+  const packageKeys = collectPackagesBlockKeys(lines);
+  if (packageKeys.length === 0) {
+    throw new PatchstackError(
+      `Lockfile at ${lockfilePath} has no "packages" entries`,
+      "LOCKFILE_PARSE_ERROR"
+    );
+  }
+  const entries = [];
+  for (const key of packageKeys) {
+    const parsed = parsePackageKey(key);
+    if (parsed === null) {
+      continue;
+    }
+    entries.push({
+      name: parsed.name,
+      version: parsed.version,
+      direct: directNames.has(parsed.name)
+    });
+  }
+  return entries;
+}
+function parsePackageKey(rawKey) {
+  let k = rawKey.trim();
+  if (k.length === 0) {
+    return null;
+  }
+  if (k.startsWith("'") && k.endsWith("'") || k.startsWith('"') && k.endsWith('"')) {
+    k = k.slice(1, -1);
+  }
+  if (k.startsWith("/")) {
+    k = k.slice(1);
+  }
+  const parenIdx = k.indexOf("(");
+  if (parenIdx >= 0) {
+    k = k.slice(0, parenIdx);
+  }
+  let scopePrefix = "";
+  let body = k;
+  if (k.startsWith("@")) {
+    const firstSlash = k.indexOf("/");
+    if (firstSlash <= 0) {
+      return null;
+    }
+    scopePrefix = k.slice(0, firstSlash + 1);
+    body = k.slice(firstSlash + 1);
+  }
+  const slashIdx = body.indexOf("/");
+  const atIdx = body.indexOf("@");
+  let sepIdx;
+  if (slashIdx < 0 && atIdx < 0) {
+    return null;
+  } else if (slashIdx < 0) {
+    sepIdx = atIdx;
+  } else if (atIdx < 0) {
+    sepIdx = slashIdx;
+  } else {
+    sepIdx = Math.min(slashIdx, atIdx);
+  }
+  const name = scopePrefix + body.slice(0, sepIdx);
+  let version = body.slice(sepIdx + 1);
+  const underscoreIdx = version.indexOf("_");
+  if (underscoreIdx >= 0) {
+    version = version.slice(0, underscoreIdx);
+  }
+  if (name.length === 0 || version.length === 0) {
+    return null;
+  }
+  return { name, version };
+}
+function indentOf(line) {
+  let i = 0;
+  while (i < line.length && line[i] === " ") {
+    i++;
+  }
+  return i;
+}
+function isBlankOrComment(line) {
+  const trimmed = line.trim();
+  return trimmed.length === 0 || trimmed.startsWith("#");
+}
+function collectPackagesBlockKeys(lines) {
+  const keys = [];
+  let inBlock = false;
+  let childIndent = null;
+  for (const line of lines) {
+    if (isBlankOrComment(line)) {
+      continue;
+    }
+    const indent = indentOf(line);
+    if (!inBlock) {
+      if (indent === 0 && line.trim() === "packages:") {
+        inBlock = true;
+      }
+      continue;
+    }
+    if (indent === 0) {
+      break;
+    }
+    if (childIndent === null) {
+      childIndent = indent;
+    }
+    if (indent !== childIndent) {
+      continue;
+    }
+    const content = line.slice(indent);
+    if (!content.endsWith(":")) {
+      continue;
+    }
+    keys.push(content.slice(0, -1));
+  }
+  return keys;
+}
+function collectDirectDepNames(lines) {
+  const names = /* @__PURE__ */ new Set();
+  collectFromImporters(lines, names);
+  for (const section of ["dependencies", "devDependencies", "optionalDependencies"]) {
+    collectFromTopLevelSection(lines, section, names);
+  }
+  return names;
+}
+var DEP_SECTIONS = /* @__PURE__ */ new Set([
+  "dependencies",
+  "devDependencies",
+  "optionalDependencies"
+]);
+function collectFromImporters(lines, out) {
+  let inImporters = false;
+  let importerIndent = null;
+  let inDepSection = false;
+  let depSectionIndent = null;
+  let leafIndent = null;
+  for (const line of lines) {
+    if (isBlankOrComment(line)) {
+      continue;
+    }
+    const indent = indentOf(line);
+    const trimmed = line.trim();
+    if (!inImporters) {
+      if (indent === 0 && trimmed === "importers:") {
+        inImporters = true;
+      }
+      continue;
+    }
+    if (indent === 0) {
+      break;
+    }
+    if (importerIndent === null) {
+      importerIndent = indent;
+    }
+    if (indent === importerIndent) {
+      inDepSection = false;
+      depSectionIndent = null;
+      leafIndent = null;
+      continue;
+    }
+    if (!inDepSection) {
+      const key = stripTrailingColon(trimmed);
+      if (key !== null && DEP_SECTIONS.has(key)) {
+        inDepSection = true;
+        depSectionIndent = indent;
+      }
+      continue;
+    }
+    if (depSectionIndent !== null && indent <= depSectionIndent) {
+      inDepSection = false;
+      depSectionIndent = null;
+      leafIndent = null;
+      const key = stripTrailingColon(trimmed);
+      if (key !== null && DEP_SECTIONS.has(key)) {
+        inDepSection = true;
+        depSectionIndent = indent;
+      }
+      continue;
+    }
+    if (leafIndent === null) {
+      leafIndent = indent;
+    }
+    if (indent !== leafIndent) {
+      continue;
+    }
+    const name = extractLeafName(trimmed);
+    if (name !== null) {
+      out.add(name);
+    }
+  }
+}
+function collectFromTopLevelSection(lines, section, out) {
+  let inSection = false;
+  let leafIndent = null;
+  for (const line of lines) {
+    if (isBlankOrComment(line)) {
+      continue;
+    }
+    const indent = indentOf(line);
+    const trimmed = line.trim();
+    if (!inSection) {
+      if (indent === 0 && trimmed === `${section}:`) {
+        inSection = true;
+      }
+      continue;
+    }
+    if (indent === 0) {
+      break;
+    }
+    if (leafIndent === null) {
+      leafIndent = indent;
+    }
+    if (indent !== leafIndent) {
+      continue;
+    }
+    const name = extractLeafName(trimmed);
+    if (name !== null) {
+      out.add(name);
+    }
+  }
+}
+function stripTrailingColon(s) {
+  if (!s.endsWith(":")) {
+    return null;
+  }
+  return s.slice(0, -1).trim();
+}
+function extractLeafName(trimmed) {
+  const colonIdx = trimmed.indexOf(":");
+  if (colonIdx < 0) {
+    return null;
+  }
+  let name = trimmed.slice(0, colonIdx).trim();
+  if (name.length === 0) {
+    return null;
+  }
+  if (name.startsWith("'") && name.endsWith("'") || name.startsWith('"') && name.endsWith('"')) {
+    name = name.slice(1, -1);
+  }
+  return name.length > 0 ? name : null;
+}
+
 // src/parsers/index.ts
 async function detectLockfile(cwd) {
   const npmLock = path3.join(cwd, "package-lock.json");
@@ -236,17 +488,19 @@ async function detectLockfile(cwd) {
       strategy: "node-modules-walk"
     };
   }
+  const pnpmLock = path3.join(cwd, "pnpm-lock.yaml");
+  if (await exists(pnpmLock)) {
+    return {
+      ecosystem: "npm",
+      filePath: pnpmLock,
+      filename: "pnpm-lock.yaml",
+      strategy: "pnpm-lockfile"
+    };
+  }
   const yarnLock = path3.join(cwd, "yarn.lock");
   if (await exists(yarnLock)) {
     throw new PatchstackError(
       "yarn.lock detected but not yet supported. Run `npm install` to generate a package-lock.json, or open an issue at github.com/patchstack/connect.",
-      "LOCKFILE_UNSUPPORTED"
-    );
-  }
-  const pnpmLock = path3.join(cwd, "pnpm-lock.yaml");
-  if (await exists(pnpmLock)) {
-    throw new PatchstackError(
-      "pnpm-lock.yaml detected but not yet supported. Open an issue at github.com/patchstack/connect to request support.",
       "LOCKFILE_UNSUPPORTED"
     );
   }
@@ -264,6 +518,8 @@ async function runStrategy(detected, cwd) {
   switch (detected.strategy) {
     case "npm-lockfile":
       return parseNpmLockfile(detected.filePath);
+    case "pnpm-lockfile":
+      return parsePnpmLockfile(detected.filePath);
     case "node-modules-walk":
       return walkNodeModules(cwd);
   }
@@ -457,7 +713,7 @@ function isTimeoutError(cause) {
 }
 
 // src/config.ts
-import { readFile as readFile3, writeFile } from "fs/promises";
+import { readFile as readFile4, writeFile } from "fs/promises";
 import path4 from "path";
 var CONFIG_FILENAME = ".patchstackrc.json";
 async function resolveConfig(options) {
@@ -498,7 +754,7 @@ async function readConfigFile(cwd) {
   const target = path4.join(cwd, CONFIG_FILENAME);
   let raw;
   try {
-    raw = await readFile3(target, "utf8");
+    raw = await readFile4(target, "utf8");
   } catch (err) {
     if (err.code === "ENOENT") {
       return {};

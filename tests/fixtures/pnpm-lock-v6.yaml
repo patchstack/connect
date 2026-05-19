@@ -1,0 +1,43 @@
+lockfileVersion: '6.0'
+
+settings:
+  autoInstallPeers: true
+  excludeLinksFromLockfile: false
+
+dependencies:
+  axios:
+    specifier: ^1.6.0
+    version: 1.6.0
+  '@scope/pkg':
+    specifier: 2.1.0
+    version: 2.1.0
+
+devDependencies:
+  vitest:
+    specifier: ^3.0.0
+    version: 3.0.0
+
+packages:
+
+  /@scope/pkg@2.1.0:
+    resolution: {integrity: sha512-fake==}
+
+  /axios@1.6.0:
+    resolution: {integrity: sha512-fake==}
+    dev: false
+
+  /follow-redirects@1.15.3:
+    resolution: {integrity: sha512-fake==}
+    dev: false
+
+  /react@18.2.0:
+    resolution: {integrity: sha512-fake==}
+
+  /react-dom@18.2.0(react@18.2.0):
+    resolution: {integrity: sha512-fake==}
+    peerDependencies:
+      react: ^18.2.0
+
+  /vitest@3.0.0:
+    resolution: {integrity: sha512-fake==}
+    dev: true

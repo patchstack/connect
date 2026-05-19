@@ -3,6 +3,7 @@ import path from 'node:path';
 import { PatchstackError, type Manifest, type PackageEntry } from '../types.js';
 import { parseNpmLockfile } from './npm.js';
 import { walkNodeModules } from './node_modules.js';
+import { parsePnpmLockfile } from './pnpm.js';
 
 type LockfileFilename =
   | 'package-lock.json'
@@ -11,7 +12,7 @@ type LockfileFilename =
   | 'yarn.lock'
   | 'pnpm-lock.yaml';
 
-type DetectionStrategy = 'npm-lockfile' | 'node-modules-walk';
+type DetectionStrategy = 'npm-lockfile' | 'node-modules-walk' | 'pnpm-lockfile';
 
 interface DetectedLockfile {
   ecosystem: 'npm';
@@ -51,18 +52,20 @@ export async function detectLockfile(cwd: string): Promise<DetectedLockfile> {
     };
   }
 
+  const pnpmLock = path.join(cwd, 'pnpm-lock.yaml');
+  if (await exists(pnpmLock)) {
+    return {
+      ecosystem: 'npm',
+      filePath: pnpmLock,
+      filename: 'pnpm-lock.yaml',
+      strategy: 'pnpm-lockfile',
+    };
+  }
+
   const yarnLock = path.join(cwd, 'yarn.lock');
   if (await exists(yarnLock)) {
     throw new PatchstackError(
       'yarn.lock detected but not yet supported. Run `npm install` to generate a package-lock.json, or open an issue at github.com/patchstack/connect.',
-      'LOCKFILE_UNSUPPORTED',
-    );
-  }
-
-  const pnpmLock = path.join(cwd, 'pnpm-lock.yaml');
-  if (await exists(pnpmLock)) {
-    throw new PatchstackError(
-      'pnpm-lock.yaml detected but not yet supported. Open an issue at github.com/patchstack/connect to request support.',
       'LOCKFILE_UNSUPPORTED',
     );
   }
@@ -86,6 +89,8 @@ async function runStrategy(
   switch (detected.strategy) {
     case 'npm-lockfile':
       return parseNpmLockfile(detected.filePath);
+    case 'pnpm-lockfile':
+      return parsePnpmLockfile(detected.filePath);
     case 'node-modules-walk':
       return walkNodeModules(cwd);
   }
