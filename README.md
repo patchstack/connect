@@ -114,10 +114,10 @@ That's the entire payload. No source code, no environment variables, no file pat
 ## Supported lockfiles
 
 - ✅ `package-lock.json` (npm v6 / v2 / v3) — parsed directly
+- ✅ `pnpm-lock.yaml` (pnpm v5 / v6 / v7 / v8 / v9) — parsed directly
 - ✅ `bun.lockb` (binary) — package list resolved by walking `node_modules/`
 - ✅ `bun.lock` (text) — same fallback; direct parsing coming
 - ❌ `yarn.lock` — coming soon
-- ❌ `pnpm-lock.yaml` — coming soon
 
 If both a Bun lockfile and `node_modules/` are present, the connector walks `node_modules/` to enumerate the installed packages. Run `bun install` (or `npm install`) before scanning so the directory is populated.
 
