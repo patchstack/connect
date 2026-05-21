@@ -1,0 +1,14 @@
+{
+  "name": "yarn-berry-project",
+  "version": "1.0.0",
+  "private": true,
+  "packageManager": "yarn@4.0.0",
+  "dependencies": {
+    "@scope/pkg": "^2.1.0",
+    "axios": "^1.6.0",
+    "react-dom": "^18.2.0"
+  },
+  "devDependencies": {
+    "vitest": "^3.0.0"
+  }
+}

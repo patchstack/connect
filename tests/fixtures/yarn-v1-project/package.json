@@ -1,0 +1,14 @@
+{
+  "name": "yarn-v1-project",
+  "version": "1.0.0",
+  "private": true,
+  "dependencies": {
+    "@scope/pkg": "^2.1.0",
+    "axios": "^1.6.0",
+    "lodash": "4.17.15",
+    "react-dom": "^18.2.0"
+  },
+  "devDependencies": {
+    "react": "^18.2.0"
+  }
+}
