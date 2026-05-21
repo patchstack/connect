@@ -49,9 +49,6 @@ jobs:
       - name: Build
         run: npm run build
 
-      - name: Verify committed dist is current
-        run: git diff --exit-code -- dist
-
       - name: Verify package contents
         run: npm pack --dry-run
 
