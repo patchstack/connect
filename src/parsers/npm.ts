@@ -1,5 +1,4 @@
 import { readFile } from 'node:fs/promises';
-import path from 'node:path';
 import { PatchstackError, type PackageEntry } from '../types.js';
 
 interface LockfileV2Package {
@@ -96,11 +95,11 @@ function extractFromV1(
 }
 
 function extractNameFromPath(pkgPath: string): string | null {
-  const segments = pkgPath.split('node_modules' + path.sep === pkgPath ? path.sep : '/');
+  // npm lockfile keys always use forward slashes, regardless of platform.
   const parts = pkgPath.split('/');
   const nmIndex = parts.lastIndexOf('node_modules');
   if (nmIndex === -1 || nmIndex >= parts.length - 1) {
-    return segments[segments.length - 1] ?? null;
+    return parts[parts.length - 1] ?? null;
   }
   const tail = parts.slice(nmIndex + 1);
   if (tail.length === 0) {

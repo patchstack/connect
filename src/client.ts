@@ -79,7 +79,7 @@ export async function postManifest(
     );
   }
 
-  if (response.status < 200 || response.status >= 300) {
+  if (!isSuccessStatus(response.status)) {
     throw new PatchstackError(
       `Patchstack returned ${response.status}: ${text.slice(0, 200)}`,
       'SERVER_ERROR',
@@ -91,6 +91,10 @@ export async function postManifest(
   }
 
   return body;
+}
+
+function isSuccessStatus(status: number): boolean {
+  return status >= 200 && status < 300;
 }
 
 function isTimeoutError(cause: unknown): boolean {

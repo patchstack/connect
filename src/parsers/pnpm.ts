@@ -1,5 +1,6 @@
 import { readFile } from 'node:fs/promises';
 import { PatchstackError, type PackageEntry } from '../types.js';
+import { unquote } from './strings.js';
 
 /**
  * Parses pnpm-lock.yaml without pulling in a YAML library. We don't need full
@@ -62,12 +63,7 @@ export function parsePackageKey(rawKey: string): ParsedKey | null {
     return null;
   }
 
-  if (
-    (k.startsWith("'") && k.endsWith("'")) ||
-    (k.startsWith('"') && k.endsWith('"'))
-  ) {
-    k = k.slice(1, -1);
-  }
+  k = unquote(k);
 
   if (k.startsWith('/')) {
     k = k.slice(1);
@@ -343,15 +339,6 @@ function extractLeafName(trimmed: string): string | null {
   if (colonIdx < 0) {
     return null;
   }
-  let name = trimmed.slice(0, colonIdx).trim();
-  if (name.length === 0) {
-    return null;
-  }
-  if (
-    (name.startsWith("'") && name.endsWith("'")) ||
-    (name.startsWith('"') && name.endsWith('"'))
-  ) {
-    name = name.slice(1, -1);
-  }
+  const name = unquote(trimmed.slice(0, colonIdx).trim());
   return name.length > 0 ? name : null;
 }

@@ -101,33 +101,43 @@ function compareSegments(a: string[], b: string[]): number {
   for (let i = 0; i < max; i++) {
     const aPart = a[i];
     const bPart = b[i];
+    // A shorter segment list sorts before a longer one (e.g. `1.0` before `1.0.1`).
     if (aPart === undefined) {
       return -1;
     }
     if (bPart === undefined) {
       return 1;
     }
-    const aNum = /^\d+$/.test(aPart);
-    const bNum = /^\d+$/.test(bPart);
-    if (aNum && bNum) {
-      const diff = Number(aPart) - Number(bPart);
-      if (diff !== 0) {
-        return diff < 0 ? -1 : 1;
-      }
-      continue;
+    const cmp = comparePartTokens(aPart, bPart);
+    if (cmp !== 0) {
+      return cmp;
     }
-    if (aNum) {
-      return -1;
-    }
-    if (bNum) {
-      return 1;
-    }
-    if (aPart < bPart) {
-      return -1;
-    }
-    if (aPart > bPart) {
-      return 1;
-    }
+  }
+  return 0;
+}
+
+/**
+ * Compares two version tokens. Numeric tokens sort numerically and ahead of
+ * non-numeric ones; otherwise tokens fall back to lexical comparison.
+ */
+function comparePartTokens(a: string, b: string): number {
+  const aNum = /^\d+$/.test(a);
+  const bNum = /^\d+$/.test(b);
+  if (aNum && bNum) {
+    const diff = Number(a) - Number(b);
+    return diff === 0 ? 0 : diff < 0 ? -1 : 1;
+  }
+  if (aNum) {
+    return -1;
+  }
+  if (bNum) {
+    return 1;
+  }
+  if (a < b) {
+    return -1;
+  }
+  if (a > b) {
+    return 1;
   }
   return 0;
 }

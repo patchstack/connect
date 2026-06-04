@@ -26,55 +26,26 @@ interface DetectedLockfile {
   strategy: DetectionStrategy;
 }
 
+// Probed in order; the first match wins, so more specific lockfiles must come
+// before fallbacks. bun has no standalone parser, so it falls back to walking
+// node_modules.
+const LOCKFILE_SPECS: ReadonlyArray<{
+  filename: LockfileFilename;
+  strategy: DetectionStrategy;
+}> = [
+  { filename: 'package-lock.json', strategy: 'npm-lockfile' },
+  { filename: 'bun.lock', strategy: 'node-modules-walk' },
+  { filename: 'bun.lockb', strategy: 'node-modules-walk' },
+  { filename: 'pnpm-lock.yaml', strategy: 'pnpm-lockfile' },
+  { filename: 'yarn.lock', strategy: 'yarn-lockfile' },
+];
+
 export async function detectLockfile(cwd: string): Promise<DetectedLockfile> {
-  const npmLock = path.join(cwd, 'package-lock.json');
-  if (await exists(npmLock)) {
-    return {
-      ecosystem: 'npm',
-      filePath: npmLock,
-      filename: 'package-lock.json',
-      strategy: 'npm-lockfile',
-    };
-  }
-
-  const bunLock = path.join(cwd, 'bun.lock');
-  if (await exists(bunLock)) {
-    return {
-      ecosystem: 'npm',
-      filePath: bunLock,
-      filename: 'bun.lock',
-      strategy: 'node-modules-walk',
-    };
-  }
-
-  const bunLockB = path.join(cwd, 'bun.lockb');
-  if (await exists(bunLockB)) {
-    return {
-      ecosystem: 'npm',
-      filePath: bunLockB,
-      filename: 'bun.lockb',
-      strategy: 'node-modules-walk',
-    };
-  }
-
-  const pnpmLock = path.join(cwd, 'pnpm-lock.yaml');
-  if (await exists(pnpmLock)) {
-    return {
-      ecosystem: 'npm',
-      filePath: pnpmLock,
-      filename: 'pnpm-lock.yaml',
-      strategy: 'pnpm-lockfile',
-    };
-  }
-
-  const yarnLock = path.join(cwd, 'yarn.lock');
-  if (await exists(yarnLock)) {
-    return {
-      ecosystem: 'npm',
-      filePath: yarnLock,
-      filename: 'yarn.lock',
-      strategy: 'yarn-lockfile',
-    };
+  for (const { filename, strategy } of LOCKFILE_SPECS) {
+    const filePath = path.join(cwd, filename);
+    if (await exists(filePath)) {
+      return { ecosystem: 'npm', filePath, filename, strategy };
+    }
   }
 
   throw new PatchstackError(

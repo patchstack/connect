@@ -1,6 +1,7 @@
 import { readFile } from 'node:fs/promises';
 import path from 'node:path';
 import { PatchstackError, type PackageEntry } from '../types.js';
+import { unquote } from './strings.js';
 
 /**
  * Parses yarn.lock (yarn classic v1 and yarn berry v2+) without a YAML
@@ -173,15 +174,9 @@ export function splitDescriptors(keyLine: string): string[] {
  * version comes from the `version` field of the block.
  */
 export function extractName(rawSpec: string): string | null {
-  let s = rawSpec.trim();
+  const s = unquote(rawSpec.trim());
   if (s.length === 0) {
     return null;
-  }
-  if (
-    (s.startsWith('"') && s.endsWith('"')) ||
-    (s.startsWith("'") && s.endsWith("'"))
-  ) {
-    s = s.slice(1, -1);
   }
   // Position-0 `@` belongs to a scope, so we want the last `@` after it.
   const atIdx = s.lastIndexOf('@');
@@ -204,16 +199,7 @@ function parseVersionField(content: string): string | null {
     return null;
   }
   let rest = firstChar === ':' ? after.slice(1) : after;
-  rest = rest.trim();
-  if (rest.length === 0) {
-    return null;
-  }
-  if (
-    (rest.startsWith('"') && rest.endsWith('"')) ||
-    (rest.startsWith("'") && rest.endsWith("'"))
-  ) {
-    rest = rest.slice(1, -1);
-  }
+  rest = unquote(rest.trim());
   return rest.length > 0 ? rest : null;
 }
 

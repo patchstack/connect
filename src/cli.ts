@@ -1,7 +1,7 @@
 import { scanLockfile } from './parsers/index.js';
 import { buildWirePayload } from './normalize.js';
 import { buildClaimUrl, postManifest } from './client.js';
-import { persistSiteUuid, resolveConfig, writeConfigFile } from './config.js';
+import { isUuid, persistSiteUuid, resolveConfig, writeConfigFile } from './config.js';
 import { PatchstackError } from './types.js';
 
 const HELP = `@patchstack/connect — scan your lockfile and report packages to Patchstack.
@@ -87,7 +87,7 @@ async function runInit(args: ParsedArgs): Promise<number> {
     console.error('Usage: patchstack-connect init <site-uuid>');
     return 1;
   }
-  if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(uuid)) {
+  if (!isUuid(uuid)) {
     console.error(`Error: "${uuid}" does not look like a valid UUID.`);
     return 1;
   }
@@ -142,11 +142,18 @@ async function runScan(args: ParsedArgs): Promise<number> {
 
   const response = await postManifest(config, payload);
 
-  // The server always returns the UUID. If we didn't have one, persist it so
-  // every subsequent scan targets the same site.
-  if (provisioning && response.uuid !== undefined && response.uuid.length > 0) {
-    const target = await persistSiteUuid(process.cwd(), response.uuid);
-    console.log(`Provisioned site ${response.uuid}. Saved UUID to ${target}.`);
+  // When provisioning, the server returns a fresh UUID for this site. (null in
+  // every other case — either we already had one, or the server didn't send one.)
+  const provisionedUuid =
+    provisioning && response.uuid !== undefined && response.uuid.length > 0
+      ? response.uuid
+      : null;
+
+  // If we didn't have a UUID, persist the provisioned one so every subsequent
+  // scan targets the same site.
+  if (provisionedUuid !== null) {
+    const target = await persistSiteUuid(process.cwd(), provisionedUuid);
+    console.log(`Provisioned site ${provisionedUuid}. Saved UUID to ${target}.`);
   }
 
   if (response.stored) {
@@ -160,10 +167,10 @@ async function runScan(args: ParsedArgs): Promise<number> {
   // On the first scan (provisioning), surface the claim URL so the user can
   // attach this site to their Patchstack account. `npx @patchstack/connect status`
   // re-displays it any time.
-  if (provisioning && response.uuid !== undefined && response.uuid.length > 0) {
+  if (provisionedUuid !== null) {
     console.log('');
     console.log('Claim this site to view vulnerability reports in your Patchstack dashboard:');
-    console.log(`  ${buildClaimUrl(config.endpoint, response.uuid)}`);
+    console.log(`  ${buildClaimUrl(config.endpoint, provisionedUuid)}`);
   }
 
   return 0;
