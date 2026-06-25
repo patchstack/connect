@@ -1,5 +1,6 @@
 import { scanLockfile } from './parsers/index.js';
 import { buildWirePayload } from './normalize.js';
+import { markProductionBuild } from './buildFlag.js';
 import { buildClaimUrl, postManifest } from './client.js';
 import { persistSiteUuid, resolveConfig, writeConfigFile } from './config.js';
 import { PatchstackError } from './types.js';
@@ -13,12 +14,20 @@ Usage:
   patchstack-connect init   <site-uuid>              Optional: pre-seed .patchstackrc.json
                                                      with an existing site UUID
   patchstack-connect status [options]                Show current configuration
+  patchstack-connect mark-build [--dir <path>]       Inject the production flag into
+                                                     the built HTML (run as a postbuild
+                                                     step). Tells the widget it's live so
+                                                     it hides the claim flow.
   patchstack-connect help                            Print this message
 
 Options (for scan and status):
   --site-uuid <uuid>      Override the configured site UUID
   --endpoint <url>        Override the API endpoint
   --dry-run               (scan only) Show the payload without posting
+
+Options (for mark-build):
+  --dir <path>            Build output dir (default: auto-detect dist/, build/,
+                          out/, .output/public)
 
 Environment:
   PATCHSTACK_SITE_UUID    Site UUID
@@ -34,7 +43,7 @@ Examples:
   npx @patchstack/connect scan --site-uuid 550e8400-...-446655440000
 `;
 
-const VALUE_FLAGS = new Set(['site-uuid', 'endpoint']);
+const VALUE_FLAGS = new Set(['site-uuid', 'endpoint', 'dir']);
 
 interface ParsedArgs {
   command: string | null;
@@ -184,6 +193,30 @@ async function runStatus(args: ParsedArgs): Promise<number> {
   return 0;
 }
 
+async function runMarkBuild(args: ParsedArgs): Promise<number> {
+  const result = await markProductionBuild(process.cwd(), getStringFlag(args.flags, 'dir'));
+
+  // Never fail the build over this — a missing flag just means the widget falls
+  // back to showing the claim flow, which is safe.
+  if (result.dir === null) {
+    console.warn(
+      'patchstack: no build output found (looked for dist/, build/, out/, .output/public). ' +
+        'Pass --dir <path> if your build outputs elsewhere. Skipping production flag.',
+    );
+    return 0;
+  }
+  if (result.patched.length === 0 && result.skipped.length === 0) {
+    console.warn(`patchstack: no HTML files found under ${result.dir}; skipping production flag.`);
+    return 0;
+  }
+
+  const already = result.skipped.length > 0 ? ` (${result.skipped.length} already marked)` : '';
+  console.log(
+    `patchstack: marked ${result.patched.length} HTML file(s) as a production build in ${result.dir}${already}.`,
+  );
+  return 0;
+}
+
 async function main(): Promise<number> {
   const args = parseArgs(process.argv);
 
@@ -199,6 +232,8 @@ async function main(): Promise<number> {
       return runScan(args);
     case 'status':
       return runStatus(args);
+    case 'mark-build':
+      return runMarkBuild(args);
     default:
       console.error(`Unknown command: ${args.command}\n`);
       console.error(HELP);
