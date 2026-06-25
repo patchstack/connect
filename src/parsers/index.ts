@@ -26,59 +26,44 @@ interface DetectedLockfile {
   strategy: DetectionStrategy;
 }
 
+interface LockfileCandidate {
+  filename: LockfileFilename;
+  strategy: DetectionStrategy;
+}
+
+// Checked in priority order: the first candidate present in `cwd` wins.
+const LOCKFILE_CANDIDATES: readonly LockfileCandidate[] = [
+  { filename: 'package-lock.json', strategy: 'npm-lockfile' },
+  { filename: 'bun.lock', strategy: 'node-modules-walk' },
+  { filename: 'bun.lockb', strategy: 'node-modules-walk' },
+  { filename: 'pnpm-lock.yaml', strategy: 'pnpm-lockfile' },
+  { filename: 'yarn.lock', strategy: 'yarn-lockfile' },
+];
+
 export async function detectLockfile(cwd: string): Promise<DetectedLockfile> {
-  const npmLock = path.join(cwd, 'package-lock.json');
-  if (await exists(npmLock)) {
+  // Probe every candidate concurrently, then resolve by declaration order so
+  // the result is identical to a sequential first-match scan — but bounded by a
+  // single I/O round-trip instead of up to one `stat` per candidate.
+  const probed = await Promise.all(
+    LOCKFILE_CANDIDATES.map(async (candidate) => {
+      const filePath = path.join(cwd, candidate.filename);
+      return { ...candidate, filePath, present: await exists(filePath) };
+    }),
+  );
+
+  const match = probed.find((candidate) => candidate.present);
+  if (match) {
     return {
       ecosystem: 'npm',
-      filePath: npmLock,
-      filename: 'package-lock.json',
-      strategy: 'npm-lockfile',
+      filePath: match.filePath,
+      filename: match.filename,
+      strategy: match.strategy,
     };
   }
 
-  const bunLock = path.join(cwd, 'bun.lock');
-  if (await exists(bunLock)) {
-    return {
-      ecosystem: 'npm',
-      filePath: bunLock,
-      filename: 'bun.lock',
-      strategy: 'node-modules-walk',
-    };
-  }
-
-  const bunLockB = path.join(cwd, 'bun.lockb');
-  if (await exists(bunLockB)) {
-    return {
-      ecosystem: 'npm',
-      filePath: bunLockB,
-      filename: 'bun.lockb',
-      strategy: 'node-modules-walk',
-    };
-  }
-
-  const pnpmLock = path.join(cwd, 'pnpm-lock.yaml');
-  if (await exists(pnpmLock)) {
-    return {
-      ecosystem: 'npm',
-      filePath: pnpmLock,
-      filename: 'pnpm-lock.yaml',
-      strategy: 'pnpm-lockfile',
-    };
-  }
-
-  const yarnLock = path.join(cwd, 'yarn.lock');
-  if (await exists(yarnLock)) {
-    return {
-      ecosystem: 'npm',
-      filePath: yarnLock,
-      filename: 'yarn.lock',
-      strategy: 'yarn-lockfile',
-    };
-  }
-
+  const expected = LOCKFILE_CANDIDATES.map((candidate) => candidate.filename).join(', ');
   throw new PatchstackError(
-    `No lockfile found in ${cwd}. Expected one of: package-lock.json, bun.lock, bun.lockb, yarn.lock, pnpm-lock.yaml.`,
+    `No lockfile found in ${cwd}. Expected one of: ${expected}.`,
     'LOCKFILE_NOT_FOUND',
   );
 }
