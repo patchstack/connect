@@ -18,6 +18,7 @@ describe('resolveConfig', () => {
     delete process.env.PATCHSTACK_SITE_UUID;
     delete process.env.PATCHSTACK_ENDPOINT;
     delete process.env.PATCHSTACK_TIMEOUT_MS;
+    delete process.env.PATCHSTACK_ENVIRONMENT;
   });
 
   afterEach(async () => {
@@ -88,6 +89,37 @@ describe('resolveConfig', () => {
 
   it('throws CONFIG_INVALID when PATCHSTACK_TIMEOUT_MS is not a positive number', async () => {
     process.env.PATCHSTACK_TIMEOUT_MS = 'not-a-number';
+    await expect(resolveConfig({ cwd, cliSiteUuid: VALID_UUID })).rejects.toMatchObject({
+      code: 'CONFIG_INVALID',
+    });
+  });
+
+  it('defaults the environment to production', async () => {
+    const config = await resolveConfig({ cwd, cliSiteUuid: VALID_UUID });
+    expect(config.environment).toBe('production');
+  });
+
+  it('reads PATCHSTACK_ENVIRONMENT from the environment', async () => {
+    process.env.PATCHSTACK_ENVIRONMENT = 'sandbox';
+    const config = await resolveConfig({ cwd, cliSiteUuid: VALID_UUID });
+    expect(config.environment).toBe('sandbox');
+  });
+
+  it('reads environment from the config file', async () => {
+    await writeConfigFile(cwd, { siteUuid: VALID_UUID, environment: 'sandbox' });
+    const config = await resolveConfig({ cwd });
+    expect(config.environment).toBe('sandbox');
+  });
+
+  it('lets PATCHSTACK_ENVIRONMENT override the file', async () => {
+    await writeConfigFile(cwd, { siteUuid: VALID_UUID, environment: 'sandbox' });
+    process.env.PATCHSTACK_ENVIRONMENT = 'production';
+    const config = await resolveConfig({ cwd });
+    expect(config.environment).toBe('production');
+  });
+
+  it('throws CONFIG_INVALID when the environment is not production or sandbox', async () => {
+    process.env.PATCHSTACK_ENVIRONMENT = 'staging';
     await expect(resolveConfig({ cwd, cliSiteUuid: VALID_UUID })).rejects.toMatchObject({
       code: 'CONFIG_INVALID',
     });

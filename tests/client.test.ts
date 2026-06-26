@@ -77,11 +77,28 @@ describe('postManifest', () => {
     vi.stubGlobal('fetch', fetchMock);
 
     const result = await postManifest(
-      { siteUuid: 'uuid', endpoint: 'https://example.com', timeoutMs: 30_000 },
+      { siteUuid: 'uuid', endpoint: 'https://example.com', timeoutMs: 30_000, environment: 'production' },
       { ecosystem: 'npm', packages: [{ name: 'lodash', version: '4.17.21' }] },
     );
     expect(result.stored).toBe(true);
     expect(result.manifest_id).toBe(1);
+  });
+
+  it('sends the configured environment in the request body', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(
+      new Response(JSON.stringify({ stored: true }), { status: 200 }),
+    );
+    vi.stubGlobal('fetch', fetchMock);
+
+    await postManifest(
+      { siteUuid: 'uuid', endpoint: 'https://example.com', timeoutMs: 30_000, environment: 'sandbox' },
+      { ecosystem: 'npm', packages: [{ name: 'lodash', version: '4.17.21' }] },
+    );
+
+    const [, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+    const body = JSON.parse(init.body as string) as { environment: string; ecosystem: string };
+    expect(body.environment).toBe('sandbox');
+    expect(body.ecosystem).toBe('npm');
   });
 
   it('throws SITE_NOT_FOUND on 404', async () => {
@@ -94,7 +111,7 @@ describe('postManifest', () => {
 
     await expect(
       postManifest(
-        { siteUuid: 'uuid', endpoint: 'https://example.com', timeoutMs: 30_000 },
+        { siteUuid: 'uuid', endpoint: 'https://example.com', timeoutMs: 30_000, environment: 'production' },
         { ecosystem: 'npm', packages: [] },
       ),
     ).rejects.toMatchObject({ code: 'SITE_NOT_FOUND' });
@@ -112,7 +129,7 @@ describe('postManifest', () => {
 
     await expect(
       postManifest(
-        { siteUuid: 'uuid', endpoint: 'https://example.com', timeoutMs: 30_000 },
+        { siteUuid: 'uuid', endpoint: 'https://example.com', timeoutMs: 30_000, environment: 'production' },
         { ecosystem: 'npm', packages: [] },
       ),
     ).rejects.toMatchObject({ code: 'VALIDATION_ERROR' });
@@ -123,7 +140,7 @@ describe('postManifest', () => {
 
     await expect(
       postManifest(
-        { siteUuid: 'uuid', endpoint: 'https://example.com', timeoutMs: 30_000 },
+        { siteUuid: 'uuid', endpoint: 'https://example.com', timeoutMs: 30_000, environment: 'production' },
         { ecosystem: 'npm', packages: [] },
       ),
     ).rejects.toBeInstanceOf(PatchstackError);
@@ -136,7 +153,7 @@ describe('postManifest', () => {
     vi.stubGlobal('fetch', fetchMock);
 
     await postManifest(
-      { siteUuid: 'uuid', endpoint: 'https://example.com', timeoutMs: 12345 },
+      { siteUuid: 'uuid', endpoint: 'https://example.com', timeoutMs: 12345, environment: 'production' },
       { ecosystem: 'npm', packages: [] },
     );
 
@@ -154,7 +171,7 @@ describe('postManifest', () => {
     vi.stubGlobal('fetch', fetchMock);
 
     const result = await postManifest(
-      { siteUuid: null, endpoint: 'https://example.com/monitor/pulse/manifest', timeoutMs: 30_000 },
+      { siteUuid: null, endpoint: 'https://example.com/monitor/pulse/manifest', timeoutMs: 30_000, environment: 'production' },
       { ecosystem: 'npm', packages: [{ name: 'lodash', version: '4.17.21' }] },
     );
 
@@ -171,7 +188,7 @@ describe('postManifest', () => {
 
     await expect(
       postManifest(
-        { siteUuid: 'uuid', endpoint: 'https://example.com', timeoutMs: 1 },
+        { siteUuid: 'uuid', endpoint: 'https://example.com', timeoutMs: 1, environment: 'production' },
         { ecosystem: 'npm', packages: [] },
       ),
     ).rejects.toMatchObject({ code: 'NETWORK_TIMEOUT' });

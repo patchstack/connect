@@ -39,7 +39,7 @@ export async function postManifest(
         Accept: 'application/json',
         'User-Agent': '@patchstack/connect',
       },
-      body: JSON.stringify(payload),
+      body: JSON.stringify({ ...payload, environment: config.environment }),
       signal: AbortSignal.timeout(timeoutMs),
     });
   } catch (cause) {

@@ -1,5 +1,13 @@
 export type Ecosystem = 'npm' | 'composer';
 
+/**
+ * Which environment a manifest was captured in. The connector reports from real
+ * builds (prebuild scan / build hooks), so it defaults to 'production'. Override
+ * with PATCHSTACK_ENVIRONMENT=sandbox (or "environment" in .patchstackrc.json)
+ * for test manifests.
+ */
+export type Environment = 'production' | 'sandbox';
+
 export interface PackageEntry {
   name: string;
   version: string;
@@ -21,6 +29,8 @@ export interface Config {
   siteUuid: string | null;
   endpoint: string;
   timeoutMs: number;
+  /** Environment to report the manifest under. Defaults to 'production'. */
+  environment: Environment;
 }
 
 export interface StoreManifestResponse {

@@ -1,14 +1,17 @@
 import { readFile, writeFile } from 'node:fs/promises';
 import path from 'node:path';
-import { PatchstackError, type Config } from './types.js';
+import { PatchstackError, type Config, type Environment } from './types.js';
 import { DEFAULT_ENDPOINT, DEFAULT_TIMEOUT_MS } from './client.js';
 
 const CONFIG_FILENAME = '.patchstackrc.json';
+
+export const DEFAULT_ENVIRONMENT: Environment = 'production';
 
 interface ConfigFile {
   siteUuid?: string;
   endpoint?: string;
   timeoutMs?: number;
+  environment?: string;
 }
 
 export interface ResolveConfigOptions {
@@ -42,6 +45,15 @@ export async function resolveConfig(options: ResolveConfigOptions): Promise<Conf
 
   const timeoutMs = fromEnv.timeoutMs ?? fromFile.timeoutMs ?? DEFAULT_TIMEOUT_MS;
 
+  const environmentRaw = fromEnv.environment ?? fromFile.environment;
+  if (environmentRaw !== undefined && !isEnvironment(environmentRaw)) {
+    throw new PatchstackError(
+      `Environment must be "production" or "sandbox"; got "${environmentRaw}".`,
+      'CONFIG_INVALID',
+    );
+  }
+  const environment: Environment = environmentRaw ?? DEFAULT_ENVIRONMENT;
+
   if (siteUuid !== null && siteUuid.length > 0 && !isUuid(siteUuid)) {
     throw new PatchstackError(
       `Site UUID "${siteUuid}" does not look like a valid UUID.`,
@@ -60,6 +72,7 @@ export async function resolveConfig(options: ResolveConfigOptions): Promise<Conf
     siteUuid: siteUuid === null || siteUuid.length === 0 ? null : siteUuid,
     endpoint,
     timeoutMs,
+    environment,
   };
 }
 
@@ -119,13 +132,20 @@ function readEnv(): ConfigFile {
     }
     timeoutMs = parsed;
   }
+  const environmentRaw = process.env.PATCHSTACK_ENVIRONMENT;
   return {
     siteUuid: process.env.PATCHSTACK_SITE_UUID ?? undefined,
     endpoint: process.env.PATCHSTACK_ENDPOINT ?? undefined,
     timeoutMs,
+    environment:
+      environmentRaw !== undefined && environmentRaw.length > 0 ? environmentRaw : undefined,
   };
 }
 
 function isUuid(value: string): boolean {
   return /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(value);
+}
+
+function isEnvironment(value: string): value is Environment {
+  return value === 'production' || value === 'sandbox';
 }

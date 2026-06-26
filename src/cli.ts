@@ -33,6 +33,7 @@ Environment:
   PATCHSTACK_SITE_UUID    Site UUID
   PATCHSTACK_ENDPOINT     API endpoint (default: https://api.patchstack.com/monitor/pulse/manifest)
   PATCHSTACK_TIMEOUT_MS   Request timeout in ms (default: 30000)
+  PATCHSTACK_ENVIRONMENT  Manifest environment: production | sandbox (default: production)
 
 Precedence: CLI flag > environment variable > .patchstackrc.json.
 
@@ -121,6 +122,7 @@ async function runScan(args: ParsedArgs): Promise<number> {
   console.log(
     `Found ${payload.packages.length} unique package versions across ${stats.uniqueNames} package names in ${manifest.ecosystem} lockfile.`,
   );
+  console.log(`Reporting under the ${config.environment} environment.`);
   if (stats.duplicateNames.length > 0) {
     console.log(`${stats.duplicateNames.length} package(s) appear at multiple versions:`);
     if (stats.duplicateNames.length <= 10) {
@@ -184,9 +186,10 @@ async function runStatus(args: ParsedArgs): Promise<number> {
     cliSiteUuid: getStringFlag(args.flags, 'site-uuid'),
     cliEndpoint: getStringFlag(args.flags, 'endpoint'),
   });
-  console.log(`Site UUID:  ${config.siteUuid ?? '(none yet — the next `scan` will provision one)'}`);
-  console.log(`Endpoint:   ${config.endpoint}`);
-  console.log(`Timeout:    ${config.timeoutMs}ms`);
+  console.log(`Site UUID:   ${config.siteUuid ?? '(none yet — the next `scan` will provision one)'}`);
+  console.log(`Endpoint:    ${config.endpoint}`);
+  console.log(`Timeout:     ${config.timeoutMs}ms`);
+  console.log(`Environment: ${config.environment}`);
   if (config.siteUuid !== null) {
     console.log(`Claim URL:  ${buildClaimUrl(config.endpoint, config.siteUuid)}`);
   }
