@@ -1,8 +1,16 @@
+import { readFileSync, writeFileSync } from 'node:fs';
+
 import { scanLockfile } from './parsers/index.js';
 import { buildWirePayload } from './normalize.js';
-import { markProductionBuild } from './buildFlag.js';
+import { computeManifestChecksum } from './checksum.js';
 import { buildClaimUrl, postManifest } from './client.js';
 import { persistSiteUuid, resolveConfig, writeConfigFile } from './config.js';
+import {
+  buildInjectionSnippet,
+  findHtmlFiles,
+  injectMarker,
+  resolveBuildDir,
+} from './mark-build.js';
 import { PatchstackError } from './types.js';
 
 const HELP = `@patchstack/connect — scan your lockfile and report packages to Patchstack.
@@ -14,10 +22,8 @@ Usage:
   patchstack-connect init   <site-uuid>              Optional: pre-seed .patchstackrc.json
                                                      with an existing site UUID
   patchstack-connect status [options]                Show current configuration
-  patchstack-connect mark-build [--dir <path>]       Inject the production flag into
-                                                     the built HTML (run as a postbuild
-                                                     step). Tells the widget it's live so
-                                                     it hides the claim flow.
+  patchstack-connect mark-build [options]            Stamp built HTML with a production flag +
+                                                     build fingerprint (run as a postbuild step)
   patchstack-connect help                            Print this message
 
 Options (for scan and status):
@@ -26,8 +32,8 @@ Options (for scan and status):
   --dry-run               (scan only) Show the payload without posting
 
 Options (for mark-build):
-  --dir <path>            Build output dir (default: auto-detect dist/, build/,
-                          out/, .output/public)
+  --dir <path>            Build output directory (default: auto-detect
+                          dist/ build/ out/ .output/public)
 
 Environment:
   PATCHSTACK_SITE_UUID    Site UUID
@@ -197,25 +203,49 @@ async function runStatus(args: ParsedArgs): Promise<number> {
 }
 
 async function runMarkBuild(args: ParsedArgs): Promise<number> {
-  const result = await markProductionBuild(process.cwd(), getStringFlag(args.flags, 'dir'));
+  const cwd = process.cwd();
 
-  // Never fail the build over this — a missing flag just means the widget falls
-  // back to showing the claim flow, which is safe.
-  if (result.dir === null) {
+  // Compute the build fingerprint from the lockfile. Best-effort: mark-build is a
+  // postbuild step and must never fail the build, so a missing/unreadable lockfile
+  // just means we stamp the production flag without a fingerprint.
+  let checksum: string | null = null;
+  try {
+    const manifest = await scanLockfile(cwd);
+    const { payload } = buildWirePayload(manifest);
+    checksum = computeManifestChecksum(payload.packages);
+  } catch (err) {
     console.warn(
-      'patchstack: no build output found (looked for dist/, build/, out/, .output/public). ' +
-        'Pass --dir <path> if your build outputs elsewhere. Skipping production flag.',
+      `mark-build: could not compute the build fingerprint (${(err as Error).message}). Stamping the production flag only.`,
+    );
+  }
+
+  const dir = resolveBuildDir(cwd, getStringFlag(args.flags, 'dir'));
+  if (dir === null) {
+    console.warn(
+      'mark-build: no build output directory found (looked for dist/, build/, out/, .output/public). Pass --dir <path> if it is elsewhere. Nothing to mark.',
     );
     return 0;
   }
-  if (result.patched.length === 0 && result.skipped.length === 0) {
-    console.warn(`patchstack: no HTML files found under ${result.dir}; skipping production flag.`);
+
+  const files = findHtmlFiles(dir);
+  if (files.length === 0) {
+    console.warn(`mark-build: no HTML files found under ${dir}. Nothing to mark.`);
     return 0;
   }
 
-  const already = result.skipped.length > 0 ? ` (${result.skipped.length} already marked)` : '';
+  const snippet = buildInjectionSnippet(checksum);
+  let marked = 0;
+  for (const file of files) {
+    const before = readFileSync(file, 'utf8');
+    const after = injectMarker(before, snippet);
+    if (after !== before) {
+      writeFileSync(file, after);
+      marked += 1;
+    }
+  }
+
   console.log(
-    `patchstack: marked ${result.patched.length} HTML file(s) as a production build in ${result.dir}${already}.`,
+    `mark-build: marked ${marked} HTML file(s) in ${dir}${checksum !== null ? ` (build ${checksum})` : ''}.`,
   );
   return 0;
 }
