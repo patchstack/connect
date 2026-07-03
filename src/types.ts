@@ -18,6 +18,12 @@ export interface PackageEntry {
 export interface Manifest {
   ecosystem: Ecosystem;
   packages: PackageEntry[];
+  /**
+   * Human-readable scan diagnostics — set when the preferred lockfile looked
+   * stale (missing dependencies declared in package.json) and another source
+   * was used, or when no fully-consistent source existed. Never fatal.
+   */
+  warnings?: string[];
 }
 
 export interface Config {
