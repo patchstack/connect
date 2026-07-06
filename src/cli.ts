@@ -123,6 +123,9 @@ async function runScan(args: ParsedArgs): Promise<number> {
     cliEndpoint: getStringFlag(args.flags, 'endpoint'),
   });
   const manifest = await scanLockfile(process.cwd());
+  for (const warning of manifest.warnings ?? []) {
+    console.warn(`patchstack: ${warning}`);
+  }
   const { payload, stats } = buildWirePayload(manifest);
 
   console.log(
@@ -211,6 +214,9 @@ async function runMarkBuild(args: ParsedArgs): Promise<number> {
   let checksum: string | null = null;
   try {
     const manifest = await scanLockfile(cwd);
+    for (const warning of manifest.warnings ?? []) {
+      console.warn(`mark-build: ${warning}`);
+    }
     const { payload } = buildWirePayload(manifest);
     checksum = computeManifestChecksum(payload.packages);
   } catch (err) {

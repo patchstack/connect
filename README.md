@@ -17,9 +17,11 @@ npm install --save-dev @patchstack/connect
 npx @patchstack/connect scan
 ```
 
+> **Use your project's own package manager.** On bun-managed projects (Lovable, Bolt, most vibe-coding platforms) install with `bun add -d @patchstack/connect` instead — running `npm install` there plants a `package-lock.json` that the platform's native dependency flow never updates again, leaving a stale lockfile next to the live one. The connector detects and works around that (see *Stale lockfiles* below), but not creating the fossil is better.
+
 That's it. The first `scan`:
 
-1. Reads your `package-lock.json`.
+1. Reads your lockfile (see *Supported lockfiles*).
 2. POSTs the package list to Patchstack with **no** UUID.
 3. Patchstack provisions a fresh site and returns its UUID.
 4. The connector writes the UUID to `.patchstackrc.json` so the next `scan` targets the same site.
@@ -122,6 +124,10 @@ That's the entire payload. No source code, no environment variables, no file pat
 - ✅ `bun.lock` (text) — same fallback; direct parsing coming
 
 If both a Bun lockfile and `node_modules/` are present, the connector walks `node_modules/` to enumerate the installed packages. Run `bun install` (or `npm install`) before scanning so the directory is populated.
+
+### Stale lockfiles
+
+Every scanned source is validated against `package.json`: if the chosen lockfile is missing dependencies that `package.json` declares, it is treated as a fossil (e.g. a `package-lock.json` created by a one-off `npm install` in a bun-managed project) and the connector falls through to the next source — ultimately walking `node_modules/`, the installed truth — and prints a warning naming the stale file. Delete the stale lockfile to silence the warning. Without this, the manifest and the build fingerprint would silently freeze while the real dependency set drifts.
 
 ## Development
 

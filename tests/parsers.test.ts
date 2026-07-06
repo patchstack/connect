@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { copyFile, mkdtemp, rm } from 'node:fs/promises';
+import { copyFile, mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -87,5 +87,130 @@ describe('scanLockfile', () => {
     const manifest = await scanLockfile(cwd);
     expect(manifest.ecosystem).toBe('npm');
     expect(manifest.packages.length).toBeGreaterThan(0);
+  });
+});
+
+describe('stale lockfile detection', () => {
+  let dir: string;
+
+  beforeEach(async () => {
+    dir = await mkdtemp(path.join(tmpdir(), 'ps-stale-'));
+  });
+
+  afterEach(async () => {
+    await rm(dir, { recursive: true, force: true });
+  });
+
+  async function writeJson(rel: string, value: unknown): Promise<void> {
+    const full = path.join(dir, rel);
+    await mkdir(path.dirname(full), { recursive: true });
+    await writeFile(full, JSON.stringify(value, null, 2));
+  }
+
+  /** Minimal npm lockfile v3 with the given node_modules packages. */
+  function lockfileV3(packages: Record<string, string>): unknown {
+    const entries: Record<string, unknown> = {
+      '': { name: 'fixture-app', version: '1.0.0' },
+    };
+    for (const [name, version] of Object.entries(packages)) {
+      entries[`node_modules/${name}`] = { version };
+    }
+    return { name: 'fixture-app', lockfileVersion: 3, packages: entries };
+  }
+
+  async function installNodeModules(packages: Record<string, string>): Promise<void> {
+    for (const [name, version] of Object.entries(packages)) {
+      await writeJson(path.join('node_modules', name, 'package.json'), { name, version });
+    }
+  }
+
+  it('falls back to the installed truth when package-lock.json misses declared dependencies', async () => {
+    // The Lovable failure mode: `npm install` planted a package-lock.json once,
+    // then the platform's native (bun) flow added dayjs — updating package.json,
+    // bun.lockb and node_modules, but never the npm lockfile. The fossil must
+    // not win: scan the source that actually covers the declared dependencies.
+    await writeJson('package.json', {
+      name: 'fixture-app',
+      dependencies: { axios: '^1.6.0', dayjs: '^1.11.0' },
+    });
+    await writeJson('package-lock.json', lockfileV3({ axios: '1.6.0' }));
+    await writeFile(path.join(dir, 'bun.lockb'), 'binary-placeholder');
+    await installNodeModules({ axios: '1.6.0', dayjs: '1.11.10' });
+
+    const manifest = await scanLockfile(dir);
+    const names = manifest.packages.map((p) => p.name);
+
+    expect(names).toContain('dayjs');
+    expect(manifest.warnings?.join(' ')).toMatch(/package-lock\.json.*dayjs/s);
+  });
+
+  it('uses node_modules as a last resort even without a bun lockfile', async () => {
+    await writeJson('package.json', {
+      name: 'fixture-app',
+      dependencies: { dayjs: '^1.11.0' },
+    });
+    await writeJson('package-lock.json', lockfileV3({ axios: '1.6.0' }));
+    await installNodeModules({ axios: '1.6.0', dayjs: '1.11.10' });
+
+    const manifest = await scanLockfile(dir);
+
+    expect(manifest.packages.map((p) => p.name)).toContain('dayjs');
+    expect(manifest.warnings?.length).toBeGreaterThan(0);
+  });
+
+  it('keeps a consistent package-lock.json without warnings', async () => {
+    await writeJson('package.json', {
+      name: 'fixture-app',
+      dependencies: { axios: '^1.6.0' },
+      devDependencies: { dayjs: '^1.11.0' },
+    });
+    await writeJson('package-lock.json', lockfileV3({ axios: '1.6.0', dayjs: '1.11.10' }));
+    // node_modules deliberately different: a consistent lockfile stays authoritative.
+    await installNodeModules({ axios: '1.6.0' });
+
+    const manifest = await scanLockfile(dir);
+
+    expect(manifest.packages.map((p) => p.name).sort()).toEqual(['axios', 'dayjs']);
+    expect(manifest.warnings ?? []).toEqual([]);
+  });
+
+  it('ignores non-registry specifiers when judging staleness', async () => {
+    await writeJson('package.json', {
+      name: 'fixture-app',
+      dependencies: {
+        axios: '^1.6.0',
+        'local-lib': 'file:../local-lib',
+        'workspace-lib': 'workspace:*',
+      },
+    });
+    await writeJson('package-lock.json', lockfileV3({ axios: '1.6.0' }));
+
+    const manifest = await scanLockfile(dir);
+
+    expect(manifest.packages.map((p) => p.name)).toEqual(['axios']);
+    expect(manifest.warnings ?? []).toEqual([]);
+  });
+
+  it('returns the best available source with a warning when nothing is fully consistent', async () => {
+    await writeJson('package.json', {
+      name: 'fixture-app',
+      dependencies: { axios: '^1.6.0', dayjs: '^1.11.0' },
+    });
+    await writeJson('package-lock.json', lockfileV3({ axios: '1.6.0' }));
+    // No node_modules at all: still scan (never fail harder than today), but say so.
+
+    const manifest = await scanLockfile(dir);
+
+    expect(manifest.packages.map((p) => p.name)).toEqual(['axios']);
+    expect(manifest.warnings?.length).toBeGreaterThan(0);
+  });
+
+  it('behaves exactly as before when there is no package.json to validate against', async () => {
+    await writeJson('package-lock.json', lockfileV3({ axios: '1.6.0' }));
+
+    const manifest = await scanLockfile(dir);
+
+    expect(manifest.packages.map((p) => p.name)).toEqual(['axios']);
+    expect(manifest.warnings ?? []).toEqual([]);
   });
 });
