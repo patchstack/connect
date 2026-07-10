@@ -35,6 +35,7 @@
     "build": "tsup",
     "dev": "tsup --watch",
     "test": "vitest run",
+    "test:manifest": "bun scripts/test-manifest.ts",
     "test:watch": "vitest",
     "typecheck": "tsc --noEmit",
     "prepare": "tsup",

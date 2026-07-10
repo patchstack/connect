@@ -138,6 +138,22 @@ npm test
 npm run build
 ```
 
+### Manifest endpoint testing
+
+To post the current lockfile manifest to a local Patchstack API endpoint and provision a new site:
+
+```bash
+bun run test:manifest -- --endpoint http://localhost:8000/monitor/pulse/manifest
+```
+
+The response should include the new site UUID. To re-test an existing site, pass that UUID explicitly:
+
+```bash
+bun run test:manifest -- --endpoint http://localhost:8000/monitor/pulse/manifest --site-uuid YOUR_REAL_UUID
+```
+
+Use `--dry-run` to preview the payload without posting.
+
 ## Release process
 
 Pull requests run typecheck, tests, build, package verification, and a production dependency audit in GitHub Actions.
