@@ -1,0 +1,90 @@
+name: Release
+
+# One-click release: bumps package.json, tags, publishes to npm, and cuts the
+# GitHub release from a single source of truth. Because the tag is derived from
+# `npm version`, the tag can never disagree with package.json.
+
+on:
+  workflow_dispatch:
+    inputs:
+      bump:
+        description: "Semver bump (ignored if 'version' is set)"
+        type: choice
+        options:
+          - patch
+          - minor
+          - major
+        default: patch
+      version:
+        description: "Explicit version, e.g. 0.3.3 (overrides bump). Leave blank to use bump."
+        type: string
+        required: false
+
+permissions:
+  contents: write
+  id-token: write
+
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+jobs:
+  release:
+    name: Release ${{ inputs.version || inputs.bump }}
+    runs-on: ubuntu-latest
+    environment: npm
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24.x
+          registry-url: https://registry.npmjs.org
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Typecheck
+        run: npm run typecheck
+
+      - name: Test
+        run: npm test
+
+      - name: Build
+        run: npm run build
+
+      - name: Verify package contents
+        run: npm pack --dry-run
+
+      - name: Configure git
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+      - name: Bump version and tag
+        id: bump
+        run: |
+          if [ -n "${{ inputs.version }}" ]; then
+            NEW=$(npm version "${{ inputs.version }}" -m "Release v%s")
+          else
+            NEW=$(npm version "${{ inputs.bump }}" -m "Release v%s")
+          fi
+          echo "tag=$NEW" >> "$GITHUB_OUTPUT"
+          echo "Bumped to $NEW"
+
+      - name: Push commit and tag
+        run: git push origin HEAD --follow-tags
+
+      - name: Publish to npm
+        run: npm publish --access public --provenance
+
+      - name: Create GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release create "${{ steps.bump.outputs.tag }}" --generate-notes --title "${{ steps.bump.outputs.tag }}"
