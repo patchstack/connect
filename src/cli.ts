@@ -29,6 +29,8 @@ Usage:
   patchstack-connect protect [--manifest]            Install runtime protection (the guard) into
                                                      a server-side JS app. --manifest only
                                                      regenerates the package manifest (prebuild).
+  patchstack-connect guide                           Print the full setup guide for AI coding
+                                                     agents (also at https://patchstack.com/install.txt)
   patchstack-connect help                            Print this message
 
 Options (for scan and status):
@@ -204,6 +206,14 @@ async function runProtectCommand(args: ParsedArgs): Promise<number> {
   return 0;
 }
 
+async function runGuide(): Promise<number> {
+  // AGENT-INSTALL.md ships at the package root, one level above dist/ (and
+  // above src/ when running unbundled), so the same relative path works in both.
+  const guidePath = new URL('../AGENT-INSTALL.md', import.meta.url);
+  console.log(readFileSync(guidePath, 'utf8'));
+  return 0;
+}
+
 async function runStatus(args: ParsedArgs): Promise<number> {
   const config = await resolveConfig({
     cwd: process.cwd(),
@@ -307,6 +317,8 @@ async function main(): Promise<number> {
       return runMarkBuild(args);
     case 'protect':
       return runProtectCommand(args);
+    case 'guide':
+      return runGuide();
     default:
       console.error(`Unknown command: ${args.command}\n`);
       console.error(HELP);
