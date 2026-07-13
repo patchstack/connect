@@ -39,7 +39,7 @@ const START_IMPORTS = [
   'import { GUARD_PATH, handleGuardRequest, inspectServerFn } from "@/integrations/patchstack/guard";',
 ].join('\n');
 
-const START_MIDDLEWARE = [
+const REQUEST_MIDDLEWARE_DEF = [
   '',
   '// Patchstack guard (browser tunnel): intercept tunneled Supabase traffic before anything else.',
   'const patchstackGuard = createMiddleware().server(async ({ next }) => {',
@@ -50,6 +50,10 @@ const START_MIDDLEWARE = [
   '  }',
   '  return next();',
   '});',
+  '',
+].join('\n');
+
+const FUNCTION_MIDDLEWARE_DEF = [
   '',
   '// Patchstack guard (server functions): inspect server-fn args before they reach the database,',
   '// covering apps that mutate via TanStack server functions (which bypass the browser tunnel).',
@@ -94,25 +98,53 @@ function patchClient(cwd: string): void {
 function patchStart(cwd: string): void {
   const p = join(cwd, 'src/start.ts');
   let s = read(p);
-  if (s.includes('patchstackGuard')) return log('start.ts already wired');
   const importAnchor = 'import { createStart, createMiddleware } from "@tanstack/react-start";';
   const exportAnchor = 'export const startInstance';
   const rmAnchor = 'requestMiddleware: [';
-  if (!s.includes(importAnchor) || !s.includes(exportAnchor) || !s.includes(rmAnchor)) {
+  if (!s.includes(importAnchor) || !s.includes(exportAnchor)) {
     return log('start.ts anchors not found — skipping (template changed?)');
   }
-  s = s.replace(importAnchor, importAnchor + '\n' + START_IMPORTS);
-  s = s.replace(exportAnchor, START_MIDDLEWARE + '\n' + exportAnchor);
-  // Browser-tunnel guard → request middleware (covers browser-direct Supabase apps).
-  s = s.replace(rmAnchor, rmAnchor + 'patchstackGuard, ');
-  // Server-function guard → function middleware (covers apps that mutate via server functions).
-  const fmAnchor = 'functionMiddleware: [';
-  if (s.includes(fmAnchor)) {
-    s = s.replace(fmAnchor, fmAnchor + 'patchstackFunctionGuard, ');
-  } else {
-    // App declared no functionMiddleware — add the key next to requestMiddleware.
-    s = s.replace(rmAnchor, 'functionMiddleware: [patchstackFunctionGuard],\n    ' + rmAnchor);
+
+  // Each step is independently idempotent, so re-running `protect` (including after a connect
+  // upgrade that adds a new guard) reconciles only what's missing — never duplicates, never
+  // silently skips a newly-added piece.
+  const original = s;
+
+  // Imports.
+  if (!s.includes('@/integrations/patchstack/guard')) {
+    s = s.replace(importAnchor, importAnchor + '\n' + START_IMPORTS);
+  } else if (!s.includes('inspectServerFn')) {
+    // Upgrade from a build that only wired the browser tunnel: pull in inspectServerFn.
+    s = s.replace(
+      'import { GUARD_PATH, handleGuardRequest } from "@/integrations/patchstack/guard";',
+      'import { GUARD_PATH, handleGuardRequest, inspectServerFn } from "@/integrations/patchstack/guard";',
+    );
   }
+
+  // Middleware definitions (each only if its const isn't already present).
+  if (!s.includes('const patchstackGuard =')) {
+    s = s.replace(exportAnchor, REQUEST_MIDDLEWARE_DEF + '\n' + exportAnchor);
+  }
+  if (!s.includes('const patchstackFunctionGuard =')) {
+    s = s.replace(exportAnchor, FUNCTION_MIDDLEWARE_DEF + '\n' + exportAnchor);
+  }
+
+  // Register the browser-tunnel guard in requestMiddleware.
+  if (s.includes(rmAnchor) && !s.includes('requestMiddleware: [patchstackGuard')) {
+    s = s.replace(rmAnchor, rmAnchor + 'patchstackGuard, ');
+  }
+
+  // Register the server-function guard in functionMiddleware (create the key if the app has none).
+  if (!s.includes('functionMiddleware: [patchstackFunctionGuard')) {
+    const fmAnchor = 'functionMiddleware: [';
+    if (s.includes(fmAnchor)) {
+      s = s.replace(fmAnchor, fmAnchor + 'patchstackFunctionGuard, ');
+    } else if (s.includes(rmAnchor)) {
+      s = s.replace(rmAnchor, 'functionMiddleware: [patchstackFunctionGuard],\n    ' + rmAnchor);
+    }
+  }
+
+  if (s === original) return log('start.ts already wired');
   writeFileSync(p, s);
   log('patched start.ts (guard registered as request + function middleware)');
 }
