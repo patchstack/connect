@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
-import { persistSiteUuid, resolveConfig, writeConfigFile } from '../src/config.js';
+import { persistSiteUuid, resolveConfig, softFailEnabled, writeConfigFile } from '../src/config.js';
 import { readFile } from 'node:fs/promises';
 import { DEFAULT_ENDPOINT, DEFAULT_TIMEOUT_MS } from '../src/client.js';
 import { PatchstackError } from '../src/types.js';
@@ -123,5 +123,27 @@ describe('resolveConfig', () => {
     await expect(resolveConfig({ cwd, cliSiteUuid: VALID_UUID })).rejects.toMatchObject({
       code: 'CONFIG_INVALID',
     });
+  });
+});
+
+describe('softFailEnabled', () => {
+  it('is off when the variable is unset or empty', () => {
+    expect(softFailEnabled(undefined)).toBe(false);
+    expect(softFailEnabled('')).toBe(false);
+  });
+
+  it('is on for any truthy-looking value', () => {
+    expect(softFailEnabled('1')).toBe(true);
+    expect(softFailEnabled('true')).toBe(true);
+    expect(softFailEnabled('yes')).toBe(true);
+    expect(softFailEnabled('anything')).toBe(true);
+  });
+
+  it('respects explicit opt-outs regardless of case', () => {
+    expect(softFailEnabled('0')).toBe(false);
+    expect(softFailEnabled('false')).toBe(false);
+    expect(softFailEnabled('FALSE')).toBe(false);
+    expect(softFailEnabled('no')).toBe(false);
+    expect(softFailEnabled('off')).toBe(false);
   });
 });

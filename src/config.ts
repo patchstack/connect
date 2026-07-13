@@ -142,6 +142,18 @@ function readEnv(): ConfigFile {
   };
 }
 
+/**
+ * PATCHSTACK_SOFT_FAIL makes the CLI exit 0 even when a command fails, so a
+ * connector problem can never break the build that invokes it. Any non-empty
+ * value enables it except explicit opt-outs ("0", "false", "no", "off").
+ */
+export function softFailEnabled(value: string | undefined): boolean {
+  if (value === undefined || value.length === 0) {
+    return false;
+  }
+  return !['0', 'false', 'no', 'off'].includes(value.toLowerCase());
+}
+
 function isUuid(value: string): boolean {
   return /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(value);
 }

@@ -4,7 +4,7 @@ import { scanLockfile } from './parsers/index.js';
 import { buildWirePayload } from './normalize.js';
 import { computeManifestChecksum } from './checksum.js';
 import { buildClaimUrl, postManifest } from './client.js';
-import { persistSiteUuid, resolveConfig, writeConfigFile } from './config.js';
+import { persistSiteUuid, resolveConfig, softFailEnabled, writeConfigFile } from './config.js';
 import {
   buildInjectionSnippet,
   findHtmlFiles,
@@ -40,6 +40,9 @@ Environment:
   PATCHSTACK_ENDPOINT     API endpoint (default: https://api.patchstack.com/monitor/pulse/manifest)
   PATCHSTACK_TIMEOUT_MS   Request timeout in ms (default: 30000)
   PATCHSTACK_ENVIRONMENT  Manifest environment: production | sandbox (default: production)
+  PATCHSTACK_SOFT_FAIL    Exit 0 even when a command fails, so a connector
+                          problem never breaks the build that invokes it
+                          (set to 1 in build pipelines / publish hooks)
 
 Precedence: CLI flag > environment variable > .patchstackrc.json.
 
@@ -280,13 +283,26 @@ async function main(): Promise<number> {
   }
 }
 
+function finalExitCode(code: number): number {
+  if (code === 0) {
+    return 0;
+  }
+  if (!softFailEnabled(process.env.PATCHSTACK_SOFT_FAIL)) {
+    return code;
+  }
+  console.error(
+    'PATCHSTACK_SOFT_FAIL is set — exiting 0 despite the failure above so the build can continue.',
+  );
+  return 0;
+}
+
 main()
-  .then((code) => process.exit(code))
+  .then((code) => process.exit(finalExitCode(code)))
   .catch((err: unknown) => {
     if (err instanceof PatchstackError) {
       console.error(`Error (${err.code}): ${err.message}`);
-      process.exit(1);
+      process.exit(finalExitCode(1));
     }
     console.error('Unexpected error:', err);
-    process.exit(2);
+    process.exit(finalExitCode(2));
   });

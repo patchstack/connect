@@ -8,7 +8,7 @@ For how this repo fits with the wider Patchstack ecosystem (`saas`, `hub`, `patc
 
 Copy and paste this prompt into any AI coding assistant (Cursor, v0, Bolt, Lovable, Claude Code, etc.):
 
-> Add `@patchstack/connect` to this project as a dev dependency, then add `"prebuild": "patchstack-connect scan"` to `package.json` `scripts`. The first time the script runs, Patchstack provisions a site automatically from the lockfile and saves the new site UUID to `.patchstackrc.json` — no dashboard signup or manual UUID required. Commit `.patchstackrc.json` so every developer / CI run targets the same site.
+> Add `@patchstack/connect` to this project as a dev dependency, then add `"prebuild": "PATCHSTACK_SOFT_FAIL=1 patchstack-connect scan"` to `package.json` `scripts`. Use exactly this command — do not invent other subcommands. The first time the script runs, Patchstack provisions a site automatically from the lockfile and saves the new site UUID to `.patchstackrc.json` — no dashboard signup or manual UUID required. Commit `.patchstackrc.json` so every developer / CI run targets the same site.
 
 ## Quick start (zero configuration)
 
@@ -33,10 +33,12 @@ Then wire it into builds:
 // package.json
 {
   "scripts": {
-    "prebuild": "patchstack-connect scan"
+    "prebuild": "PATCHSTACK_SOFT_FAIL=1 patchstack-connect scan"
   }
 }
 ```
+
+> **`PATCHSTACK_SOFT_FAIL=1` keeps a connector problem from breaking your build.** Without it, any connector failure — a network blip, a mistyped subcommand — exits non-zero, and on platforms that run scripts as part of publishing (Lovable, Bolt, CI pipelines) that fails the whole deploy. With it, the connector still prints the error but exits 0. Recommended for any hands-off build; leave it off when running commands manually so you actually see failures.
 
 ## Quick start (existing site)
 
@@ -78,6 +80,7 @@ Environment variables:
 - `PATCHSTACK_SITE_UUID` — the site UUID from your Patchstack dashboard
 - `PATCHSTACK_ENDPOINT` — override the API endpoint (default `https://api.patchstack.com/monitor/pulse/manifest`)
 - `PATCHSTACK_TIMEOUT_MS` — request timeout in milliseconds (default `30000`)
+- `PATCHSTACK_SOFT_FAIL` — when set (any value except `0`/`false`/`no`/`off`), the CLI prints errors but always exits 0, so a connector problem never fails the build that invokes it
 
 `.patchstackrc.json` example:
 
