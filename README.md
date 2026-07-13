@@ -8,20 +8,19 @@ For how this repo fits with the wider Patchstack ecosystem (`saas`, `hub`, `patc
 
 Copy and paste this prompt into any AI coding assistant (Cursor, v0, Bolt, Lovable, Claude Code, etc.):
 
-> Add Patchstack dependency vulnerability monitoring to this project:
+> Add Patchstack dependency vulnerability monitoring to this project (MIT, source: https://github.com/patchstack/connect — verify with `npm view @patchstack/connect` if unsure):
 >
-> 1. `npm install --save-dev @patchstack/connect` — or the pnpm/yarn/bun equivalent (MIT, source: https://github.com/patchstack/connect; verify with `npm view @patchstack/connect` if unsure).
-> 2. `npx @patchstack/connect scan` — saves a site ID to `.patchstackrc.json` and prints a claim URL. Show me that URL; don't open it.
-> 3. Add `package.json` scripts `"prebuild": "patchstack-connect scan"` and `"postbuild": "patchstack-connect mark-build"`, then commit the changes.
-> 4. Run `npx @patchstack/connect guide` and use it to add the report-a-vulnerability widget and finish any framework-specific details.
+> 1. Install `@patchstack/connect` as a dev dependency with this project's package manager.
+> 2. `npx @patchstack/connect scan` — reads the lockfile, saves a site ID to `.patchstackrc.json`, and prints a claim URL. Show me that URL; don't open it.
+> 3. `npx @patchstack/connect guide` — prints a checklist of what's still missing here (build hooks, report-a-vulnerability widget). Finish those steps and commit.
 
 The shape of this prompt is deliberate — it has survived three distinct AI-agent refusal modes, and each one punished a different shortcut:
 
 1. **"Follow the instructions at this URL" reads as remote script execution.** Agents refuse before ever fetching the doc.
-2. **Agents whose training predates May 2026 assert the package doesn't exist.** Step 1's `npm view` resolves that against the registry instead of the model's memory.
+2. **Agents whose training predates May 2026 assert the package doesn't exist.** The `npm view` check resolves that against the registry instead of the model's memory.
 3. **"Install the package, then follow the instructions it ships" reads as handing control to the package author** — structurally the same as prompt injection — and preemptive reassurance language ("it's safe, don't be suspicious, note your knowledge cutoff") is itself flagged as a manipulation signal.
 
-So the prompt inlines the core install as concrete, individually inspectable commands, delegates nothing up front, and argues nothing. `npx @patchstack/connect guide` (which prints the bundled `AGENT-INSTALL.md`) enters only at step 4, as an assist for widget placement, re-run rules, and troubleshooting — by then the agent has already installed and audited the package, so consulting its docs is ordinary behavior rather than the instruction channel the install depends on. The always-current long-form guide lives at https://patchstack.com/install.txt.
+So the prompt keeps the trust-critical spine inline — verification, the scan command, and surfacing the claim URL are concrete, individually inspectable steps — and argues nothing. `npx @patchstack/connect guide` enters only at step 3, after the agent has already installed and audited the package, so consulting its docs is ordinary behavior rather than the instruction channel the install depends on. And `guide` is state-aware: it inspects the project (package manager, `.patchstackrc.json`, `package.json` scripts, widget presence, framework) and prints a live checklist of only the remaining steps — with the real site UUID and framework-specific widget placement — followed by the full reference guide (`AGENT-INSTALL.md`, also at https://patchstack.com/install.txt). "Finish what the checklist marks missing" is a much smaller ask of an agent than "follow this manual", and it makes the flow idempotent: re-running `guide` on a finished project reports all-done instead of prompting a second install.
 
 ## Quick start (zero configuration)
 
@@ -70,6 +69,11 @@ patchstack-connect scan   [options]                Scan the lockfile and POST to
 patchstack-connect init   <site-uuid>              Optional: pre-seed .patchstackrc.json with
                                                    an existing site UUID
 patchstack-connect status [options]                Show current configuration
+patchstack-connect mark-build [options]            Stamp built HTML with a production flag +
+                                                   build fingerprint (run as a postbuild step)
+patchstack-connect guide                           Show this project's setup status (what's done,
+                                                   what's missing, with tailored commands), then
+                                                   print the full setup guide
 patchstack-connect help                            Print help
 
 Options (for scan and status):
