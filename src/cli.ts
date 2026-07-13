@@ -4,7 +4,7 @@ import { scanLockfile } from './parsers/index.js';
 import { buildWirePayload } from './normalize.js';
 import { computeManifestChecksum } from './checksum.js';
 import { buildClaimUrl, postManifest } from './client.js';
-import { persistSiteUuid, resolveConfig, writeConfigFile } from './config.js';
+import { persistSiteUuid, resolveConfig, softFailEnabled, writeConfigFile } from './config.js';
 import {
   buildInjectionSnippet,
   findHtmlFiles,
@@ -47,6 +47,9 @@ Environment:
   PATCHSTACK_ENDPOINT     API endpoint (default: https://api.patchstack.com/monitor/pulse/manifest)
   PATCHSTACK_TIMEOUT_MS   Request timeout in ms (default: 30000)
   PATCHSTACK_ENVIRONMENT  Manifest environment: production | sandbox (default: production)
+  PATCHSTACK_SOFT_FAIL    1 = report errors but exit 0; 0 = fail hard even in
+                          build hooks. Default: soft inside prebuild/build/
+                          postbuild scripts, hard everywhere else.
 
 Precedence: CLI flag > environment variable > .patchstackrc.json.
 
@@ -298,6 +301,36 @@ async function runMarkBuild(args: ParsedArgs): Promise<number> {
   return 0;
 }
 
+const COMMANDS = ['scan', 'init', 'status', 'mark-build', 'protect', 'guide', 'help'];
+
+function editDistance(a: string, b: string): number {
+  const row = Array.from({ length: b.length + 1 }, (_, i) => i);
+  for (let i = 1; i <= a.length; i++) {
+    let prev = row[0]!;
+    row[0] = i;
+    for (let j = 1; j <= b.length; j++) {
+      const current = row[j]!;
+      row[j] = Math.min(current + 1, row[j - 1]! + 1, prev + (a[i - 1] === b[j - 1] ? 0 : 1));
+      prev = current;
+    }
+  }
+  return row[b.length]!;
+}
+
+/** Nearest known command within edit distance 2 — catches typos and Unicode-dash mangling. */
+function suggestCommand(input: string): string | null {
+  let best: string | null = null;
+  let bestDistance = 3;
+  for (const command of COMMANDS) {
+    const distance = editDistance(input.toLowerCase(), command);
+    if (distance < bestDistance) {
+      best = command;
+      bestDistance = distance;
+    }
+  }
+  return best;
+}
+
 async function main(): Promise<number> {
   const args = parseArgs(process.argv);
 
@@ -319,20 +352,39 @@ async function main(): Promise<number> {
       return runProtectCommand(args);
     case 'guide':
       return runGuide();
-    default:
-      console.error(`Unknown command: ${args.command}\n`);
-      console.error(HELP);
+    default: {
+      // Build logs are often truncated to their tail, so keep this short and
+      // put the actual error last where it survives.
+      const suggestion = suggestCommand(args.command);
+      console.error(`Commands: ${COMMANDS.join(', ')} — run \`patchstack-connect help\` for details.`);
+      console.error(
+        `Unknown command: ${args.command}${suggestion !== null ? ` (did you mean \`${suggestion}\`?)` : ''}`,
+      );
       return 1;
+    }
   }
 }
 
+function finalExitCode(code: number): number {
+  if (code === 0) {
+    return 0;
+  }
+  if (!softFailEnabled(process.env)) {
+    return code;
+  }
+  console.error(
+    'patchstack: continuing despite the error above so the build is not blocked (soft-fail; set PATCHSTACK_SOFT_FAIL=0 to make failures fatal).',
+  );
+  return 0;
+}
+
 main()
-  .then((code) => process.exit(code))
+  .then((code) => process.exit(finalExitCode(code)))
   .catch((err: unknown) => {
     if (err instanceof PatchstackError) {
       console.error(`Error (${err.code}): ${err.message}`);
-      process.exit(1);
+      process.exit(finalExitCode(1));
     }
     console.error('Unexpected error:', err);
-    process.exit(2);
+    process.exit(finalExitCode(2));
   });

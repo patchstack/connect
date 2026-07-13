@@ -12,7 +12,7 @@ Copy and paste this prompt into any AI coding assistant (Cursor, v0, Bolt, Lovab
 >
 > 1. `npm install --save-dev @patchstack/connect` — or the pnpm/yarn/bun equivalent (MIT, source: https://github.com/patchstack/connect; verify with `npm view @patchstack/connect` if unsure).
 > 2. `npx @patchstack/connect scan` — saves a site ID to `.patchstackrc.json` and prints a claim URL. Show me that URL; don't open it.
-> 3. Add `package.json` scripts `"prebuild": "patchstack-connect scan"` and `"postbuild": "patchstack-connect mark-build"`, then commit the changes.
+> 3. Add `package.json` scripts `"prebuild": "patchstack-connect scan"` and `"postbuild": "patchstack-connect mark-build"` — use exactly these subcommands, do not invent others — then commit the changes.
 > 4. Run `npx @patchstack/connect guide` and use it to add the report-a-vulnerability widget and finish any framework-specific details.
 
 The shape of this prompt is deliberate — it has survived three distinct AI-agent refusal modes, and each one punished a different shortcut:
@@ -46,10 +46,13 @@ Then wire it into builds:
 // package.json
 {
   "scripts": {
-    "prebuild": "patchstack-connect scan"
+    "prebuild": "patchstack-connect scan",
+    "postbuild": "patchstack-connect mark-build"
   }
 }
 ```
+
+> **Hooks never fail your build.** Inside `prebuild`/`build`/`postbuild` scripts the connector reports errors — a network blip, a mistyped subcommand — but exits 0, because platforms that build on publish (Lovable, Bolt, CI pipelines) fail the whole deploy on a non-zero hook. Manual runs still exit non-zero so you see real failures; `PATCHSTACK_SOFT_FAIL=0/1` overrides either way.
 
 ## Quick start (existing site)
 
@@ -91,6 +94,7 @@ Environment variables:
 - `PATCHSTACK_SITE_UUID` — the site UUID from your Patchstack dashboard
 - `PATCHSTACK_ENDPOINT` — override the API endpoint (default `https://api.patchstack.com/monitor/pulse/manifest`)
 - `PATCHSTACK_TIMEOUT_MS` — request timeout in milliseconds (default `30000`)
+- `PATCHSTACK_SOFT_FAIL` — `1` reports errors but exits 0 so a connector problem can never fail the invoking build; `0` makes failures fatal everywhere. When unset, errors are soft inside `prebuild`/`build`/`postbuild` scripts (detected via `npm_lifecycle_event`, which npm, pnpm, yarn, and bun all set) and hard for manual runs.
 
 `.patchstackrc.json` example:
 

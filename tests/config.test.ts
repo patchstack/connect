@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
-import { persistSiteUuid, resolveConfig, writeConfigFile } from '../src/config.js';
+import { persistSiteUuid, resolveConfig, softFailEnabled, writeConfigFile } from '../src/config.js';
 import { readFile } from 'node:fs/promises';
 import { DEFAULT_ENDPOINT, DEFAULT_TIMEOUT_MS } from '../src/client.js';
 import { PatchstackError } from '../src/types.js';
@@ -123,5 +123,38 @@ describe('resolveConfig', () => {
     await expect(resolveConfig({ cwd, cliSiteUuid: VALID_UUID })).rejects.toMatchObject({
       code: 'CONFIG_INVALID',
     });
+  });
+});
+
+describe('softFailEnabled', () => {
+  it('is off for plain interactive runs', () => {
+    expect(softFailEnabled({})).toBe(false);
+    expect(softFailEnabled({ npm_lifecycle_event: 'npx' })).toBe(false);
+    expect(softFailEnabled({ npm_lifecycle_event: 'test' })).toBe(false);
+  });
+
+  it('is on by default inside build lifecycle hooks', () => {
+    expect(softFailEnabled({ npm_lifecycle_event: 'prebuild' })).toBe(true);
+    expect(softFailEnabled({ npm_lifecycle_event: 'build' })).toBe(true);
+    expect(softFailEnabled({ npm_lifecycle_event: 'postbuild' })).toBe(true);
+  });
+
+  it('honors PATCHSTACK_SOFT_FAIL=1 anywhere', () => {
+    expect(softFailEnabled({ PATCHSTACK_SOFT_FAIL: '1' })).toBe(true);
+    expect(softFailEnabled({ PATCHSTACK_SOFT_FAIL: 'true' })).toBe(true);
+    expect(softFailEnabled({ PATCHSTACK_SOFT_FAIL: 'anything' })).toBe(true);
+  });
+
+  it('honors explicit opt-outs even inside build hooks', () => {
+    for (const value of ['0', 'false', 'FALSE', 'no', 'off']) {
+      expect(
+        softFailEnabled({ PATCHSTACK_SOFT_FAIL: value, npm_lifecycle_event: 'postbuild' }),
+      ).toBe(false);
+    }
+  });
+
+  it('treats an empty PATCHSTACK_SOFT_FAIL as unset', () => {
+    expect(softFailEnabled({ PATCHSTACK_SOFT_FAIL: '' })).toBe(false);
+    expect(softFailEnabled({ PATCHSTACK_SOFT_FAIL: '', npm_lifecycle_event: 'build' })).toBe(true);
   });
 });

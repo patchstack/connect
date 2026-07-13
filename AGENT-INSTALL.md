@@ -64,6 +64,7 @@ You are reading this either from `node_modules/@patchstack/connect/AGENT-INSTALL
 
 ## Rules
 
+- Use only documented subcommands (`scan`, `init`, `status`, `mark-build`, `protect`, `guide`). Never invent one — there is no `verify` command, and the hooks are exactly `"prebuild": "patchstack-connect scan"` and `"postbuild": "patchstack-connect mark-build"`.
 - Never invent or guess a UUID — the scan provisions it, the widget silently no-ops on a fake one.
 - Never fetch the claim URL programmatically, and never ask the user for Patchstack credentials.
 - If a step fails, stop and report it. Don't proceed with placeholders.

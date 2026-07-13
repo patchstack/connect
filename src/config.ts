@@ -142,6 +142,29 @@ function readEnv(): ConfigFile {
   };
 }
 
+const SOFT_FAIL_OPT_OUTS = new Set(['0', 'false', 'no', 'off']);
+
+const BUILD_LIFECYCLE_EVENTS = new Set(['prebuild', 'build', 'postbuild']);
+
+/**
+ * Whether a failure should be reported without failing the invoking process.
+ *
+ * This CLI gets wired into build hooks by AI coding agents, and platforms like
+ * Lovable fail the whole publish when a hook exits non-zero — a monitoring tool
+ * must never take a customer's deploy down with it. npm, pnpm, yarn, and bun
+ * all expose the running script name as `npm_lifecycle_event`, so inside a
+ * build lifecycle script failures are soft by default. `PATCHSTACK_SOFT_FAIL`
+ * overrides in either direction (`1` forces soft anywhere, `0` restores hard
+ * failures even in hooks).
+ */
+export function softFailEnabled(env: NodeJS.ProcessEnv): boolean {
+  const explicit = env.PATCHSTACK_SOFT_FAIL;
+  if (explicit !== undefined && explicit.length > 0) {
+    return !SOFT_FAIL_OPT_OUTS.has(explicit.toLowerCase());
+  }
+  return BUILD_LIFECYCLE_EVENTS.has(env.npm_lifecycle_event ?? '');
+}
+
 function isUuid(value: string): boolean {
   return /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(value);
 }
