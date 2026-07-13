@@ -11,3 +11,6 @@ dist
 .patchstackrc.json
 coverage
 .vitest
+
+# Field-test harness output (agent reports, request logs, scorecards)
+field-test/results/

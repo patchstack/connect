@@ -19,6 +19,8 @@ Every clause of this one-liner is deliberate — it has survived four distinct A
 
 The prompt can be this short because `guide` is state-aware: it inspects the project (package manager, `.patchstackrc.json`, `package.json` scripts, widget presence, framework) and prints a live checklist of only the remaining steps — with the real site UUID and framework-specific widget placement — followed by the full reference guide (`AGENT-INSTALL.md`, also at https://patchstack.com/install.txt). "Finish what the checklist flags" is a much smaller ask of an agent than "follow this manual", and it makes the flow idempotent: re-running `guide` on a finished project reports all-done instead of prompting a second install. In hostile-policy field tests, agents verified the tarball against the registry, audited `dist/` for lifecycle scripts and shell/eval calls, and then completed the install — the flow is designed to *pass* that audit, not to discourage it.
 
+Before changing this prompt (or `guide` / `AGENT-INSTALL.md`), validate the variant with the field-test harness in [`field-test/`](field-test/README.md) — it runs a real agent through the full install in a throwaway fixture against a mocked API and scores the outcome on eight checks.
+
 ## Quick start (zero configuration)
 
 ```bash
