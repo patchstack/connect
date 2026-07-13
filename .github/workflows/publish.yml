@@ -39,6 +39,13 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
+      - name: Set version from release tag
+        if: github.event_name == 'release'
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          echo "Publishing version $version (from tag $GITHUB_REF_NAME)"
+          npm version "$version" --no-git-tag-version --allow-same-version
+
       - name: Typecheck
         run: npm run typecheck
 
@@ -50,10 +57,6 @@ jobs:
 
       - name: Verify package contents
         run: npm pack --dry-run
-
-      - name: Verify release tag matches package version
-        if: github.event_name == 'release'
-        run: node -e "const pkg = require('./package.json'); const expected = 'v' + pkg.version; if (process.env.GITHUB_REF_NAME !== expected) { console.error('Release tag ' + process.env.GITHUB_REF_NAME + ' does not match package version ' + expected); process.exit(1); }"
 
       - name: Dry-run publish
         if: github.event_name == 'workflow_dispatch'

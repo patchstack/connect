@@ -1,28 +1,32 @@
 # Releasing
 
-The version in `package.json` is the single source of truth. The published npm
-version, the git tag, and the GitHub release must all match it — the `Publish`
-workflow enforces this and will fail the release if they drift.
+The **git tag is the single source of truth** for a release. The `Publish`
+workflow reads the version from the tag (`v0.3.3` → `0.3.3`), writes it into
+`package.json` in CI, then builds and publishes. Nothing is committed back to
+`main`, so this works with branch protection and the tag can never disagree
+with the published version.
 
-## Recommended: one-click release
+`package.json`'s committed `version` is just a placeholder — it does not need to
+be bumped before a release.
 
-Run the **Release** workflow (Actions → Release → Run workflow) on the branch you
-want to release from (normally `main`):
+## How to release
 
-- **bump**: `patch` / `minor` / `major`, or
-- **version**: an explicit version like `0.3.3` (overrides `bump`).
+Create a GitHub release with a new tag:
 
-The workflow bumps `package.json`, commits, tags, pushes, publishes to npm, and
-cuts the GitHub release — all from the same version, so the tag can never
-disagree with `package.json`.
+```bash
+gh release create v0.3.3 --generate-notes --title "v0.3.3"
+```
 
-## Manual release (fallback)
+or use the GitHub UI (Releases → Draft a new release → new tag `v0.3.3`).
 
-If you create a release/tag by hand in the GitHub UI, you **must** bump
-`package.json` to the matching version first and merge that commit into the
-branch you tag. Cutting `v0.3.3` while `package.json` still says `0.2.11` is
-exactly what the guard rejects.
+Publishing the release triggers the `Publish` workflow, which validates
+(typecheck, test, build, `npm pack`) and publishes to npm with provenance using
+the tag's version.
 
-1. `npm version 0.3.3` on the release branch (bumps + commits + tags).
-2. `git push origin HEAD --follow-tags`.
-3. Create the GitHub release from tag `v0.3.3` → the `Publish` workflow runs.
+## Notes
+
+- Tags must be `vX.Y.Z` (the leading `v` is stripped to get the npm version).
+- Pick a version higher than the current `latest` on npm (`npm view
+  @patchstack/connect version`); npm rejects re-publishing an existing version.
+- Run the `Publish` workflow via **workflow_dispatch** for a dry-run publish
+  without cutting a release.
