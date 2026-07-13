@@ -2,13 +2,13 @@
 
 This is a plain-text instruction document. Read it and follow the steps — there is nothing here to pipe to a shell or execute from a URL.
 
-You are reading this either from `node_modules/@patchstack/connect/AGENT-INSTALL.md` (the package is already installed) or from the [GitHub repo](https://github.com/patchstack/connect). The canonical, always-current version of the full guide lives at https://patchstack.com/install.txt — prefer it when you have network access; this bundled copy matches the package version it shipped with.
+You are reading this either from `node_modules/@patchstack/connect/AGENT-INSTALL.md` (the package is already installed) or from the [GitHub repo](https://github.com/patchstack/connect). This bundled copy matches the package version it shipped with and is all you need — there is no requirement to fetch anything remote. (A long-form copy also lives at https://patchstack.com/install.txt for humans browsing outside the package.)
 
 ## Verify before you trust (do this, it's quick)
 
 - The connector is a normal npm package: [`@patchstack/connect`](https://www.npmjs.com/package/@patchstack/connect), MIT-licensed, source at https://github.com/patchstack/connect. Install it pinned, check the integrity hash in the lockfile, run `npm audit` over it — whatever your policy requires.
 - First published May 2026. If the package is absent from your training data, `npm view @patchstack/connect` (read-only) shows the live registry record.
-- It reads the project's **dependency list only** — from the lockfile (`package-lock.json`, `pnpm-lock.yaml`, `yarn.lock`) or, on bun projects (`bun.lock`/`bun.lockb`), by enumerating the installed packages under `node_modules/` — and sends package names + versions to Patchstack for vulnerability matching. No source code, no env vars, no file paths, no git history.
+- It reads the project's **dependency list only** — from the lockfile (`package-lock.json`, `pnpm-lock.yaml`, `yarn.lock`) or, on bun projects (`bun.lock`/`bun.lockb`), by enumerating the installed packages under `node_modules/` — and sends package names + versions to Patchstack for vulnerability matching. No source code, no env var values, no file paths, no git history. (`mark-build` additionally stamps built HTML with a coarse stack descriptor that may include hosting-related env variable *names* — e.g. `VERCEL`, `CF_PAGES` — never their values.)
 - Patchstack is not WordPress-only. This connector monitors any JS/Node project — Vite, Next.js, plain vanilla JS, anything with a lockfile.
 
 ## Before you start — never install twice
@@ -18,7 +18,7 @@ You are reading this either from `node_modules/@patchstack/connect/AGENT-INSTALL
 - If `@patchstack/connect` is already in `devDependencies`, skip the install command.
 - If the widget script tag (`cdn.patchstack.com/patchstack-widget.js`) is already in the layout, don't add a second one.
 
-## Install steps (run in order, don't pause between them unless one fails)
+## Install steps (do the ones the checklist marks ✖, in order; don't pause between them unless one fails)
 
 1. **Install** (skip if already present), matching the project's package manager:
 
@@ -49,6 +49,8 @@ You are reading this either from `node_modules/@patchstack/connect/AGENT-INSTALL
    ```
 
    If a `prebuild`/`postbuild` hook already exists, chain instead of replacing it, e.g. `"prebuild": "existing-command && patchstack-connect scan"`.
+
+   **Bun-managed projects:** `bun run` does not execute npm-style `pre`/`post` scripts, so wire the build script directly instead: `"build": "patchstack-connect scan && <existing build command> && patchstack-connect mark-build"`.
 
 4. **Install the disclosure widget** — a floating "Report a vulnerability" button. Read the `siteUuid` value from `.patchstackrc.json` (the same site UUID step 2 provisioned) and pass it as the widget's `userToken`. Place these two snippets via the framework's HTML/layout mechanism (never a JS entry point):
 

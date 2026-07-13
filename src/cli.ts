@@ -11,7 +11,7 @@ import {
   injectMarker,
   resolveBuildDir,
 } from './mark-build.js';
-import { collectGuideState, renderGuideChecklist } from './guide.js';
+import { collectGuideState, countRemainingSteps, renderGuideChecklist } from './guide.js';
 import { runProtect } from './protect/install.js';
 import { detectStack, type StackDescriptor } from './stack.js';
 import { PatchstackError } from './types.js';
@@ -30,9 +30,10 @@ Usage:
   patchstack-connect protect                         Install always-on runtime protection (the
                                                      guard) into a TanStack Start + Supabase app.
                                                      Covers the browser + server-function paths.
-  patchstack-connect guide                           Show this project's setup status (what's done,
+  patchstack-connect guide [--full]                  Show this project's setup status (what's done,
                                                      what's missing, with tailored commands), then
-                                                     print the full setup guide
+                                                     print the full setup guide. --full prints the
+                                                     guide even when setup is complete
                                                      (also at https://patchstack.com/install.txt)
   patchstack-connect help                            Print this message
 
@@ -221,20 +222,33 @@ async function runProtectCommand(_args: ParsedArgs): Promise<number> {
   return 0;
 }
 
-async function runGuide(): Promise<number> {
+async function runGuide(args: ParsedArgs): Promise<number> {
   // The live checklist first: what this project already has and what's missing,
-  // with commands tailored to it. Best-effort — the guide must always print the
-  // reference doc, even when the project state can't be inspected.
+  // with commands tailored to it. Best-effort — a project we can't inspect
+  // still gets the reference doc.
+  let allDone = false;
   try {
     const state = await collectGuideState(process.cwd());
     const useColor = process.stdout.isTTY === true && process.env.NO_COLOR === undefined;
     console.log(renderGuideChecklist(state, useColor));
-    console.log('');
-    console.log('———— Full reference guide (ships as AGENT-INSTALL.md) ————');
-    console.log('');
+    allDone = countRemainingSteps(state) === 0;
   } catch {
     // fall through to the static guide
   }
+
+  // A fully green project doesn't need the ~90-line manual again on every
+  // re-run — point at it instead. `--full` always prints it.
+  if (allDone && args.flags.get('full') !== true) {
+    console.log('');
+    console.log(
+      'Full reference guide: `npx @patchstack/connect guide --full` (or read node_modules/@patchstack/connect/AGENT-INSTALL.md).',
+    );
+    return 0;
+  }
+
+  console.log('');
+  console.log('———— Full reference guide (ships as AGENT-INSTALL.md) ————');
+  console.log('');
 
   // AGENT-INSTALL.md ships at the package root, one level above dist/ (and
   // above src/ when running unbundled), so the same relative path works in both.
@@ -349,7 +363,7 @@ async function main(): Promise<number> {
     case 'protect':
       return runProtectCommand(args);
     case 'guide':
-      return runGuide();
+      return runGuide(args);
     default:
       console.error(`Unknown command: ${args.command}\n`);
       console.error(HELP);

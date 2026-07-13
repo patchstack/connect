@@ -179,9 +179,34 @@ describe('guide', () => {
 
       expect(output).toContain(installCommand('bun'));
       expect(output).toContain('npx @patchstack/connect scan');
+      expect(output).toContain('bun skips pre/post hooks');
+      expect(output).toContain(
+        '"build": "patchstack-connect scan && <existing build command> && patchstack-connect mark-build"',
+      );
+      expect(output).not.toContain('\u001B[');
+    });
+
+    it('suggests prebuild/postbuild hooks on non-bun projects', async () => {
+      writeJson('package.json', { name: 'npm-app' });
+
+      const output = renderGuideChecklist(await collectGuideState(cwd), false);
+
       expect(output).toContain('"prebuild": "patchstack-connect scan"');
       expect(output).toContain('"postbuild": "patchstack-connect mark-build"');
-      expect(output).not.toContain('\u001B[');
+    });
+
+    it('counts a chained build script as wired (the bun pattern)', async () => {
+      writeJson('package.json', {
+        name: 'bun-wired-app',
+        scripts: {
+          build: 'patchstack-connect scan && vite build && patchstack-connect mark-build',
+        },
+      });
+      writeFileSync(path.join(cwd, 'bun.lock'), '');
+
+      const state = await collectGuideState(cwd);
+      expect(state.prebuildWired).toBe(true);
+      expect(state.postbuildWired).toBe(true);
     });
 
     it('substitutes the real UUID into the widget snippet once provisioned', async () => {

@@ -305,8 +305,14 @@ export async function collectGuideState(cwd: string): Promise<GuideState> {
     siteUuid,
     claimUrl,
     endpointOverride,
-    prebuildWired: (pkg?.scripts?.prebuild ?? '').includes('patchstack-connect scan'),
-    postbuildWired: (pkg?.scripts?.postbuild ?? '').includes('patchstack-connect mark-build'),
+    // bun run doesn't execute npm-style pre/post scripts, so chaining inside
+    // the build script itself also counts as wired (and is what we suggest on bun).
+    prebuildWired:
+      (pkg?.scripts?.prebuild ?? '').includes('patchstack-connect scan') ||
+      (pkg?.scripts?.build ?? '').includes('patchstack-connect scan'),
+    postbuildWired:
+      (pkg?.scripts?.postbuild ?? '').includes('patchstack-connect mark-build') ||
+      (pkg?.scripts?.build ?? '').includes('patchstack-connect mark-build'),
     widgetInstalled: widget.found,
     widgetTokenMatches: widget.uuidMatches,
     framework: stack.framework,
@@ -322,6 +328,16 @@ const ANSI = {
   yellow: '\u001B[33m',
   cyan: '\u001B[36m',
 };
+
+/** Setup steps still missing — 0 means the checklist is fully green. */
+export function countRemainingSteps(state: GuideState): number {
+  return [
+    state.installed !== null,
+    state.siteUuid !== null,
+    state.prebuildWired && state.postbuildWired,
+    state.widgetInstalled && state.widgetTokenMatches !== false,
+  ].filter((step) => !step).length;
+}
 
 export function renderGuideChecklist(state: GuideState, useColor: boolean): string {
   const paint = (code: string, text: string): string =>
@@ -374,7 +390,11 @@ export function renderGuideChecklist(state: GuideState, useColor: boolean): stri
 
   // 3. Build hooks
   if (state.prebuildWired && state.postbuildWired) {
-    lines.push(done('Build hooks wired (prebuild scan, postbuild mark-build)'));
+    lines.push(done('Build hooks wired (scan before builds, mark-build after)'));
+  } else if (state.packageManager === 'bun') {
+    // bun run skips npm-style pre/post scripts, so chain inside the build script.
+    lines.push(todo('Wire builds — chain into the package.json build script (bun skips pre/post hooks)'));
+    lines.push(detail('→ "build": "patchstack-connect scan && <existing build command> && patchstack-connect mark-build"'));
   } else {
     lines.push(todo('Wire builds — add to package.json scripts (chain with && if a hook exists)'));
     if (!state.prebuildWired) {
@@ -396,8 +416,8 @@ export function renderGuideChecklist(state: GuideState, useColor: boolean): stri
     lines.push(todo('Add the "Report a vulnerability" widget'));
     const placement =
       state.widgetFileHint !== null
-        ? `→ add to ${state.widgetFileHint} (via the framework's HTML/layout mechanism):`
-        : "→ add via the framework's HTML/layout mechanism (never a JS entry point):";
+        ? `→ add to ${state.widgetFileHint}, just before </body> (via the framework's HTML/layout mechanism):`
+        : "→ add just before </body> via the framework's HTML/layout mechanism (never a JS entry point):";
     lines.push(detail(placement));
     lines.push(detail(`  <script src="${WIDGET_SCRIPT_URL}"></script>`));
     const token = state.siteUuid ?? '<SITE_UUID from .patchstackrc.json — run scan first>';
@@ -418,23 +438,25 @@ export function renderGuideChecklist(state: GuideState, useColor: boolean): stri
     lines.push(detail('The claim URL appears after the first scan (re-print any time with `status`).'));
   }
 
-  const remaining = [
-    state.installed !== null,
-    state.siteUuid !== null,
-    state.prebuildWired && state.postbuildWired,
-    widgetOk,
-  ].filter((step) => !step).length;
+  const remaining = countRemainingSteps(state);
   lines.push('');
-  lines.push(
-    remaining === 0
-      ? done(
-          paint(
-            ANSI.bold,
-            'All setup steps complete. Commit .patchstackrc.json, package.json, and the file carrying the widget snippet.',
-          ),
-        )
-      : ` ${paint(ANSI.yellow, String(remaining))} step(s) remaining — details in the reference guide below.`,
-  );
+  if (remaining === 0) {
+    lines.push(
+      done(
+        paint(
+          ANSI.bold,
+          'All setup steps complete. Commit .patchstackrc.json, package.json, and the file carrying the widget snippet.',
+        ),
+      ),
+    );
+    if (state.claimUrl !== null) {
+      lines.push(detail('The only manual action left is claiming the site via the URL above (if not already claimed).'));
+    }
+  } else {
+    lines.push(
+      ` ${paint(ANSI.yellow, String(remaining))} step(s) remaining — details in the reference guide below.`,
+    );
+  }
 
   return lines.join('\n');
 }
