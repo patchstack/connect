@@ -12,7 +12,9 @@ export const GUARD_PATH = "/_patchstack/guard";
 const HOP_BY_HOP = new Set(["content-encoding", "content-length", "transfer-encoding", "connection"]);
 
 function mode(): "dry-run" | "block" {
-  return process.env.PATCHSTACK_MODE === "block" ? "block" : "dry-run";
+  // Always-on: protection blocks by default. Only an explicit PATCHSTACK_MODE=dry-run
+  // downgrades to log-only (for testing) — there is no silent dry-run.
+  return process.env.PATCHSTACK_MODE === "dry-run" ? "dry-run" : "block";
 }
 
 export async function handleGuardRequest(request: Request): Promise<Response> {

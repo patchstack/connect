@@ -176,5 +176,5 @@ export function runProtect(cwd: string, opts: { manifestOnly?: boolean } = {}): 
   patchStart(cwd);
   generateManifest(cwd);
   wirePrebuild(cwd);
-  log('done — guard wired. Set PATCHSTACK_MODE=block to enforce (default dry-run).');
+  log('done — guard wired and always-on (blocks by default). Set PATCHSTACK_MODE=dry-run for log-only.');
 }
