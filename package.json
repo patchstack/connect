@@ -1,6 +1,6 @@
 {
   "name": "@patchstack/connect",
-  "version": "0.3.0",
+  "version": "0.3.1",
   "description": "Patchstack connector for JavaScript applications. Scans your lockfile and reports installed packages to Patchstack for vulnerability monitoring.",
   "keywords": [
     "patchstack",
@@ -23,6 +23,7 @@
       "require": "./dist/index.cjs"
     },
     "./protect": {
+      "types": "./dist/protect.d.ts",
       "import": "./dist/protect.js",
       "require": "./dist/protect.cjs"
     }

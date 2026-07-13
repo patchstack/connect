@@ -36,18 +36,26 @@ const CLIENT_TUNNEL = [
 
 const START_IMPORTS = [
   'import { getRequest } from "@tanstack/react-start/server";',
-  'import { GUARD_PATH, handleGuardRequest } from "@/integrations/patchstack/guard";',
+  'import { GUARD_PATH, handleGuardRequest, inspectServerFn } from "@/integrations/patchstack/guard";',
 ].join('\n');
 
 const START_MIDDLEWARE = [
   '',
-  '// Patchstack guard: intercept the tunneled Supabase traffic before anything else runs.',
+  '// Patchstack guard (browser tunnel): intercept tunneled Supabase traffic before anything else.',
   'const patchstackGuard = createMiddleware().server(async ({ next }) => {',
   '  const request = getRequest();',
   '  if (request) {',
   '    const { pathname } = new URL(request.url);',
   '    if (pathname === GUARD_PATH) return handleGuardRequest(request);',
   '  }',
+  '  return next();',
+  '});',
+  '',
+  '// Patchstack guard (server functions): inspect server-fn args before they reach the database,',
+  '// covering apps that mutate via TanStack server functions (which bypass the browser tunnel).',
+  'const patchstackFunctionGuard = createMiddleware({ type: "function" }).server(async ({ next, data }) => {',
+  '  const blocked = await inspectServerFn(data);',
+  '  if (blocked) throw new Error(blocked.message);',
   '  return next();',
   '});',
   '',
@@ -95,9 +103,18 @@ function patchStart(cwd: string): void {
   }
   s = s.replace(importAnchor, importAnchor + '\n' + START_IMPORTS);
   s = s.replace(exportAnchor, START_MIDDLEWARE + '\n' + exportAnchor);
+  // Browser-tunnel guard → request middleware (covers browser-direct Supabase apps).
   s = s.replace(rmAnchor, rmAnchor + 'patchstackGuard, ');
+  // Server-function guard → function middleware (covers apps that mutate via server functions).
+  const fmAnchor = 'functionMiddleware: [';
+  if (s.includes(fmAnchor)) {
+    s = s.replace(fmAnchor, fmAnchor + 'patchstackFunctionGuard, ');
+  } else {
+    // App declared no functionMiddleware — add the key next to requestMiddleware.
+    s = s.replace(rmAnchor, 'functionMiddleware: [patchstackFunctionGuard],\n    ' + rmAnchor);
+  }
   writeFileSync(p, s);
-  log('patched start.ts (registered the guard as request middleware)');
+  log('patched start.ts (guard registered as request + function middleware)');
 }
 
 /** Scaffold + wire the runtime guard into the app. */

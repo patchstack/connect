@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 // The vendored runtime (node-waf engine + createProtection + Supabase guard),
 // exported as @patchstack/connect/protect.
-import { createProtection, createSupabaseGuard } from '../src/protect/runtime.js';
+import { createProtection, createSupabaseGuard, createServerFnGuard } from '../src/protect/runtime.js';
 
 const rules = {
   firewall: [
@@ -58,6 +58,28 @@ describe('@patchstack/connect/protect (vendored engine + supabase guard)', () =>
     const handle = createSupabaseGuard({ protection, supabaseUrl: SUPABASE, fetchImpl: okFetch });
     const res = await handle(insertReq('<img src=x onerror="steal()">'));
     expect(res.status).toBe(201);
+    expect(detections.length).toBe(1);
+  });
+});
+
+describe('createServerFnGuard (TanStack server-function path)', () => {
+  it('block mode: exploit args → receipt, benign args → null', async () => {
+    const protection = await createProtection({ rules, mode: 'block' });
+    const guard = createServerFnGuard({ protection });
+    const blocked = await guard({ title: '<img src=x onerror="steal()">' });
+    expect(blocked?.rule).toBe('rm-npm-0001');
+    expect(await guard({ title: 'buy milk' })).toBeNull();
+  });
+
+  it('dry-run: exploit args → null (not blocked), detection recorded', async () => {
+    const detections: unknown[] = [];
+    const protection = await createProtection({
+      rules,
+      mode: 'dry-run',
+      onDetect: (d: unknown) => detections.push(d),
+    });
+    const guard = createServerFnGuard({ protection });
+    expect(await guard({ title: '<img src=x onerror="steal()">' })).toBeNull();
     expect(detections.length).toBe(1);
   });
 });

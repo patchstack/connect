@@ -19,6 +19,38 @@ import { join } from 'node:path';
 // Supabase-tunnel guard for AI-builder apps (Lovable / TanStack Start + Supabase).
 export { createSupabaseGuard, GUARD_PATH } from './supabase-guard.js';
 
+// Server-function guard. Modern Lovable apps mutate data through TanStack server functions
+// (browser → server fn → server-side Supabase client), which bypass the browser-side tunnel the
+// Supabase guard relies on. This inspects the decoded server-fn call args against the SAME policy
+// by feeding them through fetchGuard (the args become the request body, so the engine resolves
+// `post.<field>` exactly as it does for a tunneled Supabase insert). Returns a block receipt
+// { rule?, message } to throw on, or null to allow (also null in dry-run — the detection is still
+// recorded by fetchGuard). Fail-open on any error.
+export function createServerFnGuard({ protection }) {
+  const guard = protection.fetchGuard();
+  return async (data) => {
+    let res;
+    try {
+      const req = new Request('https://patchstack.local/_serverfn', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify(data ?? {}),
+      });
+      res = await guard(req);
+    } catch {
+      return null; // fail open
+    }
+    if (!res) return null; // allowed (or dry-run)
+    let body = {};
+    try {
+      body = await res.clone().json();
+    } catch {
+      /* non-JSON block response */
+    }
+    return { rule: body.rule, message: body.message || 'Blocked by Patchstack' };
+  };
+}
+
 export async function createProtection(options = {}) {
   const mode = options.mode === 'block' ? 'block' : 'dry-run';
   const onError = options.onError;
