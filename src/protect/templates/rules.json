@@ -1,22 +1,19 @@
 {
-  "_comment": "DEMO SCAFFOLD — static stub; the real per-site rules endpoint does not exist in saas yet. CVE-2022-21681 is a real marked advisory affecting <4.0.10 (demo installs 4.0.0). The demo uses an XSS-shaped payload for visual clarity; exact payload<->CVE alignment is pinned with Group 1's corpus.",
+  "_comment": "Demo fallback rules — used only when PATCHSTACK_WAF_TOKEN is unset. In production the guard fetches per-site rules from the Patchstack API (api.patchstack.com/api/get-rules/3, cached to disk). CVE id is representative until aligned with the real corpus.",
   "firewall": [
     {
       "id": "rm-npm-0001",
       "title": "Block stored XSS via vulnerable markdown renderer (marked)",
       "vulnerability_id": "CVE-2022-21681",
-      "package_cond": {
-        "package": "marked",
-        "vulnerable_versions": ["4.0.0"]
-      },
       "rule_v2": [
         {
-          "parameter": ["insert.title", "body.title", "update.title"],
+          "parameter": "post.title",
           "mutations": ["urldecode"],
           "match": { "type": "inline_xss" }
         }
       ]
     }
   ],
-  "whitelists": []
+  "whitelists": [],
+  "whitelist_keys": {}
 }

@@ -1,0 +1,361 @@
+// WinterCG-safe base64 decode: use Buffer on Node, fall back to atob/TextDecoder on
+// edge runtimes (Cloudflare Workers, Deno, Bun) where Buffer may be absent. Keeps the
+// engine hot path free of Node-only APIs (per the ADR engine-language decision).
+function base64DecodeUtf8(value) {
+  const str = String(value);
+  if (typeof Buffer !== 'undefined') {
+    return Buffer.from(str, 'base64').toString('utf-8');
+  }
+  const binary = atob(str);
+  const bytes = Uint8Array.from(binary, (c) => c.charCodeAt(0));
+  return new TextDecoder().decode(bytes);
+}
+
+export class RequestResolver {
+  #req;
+  #cookies;
+
+  constructor(req) {
+    this.#req = req;
+    this.#cookies = null;
+  }
+
+  resolve(parameter) {
+    if (!parameter || parameter === 'false') {
+      return [null];
+    }
+
+    if (parameter === 'rules') {
+      return [null];
+    }
+
+    if (parameter === 'raw') {
+      return this.#resolveRaw();
+    }
+
+    if (parameter === 'all') {
+      return this.#resolveAll();
+    }
+
+    const dotIndex = parameter.indexOf('.');
+    if (dotIndex === -1) {
+      return [];
+    }
+
+    const source = parameter.substring(0, dotIndex);
+    const key = parameter.substring(dotIndex + 1);
+
+    switch (source) {
+      case 'get':
+        return this.#resolveGet(key);
+      case 'post':
+        return this.#resolvePost(key);
+      case 'request':
+        return this.#resolveRequest(key);
+      case 'cookie':
+        return this.#resolveCookie(key);
+      case 'server':
+        return this.#resolveServer(key);
+      case 'files':
+        return this.#resolveFiles(key);
+      default:
+        return [];
+    }
+  }
+
+  applyMutations(mutations, value) {
+    if (!mutations || !Array.isArray(mutations)) {
+      return value;
+    }
+
+    let result = value;
+
+    for (const mutation of mutations) {
+      result = this.#applyMutation(mutation, result);
+    }
+
+    return result;
+  }
+
+  #applyMutation(mutation, value) {
+    if (value === null || value === undefined) {
+      return value;
+    }
+
+    switch (mutation) {
+      case 'base64_decode':
+        try {
+          return base64DecodeUtf8(value);
+        } catch {
+          return value;
+        }
+
+      case 'json_decode':
+        try {
+          return JSON.parse(String(value));
+        } catch {
+          return value;
+        }
+
+      case 'json_encode':
+        try {
+          return JSON.stringify(value);
+        } catch {
+          return value;
+        }
+
+      case 'urldecode':
+        try {
+          return decodeURIComponent(String(value));
+        } catch {
+          return value;
+        }
+
+      case 'intval':
+        return parseInt(String(value), 10) || 0;
+
+      case 'getArrayValues':
+        if (typeof value === 'object' && value !== null) {
+          return Object.values(value);
+        }
+        return value;
+
+      default:
+        return value;
+    }
+  }
+
+  #resolveGet(key) {
+    const query = this.#req.query ?? {};
+
+    if (key.endsWith('*')) {
+      return this.#resolveWildcard(query, key);
+    }
+
+    const value = this.#getNestedValue(query, key);
+    return value !== undefined ? [value] : [];
+  }
+
+  #resolvePost(key) {
+    const body = this.#req.body ?? {};
+
+    if (key.endsWith('*')) {
+      return this.#resolveWildcard(body, key);
+    }
+
+    const value = this.#getNestedValue(body, key);
+    return value !== undefined ? [value] : [];
+  }
+
+  #resolveRequest(key) {
+    const query = this.#req.query ?? {};
+    const body = this.#req.body ?? {};
+    const cookies = this.#parseCookies();
+
+    if (key.endsWith('*')) {
+      return [
+        ...this.#resolveWildcard(query, key),
+        ...this.#resolveWildcard(body, key),
+        ...this.#resolveWildcard(cookies, key)
+      ];
+    }
+
+    const value = this.#getNestedValue(query, key)
+      ?? this.#getNestedValue(body, key)
+      ?? cookies[key];
+
+    return value !== undefined ? [value] : [];
+  }
+
+  #resolveCookie(key) {
+    const cookies = this.#parseCookies();
+
+    if (key.endsWith('*')) {
+      return this.#resolveWildcard(cookies, key);
+    }
+
+    const value = cookies[key];
+    return value !== undefined ? [value] : [];
+  }
+
+  #resolveServer(key) {
+    const req = this.#req;
+
+    switch (key) {
+      case 'REQUEST_URI':
+        return [req.originalUrl ?? req.url ?? '/'];
+      case 'REQUEST_METHOD':
+        return [req.method ?? 'GET'];
+      case 'HTTP_USER_AGENT':
+        return req.headers?.['user-agent'] ? [req.headers['user-agent']] : [];
+      case 'HTTP_REFERER':
+        return req.headers?.referer ? [req.headers.referer] : [];
+      case 'HTTP_HOST':
+        return req.headers?.host ? [req.headers.host] : [];
+      case 'REMOTE_ADDR':
+      case 'ip':
+        return [req.ip ?? req.socket?.remoteAddress ?? ''];
+      case 'CONTENT_TYPE':
+        return req.headers?.['content-type'] ? [req.headers['content-type']] : [];
+      case 'CONTENT_LENGTH':
+        return req.headers?.['content-length'] ? [req.headers['content-length']] : [];
+      default: {
+        if (key.startsWith('HTTP_')) {
+          const headerName = key.substring(5).toLowerCase().replace(/_/g, '-');
+          return req.headers?.[headerName] ? [req.headers[headerName]] : [];
+        }
+        return [];
+      }
+    }
+  }
+
+  #resolveFiles(key) {
+    const files = this.#req.files;
+    if (!files) {
+      return [];
+    }
+
+    if (key.endsWith('*')) {
+      return this.#resolveWildcard(files, key);
+    }
+
+    const value = files[key];
+    return value !== undefined ? [value] : [];
+  }
+
+  #resolveRaw() {
+    // Use pre-captured raw body if available (set by normalizeRequest).
+    // For string bodies, the original text is preserved verbatim.
+    // For pre-parsed objects, serializeForRawDetection uses Object.getOwnPropertyNames()
+    // to include __proto__ own-property keys that JSON.stringify() would silently drop.
+    if (typeof this.#req._rawBody === 'string') {
+      return this.#req._rawBody ? [this.#req._rawBody] : [];
+    }
+
+    const body = this.#req.body;
+
+    if (body === undefined || body === null) {
+      return [];
+    }
+
+    if (typeof body === 'string') {
+      return [body];
+    }
+
+    try {
+      return [JSON.stringify(body)];
+    } catch {
+      return [String(body)];
+    }
+  }
+
+  #resolveAll() {
+    const parts = [];
+
+    const uri = this.#req.originalUrl ?? this.#req.url ?? '/';
+    parts.push(uri);
+
+    const queryString = uri.includes('?') ? uri.split('?')[1] : '';
+    if (queryString) {
+      parts.push(queryString);
+    }
+
+    const body = this.#req.body;
+    if (body) {
+      parts.push(typeof body === 'string' ? body : JSON.stringify(body));
+    }
+
+    const headers = this.#req.headers ?? {};
+    const excludedHeaders = new Set([
+      'host', 'connection', 'cache-control', 'accept', 'accept-encoding',
+      'accept-language', 'priority', 'sec-ch-ua', 'sec-ch-ua-mobile',
+      'sec-ch-ua-platform', 'sec-fetch-dest', 'sec-fetch-mode',
+      'sec-fetch-site', 'sec-fetch-user', 'upgrade-insecure-requests'
+    ]);
+
+    for (const [name, value] of Object.entries(headers)) {
+      if (!excludedHeaders.has(name)) {
+        parts.push(`${name}: ${value}`);
+      }
+    }
+
+    const cookies = this.#parseCookies();
+    const cookieStr = Object.entries(cookies).map(([k, v]) => `${k}=${v}`).join('; ');
+    if (cookieStr) {
+      parts.push(cookieStr);
+    }
+
+    return [parts.join(' ')];
+  }
+
+  #resolveWildcard(obj, pattern) {
+    if (typeof obj !== 'object' || obj === null) {
+      return [];
+    }
+
+    const prefix = pattern.slice(0, -1);
+    const values = [];
+
+    for (const [key, value] of Object.entries(obj)) {
+      if (key.startsWith(prefix)) {
+        values.push(value);
+      }
+    }
+
+    return values;
+  }
+
+  #getNestedValue(obj, key) {
+    if (typeof obj !== 'object' || obj === null) {
+      return undefined;
+    }
+
+    if (key in obj) {
+      return obj[key];
+    }
+
+    const parts = key.split('.');
+    let current = obj;
+
+    for (const part of parts) {
+      if (current === null || current === undefined || typeof current !== 'object') {
+        return undefined;
+      }
+      current = current[part];
+    }
+
+    return current;
+  }
+
+  #parseCookies() {
+    if (this.#cookies !== null) {
+      return this.#cookies;
+    }
+
+    if (this.#req.cookies) {
+      this.#cookies = this.#req.cookies;
+      return this.#cookies;
+    }
+
+    const header = this.#req.headers?.cookie;
+    if (!header) {
+      this.#cookies = {};
+      return this.#cookies;
+    }
+
+    const cookies = {};
+
+    for (const pair of header.split(';')) {
+      const eqIndex = pair.indexOf('=');
+      if (eqIndex === -1) {
+        continue;
+      }
+      const name = pair.substring(0, eqIndex).trim();
+      const value = pair.substring(eqIndex + 1).trim();
+      cookies[name] = value;
+    }
+
+    this.#cookies = cookies;
+    return this.#cookies;
+  }
+}
