@@ -32,13 +32,13 @@
     "LICENSE"
   ],
   "scripts": {
-    "build": "tsup",
+    "build": "tsup && node scripts/copy-protect-templates.mjs",
     "dev": "tsup --watch",
     "test": "vitest run",
     "test:manifest": "bun scripts/test-manifest.ts",
     "test:watch": "vitest",
     "typecheck": "tsc --noEmit",
-    "prepare": "tsup",
+    "prepare": "npm run build",
     "prepublishOnly": "npm run typecheck && npm test && npm run build"
   },
   "engines": {

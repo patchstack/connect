@@ -1,5 +1,3 @@
-import { cpSync, mkdirSync } from 'node:fs';
-
 import { defineConfig } from 'tsup';
 
 export default defineConfig([
@@ -18,10 +16,5 @@ export default defineConfig([
     sourcemap: true,
     target: 'node18',
     banner: { js: '#!/usr/bin/env node' },
-    // Ship the guard templates next to the built CLI so `protect` can scaffold them.
-    onSuccess: async () => {
-      mkdirSync('dist/protect', { recursive: true });
-      cpSync('src/protect/templates', 'dist/protect/templates', { recursive: true });
-    },
   },
 ]);

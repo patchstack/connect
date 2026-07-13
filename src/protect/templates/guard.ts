@@ -2,7 +2,7 @@
 // touches this. It runs in the app's own server (the Cloudflare Worker). The patched Supabase
 // client tunnels every browser data call here; we inspect the payload against the rules, then
 // either block it (virtual patch) or forward it to real Supabase.
-import { evaluate } from "./engine.js";
+import { evaluate, type Rule } from "./engine.js";
 import rulesData from "./rules.json";
 import { manifest } from "./manifest.js";
 
@@ -56,7 +56,7 @@ export async function handleGuardRequest(request: Request): Promise<Response> {
   };
 
   const t0 = performance.now();
-  const verdict = evaluate(ctx, (rulesData as { firewall: unknown[] }).firewall, manifest);
+  const verdict = evaluate(ctx, (rulesData as { firewall: Rule[] }).firewall, manifest);
   const latencyMs = Math.round((performance.now() - t0) * 100) / 100;
 
   // Always log the flag (this is the "dry-run sees it too" behavior).

@@ -99,9 +99,11 @@ function scaffold(cwd: string): void {
   const dst = join(cwd, PS_DIR_REL);
   mkdirSync(dst, { recursive: true });
   copyFileSync(join(TEMPLATES, 'engine.js'), join(dst, 'engine.js'));
+  copyFileSync(join(TEMPLATES, 'engine.d.ts'), join(dst, 'engine.d.ts'));
+  copyFileSync(join(TEMPLATES, 'manifest.d.ts'), join(dst, 'manifest.d.ts'));
   copyFileSync(join(TEMPLATES, 'rules.json'), join(dst, 'rules.json'));
   copyFileSync(join(TEMPLATES, 'guard.ts'), join(dst, 'guard.ts'));
-  log('scaffolded engine.js, rules.json, guard.ts');
+  log('scaffolded engine.js (+types), rules.json, guard.ts');
 }
 
 function patchClient(cwd: string): void {
