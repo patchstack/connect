@@ -29,6 +29,7 @@
   "files": [
     "dist",
     "README.md",
+    "AGENT-INSTALL.md",
     "LICENSE"
   ],
   "scripts": {
