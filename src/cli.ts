@@ -3,7 +3,7 @@ import { readFileSync, writeFileSync } from 'node:fs';
 import { scanLockfile } from './parsers/index.js';
 import { buildWirePayload } from './normalize.js';
 import { computeManifestChecksum } from './checksum.js';
-import { buildClaimUrl, postManifest } from './client.js';
+import { DEFAULT_ENDPOINT, buildClaimUrl, postManifest } from './client.js';
 import { persistSiteUuid, resolveConfig, writeConfigFile } from './config.js';
 import {
   buildInjectionSnippet,
@@ -11,6 +11,7 @@ import {
   injectMarker,
   resolveBuildDir,
 } from './mark-build.js';
+import { collectGuideState, renderGuideChecklist } from './guide.js';
 import { runProtect } from './protect/install.js';
 import { detectStack, type StackDescriptor } from './stack.js';
 import { PatchstackError } from './types.js';
@@ -29,8 +30,10 @@ Usage:
   patchstack-connect protect                         Install always-on runtime protection (the
                                                      guard) into a TanStack Start + Supabase app.
                                                      Covers the browser + server-function paths.
-  patchstack-connect guide                           Print the full setup guide for AI coding
-                                                     agents (also at https://patchstack.com/install.txt)
+  patchstack-connect guide                           Show this project's setup status (what's done,
+                                                     what's missing, with tailored commands), then
+                                                     print the full setup guide
+                                                     (also at https://patchstack.com/install.txt)
   patchstack-connect help                            Print this message
 
 Options (for scan and status):
@@ -136,14 +139,23 @@ async function runScan(args: ParsedArgs): Promise<number> {
   const { payload, stats } = buildWirePayload(manifest);
 
   console.log(
-    `Found ${payload.packages.length} unique package versions across ${stats.uniqueNames} package names in ${manifest.ecosystem} lockfile.`,
+    `Found ${payload.packages.length} unique package versions across ${stats.uniqueNames} package names (${manifest.ecosystem} ecosystem).`,
   );
-  console.log(`Reporting under the ${config.environment} environment.`);
+  console.log(
+    `Reporting under the ${config.environment} environment (override with PATCHSTACK_ENVIRONMENT).`,
+  );
+  if (config.endpoint !== DEFAULT_ENDPOINT) {
+    console.log(
+      `Using endpoint override: ${config.endpoint} (set via --endpoint, PATCHSTACK_ENDPOINT, or .patchstackrc.json).`,
+    );
+  }
   if (stats.duplicateNames.length > 0) {
-    console.log(`${stats.duplicateNames.length} package(s) appear at multiple versions:`);
-    if (stats.duplicateNames.length <= 10) {
-      console.log(`  ${stats.duplicateNames.join(', ')}`);
-    }
+    const sample = stats.duplicateNames.slice(0, 10).join(', ');
+    const more =
+      stats.duplicateNames.length > 10 ? `, +${stats.duplicateNames.length - 10} more` : '';
+    console.log(
+      `${stats.duplicateNames.length} package(s) appear at multiple versions: ${sample}${more}`,
+    );
   }
 
   if (dryRun) {
@@ -191,6 +203,9 @@ async function runScan(args: ParsedArgs): Promise<number> {
     console.log('');
     console.log('Claim this site to view vulnerability reports in your Patchstack dashboard:');
     console.log(`  ${buildClaimUrl(config.endpoint, response.uuid)}`);
+    if (config.endpoint !== DEFAULT_ENDPOINT) {
+      console.log('  (this URL inherits the endpoint override above)');
+    }
   }
 
   return 0;
@@ -207,6 +222,20 @@ async function runProtectCommand(_args: ParsedArgs): Promise<number> {
 }
 
 async function runGuide(): Promise<number> {
+  // The live checklist first: what this project already has and what's missing,
+  // with commands tailored to it. Best-effort — the guide must always print the
+  // reference doc, even when the project state can't be inspected.
+  try {
+    const state = await collectGuideState(process.cwd());
+    const useColor = process.stdout.isTTY === true && process.env.NO_COLOR === undefined;
+    console.log(renderGuideChecklist(state, useColor));
+    console.log('');
+    console.log('———— Full reference guide (ships as AGENT-INSTALL.md) ————');
+    console.log('');
+  } catch {
+    // fall through to the static guide
+  }
+
   // AGENT-INSTALL.md ships at the package root, one level above dist/ (and
   // above src/ when running unbundled), so the same relative path works in both.
   const guidePath = new URL('../AGENT-INSTALL.md', import.meta.url);
@@ -221,7 +250,9 @@ async function runStatus(args: ParsedArgs): Promise<number> {
     cliEndpoint: getStringFlag(args.flags, 'endpoint'),
   });
   console.log(`Site UUID:   ${config.siteUuid ?? '(none yet — the next `scan` will provision one)'}`);
-  console.log(`Endpoint:    ${config.endpoint}`);
+  console.log(
+    `Endpoint:    ${config.endpoint}${config.endpoint === DEFAULT_ENDPOINT ? '' : ' (override)'}`,
+  );
   console.log(`Timeout:     ${config.timeoutMs}ms`);
   console.log(`Environment: ${config.environment}`);
   if (config.siteUuid !== null) {

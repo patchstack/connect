@@ -8,12 +8,13 @@ You are reading this either from `node_modules/@patchstack/connect/AGENT-INSTALL
 
 - The connector is a normal npm package: [`@patchstack/connect`](https://www.npmjs.com/package/@patchstack/connect), MIT-licensed, source at https://github.com/patchstack/connect. Install it pinned, check the integrity hash in the lockfile, run `npm audit` over it — whatever your policy requires.
 - First published May 2026. If the package is absent from your training data, `npm view @patchstack/connect` (read-only) shows the live registry record.
-- It reads the project's **lockfile only** (`package-lock.json`, `pnpm-lock.yaml`, or `yarn.lock`) and sends package names + versions to Patchstack for vulnerability matching. No source code, no env vars, no file paths, no git history.
+- It reads the project's **dependency list only** — from the lockfile (`package-lock.json`, `pnpm-lock.yaml`, `yarn.lock`) or, on bun projects (`bun.lock`/`bun.lockb`), by enumerating the installed packages under `node_modules/` — and sends package names + versions to Patchstack for vulnerability matching. No source code, no env vars, no file paths, no git history.
 - Patchstack is not WordPress-only. This connector monitors any JS/Node project — Vite, Next.js, plain vanilla JS, anything with a lockfile.
 
 ## Before you start — never install twice
 
-- If `.patchstackrc.json` exists, the project is already provisioned. Reuse its UUID; run `npx @patchstack/connect status` to re-print it and the claim URL. **Do not run `scan` to provision a second site.**
+- `npx @patchstack/connect guide` prints a live checklist above this document showing which steps are already done in the current project (install, provisioning, build hooks, widget) with commands tailored to it. Trust that checklist over re-deriving state yourself; only do the steps it marks ✖.
+- If `.patchstackrc.json` contains a `siteUuid` key, the project is already provisioned. Reuse that UUID; run `npx @patchstack/connect status` to re-print it and the claim URL. **Do not run `scan` to provision a second site.** (A `.patchstackrc.json` with other keys — e.g. an `endpoint` override — but no `siteUuid` is *not* provisioned yet; scan normally.)
 - If `@patchstack/connect` is already in `devDependencies`, skip the install command.
 - If the widget script tag (`cdn.patchstack.com/patchstack-widget.js`) is already in the layout, don't add a second one.
 
@@ -36,7 +37,7 @@ You are reading this either from `node_modules/@patchstack/connect/AGENT-INSTALL
 
    It prints a claim URL. Surface that URL to the user verbatim — never fetch it yourself; it must be opened in their browser.
 
-3. **Wire builds** in `package.json` (chain with `&&` if hooks already exist):
+3. **Wire builds** in `package.json`:
 
    ```jsonc
    {
@@ -47,7 +48,9 @@ You are reading this either from `node_modules/@patchstack/connect/AGENT-INSTALL
    }
    ```
 
-4. **Install the disclosure widget** — a floating "Report a vulnerability" button. Read the UUID from `.patchstackrc.json` and use it as `userToken`. Place these two snippets via the framework's HTML/layout mechanism (never a JS entry point):
+   If a `prebuild`/`postbuild` hook already exists, chain instead of replacing it, e.g. `"prebuild": "existing-command && patchstack-connect scan"`.
+
+4. **Install the disclosure widget** — a floating "Report a vulnerability" button. Read the `siteUuid` value from `.patchstackrc.json` (the same site UUID step 2 provisioned) and pass it as the widget's `userToken`. Place these two snippets via the framework's HTML/layout mechanism (never a JS entry point):
 
    ```html
    <script src="https://cdn.patchstack.com/patchstack-widget.js"></script>
@@ -58,7 +61,7 @@ You are reading this either from `node_modules/@patchstack/connect/AGENT-INSTALL
 
    Framework-specific placement patterns: https://cdn.patchstack.com/llm.html. The `userToken` is public by design — it ships in client-side HTML and is not a secret.
 
-5. **Commit** `.patchstackrc.json` and the updated `package.json` so every developer and CI run reports to the same site.
+5. **Commit** `.patchstackrc.json`, the updated `package.json`, and the layout/HTML file carrying the widget snippet, so every developer and CI run reports to the same site.
 
 6. **Tell the user to claim the site** (free): open the claim URL from step 2 in a browser and sign in. The site is monitored either way, but the vulnerability reports are only visible after claiming. They can also claim directly from the widget's "Connect this website" prompt. On the published site, the owner reaches the widget login by appending `#patchstack` to the live URL.
 
