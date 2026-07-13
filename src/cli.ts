@@ -11,6 +11,7 @@ import {
   injectMarker,
   resolveBuildDir,
 } from './mark-build.js';
+import { runProtect } from './protect/install.js';
 import { PatchstackError } from './types.js';
 
 const HELP = `@patchstack/connect — scan your lockfile and report packages to Patchstack.
@@ -24,6 +25,9 @@ Usage:
   patchstack-connect status [options]                Show current configuration
   patchstack-connect mark-build [options]            Stamp built HTML with a production flag +
                                                      build fingerprint (run as a postbuild step)
+  patchstack-connect protect [--manifest]            Install runtime protection (the guard) into
+                                                     a server-side JS app. --manifest only
+                                                     regenerates the package manifest (prebuild).
   patchstack-connect help                            Print this message
 
 Options (for scan and status):
@@ -189,6 +193,16 @@ async function runScan(args: ParsedArgs): Promise<number> {
   return 0;
 }
 
+async function runProtectCommand(args: ParsedArgs): Promise<number> {
+  // Best-effort: like mark-build, this runs during builds and must never fail one.
+  try {
+    runProtect(process.cwd(), { manifestOnly: args.flags.get('manifest') === true });
+  } catch (err) {
+    console.warn(`patchstack protect: skipped (${(err as Error).message}).`);
+  }
+  return 0;
+}
+
 async function runStatus(args: ParsedArgs): Promise<number> {
   const config = await resolveConfig({
     cwd: process.cwd(),
@@ -273,6 +287,8 @@ async function main(): Promise<number> {
       return runStatus(args);
     case 'mark-build':
       return runMarkBuild(args);
+    case 'protect':
+      return runProtectCommand(args);
     default:
       console.error(`Unknown command: ${args.command}\n`);
       console.error(HELP);
