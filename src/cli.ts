@@ -26,9 +26,9 @@ Usage:
   patchstack-connect status [options]                Show current configuration
   patchstack-connect mark-build [options]            Stamp built HTML with a production flag +
                                                      build fingerprint (run as a postbuild step)
-  patchstack-connect protect [--manifest]            Install runtime protection (the guard) into
-                                                     a server-side JS app. --manifest only
-                                                     regenerates the package manifest (prebuild).
+  patchstack-connect protect                         Install always-on runtime protection (the
+                                                     guard) into a TanStack Start + Supabase app.
+                                                     Covers the browser + server-function paths.
   patchstack-connect guide                           Print the full setup guide for AI coding
                                                      agents (also at https://patchstack.com/install.txt)
   patchstack-connect help                            Print this message
@@ -196,10 +196,10 @@ async function runScan(args: ParsedArgs): Promise<number> {
   return 0;
 }
 
-async function runProtectCommand(args: ParsedArgs): Promise<number> {
+async function runProtectCommand(_args: ParsedArgs): Promise<number> {
   // Best-effort: like mark-build, this runs during builds and must never fail one.
   try {
-    runProtect(process.cwd(), { manifestOnly: args.flags.get('manifest') === true });
+    runProtect(process.cwd());
   } catch (err) {
     console.warn(`patchstack protect: skipped (${(err as Error).message}).`);
   }

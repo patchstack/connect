@@ -21,6 +21,11 @@
       "types": "./dist/index.d.ts",
       "import": "./dist/index.js",
       "require": "./dist/index.cjs"
+    },
+    "./protect": {
+      "types": "./dist/protect.d.ts",
+      "import": "./dist/protect.js",
+      "require": "./dist/protect.cjs"
     }
   },
   "bin": {

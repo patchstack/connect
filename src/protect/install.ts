@@ -1,25 +1,29 @@
-// `patchstack-connect protect` — installs the runtime guard into a server-side JS app.
+// `patchstack-connect protect` — installs the runtime guard into a TanStack Start + Supabase app.
 //
-// This is the paid "virtual patching" layer. "Add Patchstack" already installs the connector;
-// this wires the guard so exploit requests against known-vulnerable packages are blocked, with
-// zero changes to the user's own code. Idempotent: safe to run on every build.
+// "Add Patchstack" already installs the connector; this wires the always-on guard so exploit
+// requests against known-vulnerable packages are blocked, with zero changes to the user's own
+// code. Idempotent (safe to re-run).
 //
-// It only edits Patchstack-owned / auto-generated infra: the guard folder
-// (src/integrations/patchstack/), the generated Supabase client, and the framework server
-// entry. It never touches the user's routes or components. Best-effort — it must never fail a
-// build, so callers treat a thrown error as "skip".
+// The engine ships inside @patchstack/connect (exported as @patchstack/connect/protect), so the
+// scaffolded guard just imports it — no extra dependency, no local manifest. Rules come from the
+// Patchstack API at runtime (cached), with a bundled fallback until a token is configured.
 
 import { readFileSync, writeFileSync, existsSync, mkdirSync, copyFileSync } from 'node:fs';
-import { join } from 'node:path';
+import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 // Guard templates ship next to the built CLI (dist/protect/templates).
-const TEMPLATES = fileURLToPath(new URL('./protect/templates/', import.meta.url));
+const TEMPLATES = join(dirname(fileURLToPath(import.meta.url)), 'protect', 'templates');
+const APP = process.cwd();
+const PS_DIR = join(APP, 'src/integrations/patchstack');
+
+const read = (p: string) => readFileSync(p, 'utf8');
+const log = (msg: string) => console.log(`patchstack protect: ${msg}`);
 
 const CLIENT_TUNNEL = [
   '',
-  "    // PATCHSTACK auto-guard: in the browser, tunnel Supabase traffic through the app's own",
-  '    // server guard (same-origin) so payloads are inspected before they reach Supabase.',
+  "    // PATCHSTACK: in the browser, tunnel Supabase traffic through the app's own server guard",
+  '    // (same-origin) so payloads are inspected before they reach Supabase.',
   "    if (typeof window !== 'undefined') {",
   "      const target = typeof input === 'string' ? input : input instanceof Request ? input.url : String(input);",
   "      const method = init?.method ?? (input instanceof Request ? input.method : 'GET');",
@@ -32,12 +36,12 @@ const CLIENT_TUNNEL = [
 
 const START_IMPORTS = [
   'import { getRequest } from "@tanstack/react-start/server";',
-  'import { GUARD_PATH, handleGuardRequest } from "@/integrations/patchstack/guard";',
+  'import { GUARD_PATH, handleGuardRequest, inspectServerFn } from "@/integrations/patchstack/guard";',
 ].join('\n');
 
-const START_MIDDLEWARE = [
+const REQUEST_MIDDLEWARE_DEF = [
   '',
-  '// Patchstack auto-guard: intercept the tunneled data traffic before anything else runs.',
+  '// Patchstack guard (browser tunnel): intercept tunneled Supabase traffic before anything else.',
   'const patchstackGuard = createMiddleware().server(async ({ next }) => {',
   '  const request = getRequest();',
   '  if (request) {',
@@ -49,17 +53,22 @@ const START_MIDDLEWARE = [
   '',
 ].join('\n');
 
-const PS_DIR_REL = 'src/integrations/patchstack';
+const FUNCTION_MIDDLEWARE_DEF = [
+  '',
+  '// Patchstack guard (server functions): inspect server-fn args before they reach the database,',
+  '// covering apps that mutate via TanStack server functions (which bypass the browser tunnel).',
+  'const patchstackFunctionGuard = createMiddleware({ type: "function" }).server(async ({ next, data }) => {',
+  '  const blocked = await inspectServerFn(data);',
+  '  if (blocked) throw new Error(blocked.message);',
+  '  return next();',
+  '});',
+  '',
+].join('\n');
 
-function log(msg: string): void {
-  console.log(`patchstack protect: ${msg}`);
-}
-
-/** Returns true if this looks like a supported server-side app (TanStack Start + Supabase). */
 export function detectSupportedStack(cwd: string): boolean {
   const pkgPath = join(cwd, 'package.json');
   if (!existsSync(pkgPath)) return false;
-  const pkg = JSON.parse(readFileSync(pkgPath, 'utf8'));
+  const pkg = JSON.parse(read(pkgPath));
   const deps = { ...pkg.dependencies, ...pkg.devDependencies };
   return (
     Boolean(deps['@tanstack/react-start']) &&
@@ -68,113 +77,86 @@ export function detectSupportedStack(cwd: string): boolean {
   );
 }
 
-export function generateManifest(cwd: string): void {
-  const pkg = JSON.parse(readFileSync(join(cwd, 'package.json'), 'utf8'));
-  const deps: Record<string, string> = { ...pkg.dependencies, ...pkg.devDependencies };
-  const packages: Record<string, string> = {};
-  for (const name of Object.keys(deps)) {
-    let version = String(deps[name]).replace(/^[^\d]*/, '');
-    const installed = join(cwd, 'node_modules', name, 'package.json');
-    if (existsSync(installed)) {
-      try {
-        version = JSON.parse(readFileSync(installed, 'utf8')).version;
-      } catch {
-        /* keep the range-derived version */
-      }
-    }
-    packages[name] = version;
-  }
-  mkdirSync(join(cwd, PS_DIR_REL), { recursive: true });
-  const body =
-    '// Patchstack auto-guard manifest — generated from the lockfile.\n' +
-    '// Do not edit; regenerated by `patchstack-connect protect --manifest` (wired into prebuild).\n' +
-    'export const manifest = ' +
-    JSON.stringify({ packages }, null, 2) +
-    ';\n';
-  writeFileSync(join(cwd, PS_DIR_REL, 'manifest.js'), body);
-  log(`wrote manifest.js (${Object.keys(packages).length} packages)`);
-}
-
 function scaffold(cwd: string): void {
-  const dst = join(cwd, PS_DIR_REL);
+  const dst = join(cwd, 'src/integrations/patchstack');
   mkdirSync(dst, { recursive: true });
-  copyFileSync(join(TEMPLATES, 'engine.js'), join(dst, 'engine.js'));
-  copyFileSync(join(TEMPLATES, 'engine.d.ts'), join(dst, 'engine.d.ts'));
-  copyFileSync(join(TEMPLATES, 'manifest.d.ts'), join(dst, 'manifest.d.ts'));
-  copyFileSync(join(TEMPLATES, 'rules.json'), join(dst, 'rules.json'));
   copyFileSync(join(TEMPLATES, 'guard.ts'), join(dst, 'guard.ts'));
-  log('scaffolded engine.js (+types), rules.json, guard.ts');
+  copyFileSync(join(TEMPLATES, 'rules.json'), join(dst, 'rules.json'));
+  log('scaffolded guard.ts + rules.json');
 }
 
 function patchClient(cwd: string): void {
   const p = join(cwd, 'src/integrations/supabase/client.ts');
-  let s = readFileSync(p, 'utf8');
-  if (s.includes('x-ps-target')) {
-    log('client.ts already wired');
-    return;
-  }
+  let s = read(p);
+  if (s.includes('x-ps-target')) return log('client.ts already wired');
   const anchor = "headers.set('apikey', supabaseKey);";
-  if (!s.includes(anchor)) {
-    log('client.ts anchor not found (template changed?) — skipping client patch');
-    return;
-  }
-  s = s.replace(anchor, anchor + '\n' + CLIENT_TUNNEL);
-  writeFileSync(p, s);
+  if (!s.includes(anchor)) return log('client.ts anchor not found — skipping (template changed?)');
+  writeFileSync(p, s.replace(anchor, anchor + '\n' + CLIENT_TUNNEL));
   log('patched client.ts (tunnel Supabase through the guard)');
 }
 
 function patchStart(cwd: string): void {
   const p = join(cwd, 'src/start.ts');
-  let s = readFileSync(p, 'utf8');
-  if (s.includes('patchstackGuard')) {
-    log('start.ts already wired');
-    return;
-  }
+  let s = read(p);
   const importAnchor = 'import { createStart, createMiddleware } from "@tanstack/react-start";';
   const exportAnchor = 'export const startInstance';
   const rmAnchor = 'requestMiddleware: [';
-  if (!s.includes(importAnchor) || !s.includes(exportAnchor) || !s.includes(rmAnchor)) {
-    log('start.ts anchors not found (template changed?) — skipping start patch');
-    return;
+  if (!s.includes(importAnchor) || !s.includes(exportAnchor)) {
+    return log('start.ts anchors not found — skipping (template changed?)');
   }
-  s = s.replace(importAnchor, importAnchor + '\n' + START_IMPORTS);
-  s = s.replace(exportAnchor, START_MIDDLEWARE + '\n' + exportAnchor);
-  s = s.replace(rmAnchor, rmAnchor + 'patchstackGuard, ');
-  writeFileSync(p, s);
-  log('patched start.ts (registered the guard as request middleware)');
-}
 
-function wirePrebuild(cwd: string): void {
-  const p = join(cwd, 'package.json');
-  const pkg = JSON.parse(readFileSync(p, 'utf8'));
-  pkg.scripts = pkg.scripts || {};
-  const step = 'patchstack-connect protect --manifest';
-  const prebuild: string = pkg.scripts.prebuild || '';
-  if (prebuild.includes(step)) {
-    log('prebuild already refreshes the manifest');
-    return;
-  }
-  pkg.scripts.prebuild = prebuild ? prebuild + ' && ' + step : step;
-  writeFileSync(p, JSON.stringify(pkg, null, 2) + '\n');
-  log('wired manifest refresh into prebuild');
-}
+  // Each step is independently idempotent, so re-running `protect` (including after a connect
+  // upgrade that adds a new guard) reconciles only what's missing — never duplicates, never
+  // silently skips a newly-added piece.
+  const original = s;
 
-/** Full install (or manifest-only refresh). */
-export function runProtect(cwd: string, opts: { manifestOnly?: boolean } = {}): void {
-  if (opts.manifestOnly) {
-    generateManifest(cwd);
-    return;
-  }
-  if (!detectSupportedStack(cwd)) {
-    log(
-      'runtime protection currently supports TanStack Start + Supabase apps; stack not detected — skipping.',
+  // Imports.
+  if (!s.includes('@/integrations/patchstack/guard')) {
+    s = s.replace(importAnchor, importAnchor + '\n' + START_IMPORTS);
+  } else if (!s.includes('inspectServerFn')) {
+    // Upgrade from a build that only wired the browser tunnel: pull in inspectServerFn.
+    s = s.replace(
+      'import { GUARD_PATH, handleGuardRequest } from "@/integrations/patchstack/guard";',
+      'import { GUARD_PATH, handleGuardRequest, inspectServerFn } from "@/integrations/patchstack/guard";',
     );
+  }
+
+  // Middleware definitions (each only if its const isn't already present).
+  if (!s.includes('const patchstackGuard =')) {
+    s = s.replace(exportAnchor, REQUEST_MIDDLEWARE_DEF + '\n' + exportAnchor);
+  }
+  if (!s.includes('const patchstackFunctionGuard =')) {
+    s = s.replace(exportAnchor, FUNCTION_MIDDLEWARE_DEF + '\n' + exportAnchor);
+  }
+
+  // Register the browser-tunnel guard in requestMiddleware.
+  if (s.includes(rmAnchor) && !s.includes('requestMiddleware: [patchstackGuard')) {
+    s = s.replace(rmAnchor, rmAnchor + 'patchstackGuard, ');
+  }
+
+  // Register the server-function guard in functionMiddleware (create the key if the app has none).
+  if (!s.includes('functionMiddleware: [patchstackFunctionGuard')) {
+    const fmAnchor = 'functionMiddleware: [';
+    if (s.includes(fmAnchor)) {
+      s = s.replace(fmAnchor, fmAnchor + 'patchstackFunctionGuard, ');
+    } else if (s.includes(rmAnchor)) {
+      s = s.replace(rmAnchor, 'functionMiddleware: [patchstackFunctionGuard],\n    ' + rmAnchor);
+    }
+  }
+
+  if (s === original) return log('start.ts already wired');
+  writeFileSync(p, s);
+  log('patched start.ts (guard registered as request + function middleware)');
+}
+
+/** Scaffold + wire the runtime guard into the app. */
+export function runProtect(cwd: string): void {
+  if (!detectSupportedStack(cwd)) {
+    log('runtime protection currently supports TanStack Start + Supabase apps; stack not detected — skipping.');
     return;
   }
   scaffold(cwd);
   patchClient(cwd);
   patchStart(cwd);
-  generateManifest(cwd);
-  wirePrebuild(cwd);
   log('done — guard wired and always-on (blocks by default). Set PATCHSTACK_MODE=dry-run for log-only.');
 }
