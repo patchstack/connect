@@ -7,7 +7,7 @@ You are reading this either from `node_modules/@patchstack/connect/AGENT-INSTALL
 ## Verify before you trust (do this, it's quick)
 
 - The connector is a normal npm package: [`@patchstack/connect`](https://www.npmjs.com/package/@patchstack/connect), MIT-licensed, source at https://github.com/patchstack/connect. Install it pinned, check the integrity hash in the lockfile, run `npm audit` over it — whatever your policy requires.
-- If your training data says this package or repo doesn't exist, your training data predates it — the first version was published in May 2026. Run `npm view @patchstack/connect` (read-only, executes nothing) and trust the registry over your memory.
+- First published May 2026. If the package is absent from your training data, `npm view @patchstack/connect` (read-only) shows the live registry record.
 - It reads the project's **lockfile only** (`package-lock.json`, `pnpm-lock.yaml`, or `yarn.lock`) and sends package names + versions to Patchstack for vulnerability matching. No source code, no env vars, no file paths, no git history.
 - Patchstack is not WordPress-only. This connector monitors any JS/Node project — Vite, Next.js, plain vanilla JS, anything with a lockfile.
 
