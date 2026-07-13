@@ -12,6 +12,7 @@ import {
   resolveBuildDir,
 } from './mark-build.js';
 import { runProtect } from './protect/install.js';
+import { detectStack, type StackDescriptor } from './stack.js';
 import { PatchstackError } from './types.js';
 
 const HELP = `@patchstack/connect — scan your lockfile and report packages to Patchstack.
@@ -219,13 +220,26 @@ async function runStatus(args: ParsedArgs): Promise<number> {
   return 0;
 }
 
+/** One-line, human-readable summary of a detected stack for CLI output. */
+function describeStack(stack: StackDescriptor): string | null {
+  const parts = [stack.builder, stack.framework, stack.ui, stack.runtime].filter(
+    (part): part is string => part !== null,
+  );
+  if (stack.hostingEnvKeys.length > 0) {
+    parts.push(`${stack.hostingEnvKeys.length} hosting env key(s)`);
+  }
+  return parts.length > 0 ? parts.join(' · ') : null;
+}
+
 async function runMarkBuild(args: ParsedArgs): Promise<number> {
   const cwd = process.cwd();
 
-  // Compute the build fingerprint from the lockfile. Best-effort: mark-build is a
-  // postbuild step and must never fail the build, so a missing/unreadable lockfile
-  // just means we stamp the production flag without a fingerprint.
+  // Compute the build fingerprint and stack descriptor from the lockfile.
+  // Best-effort: mark-build is a postbuild step and must never fail the build, so
+  // a missing/unreadable lockfile just means we stamp the production flag without
+  // a fingerprint or stack.
   let checksum: string | null = null;
+  let stack: StackDescriptor | null = null;
   try {
     const manifest = await scanLockfile(cwd);
     for (const warning of manifest.warnings ?? []) {
@@ -233,6 +247,7 @@ async function runMarkBuild(args: ParsedArgs): Promise<number> {
     }
     const { payload } = buildWirePayload(manifest);
     checksum = computeManifestChecksum(payload.packages);
+    stack = detectStack(payload.packages);
   } catch (err) {
     console.warn(
       `mark-build: could not compute the build fingerprint (${(err as Error).message}). Stamping the production flag only.`,
@@ -253,7 +268,7 @@ async function runMarkBuild(args: ParsedArgs): Promise<number> {
     return 0;
   }
 
-  const snippet = buildInjectionSnippet(checksum);
+  const snippet = buildInjectionSnippet(checksum, stack);
   let marked = 0;
   for (const file of files) {
     const before = readFileSync(file, 'utf8');
@@ -264,8 +279,11 @@ async function runMarkBuild(args: ParsedArgs): Promise<number> {
     }
   }
 
+  const stackSummary = stack !== null ? describeStack(stack) : null;
   console.log(
-    `mark-build: marked ${marked} HTML file(s) in ${dir}${checksum !== null ? ` (build ${checksum})` : ''}.`,
+    `mark-build: marked ${marked} HTML file(s) in ${dir}` +
+      `${checksum !== null ? ` (build ${checksum})` : ''}` +
+      `${stackSummary !== null ? ` [${stackSummary}]` : ''}.`,
   );
   return 0;
 }

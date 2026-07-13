@@ -9,6 +9,12 @@ export { buildWirePayload, compareVersions } from './normalize.js';
 export { postManifest, buildClaimUrl, buildEndpointUrl, DEFAULT_ENDPOINT } from './client.js';
 export { persistSiteUuid, resolveConfig, writeConfigFile } from './config.js';
 export {
+  detectStack,
+  collectHostingEnvKeys,
+  isEmptyStack,
+  type StackDescriptor,
+} from './stack.js';
+export {
   PatchstackError,
   type Config,
   type Ecosystem,

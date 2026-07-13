@@ -23,6 +23,34 @@ describe('buildInjectionSnippet', () => {
     expect(snippet).toContain('__PATCHSTACK_PROD__');
     expect(snippet).not.toContain('__PATCHSTACK_BUILD__');
   });
+
+  it('injects the stack descriptor when one carries signal', () => {
+    const snippet = buildInjectionSnippet('abc123def456', {
+      framework: 'tanstack-start',
+      ui: 'react',
+      bundler: 'vite',
+      runtime: 'cloudflare-workers',
+      builder: 'lovable',
+      ecosystem: 'npm',
+      hostingEnvKeys: ['CF_PAGES'],
+    });
+    expect(snippet).toContain('window.__PATCHSTACK_STACK__=');
+    expect(snippet).toContain('"builder":"lovable"');
+  });
+
+  it('omits the stack when it is empty or absent', () => {
+    const empty = buildInjectionSnippet('c1', {
+      framework: null,
+      ui: null,
+      bundler: null,
+      runtime: null,
+      builder: null,
+      ecosystem: 'npm',
+      hostingEnvKeys: [],
+    });
+    expect(empty).not.toContain('__PATCHSTACK_STACK__');
+    expect(buildInjectionSnippet('c1')).not.toContain('__PATCHSTACK_STACK__');
+  });
 });
 
 describe('injectMarker', () => {

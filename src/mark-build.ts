@@ -1,6 +1,8 @@
 import { existsSync, readdirSync, statSync } from 'node:fs';
 import path from 'node:path';
 
+import { isEmptyStack, type StackDescriptor } from './stack.js';
+
 /** Attribute that tags our injected <script> so re-runs replace it instead of stacking. */
 export const MARKER_ATTR = 'data-patchstack-build';
 
@@ -50,12 +52,19 @@ export function findHtmlFiles(dir: string): string[] {
 /**
  * The <script> we inject into built HTML. Always marks the build as production
  * (so the widget hides the connect/claim prompt on the published site) and, when
- * a fingerprint is available, exposes it for the widget's parity heartbeat.
+ * available, exposes the build fingerprint (for the parity heartbeat) and the
+ * detected stack descriptor (so the widget can report how the site was built).
  */
-export function buildInjectionSnippet(checksum: string | null): string {
+export function buildInjectionSnippet(
+  checksum: string | null,
+  stack?: StackDescriptor | null,
+): string {
   const statements = ['window.__PATCHSTACK_PROD__=true;'];
   if (checksum !== null && checksum !== '') {
     statements.push(`window.__PATCHSTACK_BUILD__=${JSON.stringify(checksum)};`);
+  }
+  if (stack != null && !isEmptyStack(stack)) {
+    statements.push(`window.__PATCHSTACK_STACK__=${JSON.stringify(stack)};`);
   }
   return `<script ${MARKER_ATTR}>${statements.join('')}</script>`;
 }
