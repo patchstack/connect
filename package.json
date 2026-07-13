@@ -1,6 +1,6 @@
 {
   "name": "@patchstack/connect",
-  "version": "0.2.8",
+  "version": "0.2.10",
   "description": "Patchstack connector for JavaScript applications. Scans your lockfile and reports installed packages to Patchstack for vulnerability monitoring.",
   "keywords": [
     "patchstack",
@@ -32,13 +32,13 @@
     "LICENSE"
   ],
   "scripts": {
-    "build": "tsup",
+    "build": "tsup && node scripts/copy-protect-templates.mjs",
     "dev": "tsup --watch",
     "test": "vitest run",
     "test:manifest": "bun scripts/test-manifest.ts",
     "test:watch": "vitest",
     "typecheck": "tsc --noEmit",
-    "prepare": "tsup",
+    "prepare": "npm run build",
     "prepublishOnly": "npm run typecheck && npm test && npm run build"
   },
   "engines": {
