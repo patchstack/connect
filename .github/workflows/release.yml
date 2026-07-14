@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
     inputs:
       bump:
-        description: Semver bump to apply over the current npm latest
+        description: Semver bump to apply over the latest release
         type: choice
         default: patch
         options:
@@ -28,6 +28,8 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - name: Setup Node
         uses: actions/setup-node@v4
@@ -37,13 +39,18 @@ jobs:
       - name: Compute next version
         id: version
         run: |
-          current="$(npm view @patchstack/connect version 2>/dev/null || echo 0.0.0)"
+          latest_tag="$(git tag -l 'v*' --sort=-v:refname | head -n1 | sed 's/^v//')"
+          npm_latest="$(npm view @patchstack/connect version 2>/dev/null || echo 0.0.0)"
+          current="$(npx --yes semver "${latest_tag:-0.0.0}" "$npm_latest" | tail -n1)"
           next="$(npx --yes semver -i "${{ inputs.bump }}" "$current")"
-          echo "Current npm latest: $current"
-          echo "Next version:       $next (bump: ${{ inputs.bump }})"
 
-          if git rev-parse "v$next" >/dev/null 2>&1; then
-            echo "::error::Tag v$next already exists."
+          echo "Latest git tag:  ${latest_tag:-none}"
+          echo "npm latest:      $npm_latest"
+          echo "Bumping from:    $current"
+          echo "Next version:    $next (bump: ${{ inputs.bump }})"
+
+          if git ls-remote --tags origin "refs/tags/v$next" | grep -q .; then
+            echo "::error::Tag v$next already exists on origin."
             exit 1
           fi
 
