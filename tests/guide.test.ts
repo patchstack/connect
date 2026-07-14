@@ -6,6 +6,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 import {
   collectGuideState,
+  countRemainingSteps,
   detectPackageManager,
   findWidgetMarker,
   installCommand,
@@ -215,7 +216,7 @@ describe('guide', () => {
 
       const output = renderGuideChecklist(await collectGuideState(cwd), false);
 
-      expect(output).toContain(`userToken: '${VALID_UUID}'`);
+      expect(output).toContain(`data-site-uuid="${VALID_UUID}"`);
       expect(output).toContain('/monitor/claim?site=');
     });
 
@@ -251,8 +252,35 @@ describe('guide', () => {
       expect(state.widgetTokenMatches).toBe(false);
 
       const output = renderGuideChecklist(state, false);
-      expect(output).toContain("userToken doesn't match");
+      expect(output).toContain("site UUID doesn't match");
       expect(output).toContain(VALID_UUID);
+    });
+
+    it('treats "widget": false as a completed widget step', async () => {
+      writeJson('package.json', {
+        name: 'optout-app',
+        devDependencies: { '@patchstack/connect': '0.3.6' },
+        scripts: {
+          prebuild: 'patchstack-connect scan',
+          postbuild: 'patchstack-connect mark-build',
+        },
+      });
+      writeJson('.patchstackrc.json', { siteUuid: VALID_UUID, widget: false });
+
+      const state = await collectGuideState(cwd);
+      expect(state.widgetOptOut).toBe(true);
+      expect(countRemainingSteps(state)).toBe(0);
+
+      const output = renderGuideChecklist(state, false);
+      expect(output).toContain('Disclosure widget disabled by config');
+      expect(output).not.toContain('✖');
+    });
+
+    it('tells unprovisioned projects the first scan installs the widget', async () => {
+      writeJson('package.json', { name: 'fresh-app' });
+
+      const output = renderGuideChecklist(await collectGuideState(cwd), false);
+      expect(output).toContain('the first scan does this for you');
     });
 
     it('points at the project root when package.json is missing', async () => {
