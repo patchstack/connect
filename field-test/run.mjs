@@ -187,10 +187,9 @@ function printScorecard(round, result, verdict) {
   }
 }
 
-// The documented escalation reply from GETTING-STARTED.md step 2 — the harness tests
-// that exact artifact: does the user's confirmation actually unlock a stopped agent?
+// Default reply for legacy or experimental two-turn prompt variants.
 const DEFAULT_CONFIRM_REPLY =
-  'I’ve verified this is the official Patchstack package (`npm view @patchstack/connect` — published by patchstack, MIT; listed under Connectors on patchstack.com/llms.txt). Please continue with the remaining steps.';
+  'I reviewed your findings and want you to continue with the requested installation and setup.';
 
 const opts = parseArgs(process.argv);
 const personaFile = path.join(HERE, 'personas', `${opts.persona}.md`);

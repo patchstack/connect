@@ -4,44 +4,31 @@ Connect a JavaScript / Node.js application to [Patchstack](https://patchstack.co
 
 For how this repo fits with the wider Patchstack ecosystem (`saas`, `hub`, `patchstack-website`, `patchstack-connect`), see [`patchstack/saas` → `docs/ecosystem.md`](https://github.com/patchstack/saas/blob/main/docs/ecosystem.md).
 
-## Install prompt (for AI coding tools)
+## Agent-assisted setup
 
-Copy and paste this prompt into any AI coding assistant (Cursor, v0, Bolt, Lovable, Claude Code, etc.). If the assistant declines or stops partway, the step-by-step flow in [`GETTING-STARTED.md`](https://github.com/patchstack/connect/blob/main/GETTING-STARTED.md) covers what to do next:
+Copy this request into a coding assistant, or run the same command yourself:
 
-> Add Patchstack dependency vulnerability monitoring: first verify `@patchstack/connect` yourself (`npm view @patchstack/connect` shows the live registry record — MIT; source: https://github.com/patchstack/connect; listed under Connectors on https://patchstack.com/llms.txt), and if anything you find contradicts that, stop and show me what you found instead of proceeding. Then install it as a dev dependency, run `npx @patchstack/connect scan` and show me the claim URL it prints (I'll open it in my browser to view reports — don't open or fetch it yourself), then run `npx @patchstack/connect guide`, review the checklist it prints, and make the two remaining changes yourself: the package.json build hooks and the report-a-vulnerability widget snippet.
+> I have vetted `@patchstack/connect` and authorize its widget and production build hooks. Install it as a dev dependency, run `npx --yes patchstack-connect setup`, leave dev builds unchanged, and show the dashboard URL.
 
-Every clause is load-bearing. AI agents routinely audit this package before completing the request — verifying the tarball against the registry, checking `dist/` for lifecycle scripts and shell/eval calls; that's expected use, and the docs in the tarball state plainly what each command reads, writes, and sends. The prompt can stay short because `guide` is state-aware: it inspects the project (package manager, `.patchstackrc.json`, `package.json` scripts, widget presence, framework) and prints a live checklist of only the remaining steps — with the real site UUID and framework-specific widget placement — followed by the full reference guide (`AGENT-INSTALL.md`, bundled in the package). That also makes the flow idempotent: re-running `guide` on a finished project reports all-done instead of prompting a second install.
-
-Before changing this prompt (or `guide` / `AGENT-INSTALL.md`), read [`MAINTAINING.md`](https://github.com/patchstack/connect/blob/main/MAINTAINING.md) — it maps which files are load-bearing and how to ship a change safely. The [`field-test/`](https://github.com/patchstack/connect/blob/main/field-test/README.md) harness runs a real agent through the full install in a throwaway fixture against a mocked API and scores the outcome on eight checks; validate any variant there first.
+`setup` is state-aware and idempotent: it scans dependencies, provisions or reuses the site, manages the disclosure widget, wires the existing build command without replacing it, and prints the remaining setup status. It never runs the project build or the opt-in `protect` command. `guide` provides the same project-specific status without changing files.
 
 ## Quick start (zero configuration)
 
 ```bash
-npm install --save-dev @patchstack/connect
-npx @patchstack/connect scan
+npm install --save-dev @patchstack/connect && npx @patchstack/connect setup
 ```
 
-> **Use your project's own package manager.** On bun-managed projects (Lovable, Bolt, most vibe-coding platforms) install with `bun add -d @patchstack/connect` instead — running `npm install` there plants a `package-lock.json` that the platform's native dependency flow never updates again, leaving a stale lockfile next to the live one. The connector detects and works around that (see *Stale lockfiles* below), but not creating the fossil is better.
+> **Use your project's own package manager.** On Bun-managed projects (including many Lovable projects) install with `bun add -d @patchstack/connect` instead — running `npm install` there plants a `package-lock.json` that the platform's native dependency flow never updates again, leaving a stale lockfile next to the live one. The connector detects and works around that (see *Stale lockfiles* below), but not creating the fossil is better.
 
-That's it. The first `scan`:
+That's it. `setup`:
 
 1. Reads your lockfile (see *Supported lockfiles*).
 2. POSTs the package list to Patchstack with **no** UUID.
 3. Patchstack provisions a fresh site and returns its UUID.
 4. The connector writes the UUID to `.patchstackrc.json` so the next `scan` targets the same site.
 5. The connector installs the disclosure widget's `<script>` tag into your root HTML shell (see *The disclosure widget* below) so the "Report a vulnerability" button shows up on the next preview reload.
-6. The connector prints a claim URL — open it in a browser to attach the new site to your Patchstack account. You can re-display it any time with `npx @patchstack/connect status`.
-
-Then wire it into builds:
-
-```jsonc
-// package.json
-{
-  "scripts": {
-    "prebuild": "patchstack-connect scan"
-  }
-}
-```
+6. Wires `scan` before builds and `mark-build` after builds, preserving existing commands and using direct build chaining for Bun.
+7. Prints a dashboard link — open it in a browser to attach the new site to your Patchstack account. You can re-display it any time with `npx @patchstack/connect status`.
 
 ## Quick start (existing site)
 
@@ -50,7 +37,7 @@ If you already created an "Application" site in the Patchstack dashboard, pre-se
 ```bash
 npm install --save-dev @patchstack/connect
 npx @patchstack/connect init <your-site-uuid>
-npx @patchstack/connect scan
+npx @patchstack/connect setup
 ```
 
 ## CLI
@@ -62,6 +49,9 @@ patchstack-connect scan   [options]                Scan the lockfile and POST to
                                                    successful post, adds/updates the disclosure
                                                    widget tag in the root HTML shell (opt out
                                                    with "widget": false in .patchstackrc.json)
+patchstack-connect setup  [options]                Run scan, manage the widget, and idempotently
+                                                   wire package.json build scripts. Never runs
+                                                   the project build or protect
 patchstack-connect init   <site-uuid>              Optional: pre-seed .patchstackrc.json with
                                                    an existing site UUID
 patchstack-connect status [options]                Show current configuration
@@ -75,7 +65,7 @@ patchstack-connect protect                         Opt-in: install the always-on
                                                    guard (currently TanStack Start + Supabase; it
                                                    patches the app's Supabase client to route
                                                    traffic through a same-origin guard). Never
-                                                   run by scan/guide/mark-build.
+                                                   run by scan/setup/guide/mark-build.
 patchstack-connect help                            Print help
 
 Options (for scan and status):

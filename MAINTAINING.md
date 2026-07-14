@@ -8,7 +8,7 @@ The deep "why" — the AI-agent refusal modes each clause guards against — liv
 
 | Artifact | Rule |
 |---|---|
-| **The install prompt** (1 sentence) — in `README.md`, `GETTING-STARTED.md` (step 1), and `field-test/prompt.txt` | 🔴 **Don't casually edit.** Load-bearing and adversarially tuned; every clause exists because an agent refused a shorter version. Must be **byte-identical** in all three places, and any change must pass the hostile field-test gate. |
+| **The install prompt** — in `README.md`, `GETTING-STARTED.md` (step 1), and `field-test/prompt.txt` | 🔴 Keep it **byte-identical** in all three places and validate changes with the field-test matrix. |
 | **`src/guide.ts`** — the `guide` checklist output | 🟠 **Edit with the gate.** Agents read this live and act on it; wrong commands or claims cause refusals. |
 | **`AGENT-INSTALL.md`** — ships inside the npm tarball | 🟠 **Edit with the gate.** Must disclose **every** capability in `dist/` (e.g. the `protect` command); an undisclosed capability or overbroad privacy claim is read as misrepresentation and refused. |
 | **`GETTING-STARTED.md`** — teammate-facing onboarding prose (steps 2–4) | 🟢 **Safe to improve** — *except* the quoted prompt block in step 1, which is the 🔴 artifact above. |
@@ -20,7 +20,7 @@ The deep "why" — the AI-agent refusal modes each clause guards against — liv
 
 `README.md` (Install prompt section), `GETTING-STARTED.md` (step 1), and `field-test/prompt.txt`. `prompt.txt` is the artifact the harness actually tests. If you change one, change all three — a drift means the docs advertise one prompt while the tested one is another.
 
-The prompt also cites two URLs as provenance anchors: the GitHub repo and https://patchstack.com/llms.txt (whose Connectors section describes the package in neutral product language). Both are load-bearing — web-verifying agents check the vendor's own domain, and a dead cited link reads worse than no link. Only ever cite *descriptive* vendor content: the retired install.txt was an agent-addressed instruction doc, and agents that fetched it as a cited provenance link treated the steering language as the decisive manipulation signal (refusal mode #8; the file has since been removed from patchstack.com). If llms.txt moves or its Connectors section is dropped, update the prompt in all three places and re-gate (`--persona hostinger` covers this pressure).
+The prompt deliberately contains no model-authored verification step. In staged-command UIs, assistants cannot observe an `npm view` command until the user runs it; asking them to verify first caused fabricated registry findings and stopped the flow. Instead, the prompt records the user's explicit authorization for the disclosure widget and production-only build hooks before asking for one bounded `setup` command. Bolt's dependency-first fallback splits declaration from execution without adding hidden `postinstall` behavior. Keep `@patchstack/connect` discoverable in Patchstack's official product documentation so web-verifying platforms can independently establish its provenance.
 
 ## Before shipping a 🔴 or 🟠 change
 

@@ -12,8 +12,13 @@ import { readFileSync, writeFileSync, existsSync, mkdirSync, copyFileSync } from
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-// Guard templates ship next to the built CLI (dist/protect/templates).
-const TEMPLATES = join(dirname(fileURLToPath(import.meta.url)), 'protect', 'templates');
+// Guard templates ship next to the built CLI (dist/protect/templates). Resolve for both the
+// built layout (install.ts is bundled into dist/cli.js at the dist root → protect/templates) and
+// the source layout (install.ts lives in src/protect/ → templates is a sibling).
+const HERE = dirname(fileURLToPath(import.meta.url));
+const TEMPLATES =
+  [join(HERE, 'protect', 'templates'), join(HERE, 'templates')].find((p) => existsSync(p)) ??
+  join(HERE, 'protect', 'templates');
 const APP = process.cwd();
 const PS_DIR = join(APP, 'src/integrations/patchstack');
 
@@ -36,19 +41,20 @@ const CLIENT_TUNNEL = [
 
 const START_IMPORTS = [
   'import { getRequest } from "@tanstack/react-start/server";',
-  'import { GUARD_PATH, handleGuardRequest, inspectServerFn } from "@/integrations/patchstack/guard";',
+  'import { GUARD_PATH, handleGuardRequest, inspectServerFn, screenResponse } from "@/integrations/patchstack/guard";',
 ].join('\n');
 
 const REQUEST_MIDDLEWARE_DEF = [
   '',
-  '// Patchstack guard (browser tunnel): intercept tunneled Supabase traffic before anything else.',
+  '// Patchstack guard (browser tunnel): intercept tunneled Supabase traffic before anything else,',
+  '// then screen the outgoing response (SSR HTML / data) for leaked secrets & PII.',
   'const patchstackGuard = createMiddleware().server(async ({ next }) => {',
   '  const request = getRequest();',
   '  if (request) {',
   '    const { pathname } = new URL(request.url);',
   '    if (pathname === GUARD_PATH) return handleGuardRequest(request);',
   '  }',
-  '  return next();',
+  '  return screenResponse(await next());',
   '});',
   '',
 ].join('\n');
@@ -83,6 +89,32 @@ function scaffold(cwd: string): void {
   copyFileSync(join(TEMPLATES, 'guard.ts'), join(dst, 'guard.ts'));
   copyFileSync(join(TEMPLATES, 'rules.json'), join(dst, 'rules.json'));
   log('scaffolded guard.ts + rules.json');
+}
+
+// Bake the site UUID from .patchstackrc.json (written by `patchstack-connect scan`) into the
+// scaffolded guard, so the deployed Worker calls the live Pulse rules API with zero user config.
+// Left as the inert placeholder (guard falls back to PATCHSTACK_SITE_UUID env / bundled rules)
+// when the app hasn't been scanned yet or the file can't be read.
+function bakeSiteUuid(cwd: string): void {
+  const rc = join(cwd, '.patchstackrc.json');
+  if (!existsSync(rc)) return log('no .patchstackrc.json — guard uses PATCHSTACK_SITE_UUID env or the bundled fallback');
+  let uuid: string | undefined;
+  try {
+    uuid = JSON.parse(read(rc)).siteUuid;
+  } catch {
+    return log('.patchstackrc.json unreadable — skipping site-UUID bake');
+  }
+  // Guard on UUID format so a malformed value falls through to the inert placeholder rather
+  // than baking junk into a TS string literal (broken build / replace-token hazards).
+  if (!uuid || !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(uuid)) {
+    return log('.patchstackrc.json siteUuid missing or malformed — guard uses PATCHSTACK_SITE_UUID env or the bundled fallback');
+  }
+  const p = join(cwd, 'src/integrations/patchstack/guard.ts');
+  if (!existsSync(p)) return;
+  const s = read(p);
+  if (!s.includes('__PATCHSTACK_SITE_UUID__')) return log('guard.ts site UUID already baked');
+  writeFileSync(p, s.replace('__PATCHSTACK_SITE_UUID__', uuid));
+  log('baked site UUID into guard.ts — live rules from the Patchstack API');
 }
 
 function patchClient(cwd: string): void {
@@ -156,6 +188,7 @@ export function runProtect(cwd: string): void {
     return;
   }
   scaffold(cwd);
+  bakeSiteUuid(cwd);
   patchClient(cwd);
   patchStart(cwd);
   log('done — guard wired and always-on (blocks by default). Set PATCHSTACK_MODE=dry-run for log-only.');
