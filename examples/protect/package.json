@@ -4,7 +4,7 @@
   "type": "module",
   "description": "End-to-end demo for @patchstack/connect/protect (public CVE, demo rules only)",
   "dependencies": {
-    "lodash": "4.17.11"
+    "lodash": "4.18.1"
   },
   "scripts": {
     "demo": "node demo.mjs"
