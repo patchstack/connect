@@ -2,6 +2,8 @@
 
 npm package that connects a JS/Node project to Patchstack vulnerability monitoring: scans the lockfile, POSTs package names + versions, provisions a site UUID, prints a claim URL. CLI entry: `src/cli.ts`; the state-aware setup checklist lives in `src/guide.ts`.
 
+Editing any onboarding, prompt, or setup-guide content? Read `MAINTAINING.md` first — it maps which files are load-bearing and how to ship a change safely.
+
 ## Commands
 
 - `npm test` — vitest suite
