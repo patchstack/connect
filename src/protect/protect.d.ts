@@ -33,6 +33,10 @@ export interface CreateProtectionOptions {
   /** Patchstack WAF token — pull live per-site rules from the API. */
   token?: string;
   baseUrl?: string;
+  /** Pulse site UUID — pull live per-site rules from the Pulse rules API (cached). */
+  siteUuid?: string;
+  /** Override the Pulse rules API base URL. */
+  pulseRulesUrl?: string;
   /** Directory for the last-known-good rule cache. */
   cacheDir?: string;
   /** Override the default response-phase (secret-leak) rule set. */

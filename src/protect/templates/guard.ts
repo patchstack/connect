@@ -20,6 +20,9 @@ import {
 } from "@patchstack/connect/protect";
 import fallbackRules from "./rules.json";
 
+// Baked by `patchstack-connect protect` from .patchstackrc.json (empty if the app isn't scanned yet).
+const PS_SITE_UUID = "__PATCHSTACK_SITE_UUID__";
+
 export { GUARD_PATH };
 
 // One shared protection policy for both guards (rules load once).
@@ -29,6 +32,7 @@ async function getProtection() {
     // Always-on: block by default. An explicit PATCHSTACK_MODE=dry-run downgrades to log-only.
     const mode = process.env.PATCHSTACK_MODE === "dry-run" ? "dry-run" : "block";
     const token = process.env.PATCHSTACK_WAF_TOKEN;
+    const siteUuid = PS_SITE_UUID.startsWith("__") ? process.env.PATCHSTACK_SITE_UUID : PS_SITE_UUID;
     // Egress SSRF screening: block the app's outbound calls to internal / metadata addresses,
     // but never its own Supabase project.
     let allowHosts: string[] = [];
@@ -39,9 +43,11 @@ async function getProtection() {
     }
     const common = { mode, egress: true, allowHosts };
     _protection = await createProtection(
-      token
-        ? { ...common, token, cacheDir: ".patchstack" } // live per-site rules from the Patchstack API (cached)
-        : { ...common, rules: fallbackRules as never }, // demo fallback until a token is set
+      siteUuid
+        ? { ...common, siteUuid, rules: fallbackRules as never, cacheDir: ".patchstack" } // live per-site rules; bundled = offline fallback
+        : token
+          ? { ...common, token, cacheDir: ".patchstack" } // live per-site WAF rules from the Patchstack API (cached)
+          : { ...common, rules: fallbackRules as never }, // demo fallback until a site UUID / token is set
     );
   }
   return _protection;
