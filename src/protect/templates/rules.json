@@ -1,16 +1,43 @@
 {
-  "_comment": "Demo fallback rules — used only when PATCHSTACK_WAF_TOKEN is unset. In production the guard fetches per-site rules from the Patchstack API (api.patchstack.com/api/get-rules/3, cached to disk). CVE id is representative until aligned with the real corpus.",
+  "_comment": "Starter fallback rules — used ONLY when PATCHSTACK_WAF_TOKEN is unset. The guard blocks by default, so these are deliberately HIGH-PRECISION signatures (structural markers legitimate traffic doesn't carry) to avoid false positives before a token is configured. Once a token is set the guard fetches the per-site, version-scoped corpus from the Patchstack API (api.patchstack.com/api/get-rules/3, cached to disk) and this file is no longer used. For a broad, many-class DEMONSTRATION (SQLi/XSS/XXE/SSRF/PII/…), seed this file from examples/protect/demo-rules.json — see that folder's README.",
   "firewall": [
     {
-      "id": "rm-npm-0001",
-      "title": "Block stored XSS via vulnerable markdown renderer (marked)",
-      "vulnerability_id": "CVE-2022-21681",
+      "id": "ps-fallback-proto-pollution",
+      "title": "Prototype pollution in request body",
+      "category": "prototype-pollution",
       "rule_v2": [
+        { "parameter": "raw", "mutations": ["urldecode"], "match": { "type": "contains", "value": "__proto__" } },
         {
-          "parameter": "post.title",
-          "mutations": ["urldecode"],
-          "match": { "type": "inline_xss" }
+          "parameter": "rules",
+          "rules": [
+            { "parameter": "raw", "mutations": ["urldecode"], "match": { "type": "contains", "value": "constructor" }, "inclusive": true },
+            { "parameter": "raw", "mutations": ["urldecode"], "match": { "type": "contains", "value": "prototype" }, "inclusive": true }
+          ]
         }
+      ]
+    },
+    {
+      "id": "ps-fallback-path-traversal",
+      "title": "Path traversal in a file/path parameter",
+      "category": "lfi",
+      "rule_v2": [
+        { "parameter": ["get.file", "post.file", "raw.file", "get.path", "post.path"], "mutations": ["urldecode"], "match": { "type": "contains", "value": ".." } }
+      ]
+    },
+    {
+      "id": "ps-fallback-ssrf-internal",
+      "title": "SSRF via a url parameter pointing at an internal/metadata address",
+      "category": "ssrf",
+      "rule_v2": [
+        { "parameter": ["get.url", "post.url", "raw.url"], "mutations": ["urldecode"], "match": { "type": "regex", "value": "/localhost|127\\.0\\.0\\.1|169\\.254\\.169\\.254|::1|metadata\\.google/i" } }
+      ]
+    },
+    {
+      "id": "ps-fallback-xss",
+      "title": "Stored/reflected XSS in a text field",
+      "category": "xss",
+      "rule_v2": [
+        { "parameter": ["post.title", "post.comment", "post.body"], "mutations": ["urldecode", "htmlentitydecode"], "match": { "type": "regex", "value": "/<script\\b|onerror\\s*=|javascript:/i" } }
       ]
     }
   ],
