@@ -1,0 +1,25 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Patchstack connect — test build</title>
+    <link rel="stylesheet" href="style.css" />
+  </head>
+  <body>
+    <main>
+      <h1>Patchstack connect test site</h1>
+      <p>
+        This page was produced by <code>npm run build</code> in the throwaway fixture:
+        the <code>prebuild</code> hook ran <code>patchstack-connect scan</code> (which
+        injected the widget tag below) and the <code>postbuild</code> hook ran
+        <code>patchstack-connect mark-build</code> (which stamped the production flag).
+      </p>
+      <p>
+        The "Report a vulnerability" button should be floating in the bottom-right
+        corner. View the page source to see the managed widget tag and the
+        <code>__PATCHSTACK_PROD__</code> marker.
+      </p>
+    </main>
+  </body>
+</html>

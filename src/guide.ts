@@ -13,8 +13,7 @@ import path from 'node:path';
 import { DEFAULT_ENDPOINT, buildClaimUrl } from './client.js';
 import { resolveConfig } from './config.js';
 import { detectStack } from './stack.js';
-
-export const WIDGET_SCRIPT_URL = 'https://cdn.patchstack.com/patchstack-widget.js';
+import { buildWidgetTag } from './widget.js';
 
 /** Substring that marks the widget as installed anywhere in the source tree. */
 const WIDGET_NEEDLE = 'patchstack-widget';
@@ -35,8 +34,10 @@ export interface GuideState {
   prebuildWired: boolean;
   postbuildWired: boolean;
   widgetInstalled: boolean;
-  /** False when the widget is present but its userToken isn't the site UUID. */
+  /** False when the widget is present but its site UUID isn't this project's. */
   widgetTokenMatches: boolean | null;
+  /** True when .patchstackrc.json opts out of widget management ("widget": false). */
+  widgetOptOut: boolean;
   /** Framework label from the declared dependencies (e.g. "next"), best-effort. */
   framework: string | null;
   /** Existing file the widget snippet belongs in, best-effort. */
@@ -274,6 +275,7 @@ export async function collectGuideState(cwd: string): Promise<GuideState> {
   let siteUuid: string | null = null;
   let claimUrl: string | null = null;
   let endpointOverride: string | null = null;
+  let widgetOptOut = false;
   try {
     const config = await resolveConfig({ cwd });
     siteUuid = config.siteUuid;
@@ -283,6 +285,7 @@ export async function collectGuideState(cwd: string): Promise<GuideState> {
     if (config.endpoint !== DEFAULT_ENDPOINT) {
       endpointOverride = config.endpoint;
     }
+    widgetOptOut = !config.widget;
   } catch {
     // invalid config — the checklist just shows the site as not provisioned
   }
@@ -315,6 +318,7 @@ export async function collectGuideState(cwd: string): Promise<GuideState> {
       (pkg?.scripts?.build ?? '').includes('patchstack-connect mark-build'),
     widgetInstalled: widget.found,
     widgetTokenMatches: widget.uuidMatches,
+    widgetOptOut,
     framework: stack.framework,
     widgetFileHint: resolveWidgetFileHint(cwd, stack.framework),
   };
@@ -335,7 +339,7 @@ export function countRemainingSteps(state: GuideState): number {
     state.installed !== null,
     state.siteUuid !== null,
     state.prebuildWired && state.postbuildWired,
-    state.widgetInstalled && state.widgetTokenMatches !== false,
+    state.widgetOptOut || (state.widgetInstalled && state.widgetTokenMatches !== false),
   ].filter((step) => !step).length;
 }
 
@@ -407,22 +411,27 @@ export function renderGuideChecklist(state: GuideState, useColor: boolean): stri
 
   // 4. Disclosure widget
   const widgetOk = state.widgetInstalled && state.widgetTokenMatches !== false;
-  if (widgetOk) {
+  if (state.widgetOptOut && !widgetOk) {
+    lines.push(done('Disclosure widget disabled by config ("widget": false in .patchstackrc.json)'));
+  } else if (widgetOk) {
     lines.push(done('Disclosure widget installed'));
   } else if (state.widgetInstalled) {
-    lines.push(todo("Disclosure widget found, but its userToken doesn't match this project's site UUID"));
-    lines.push(detail(`→ a wrong userToken makes the widget silently no-op; set it to '${state.siteUuid}'`));
+    lines.push(todo("Disclosure widget found, but its site UUID doesn't match this project's"));
+    lines.push(detail(`→ a wrong site UUID makes the widget silently no-op; set data-site-uuid (or userToken) to '${state.siteUuid}'`));
+  } else if (state.siteUuid === null) {
+    lines.push(todo('Add the "Report a vulnerability" widget — the first scan does this for you'));
+    lines.push(detail('→ `npx @patchstack/connect scan` provisions the site and adds the widget tag'));
+    lines.push(detail('  to the root HTML shell (index.html / public/index.html / src/app.html).'));
   } else {
     lines.push(todo('Add the "Report a vulnerability" widget'));
+    lines.push(detail('→ a normal `scan` adds this tag to a plain HTML shell automatically;'));
     const placement =
       state.widgetFileHint !== null
-        ? `→ add to ${state.widgetFileHint}, just before </body> (via the framework's HTML/layout mechanism):`
-        : "→ add just before </body> via the framework's HTML/layout mechanism (never a JS entry point):";
+        ? `  for this project put it in ${state.widgetFileHint}, just before </body>:`
+        : "  put it just before </body> via the framework's HTML/layout mechanism (never a JS entry point):";
     lines.push(detail(placement));
-    lines.push(detail(`  <script src="${WIDGET_SCRIPT_URL}"></script>`));
-    const token = state.siteUuid ?? '<SITE_UUID from .patchstackrc.json — run scan first>';
-    lines.push(detail(`  <script>PatchstackWidget.init({ userToken: '${token}' });</script>`));
-    lines.push(detail('The userToken is public by design — it ships in client-side HTML.'));
+    lines.push(detail(`  ${buildWidgetTag(state.siteUuid)}`));
+    lines.push(detail('The site UUID is public by design — it ships in client-side HTML.'));
   }
 
   // 5. Claim — the conversion moment; always the loudest line.

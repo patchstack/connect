@@ -15,18 +15,25 @@ import { collectGuideState, countRemainingSteps, renderGuideChecklist } from './
 import { runProtect } from './protect/install.js';
 import { detectStack, type StackDescriptor } from './stack.js';
 import { PatchstackError } from './types.js';
+import { buildWidgetTag, ensureSourceWidget, ensureWidgetInHtml } from './widget.js';
 
 const HELP = `@patchstack/connect — scan your lockfile and report packages to Patchstack.
 
 Usage:
   patchstack-connect scan   [options]                Scan lockfile and POST to Patchstack.
                                                      If no UUID is configured, the server
-                                                     provisions one and we persist it.
+                                                     provisions one and we persist it. After a
+                                                     successful post it also adds/updates the
+                                                     disclosure-widget <script> tag in the root
+                                                     HTML shell (index.html, public/index.html,
+                                                     or src/app.html) — opt out with
+                                                     "widget": false in .patchstackrc.json
   patchstack-connect init   <site-uuid>              Optional: pre-seed .patchstackrc.json
                                                      with an existing site UUID
   patchstack-connect status [options]                Show current configuration
   patchstack-connect mark-build [options]            Stamp built HTML with a production flag +
-                                                     build fingerprint (run as a postbuild step)
+                                                     build fingerprint, and ensure the widget
+                                                     tag in built pages (run as a postbuild step)
   patchstack-connect protect                         Install always-on runtime protection (the
                                                      guard) into a TanStack Start + Supabase app.
                                                      Covers the browser + server-function paths.
@@ -197,6 +204,16 @@ async function runScan(args: ParsedArgs): Promise<number> {
     console.log(`Server response: ${response.message ?? JSON.stringify(response)}`);
   }
 
+  // With a UUID in hand (existing or freshly provisioned), ensure the
+  // disclosure widget's managed tag in the source HTML shell so the very next
+  // preview reload shows the "Report a vulnerability" button. Best-effort and
+  // opt-out-able; a failed post never reaches this point, and --dry-run
+  // returned above.
+  const effectiveUuid = config.siteUuid ?? response.uuid ?? null;
+  if (config.widget && effectiveUuid !== null && effectiveUuid.length > 0) {
+    reportSourceWidget(effectiveUuid);
+  }
+
   // On the first scan (provisioning), surface the claim URL so the user can
   // attach this site to their Patchstack account. `npx @patchstack/connect status`
   // re-displays it any time.
@@ -210,6 +227,45 @@ async function runScan(args: ParsedArgs): Promise<number> {
   }
 
   return 0;
+}
+
+/**
+ * Run the source-widget pass for `scan` and narrate the outcome. Never throws:
+ * widget management is a convenience layered on top of a successful scan and
+ * must not turn one into a failure.
+ */
+function reportSourceWidget(siteUuid: string): void {
+  try {
+    const result = ensureSourceWidget(process.cwd(), siteUuid);
+    switch (result.action) {
+      case 'added':
+        console.log(`Widget: added the "Report a vulnerability" tag to ${result.shell}. Reload your preview to see it.`);
+        break;
+      case 'updated':
+        console.log(`Widget: updated the managed tag in ${result.shell} to site ${siteUuid}.`);
+        break;
+      case 'unchanged':
+        console.log(`Widget: already installed in ${result.shell}.`);
+        break;
+      case 'manual':
+        console.log(`Widget: found an existing (manual) install in ${result.shell} — left untouched.`);
+        break;
+      case 'no-body':
+        console.log(`Widget: ${result.shell} has no </body> tag to anchor on. Add this tag to your root layout manually:`);
+        console.log(`  ${buildWidgetTag(siteUuid)}`);
+        break;
+      case 'no-shell':
+        console.log('Widget: no plain HTML shell found (index.html / public/index.html / src/app.html).');
+        console.log('Add this tag to your root layout before </body> (run `guide` for framework-specific placement):');
+        console.log(`  ${buildWidgetTag(siteUuid)}`);
+        break;
+    }
+    if (result.action === 'added' || result.action === 'updated') {
+      console.log('  (opt out any time with "widget": false in .patchstackrc.json)');
+    }
+  } catch (err) {
+    console.warn(`Widget: skipped (${(err as Error).message}).`);
+  }
 }
 
 async function runProtectCommand(_args: ParsedArgs): Promise<number> {
@@ -309,6 +365,22 @@ async function runMarkBuild(args: ParsedArgs): Promise<number> {
     );
   }
 
+  // The widget pass needs the configured UUID; best-effort for the same reason.
+  let widgetUuid: string | null = null;
+  try {
+    const config = await resolveConfig({
+      cwd,
+      cliSiteUuid: getStringFlag(args.flags, 'site-uuid'),
+    });
+    if (config.widget) {
+      widgetUuid = config.siteUuid;
+    }
+  } catch (err) {
+    console.warn(
+      `mark-build: could not resolve the site UUID (${(err as Error).message}). Skipping the widget pass.`,
+    );
+  }
+
   const dir = resolveBuildDir(cwd, getStringFlag(args.flags, 'dir'));
   if (dir === null) {
     console.warn(
@@ -325,9 +397,20 @@ async function runMarkBuild(args: ParsedArgs): Promise<number> {
 
   const snippet = buildInjectionSnippet(checksum, stack);
   let marked = 0;
+  let widgetTouched = 0;
   for (const file of files) {
     const before = readFileSync(file, 'utf8');
-    const after = injectMarker(before, snippet);
+    let after = injectMarker(before, snippet);
+    // Built HTML that came through a shell scan already edited carries the
+    // managed tag; this covers output whose source shell we couldn't edit.
+    // Manual installs are adopted (left untouched), same as in scan.
+    if (widgetUuid !== null) {
+      const ensured = ensureWidgetInHtml(after, widgetUuid);
+      if (ensured.action === 'added' || ensured.action === 'updated') {
+        widgetTouched += 1;
+      }
+      after = ensured.html;
+    }
     if (after !== before) {
       writeFileSync(file, after);
       marked += 1;
@@ -338,6 +421,7 @@ async function runMarkBuild(args: ParsedArgs): Promise<number> {
   console.log(
     `mark-build: marked ${marked} HTML file(s) in ${dir}` +
       `${checksum !== null ? ` (build ${checksum})` : ''}` +
+      `${widgetTouched > 0 ? `, widget tag ensured in ${widgetTouched}` : ''}` +
       `${stackSummary !== null ? ` [${stackSummary}]` : ''}.`,
   );
   return 0;
