@@ -1,0 +1,11 @@
+{
+  "name": "patchstack-connect-test-build",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build:connector": "npm --prefix .. run build",
+    "test": "npm run build:connector && node run.mjs --no-serve",
+    "start": "npm run build:connector && node run.mjs"
+  }
+}

@@ -9,6 +9,7 @@ Editing any onboarding, prompt, or setup-guide content? Read `MAINTAINING.md` fi
 - `npm test` — vitest suite
 - `npm run typecheck` / `npm run build`
 - `node field-test/run.mjs --persona hostile --rounds 3` — agent field test (real AI agent, ~3–6 min and ~30–50k tokens per round; see `field-test/README.md` before running)
+- `node field-test/matrix.mjs --agents claude,codex,gemini` — personas × models cross-product; the platform personas (`bolt-diy`, `lovable`, `replit`) carry the real platform system prompts (provenance in `field-test/README.md`)
 
 ## The install prompt is a tested artifact
 

@@ -12,6 +12,7 @@ interface ConfigFile {
   endpoint?: string;
   timeoutMs?: number;
   environment?: string;
+  widget?: boolean;
 }
 
 export interface ResolveConfigOptions {
@@ -73,6 +74,7 @@ export async function resolveConfig(options: ResolveConfigOptions): Promise<Conf
     endpoint,
     timeoutMs,
     environment,
+    widget: fromFile.widget !== false,
   };
 }
 
