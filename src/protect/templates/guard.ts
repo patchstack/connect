@@ -30,7 +30,7 @@ let _protection: Awaited<ReturnType<typeof createProtection>> | undefined;
 async function getProtection() {
   if (!_protection) {
     // Always-on: block by default. An explicit PATCHSTACK_MODE=dry-run downgrades to log-only.
-    const mode = process.env.PATCHSTACK_MODE === "dry-run" ? "dry-run" : "block";
+    const mode: "block" | "dry-run" = process.env.PATCHSTACK_MODE === "dry-run" ? "dry-run" : "block";
     const token = process.env.PATCHSTACK_WAF_TOKEN;
     const siteUuid = PS_SITE_UUID.startsWith("__") ? process.env.PATCHSTACK_SITE_UUID : PS_SITE_UUID;
     // Egress SSRF screening: block the app's outbound calls to internal / metadata addresses,
@@ -80,11 +80,11 @@ export async function inspectServerFn(data: unknown): Promise<{ rule?: string; m
 // src/start.ts (the browser→Supabase tunnel screens its own forwarded response). Only acts on a
 // web Response (text/JSON/HTML) — anything else, or any error, passes through untouched (fail-open,
 // never breaks a response).
-export async function screenResponse(response: unknown): Promise<unknown> {
+export async function screenResponse<T>(response: T): Promise<T> {
   try {
     if (!(response instanceof Response)) return response;
     const protection = await getProtection();
-    return protection.screenResponse ? await protection.screenResponse(response) : response;
+    return (protection.screenResponse ? await protection.screenResponse(response) : response) as T;
   } catch {
     return response; // fail open
   }
