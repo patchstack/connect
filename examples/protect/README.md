@@ -49,6 +49,40 @@ Each rule carries an `_demo` block (exploit + benign vector). The same bundle is
 whole `examples/` folder is kept out of the published npm package (`tests/pack-safety.test.ts`), so
 the vulnerable `lodash` the deep demo installs never reaches consumers.
 
+## Loading the demo rules on a real Lovable app
+
+`patchstack-connect protect` scaffolds the runtime guard into a TanStack Start + Supabase app and
+drops `src/integrations/patchstack/{guard.ts, rules.json}`. That scaffolded `rules.json` is the
+**token-less fallback** the guard loads — so it's the insertion point for a demo. Seed it with this
+bundle:
+
+```bash
+# in the Lovable app
+npx patchstack-connect protect                          # scaffold + wire the guard
+cp <this-repo>/examples/protect/demo-rules.json \
+   src/integrations/patchstack/rules.json               # swap the fallback for the demo set
+# leave PATCHSTACK_WAF_TOKEN UNSET so the guard uses the local rules (not the live API)
+```
+
+`demo-rules.json` is a drop-in `rules.json` — same `{ firewall, whitelists, whitelist_keys }`
+shape; `createProtection` splits the phase-tagged rules and ignores the `_demo` blocks. The guard
+blocks by default (`PATCHSTACK_MODE=dry-run` for log-only).
+
+**What fires where** (the guard hooks the *data path*, not arbitrary routes):
+
+- ✅ **prototype pollution / SQLi / XSS / NoSQL injection** in a record you write (e.g. a task
+  title) — caught via the Supabase tunnel + server-function arg inspection.
+- ✅ **response PII / secret redaction** — masked in Supabase query results the guard forwards.
+- ⚠️ **path traversal / command injection / request-side SSRF** target `get.file` / `get.host` /
+  `get.url`; they only fire if the app actually has such a route + parameter.
+- ⚠️ **egress SSRF** is dormant unless the guard is created with `egress: true` (the scaffolded
+  `guard.ts` doesn't enable it by default) — for an egress demo, add `egress: true` to
+  `getProtection()` in the scaffolded `guard.ts`.
+
+For a live tasks-app demo, the reliable rows are the write-path ones (insert a task whose title is
+`<script>…</script>` → blocked) and the response redaction (store/return a value containing an
+email or card number → masked). The full matrix is best shown offline via `gallery.mjs`.
+
 ## Note on rules
 
 `rules.demo.json` holds **example rules for public CVEs only** — it is **not** the
