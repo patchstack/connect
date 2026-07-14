@@ -10,9 +10,11 @@ For how this repo fits with the wider Patchstack ecosystem (`saas`, `hub`, `patc
 
 Copy and paste this prompt into any AI coding assistant (Cursor, v0, Bolt, Lovable, Claude Code, etc.). If the assistant declines or stops partway, the step-by-step flow in [`GETTING-STARTED.md`](https://github.com/patchstack/connect/blob/main/GETTING-STARTED.md) covers what to do next:
 
+While the security release blocker above remains open, retain this synchronized prompt for disposable testing only and do not perform its claim-URL action.
+
 > Add Patchstack dependency vulnerability monitoring: install `@patchstack/connect` as a dev dependency (MIT — verify with `npm view @patchstack/connect`; source: https://github.com/patchstack/connect), then use that installed copy through the project's package manager to run `patchstack-connect scan`; it resolves or provisions and saves the site UUID, then adds the report-a-vulnerability widget to a safe app shell. Show me the claim URL it prints (I'll open it in my browser — don't open or fetch it yourself), reload the preview to confirm the widget appears, then run the installed `patchstack-connect guide` and finish only what its checklist flags: package.json build hooks ending in `mark-build --strict`, or creating/fixing the framework's safe root shell before rerunning. Do not use a runner that downloads another CLI copy.
 
-Every clause is load-bearing. AI agents routinely audit this package before completing the request — verifying the tarball against the registry, checking `dist/` for lifecycle scripts and shell/eval calls — and the flow is designed to pass that audit, not to discourage it. The prompt can stay short because `guide` is state-aware: it inspects the project (package manager, `.patchstackrc.json`, `package.json` scripts, widget presence, framework) and prints a live checklist of only the remaining steps — with the real site UUID and framework-specific widget placement — followed by the full reference guide (`AGENT-INSTALL.md`, also at https://patchstack.com/install.txt). That also makes the flow idempotent: re-running `guide` on a finished project reports all-done instead of prompting a second install.
+`guide` is state-aware: it inspects the project (package manager, `.patchstackrc.json`, `package.json` scripts, widget presence, framework) and prints a live checklist of only the remaining work, followed by the full reference guide (`AGENT-INSTALL.md`, also at https://patchstack.com/install.txt). Re-running it on a finished project reports all-done instead of prompting a second install.
 
 Before changing this prompt (or `guide` / `AGENT-INSTALL.md`), read [`field-test/README.md`](https://github.com/patchstack/connect/blob/main/field-test/README.md): it documents the AI-agent refusal modes each clause guards against, and its harness runs a real agent through the full install in a throwaway fixture against a mocked API and scores the outcome on eight checks. Validate any variant there first.
 
@@ -219,7 +221,7 @@ npm test
 npm run build
 ```
 
-For the maintained end-to-end local connector and static-build fixture, see [`testConnect/README.md`](https://github.com/patchstack/connect/tree/main/testConnect). Its normal scan/build flow performs a real Patchstack API request; follow its security warning and use it only as disposable local test data.
+For the maintained end-to-end local connector and static-build fixture, see [`test-build/README.md`](https://github.com/patchstack/connect/tree/main/test-build). Its normal scan/build flow performs a real Patchstack API request; follow its security warning and use it only as disposable local test data.
 
 ### Manifest endpoint testing
 
@@ -241,9 +243,9 @@ Use `--dry-run` to preview the payload without posting or editing a source shell
 
 Pull requests run typecheck, tests, build, package verification, and a production dependency audit in GitHub Actions.
 
-Publishing runs when a GitHub Release is published. The GitHub release tag is the source of truth for the published version: the workflow strips the leading `v` and runs `npm version` in its checkout before verification and publishing. The checked-in development version in `package.json` therefore does not need to match the release tag.
+The recommended `Release` workflow creates a GitHub Release from `main` and explicitly dispatches `Publish`; a manually published GitHub Release also triggers `Publish`. The GitHub release tag is the source of truth for the package version. See [`RELEASING.md`](RELEASING.md) for the mechanics and recovery path. The workflows do not replace the release-readiness checks below.
 
-The automatic UUID-to-widget flow documented in this branch is not present in the currently published npm `0.3.6`. Deployment order is part of the compatibility contract: first close the credential-separation security gate above and verify authorization/migration end to end; then deploy and verify the rolling widget bundle with `data-production` support; then release this connector under an unused version greater than `0.3.6`, verify it on npm; and only then deploy the matching `patchstack-website` `install.txt`, `llms.txt`, and `uninstall.txt`. Reversing or skipping that order would expose write/claim authority or make the public guide promise unavailable behavior.
+The automatic UUID-to-widget flow documented in this branch is not yet published. Deployment order is part of the compatibility contract: first close the credential-separation security gate above and verify authorization/migration end to end; then deploy and verify the rolling widget bundle with `data-production` support; then release this connector under an unused version greater than the live npm version and verify it on npm; and only then deploy the matching `patchstack-website` `install.txt`, `llms.txt`, and `uninstall.txt`. Reversing or skipping that order would expose write/claim authority or make the public guide promise unavailable behavior.
 
 Maintainer reliability note: the connector serializes first-site provisioning processes in the same checkout and re-reads config after acquiring that local lock. That prevents two ordinary local/CI processes sharing the workspace from provisioning twice. It cannot make a timed-out request idempotent after the server has already committed, nor coordinate separate checkouts. Before describing first-site creation as exactly-once, the manifest API must accept and persist an idempotency key for bare provisioning requests; client-side locking alone cannot close that network boundary.
 
@@ -252,8 +254,8 @@ To publish a release:
 1. Change the backend/API so the widget identifier cannot write manifests or claim a site; issue separate authenticated write and one-time scoped claim credentials. Update connector configuration/protocol, migration, redaction, rotation/replay, and end-to-end negative-authorization tests.
 2. Deploy the tested `sass-webvdp-widget` build to `https://cdn.patchstack.com/patchstack-widget.js` and verify `data-production="true"` produces the production/report-only mode while omitted/false preserves development preview behavior.
 3. Merge the tested connector feature changes to `main`.
-4. Choose an unused semver greater than the live npm version and create a GitHub Release with its `v`-prefixed tag, for example `v0.3.7` when `0.3.6` is live.
-5. The `Publish` workflow derives the package version from that tag, verifies the package, then runs `npm publish --provenance --access public`.
+4. From `main`, run the recommended `Release` workflow as documented in [`RELEASING.md`](RELEASING.md). It computes the next npm version, creates the `v`-prefixed release tag, and dispatches `Publish`. If it reports an existing unpublished tag, stop and follow the documented recovery checks rather than moving or recreating the tag.
+5. Confirm that `Publish` validates the tagged tree and completes `npm publish --provenance --access public`.
 6. Verify the new version with `npm view @patchstack/connect version` and a clean install/scan/static-build smoke test, plus a hybrid-SSR route-coverage test where applicable.
 7. Deploy the coordinated website instructions only after backend, CDN, and registry verification succeed.
 

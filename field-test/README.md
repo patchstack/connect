@@ -90,11 +90,11 @@ The agent audits the *published* tarball, so the gate's pass rate is a function 
 Until a publish lands and ages, use this ladder instead of burning hostile rounds on a known-red gate:
 
 1. **Stub self-test** — `node field-test/run.mjs --agent-cmd "node $PWD/field-test/stub-compliant.mjs"`. Validates the harness, mock, and scoring in ~1 min. No AI, no registry dependency.
-2. **Standard persona** — exercises the mechanical checks (guide accuracy, hook wiring, widget identifier) with less policy pressure; catches CLI/UX regressions immediately.
+2. **Standard persona** — exercises the published package and local prompt with less policy pressure. It catches prompt-to-published-CLI integration regressions, but it cannot validate unpublished CLI or shipped-doc changes.
 3. **Hostile rounds scored by refusal *reason*, not exit code.** Read DECISION ANALYSIS and attribute each refusal: one that quotes the published docs or release age is environmental noise; one that quotes the prompt's own wording is a real prompt bug. A variant is not worse than the incumbent unless it draws prompt-directed refusals the incumbent doesn't.
 4. **(Not built) local-registry mode** — run a local registry (e.g. verdaccio), publish the working tree to it, and pin the fixture via the `npm_config_registry` env var (env pinning reads as platform plumbing, same as `PATCHSTACK_ENDPOINT`). This is the only way to exercise unpublished doc/CLI changes end-to-end. Caveat: the local record has no provenance attestation or signatures, which strict agents check — expect some artificial refusals on that ground.
 
 ## Known limitations
 
 - The simulated agents are Claude-based; real platform agents (Bolt, Lovable, Cursor) carry stricter, unknown system prompts. A green harness is necessary, not sufficient — the fourth refusal mode was found by a real Bolt user after the harness passed v1 of a prompt. Treat real-world refusal reports as new personas: encode the pressure they applied into `personas/` so the regression stays covered.
-- The fixture installs the *published* package. An unpublished `guide`/CLI change can't be exercised end-to-end by the agent (it will install the registry version); publish first or accept that the run validates the prompt shape only.
+- The fixture installs the *published* package. It cannot exercise unpublished `guide`, CLI, README, or `AGENT-INSTALL.md` changes end-to-end; use the plan B above until the normal, approved release process is safe to run. Never publish merely to make this test exercise a working tree.

@@ -487,7 +487,7 @@ async function runGuide(args: ParsedArgs): Promise<number> {
   if (allDone && !getBooleanFlag(args.flags, 'full')) {
     console.log('');
     console.log(
-      'Full reference guide: `npx @patchstack/connect guide --full` (or read node_modules/@patchstack/connect/AGENT-INSTALL.md).',
+      'Full reference guide: run the installed `patchstack-connect guide --full` through this project\'s package manager (or read node_modules/@patchstack/connect/AGENT-INSTALL.md).',
     );
     return 0;
   }

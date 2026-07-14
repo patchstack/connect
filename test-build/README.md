@@ -1,6 +1,6 @@
 # Patchstack connector test app
 
-`testConnect/` is a maintained, deliberately small Vite application for testing the local connector end to end. It proves that one UUID moves through the complete flow:
+`test-build/` is a maintained, deliberately small Vite application for testing the local connector end to end. It proves that one UUID moves through the complete flow:
 
 1. `scan` adopts or provisions the UUID and injects the CDN widget into source.
 2. The development preview shows the widget immediately.
@@ -17,7 +17,7 @@ Security warning: under the current pre-release backend semantics, the site UUID
 cd /path/to/connect
 npm install
 npm run build
-cd testConnect
+cd test-build
 npm install
 ```
 

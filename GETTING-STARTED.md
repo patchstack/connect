@@ -1,10 +1,14 @@
 # Getting started — connect a project to Patchstack
 
+<!-- Editing this file? Keep the prompt text in step 1 synchronized with README.md and field-test/prompt.txt; tests/docs.test.ts enforces equality after Markdown blockquote syntax is removed. Read MAINTAINING.md before changing it or any setup-guide content. -->
+
 The teammate-facing path from "I have a JS/Node project" to automatic dependency monitoring, source-widget installation, and strict static-build verification.
 
 > **Security gate:** the current pre-release backend lets the client-visible site UUID authorize manifest writes and unclaimed-site claiming. Until Patchstack separates public widget identity, manifest-write authorization, and a scoped one-time claim credential, use this flow only with disposable local test data. Do not deploy it, open or share its UUID-derived claim URL, or commit generated `.patchstackrc.json`/widget output.
 
 ## 1. Paste this prompt into your AI coding tool
+
+The synchronized prompt describes the intended post-gate claim flow. While the security gate above remains open, use it only with disposable local test data and do not perform the claim-URL action it describes.
 
 Works in Cursor, Claude Code, Lovable, Bolt, v0, Windsurf, etc. Paste it exactly — every clause is there for a reason (see step 2), so don't shorten it:
 
