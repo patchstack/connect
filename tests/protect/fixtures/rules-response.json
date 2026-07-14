@@ -1,0 +1,114 @@
+{
+  "firewall": [
+    {
+      "id": 101,
+      "title": "Block SQL Injection in search",
+      "rule_v2": [
+        {
+          "parameter": "get.search",
+          "match": { "type": "regex", "value": "/union\\s+select/i" },
+          "inclusive": false
+        }
+      ]
+    },
+    {
+      "id": 102,
+      "title": "Block XSS in comment field",
+      "rule_v2": [
+        {
+          "parameter": "post.comment",
+          "match": { "type": "regex", "value": "/<script[^>]*>/i" },
+          "inclusive": false
+        }
+      ]
+    },
+    {
+      "id": 103,
+      "title": "Block admin action exploitation",
+      "rule_v2": [
+        {
+          "parameter": "post.action",
+          "match": { "type": "equals", "value": "delete_all_users" },
+          "inclusive": true
+        },
+        {
+          "parameter": "server.REQUEST_METHOD",
+          "match": { "type": "equals", "value": "POST" },
+          "inclusive": true
+        }
+      ]
+    },
+    {
+      "id": 104,
+      "title": "Block path traversal",
+      "rule_v2": [
+        {
+          "parameter": "server.REQUEST_URI",
+          "match": { "type": "regex", "value": "/\\.\\.[\\/\\\\]/i" },
+          "inclusive": false
+        }
+      ]
+    },
+    {
+      "id": 105,
+      "title": "Block prototype pollution",
+      "rule_v2": [
+        {
+          "parameter": "raw",
+          "match": { "type": "contains", "value": "__proto__" },
+          "inclusive": false
+        }
+      ]
+    },
+    {
+      "id": 106,
+      "title": "Block SSRF to internal IPs",
+      "rule_v2": [
+        {
+          "parameter": "post.url",
+          "match": { "type": "regex", "value": "/(localhost|127\\.0\\.0\\.1|0\\.0\\.0\\.0|::1|10\\.|172\\.(1[6-9]|2[0-9]|3[01])\\.|192\\.168\\.)/i" },
+          "inclusive": false
+        }
+      ]
+    },
+    {
+      "id": 107,
+      "title": "Block base64-encoded payloads",
+      "rule_v2": [
+        {
+          "parameter": "post.data",
+          "match": { "type": "contains", "value": "<script>" },
+          "mutations": ["base64_decode"],
+          "inclusive": false
+        }
+      ]
+    },
+    {
+      "id": 108,
+      "title": "Block user agent bot",
+      "rule_v2": [
+        {
+          "parameter": "server.HTTP_USER_AGENT",
+          "match": { "type": "contains", "value": "sqlmap" },
+          "inclusive": false
+        }
+      ]
+    }
+  ],
+  "whitelists": [
+    {
+      "rule_id": 101,
+      "rule_v2": [
+        {
+          "parameter": "server.REMOTE_ADDR",
+          "match": { "type": "equals", "value": "10.0.0.1" },
+          "inclusive": false
+        }
+      ]
+    }
+  ],
+  "whitelist_keys": {
+    "POST": ["_token", "csrf"],
+    "GET": ["page", "limit"]
+  }
+}
