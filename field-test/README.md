@@ -31,6 +31,8 @@ Not every real-world report is a refusal, and successes carry signal the harness
 
 The minimal prompt is now the canonical artifact: one explicit `install && setup` command, with the command's bounded effects named inline.
 
+PR #73 tested the provenance-led version as a universal prompt. It helped one Lovable run, but one Bolt run installed the package and then invented a CI token/workflow instead of reading or running its setup, while three other fresh Bolt chats refused as usual. The line `Purpose: Scan project dependencies for known vulnerabilities in CI.` was especially costly: it anchored the assistant to a plausible generic CI-scanner story that is false for this connector's zero-configuration flow. Keep provenance metadata available for human follow-ups, but keep the canonical prompt focused on the exact command and effects that must complete.
+
 ## Platform personas — real system prompts
 
 `personas/standard.md` and `personas/hostile.md` are hand-written reconstructions of platform pressure. The platform personas embed the *actual* system prompts of the platforms we onboard on, so a refusal in a run quotes the policy the real product runs:
