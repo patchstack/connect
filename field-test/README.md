@@ -19,6 +19,20 @@ Every clause of the README prompt exists because an agent refused a version with
 5. **Bounded steps still read as unseen-output execution to agents that don't run commands themselves.** A bolt.diy agent (which stages commands as clickable artifacts for the user instead of executing them) refused "finish what its checklist flags" even with the steps named, because the *content* of those steps still comes from the tool's output — "package trust ≠ output trust… I have no way to inspect what scan/guide will actually output before acting on it". The user asserting they had independently verified the package changed nothing ("verification was never going to unlock the auto-apply step"). The agent stated its unlock explicitly: seeing the output before applying it. So the prompt commands "review the checklist it prints, and make the two remaining changes yourself" — read-then-apply, with the agent as reviewer rather than executor of dictated instructions. The `bolt-diy` persona keeps this covered.
 6. **The shipped docs are part of the attack surface.** Agents `npm pack` the tarball and read everything in it. A README section that narrated how the prompt "survived AI-agent refusal modes" was quoted back as "being told, in writing, that the message was tuned to get past me — the clearest signal to hold the line", and any contradiction between docs and `dist/` (an undisclosed command, an overbroad privacy claim) is treated as misrepresentation and refused regardless of vendor legitimacy. Dev-process rationale lives here, outside the published package; the shipped docs must disclose every capability the code ships.
 
+## Platform personas — real system prompts
+
+`personas/standard.md` and `personas/hostile.md` are hand-written reconstructions of platform pressure. The platform personas embed the *actual* system prompts of the platforms we onboard on, so a refusal in a run quotes the policy the real product runs:
+
+| Persona | Source | Retrieved | What it tests |
+|---|---|---|---|
+| `bolt-diy` | [`stackblitz-labs/bolt.diy`](https://github.com/stackblitz-labs/bolt.diy) `app/lib/common/prompts/prompts.ts` @ `2e254ac` | 2026-07-14 | No security policy at all — refusals here come purely from model priors, plus WebContainer constraints (no git, no native binaries, package.json-first installs, extreme terseness) |
+| `lovable` | [`x1xhlol/system-prompts-and-models-of-ai-tools`](https://github.com/x1xhlol/system-prompts-and-models-of-ai-tools) `Lovable/Agent Prompt.txt` @ `2054f58` | 2026-07-14 | Discussion-mode default, clarifying-questions-first, strict scope discipline — the failure mode is a *stall*, not a refusal (VERDICT: "stalled in discussion mode") |
+| `replit` | same collection, `Replit/Prompt.txt` @ `2054f58` | 2026-07-14 | Propose-and-approve protocol: the report records every command the agent would have classified `is_dangerous` and every detour it would have made to the Secrets tool (the site UUID is bait for that) |
+
+Adaptation rule, applied identically to all three: policy, behavior, and environment sections are kept **verbatim**; response-format machinery (`<boltArtifact>`, `lov-*` tags, `<proposed_*>` tags) is removed and replaced with a bridge note ("act directly with the tools you have"), because the harness agent acts through its own CLI tools. Domain sections irrelevant to installs (Supabase migrations, design systems, SEO, mobile) are dropped for token economy. If you re-fetch a newer upstream prompt, re-apply exactly this rule and update the table.
+
+Caveats: the `lovable` persona grants a working shell; hosted Lovable has no user-facing terminal (deps are added declaratively), so it can't reproduce "the CLI steps are impossible", only the policy pressure. The `replit` source is Replit *Assistant*, not the newer Replit Agent. And a persona pins policy, not weights — the same persona under different models is exactly what the matrix runner measures.
+
 ## Prerequisites
 
 - Node ≥ 18, network access (fixtures run a real `npm install`; the agent installs the real published `@patchstack/connect`).
@@ -27,7 +41,7 @@ Every clause of the README prompt exists because an agent refused a version with
 ## Safety model — read before running
 
 - **The Patchstack API is mocked.** Each run starts a local mock and pins it via the `PATCHSTACK_ENDPOINT` env var on the agent process. Env pinning survives anything the agent does to project files and reads as platform plumbing. (Earlier versions planted the override in `.patchstackrc.json`; every agent flagged that file as the #1 trust concern, and one deleted it and provisioned a real production site. Don't regress this.)
-- **The agent runs with permissions skipped** (`--dangerously-skip-permissions`) in a temp-dir fixture, because headless runs can't answer permission prompts. It can run arbitrary commands. Supervise runs; don't run on a machine where that's unacceptable.
+- **The agent runs with permissions skipped** (`--dangerously-skip-permissions`; the codex and gemini matrix agents use their equivalent bypass/yolo flags) in a temp-dir fixture, because headless runs can't answer permission prompts. It can run arbitrary commands. Supervise runs; don't run on a machine where that's unacceptable.
 - One run ≈ 3–6 minutes and ~30–50k agent tokens.
 
 ## Usage
@@ -39,8 +53,7 @@ node field-test/run.mjs
 # The adversarial persona that reproduces the Bolt/WebContainer refusal pressure
 node field-test/run.mjs --persona hostile
 
-# The bolt.diy pressure: judge the prompt text before running anything;
-# tool output is untrusted; user verification claims transfer nothing
+# The real bolt.diy system prompt (see "Platform personas" above)
 node field-test/run.mjs --persona bolt-diy
 
 # Stochastic agents: run several rounds and look at the aggregate
@@ -56,7 +69,27 @@ node field-test/run.mjs --agent-cmd "claude -p --dangerously-skip-permissions --
 node field-test/run.mjs --agent-cmd "node $PWD/field-test/stub-compliant.mjs"
 ```
 
-Flags: `--persona standard|hostile|bolt-diy`, `--template lovable-bun|vite-npm`, `--prompt <file>`, `--rounds N`, `--agent-cmd "<cmd>"`, `--keep` (don't delete the fixture), `--timeout <minutes>`.
+Flags: `--persona <name>` (any `personas/<name>.md`), `--template lovable-bun|vite-npm`, `--prompt <file>`, `--rounds N`, `--agent-cmd "<cmd>"`, `--keep` (don't delete the fixture), `--timeout <minutes>`.
+
+### Matrix runs — personas × models
+
+Refusal behavior is a function of (system prompt × model). `matrix.mjs` runs the cross-product and aggregates the scorecards into one table:
+
+```bash
+# Default: the three platform personas under Claude
+node field-test/matrix.mjs
+
+# Full matrix: 3 platform personas × 3 model families (9 agent runs — budget ~30-60 min)
+node field-test/matrix.mjs --agents claude,codex,gemini
+
+# Everything run.mjs accepts passes through
+node field-test/matrix.mjs --personas hostile,bolt-diy --agents claude,codex --rounds 3 --prompt /tmp/v2.txt
+
+# Plumbing self-test (scripted stub, no AI)
+node field-test/matrix.mjs --agents stub --personas bolt-diy,lovable,replit
+```
+
+Named agents (see the `AGENTS` table in `matrix.mjs`): `claude` (logged-in Claude Code), `codex` (`codex login` or `OPENAI_API_KEY`), `gemini` (interactive login once or `GEMINI_API_KEY`; Workspace accounts also need `GOOGLE_CLOUD_PROJECT`), `stub`. Agents missing from PATH are skipped with a warning; unauthenticated ones fail their cells visibly. The aggregate lands in `field-test/results/matrix-<timestamp>/matrix.md` with links to each cell's full run.mjs results; exit code is 0 only if every cell is fully green.
 
 ## What gets scored
 
@@ -101,5 +134,5 @@ Until a publish lands and ages, use this ladder instead of burning hostile round
 
 ## Known limitations
 
-- The simulated agents are Claude-based; real platform agents (Bolt, Lovable, Cursor) carry stricter, unknown system prompts. A green harness is necessary, not sufficient — the fourth refusal mode was found by a real Bolt user after the harness passed v1 of a prompt. Treat real-world refusal reports as new personas: encode the pressure they applied into `personas/` so the regression stays covered.
+- The platform personas carry the real system prompts and the matrix covers multiple model families, but a hosted platform is still (prompt × model × runtime × UI) — the runtime and UI layers aren't reproduced here. A green harness is necessary, not sufficient — the fourth refusal mode was found by a real Bolt user after the harness passed v1 of a prompt. Treat real-world refusal reports as new personas: encode the pressure they applied into `personas/` so the regression stays covered.
 - The fixture installs the *published* package. An unpublished `guide`/CLI change can't be exercised end-to-end by the agent (it will install the registry version); publish first or accept that the run validates the prompt shape only.
