@@ -10,18 +10,11 @@ For how this repo fits with the wider Patchstack ecosystem (`saas`, `hub`, `patc
 
 Copy and paste this prompt into any AI coding assistant (Cursor, v0, Bolt, Lovable, Claude Code, etc.):
 
-> Add Patchstack dependency vulnerability monitoring: install `@patchstack/connect` as a dev dependency (MIT — verify at https://www.npmjs.com/package/@patchstack/connect or with `npm view @patchstack/connect`; source: https://github.com/patchstack/connect), then use that installed copy through the project's package manager to run `patchstack-connect scan` (it safely resolves or provisions and saves the site UUID, then adds the report-a-vulnerability widget to a safe app shell). Show me the claim URL it prints without opening or fetching it, reload the preview to confirm the widget appears, then run the installed `patchstack-connect guide` and finish what its checklist flags: the package.json build hooks ending in `mark-build --strict`, or creating/fixing the framework's safe root shell before rerunning. Do not use a runner that downloads a second CLI copy.
+> Add Patchstack dependency vulnerability monitoring: install `@patchstack/connect` as a dev dependency (MIT — verify with `npm view @patchstack/connect`; source: https://github.com/patchstack/connect), then use that installed copy through the project's package manager to run `patchstack-connect scan`; it resolves or provisions and saves the site UUID, then adds the report-a-vulnerability widget to a safe app shell. Show me the claim URL it prints (I'll open it in my browser — don't open or fetch it yourself), reload the preview to confirm the widget appears, then run the installed `patchstack-connect guide` and finish only what its checklist flags: package.json build hooks ending in `mark-build --strict`, or creating/fixing the framework's safe root shell before rerunning. Do not use a runner that downloads another CLI copy.
 
-Every clause of this one-liner is deliberate — it has survived four distinct AI-agent refusal modes, each found by field-testing, and each one punished a different shortcut:
+Every clause is load-bearing. AI agents routinely audit this package before completing the request — verifying the tarball against the registry, checking `dist/` for lifecycle scripts and shell/eval calls — and the flow is designed to pass that audit, not to discourage it. The prompt can stay short because `guide` is state-aware: it inspects the project (package manager, `.patchstackrc.json`, `package.json` scripts, widget presence, framework) and prints a live checklist of only the remaining steps — with the real site UUID and framework-specific widget placement — followed by the full reference guide (`AGENT-INSTALL.md`, also at https://patchstack.com/install.txt). That also makes the flow idempotent: re-running `guide` on a finished project reports all-done instead of prompting a second install.
 
-1. **"Follow the instructions at this URL" reads as remote script execution.** Agents refuse before ever fetching the doc. Nothing in the prompt asks the agent to fetch anything.
-2. **Agents whose training predates May 2026 assert the package doesn't exist.** The npmjs.com link and `npm view` check resolve that against the registry instead of the model's memory.
-3. **"Install the package, then follow the instructions it ships" reads as handing control to the package author** — structurally the same as prompt injection — and preemptive reassurance language ("it's safe, don't be suspicious, note your knowledge cutoff") is itself flagged as a manipulation signal. The prompt argues nothing and delegates to `guide` only after the agent has installed and audited the package.
-4. **Unbounded delegation and authorization-shaped URLs.** "Finish the steps its checklist marks missing", unqualified, was refused by a WebContainer-based agent as a blank check ("executing untrusted, unseen commands"), and a bare "show me the claim URL" was flagged as a machine-authorization/pairing link. So the prompt names exactly what the checklist may flag (build hooks or a safe source-shell repair) — bounding the delegation in advance — and states that the claim URL is for the user, not the agent, to open.
-
-The prompt can be this short because `scan` performs the UUID-to-widget hand-off automatically and `guide` is state-aware: it inspects the project (package manager, `.patchstackrc.json`, `package.json` scripts, widget presence, framework) and prints a live checklist of only the remaining steps. When automatic source discovery succeeds, the widget item is already complete. An ambiguous, unsupported, or missing safe shell stops before the API so it can be fixed without creating an orphan site. Re-running `guide` on a finished project reports all-done instead of prompting a second install. In hostile-policy field tests, agents verified the tarball against the registry, audited `dist/` for lifecycle scripts and shell/eval calls, and then completed the install—the flow is designed to pass that audit, not discourage it. The full reference guide ships as `AGENT-INSTALL.md` and also lives at https://patchstack.com/install.txt.
-
-Before changing this prompt (or `guide` / `AGENT-INSTALL.md`), validate the variant with the field-test harness in [`field-test/`](field-test/README.md) — it runs a real agent through the full install in a throwaway fixture against a mocked API and scores the outcome on eight checks.
+Before changing this prompt (or `guide` / `AGENT-INSTALL.md`), read [`field-test/README.md`](https://github.com/patchstack/connect/blob/main/field-test/README.md): it documents the AI-agent refusal modes each clause guards against, and its harness runs a real agent through the full install in a throwaway fixture against a mocked API and scores the outcome on eight checks. Validate any variant there first.
 
 ## Quick start (zero configuration)
 
@@ -115,10 +108,14 @@ patchstack-connect mark-build [options]            Stamp built HTML with a produ
                                                    build fingerprint, ensure the CDN widget,
                                                    and optionally verify it strictly
                                                    (run as a postbuild step)
-patchstack-connect protect                         Install always-on runtime protection
 patchstack-connect guide [--full]                  Show this project's setup status (what's done,
                                                    what's missing, with tailored commands), then
                                                    print the full setup guide
+patchstack-connect protect                         Opt-in: install the always-on runtime exploit
+                                                   guard (currently TanStack Start + Supabase; it
+                                                   patches the app's Supabase client to route
+                                                   traffic through a same-origin guard). Never
+                                                   run by scan/guide/mark-build.
 patchstack-connect help                            Print help
 
 Options (for scan and status):
@@ -197,7 +194,7 @@ Lower-level pieces are also exported: `scanLockfile`, `buildWirePayload`, `postM
 }
 ```
 
-That's the entire network payload. No source code, environment variables, or file paths are uploaded — just the package names and versions from your lockfile. Separately, after a successful non-dry response has a UUID, the CLI may locally edit one allowlisted source shell to ensure the widget. Duplicate names with different versions are preserved so transitive vulnerabilities aren't missed.
+That's the entire network payload. No source code, environment-variable values, or file paths are uploaded — just the package names and versions from your lockfile. After a successful non-dry response has a UUID, `scan` may locally edit one allowlisted source shell to ensure the widget; source is never uploaded. `mark-build` separately edits built HTML and stamps it with a stack descriptor that may include hosting-related environment-variable *names* such as `VERCEL`, never their values. Duplicate names with different versions are preserved so transitive vulnerabilities aren't missed.
 
 ## Supported lockfiles
 

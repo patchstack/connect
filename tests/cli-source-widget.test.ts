@@ -1,16 +1,19 @@
 import { execFile } from 'node:child_process';
 import { copyFile, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { createServer, type Server } from 'node:http';
+import { createRequire } from 'node:module';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { promisify } from 'node:util';
 
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 const execFileAsync = promisify(execFile);
-const REPO_ROOT = path.resolve(import.meta.dirname, '..');
+const require = createRequire(import.meta.url);
+const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const CLI_SOURCE = path.join(REPO_ROOT, 'src', 'cli.ts');
-const VITE_NODE = path.join(REPO_ROOT, 'node_modules', 'vite-node', 'vite-node.mjs');
+const TSX_CLI = require.resolve('tsx/cli');
 const LOCKFILE_FIXTURE = path.join(REPO_ROOT, 'tests', 'fixtures', 'package-lock-v3.json');
 const SITE_UUID = '550e8400-e29b-41d4-a716-446655440000';
 const OTHER_UUID = '11111111-1111-1111-1111-111111111111';
@@ -723,7 +726,7 @@ async function runCli(
   cwd: string,
   args: string[],
 ): Promise<{ stdout: string; stderr: string }> {
-  return execFileAsync(process.execPath, [VITE_NODE, '--script', CLI_SOURCE, ...args], {
+  return execFileAsync(process.execPath, [TSX_CLI, CLI_SOURCE, ...args], {
     cwd,
     env: cleanConnectorEnv(),
     encoding: 'utf8',

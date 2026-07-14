@@ -163,7 +163,7 @@ function verify(fixtureDir, mock, agentOutput) {
     },
     widgetTokenMatches: {
       pass: fixtureContains(fixtureDir, mock.uuid),
-      detail: 'provisioned UUID appears in source (userToken)',
+      detail: 'provisioned UUID appears in source as the widget identifier',
     },
     claimUrlSurfaced: {
       pass: agentOutput.includes('/monitor/claim?site='),
