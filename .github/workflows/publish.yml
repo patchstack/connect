@@ -5,6 +5,11 @@ on:
     types:
       - published
   workflow_dispatch:
+    inputs:
+      version:
+        description: Version to publish (e.g. 0.3.7). Leave blank for a dry-run.
+        type: string
+        default: ""
 
 permissions:
   contents: read
@@ -51,12 +56,12 @@ jobs:
         run: npm pack --dry-run
 
       - name: Dry-run publish
-        if: github.event_name == 'workflow_dispatch'
+        if: github.event_name == 'workflow_dispatch' && inputs.version == ''
         run: npm publish --access public --provenance --dry-run
 
   publish:
     name: Publish to npm
-    if: github.event_name == 'release'
+    if: github.event_name == 'release' || (github.event_name == 'workflow_dispatch' && inputs.version != '')
     needs: validate
     runs-on: ubuntu-latest
     environment:
@@ -64,8 +69,22 @@ jobs:
       url: ${{ steps.version.outputs.url }}
 
     steps:
+      - name: Resolve version
+        id: version
+        run: |
+          if [ "${{ github.event_name }}" = "release" ]; then
+            version="${GITHUB_REF_NAME#v}"
+          else
+            version="${{ inputs.version }}"
+          fi
+          echo "Publishing version $version"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "url=https://www.npmjs.com/package/@patchstack/connect/v/$version" >> "$GITHUB_OUTPUT"
+
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          ref: refs/tags/v${{ steps.version.outputs.version }}
 
       - name: Setup Node
         uses: actions/setup-node@v4
@@ -77,13 +96,8 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
-      - name: Set version from release tag
-        id: version
-        run: |
-          version="${GITHUB_REF_NAME#v}"
-          echo "Publishing version $version (from tag $GITHUB_REF_NAME)"
-          npm version "$version" --no-git-tag-version --allow-same-version
-          echo "url=https://www.npmjs.com/package/@patchstack/connect/v/$version" >> "$GITHUB_OUTPUT"
+      - name: Set package version
+        run: npm version "${{ steps.version.outputs.version }}" --no-git-tag-version --allow-same-version
 
       - name: Build
         run: npm run build
