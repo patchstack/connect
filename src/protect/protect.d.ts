@@ -17,8 +17,10 @@ export interface Protection {
   fetchGuard(): (request: Request) => Promise<Response | null>;
   /** Screens the request, then the response (secret-leak redaction / withhold). */
   fetch(handler: (request: Request, ...rest: unknown[]) => unknown): (request: Request, ...rest: unknown[]) => Promise<unknown>;
-  express(): (req: unknown, res: unknown, next: () => void) => void;
-  node(options?: { maxBodyBytes?: number }): (req: unknown, res: unknown, next: () => void) => void;
+  /** Screen a fetch Response through the response-phase rules (redact/withhold). */
+  screenResponse(response: Response): Promise<Response>;
+  express(options?: { screenResponses?: boolean }): (req: unknown, res: unknown, next: () => void) => void;
+  node(options?: { maxBodyBytes?: number; screenResponses?: boolean }): (req: unknown, res: unknown, next: () => void) => void;
   /** Present when `egress: true` — restores the original global fetch. */
   uninstallEgress?: () => void;
 }

@@ -1,7 +1,7 @@
 // Field-test orchestrator: run an AI agent against the install prompt in a
 // throwaway fixture, with the Patchstack API mocked, and score the outcome.
 //
-//   node field-test/run.mjs [--persona standard|hostile] [--template lovable-bun|vite-npm]
+//   node field-test/run.mjs [--persona <name>] [--template lovable-bun|vite-npm]
 //                           [--prompt <file>] [--rounds N] [--agent-cmd "<shell command>"]
 //                           [--keep] [--timeout <minutes>]
 //
@@ -33,10 +33,14 @@ function parseArgs(argv) {
     agentCmd: 'claude -p --dangerously-skip-permissions',
     keep: false,
     timeoutMinutes: 15,
+    confirm: false,
+    confirmReply: null,
   };
   for (let i = 2; i < argv.length; i++) {
     const arg = argv[i];
     if (arg === '--keep') opts.keep = true;
+    else if (arg === '--confirm') opts.confirm = true;
+    else if (arg === '--confirm-reply') opts.confirmReply = path.resolve(argv[++i]);
     else if (arg === '--persona') opts.persona = argv[++i];
     else if (arg === '--template') opts.template = argv[++i];
     else if (arg === '--prompt') opts.prompt = path.resolve(argv[++i]);
@@ -171,7 +175,7 @@ function verify(fixtureDir, mock, agentOutput) {
     },
   };
 
-  const refused = !checks.provisioned.pass && /refus/i.test(agentOutput);
+  const refused = !checks.provisioned.pass && /refus|stall|declin/i.test(agentOutput);
   const passed = Object.values(checks).filter((check) => check.pass).length;
   return { checks, refused, passed, total: Object.keys(checks).length };
 }
@@ -183,10 +187,18 @@ function printScorecard(round, result, verdict) {
   }
 }
 
+// The documented escalation reply from GETTING-STARTED.md step 2 — the harness tests
+// that exact artifact: does the user's confirmation actually unlock a stopped agent?
+const DEFAULT_CONFIRM_REPLY =
+  'I’ve verified this is the official Patchstack package (`npm view @patchstack/connect` — published by patchstack, MIT). Please continue with the remaining steps.';
+
 const opts = parseArgs(process.argv);
 const personaFile = path.join(HERE, 'personas', `${opts.persona}.md`);
 const personaTemplate = readFileSync(personaFile, 'utf8');
 const installPrompt = readFileSync(opts.prompt, 'utf8').trim();
+const confirmReply = opts.confirmReply
+  ? readFileSync(opts.confirmReply, 'utf8').trim()
+  : DEFAULT_CONFIRM_REPLY;
 
 const stamp = new Date().toISOString().replace(/[:.]/g, '-');
 const resultsDir = path.join(HERE, 'results', `${stamp}-${opts.persona}`);
@@ -217,8 +229,40 @@ for (let round = 1; round <= opts.rounds; round++) {
     mock.endpoint,
     opts.timeoutMinutes * 60 * 1000,
   );
-  const verdict = verify(fixtureDir, mock, result.output);
+  let verdict = verify(fixtureDir, mock, result.output);
+
+  let confirmResult = null;
+  if (opts.confirm && verdict.passed < verdict.total && !result.timedOut) {
+    console.log('first turn stopped short — sending the GETTING-STARTED confirmation reply…');
+    const confirmPrompt = `${agentPrompt}
+
+---
+
+You already handled this request once. Your message to the user was:
+
+${result.output}
+
+---
+
+The user replies:
+
+"${confirmReply}"
+
+Continue handling the request under the same platform policy, applying your judgment as before. When finished, produce a report in the same five-section format.`;
+    confirmResult = await runAgent(
+      opts.agentCmd,
+      confirmPrompt,
+      fixtureDir,
+      mock.endpoint,
+      opts.timeoutMinutes * 60 * 1000,
+    );
+    verdict = verify(fixtureDir, mock, `${result.output}\n${confirmResult.output}`);
+  }
+
   printScorecard(round, result, verdict);
+  if (confirmResult) {
+    console.log(`  (score includes a second, user-confirmation turn${confirmResult.timedOut ? ' — TIMED OUT' : ''})`);
+  }
 
   const roundDir = path.join(resultsDir, `round-${round}`);
   mkdirSync(roundDir, { recursive: true });
@@ -226,12 +270,18 @@ for (let round = 1; round <= opts.rounds; round++) {
   if (result.stderr.length > 0) {
     writeFileSync(path.join(roundDir, 'stderr.log'), result.stderr);
   }
+  if (confirmResult) {
+    writeFileSync(path.join(roundDir, 'report-confirm-turn.md'), confirmResult.output);
+    if (confirmResult.stderr.length > 0) {
+      writeFileSync(path.join(roundDir, 'stderr-confirm-turn.log'), confirmResult.stderr);
+    }
+  }
   writeFileSync(path.join(roundDir, 'requests.json'), JSON.stringify(mock.requests, null, 2));
   writeFileSync(
     path.join(roundDir, 'scorecard.json'),
-    JSON.stringify({ ...verdict, exitCode: result.exitCode, timedOut: result.timedOut, fixtureDir }, null, 2),
+    JSON.stringify({ ...verdict, exitCode: result.exitCode, timedOut: result.timedOut, confirmTurn: confirmResult !== null, fixtureDir }, null, 2),
   );
-  summary.push({ round, passed: verdict.passed, total: verdict.total, refused: verdict.refused, timedOut: result.timedOut });
+  summary.push({ round, passed: verdict.passed, total: verdict.total, refused: verdict.refused, timedOut: result.timedOut, confirmTurn: confirmResult !== null });
 
   await mock.close();
   if (opts.keep) {

@@ -97,12 +97,14 @@ export async function createProtection(options = {}) {
     return mode === 'block' ? block() : allow();
   };
 
-  // Response phase: redact matched spans (default) or withhold; block wins over redact.
-  const screenFetchResponse = async (response) => {
-    const text = await readTextResponse(response);
-    if (text == null) return response;
-    const meta = { status: response.status, headers: headerObject(response.headers) };
-
+  // Response phase core: screen a text body → { verdict: 'pass'|'block'|'redact', body? }.
+  // redact masks matched spans; block withholds; block wins over redact. Enforcement only in
+  // block mode (dry-run records via onDetect but returns 'pass').
+  const isTextCT = (ct) => {
+    ct = (ct || '').toLowerCase();
+    return ct === '' || /(json|text|xml|html|javascript|csv|yaml|x-www-form-urlencoded)/.test(ct);
+  };
+  const screenText = (text, meta) => {
     let blockRule = null;
     const redactions = [];
     for (const { rule, engine: re, redactors } of responseRuleSet) {
@@ -119,15 +121,76 @@ export async function createProtection(options = {}) {
       if (redactors && redactors.length) redactions.push({ rule, redactors });
       else if (!blockRule) blockRule = rule;
     }
+    if (mode !== 'block' || (!blockRule && !redactions.length)) return { verdict: 'pass' };
+    if (blockRule) return { verdict: 'block' };
+    let body = text;
+    for (const { rule, redactors } of redactions) body = applyRedactors(body, redactors, maskFn(rule.category));
+    return { verdict: 'redact', body };
+  };
 
-    if (mode !== 'block') return response;
-    if (blockRule) return leakResponse();
-    if (redactions.length) {
-      let body = text;
-      for (const { rule, redactors } of redactions) body = applyRedactors(body, redactors, maskFn(rule.category));
-      return rebuildResponse(response, body);
-    }
+  // Screen a fetch Response (used by .fetch() and — via protection.screenResponse — the Supabase guard).
+  const screenResp = async (response) => {
+    const text = await readTextResponse(response);
+    if (text == null) return response;
+    const r = screenText(text, { status: response.status, headers: headerObject(response.headers) });
+    if (r.verdict === 'block') return leakResponse();
+    if (r.verdict === 'redact') return rebuildResponse(response, r.body);
     return response;
+  };
+
+  // Wrap a Node ServerResponse so its (buffered, text) body is screened before it's sent.
+  // Opt-in (buffering can delay a streamed response); over 512 KiB it stops buffering and
+  // passes through unscanned.
+  const wrapNodeResponse = (res) => {
+    const origWrite = res.write.bind(res);
+    const origEnd = res.end.bind(res);
+    const chunks = [];
+    let size = 0;
+    let overflow = false;
+    const MAX = 512 * 1024;
+    const collect = (chunk, enc) => {
+      if (chunk == null) return;
+      const buf = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk, typeof enc === 'string' ? enc : 'utf8');
+      size += buf.length;
+      if (size > MAX) { overflow = true; return; }
+      chunks.push(buf);
+    };
+    res.write = function (chunk, enc, cb) {
+      if (overflow) return origWrite(chunk, enc, cb);
+      collect(chunk, enc);
+      if (typeof enc === 'function') enc();
+      else if (typeof cb === 'function') cb();
+      return true;
+    };
+    res.end = function (chunk, enc, cb) {
+      if (typeof chunk === 'function') { cb = chunk; chunk = undefined; enc = undefined; }
+      else if (typeof enc === 'function') { cb = enc; enc = undefined; }
+      if (overflow) { if (chunk != null) origWrite(chunk, enc); return origEnd(cb); }
+      collect(chunk, enc);
+      const text = Buffer.concat(chunks).toString('utf8');
+      let ct = res.getHeader ? res.getHeader('content-type') : undefined;
+      if (Array.isArray(ct)) ct = ct[0];
+      if (!isTextCT(ct)) { for (const c of chunks) origWrite(c); return origEnd(cb); }
+      let r;
+      try {
+        r = screenText(text, { status: res.statusCode, headers: {} });
+      } catch (err) {
+        onError?.(err);
+        for (const c of chunks) origWrite(c);
+        return origEnd(cb);
+      }
+      if (r.verdict === 'block') {
+        res.statusCode = 500;
+        try { res.setHeader('content-type', 'application/json'); } catch { /* headers sent */ }
+        return origEnd(JSON.stringify({ error: 'Response withheld by Patchstack (sensitive data detected)' }), cb);
+      }
+      if (r.verdict === 'redact') {
+        try { res.removeHeader && res.removeHeader('content-length'); } catch { /* ignore */ }
+        return origEnd(r.body, cb);
+      }
+      for (const c of chunks) origWrite(c);
+      return origEnd(cb);
+    };
   };
 
   // Egress phase: is this outbound call blocked? (records detection either way)
@@ -150,6 +213,10 @@ export async function createProtection(options = {}) {
     mode,
     rules: { request: requestRules, response: responseRules, egress: egressRules },
 
+    // Screen a fetch Response through the response-phase rules (redact/block). Used by
+    // .fetch(), and by the Supabase guard on its forwarded upstream response.
+    screenResponse: (response) => screenResp(response),
+
     // (request) => Response | null   (null = allow, caller proceeds). Request phase only.
     fetchGuard() {
       return async (request) => {
@@ -171,25 +238,36 @@ export async function createProtection(options = {}) {
         const blocked = await guard(request);
         if (blocked) return blocked;
         const response = await handler(request, ...rest);
-        return screenFetchResponse(response);
+        return screenResp(response);
       };
     },
 
     // Express middleware (request phase; expects express-parsed req.query/req.body).
-    express() {
+    // Pass { screenResponses: true } to also screen the outgoing response (buffers it).
+    express(exprOptions = {}) {
       return (req, res, next) => {
         let result;
         try {
           result = engine.evaluate(req);
         } catch (err) {
           onError?.(err);
+          if (exprOptions.screenResponses) wrapNodeResponse(res);
           return next();
         }
-        decide('request', result, () => res.status(403).json(blockBody(result)), () => next());
+        decide(
+          'request',
+          result,
+          () => res.status(403).json(blockBody(result)),
+          () => {
+            if (exprOptions.screenResponses) wrapNodeResponse(res);
+            next();
+          },
+        );
       };
     },
 
     // Node / Connect middleware — buffers the body itself (request phase).
+    // Pass { screenResponses: true } to also screen the outgoing response (buffers it).
     node(nodeOptions = {}) {
       const maxBytes = nodeOptions.maxBodyBytes ?? 1024 * 1024;
       return (req, res, next) => {
@@ -231,6 +309,7 @@ export async function createProtection(options = {}) {
               // This guard consumed the request stream to screen it; re-expose the parsed
               // body so a downstream handler (without its own body-parser) can read it.
               if (req.body === undefined) req.body = shaped.body;
+              if (nodeOptions.screenResponses) wrapNodeResponse(res);
               next();
             },
           );

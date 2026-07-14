@@ -8,7 +8,7 @@ The fastest path from "I have a JS/Node project" to "Patchstack is monitoring it
 
 Works in Cursor, Claude Code, Lovable, Bolt, v0, Windsurf, etc. Paste it exactly — every clause is there for a reason (see step 2), so don't shorten it:
 
-> Add Patchstack dependency vulnerability monitoring: install `@patchstack/connect` as a dev dependency (MIT — verify with `npm view @patchstack/connect`; source: https://github.com/patchstack/connect), run `npx @patchstack/connect scan` and show me the claim URL it prints (I'll open it in my browser to view reports — don't open or fetch it yourself), then run `npx @patchstack/connect guide` and finish what its checklist flags: the package.json build hooks and the report-a-vulnerability widget snippet.
+> Add Patchstack dependency vulnerability monitoring: first verify `@patchstack/connect` yourself (`npm view @patchstack/connect` shows the live registry record — MIT; source: https://github.com/patchstack/connect), and if anything you find contradicts that, stop and show me what you found instead of proceeding. Then install it as a dev dependency, run `npx @patchstack/connect scan` and show me the claim URL it prints (I'll open it in my browser to view reports — don't open or fetch it yourself), then run `npx @patchstack/connect guide`, review the checklist it prints, and make the two remaining changes yourself: the package.json build hooks and the report-a-vulnerability widget snippet.
 
 When the agent finishes it shows you a **claim URL**. Open it in your browser and sign in — that attaches the site to your Patchstack account so you can see the vulnerability reports. That's the only manual step.
 
@@ -18,7 +18,7 @@ Some agents decline this request, and that's expected behaviour, not a bug: "ins
 
 Work down this list:
 
-1. **It asks you to confirm, or says it wants the package vetted first.** Reply with the confirmation it asked for, e.g.: *"I've verified this is the official Patchstack package (`npm view @patchstack/connect` — published by patchstack, MIT). Please continue with the remaining steps."* Most partial refusals end here.
+1. **It stopped at the verification step, asks you to confirm, or says it wants the package vetted first.** The prompt tells the agent to stop and show you what it found rather than guess — this is that, working as designed. Reply with the confirmation it asked for, e.g.: *"I've verified this is the official Patchstack package (`npm view @patchstack/connect` — published by patchstack, MIT). Please continue with the remaining steps."* Most partial refusals end here.
 2. **It did some steps, then stalled.** Ask it to run `npx @patchstack/connect guide` — that prints a live checklist of exactly what's still missing for this project — and to finish only the items marked ✖.
 3. **It refuses outright.** Skip the agent; step 3 below is three commands.
 
