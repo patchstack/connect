@@ -101,7 +101,11 @@ function bakeSiteUuid(cwd: string): void {
   } catch {
     return log('.patchstackrc.json unreadable — skipping site-UUID bake');
   }
-  if (!uuid) return;
+  // Guard on UUID format so a malformed value falls through to the inert placeholder rather
+  // than baking junk into a TS string literal (broken build / replace-token hazards).
+  if (!uuid || !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(uuid)) {
+    return log('.patchstackrc.json siteUuid missing or malformed — guard uses PATCHSTACK_SITE_UUID env or the bundled fallback');
+  }
   const p = join(cwd, 'src/integrations/patchstack/guard.ts');
   if (!existsSync(p)) return;
   const s = read(p);

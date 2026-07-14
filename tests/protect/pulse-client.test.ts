@@ -40,6 +40,27 @@ describe('PulseRuleClient', () => {
     expect(fetchMock).toHaveBeenCalledTimes(1);
   });
 
+  it('refetches once the cache TTL has elapsed', async () => {
+    const nowSpy = vi.spyOn(Date, 'now').mockReturnValue(0);
+    const fetchMock = vi.fn(async () => new Response(JSON.stringify(RULES), { status: 200 }));
+    vi.stubGlobal('fetch', fetchMock);
+    const client = new PulseRuleClient({ siteUuid: 'x', cacheTtl: 10_000 });
+    await client.getRules();
+    nowSpy.mockReturnValue(10_001); // past the TTL
+    await client.getRules();
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
+
+  it('clearCache() forces the next call to refetch', async () => {
+    const fetchMock = vi.fn(async () => new Response(JSON.stringify(RULES), { status: 200 }));
+    vi.stubGlobal('fetch', fetchMock);
+    const client = new PulseRuleClient({ siteUuid: 'x', cacheTtl: 10_000 });
+    await client.getRules();
+    client.clearCache();
+    await client.getRules();
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
+
   it('requires a siteUuid', () => {
     expect(() => new PulseRuleClient({})).toThrow();
   });
