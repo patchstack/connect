@@ -78,19 +78,19 @@ Everything is saved under `field-test/results/<timestamp>-<persona>/` (gitignore
 4. Fix what you find — in the prompt, the `guide` checklist, or `AGENT-INSTALL.md` (agents audit the shipped docs; inaccuracies cost trust).
 5. When rounds are consistently green, copy the prompt into the README's install-prompt section and record any new refusal mode in the list above.
 
-Keep `prompt.txt` in sync with the README prompt — it is the tested artifact.
+Keep `prompt.txt`, the README prompt, and the prompt in `GETTING-STARTED.md` identical — `prompt.txt` is the tested artifact.
 
 ## When the gate is red for environmental reasons (plan B)
 
 The agent audits the *published* tarball, so the gate's pass rate is a function of two things that no prompt edit can fix:
 
-- **Stale shipped docs.** If doc fixes are merged but unpublished, agents refuse over contradictions that no longer exist at HEAD (this is how a full 2026-07-14 session went 2-green/8-refused across every prompt variant, including the incumbent). Publishing is the only fix.
-- **Release freshness.** "Published 11 hours ago" and same-day release bursts are cited as targeted-attack signals. This decays on its own; gate results are most representative ≥24–48h after the last publish. (Corollary: publishing doc fixes resets this clock — expect a noisy day, then re-gate.)
+- **Stale shipped docs.** If doc fixes are merged but unpublished, agents refuse over contradictions that no longer exist at HEAD (this is how a full 2026-07-14 session went 2-green/8-refused across every prompt variant, including the incumbent). After the UUID security blocker is lifted, publishing is the only way to update the audited tarball. While that blocker remains, do not publish merely to make this gate green; classify the stale-doc refusal as environmental.
+- **Release freshness.** "Published 11 hours ago" and same-day release bursts are cited as targeted-attack signals. This decays on its own; gate results are most representative ≥24–48h after the last permitted publish. (Corollary: a post-gate docs release resets this clock — expect a noisy day, then re-gate.)
 
 Until a publish lands and ages, use this ladder instead of burning hostile rounds on a known-red gate:
 
 1. **Stub self-test** — `node field-test/run.mjs --agent-cmd "node $PWD/field-test/stub-compliant.mjs"`. Validates the harness, mock, and scoring in ~1 min. No AI, no registry dependency.
-2. **Standard persona** — exercises the mechanical checks (guide accuracy, hook wiring, widget token) with less policy pressure; catches CLI/UX regressions immediately.
+2. **Standard persona** — exercises the mechanical checks (guide accuracy, hook wiring, widget identifier) with less policy pressure; catches CLI/UX regressions immediately.
 3. **Hostile rounds scored by refusal *reason*, not exit code.** Read DECISION ANALYSIS and attribute each refusal: one that quotes the published docs or release age is environmental noise; one that quotes the prompt's own wording is a real prompt bug. A variant is not worse than the incumbent unless it draws prompt-directed refusals the incumbent doesn't.
 4. **(Not built) local-registry mode** — run a local registry (e.g. verdaccio), publish the working tree to it, and pin the fixture via the `npm_config_registry` env var (env pinning reads as platform plumbing, same as `PATCHSTACK_ENDPOINT`). This is the only way to exercise unpublished doc/CLI changes end-to-end. Caveat: the local record has no provenance attestation or signatures, which strict agents check — expect some artificial refusals on that ground.
 
