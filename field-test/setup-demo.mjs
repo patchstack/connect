@@ -56,12 +56,12 @@ try {
   const env = { ...process.env, PATCHSTACK_ENDPOINT: mock.endpoint, NO_COLOR: '1' };
 
   console.log('\n2. Run the single bounded setup command');
-  if ((await run('npx', ['patchstack-connect', 'setup'], { cwd: fixture, env })) !== 0) {
+  if ((await run('npx', ['--yes', 'patchstack-connect', 'setup'], { cwd: fixture, env })) !== 0) {
     throw new Error('setup failed');
   }
 
   console.log('\n3. Re-run setup to prove it is idempotent');
-  if ((await run('npx', ['patchstack-connect', 'setup'], { cwd: fixture, env })) !== 0) {
+  if ((await run('npx', ['--yes', 'patchstack-connect', 'setup'], { cwd: fixture, env })) !== 0) {
     throw new Error('second setup failed');
   }
 

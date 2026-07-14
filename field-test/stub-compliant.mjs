@@ -11,12 +11,12 @@ const run = (cmd) => execSync(cmd, { cwd, stdio: 'pipe', env: process.env }).toS
 run('npm install --save-dev --no-audit --no-fund @patchstack/connect');
 let setupOutput;
 try {
-  setupOutput = run('npx @patchstack/connect setup');
+  setupOutput = run('npx --yes patchstack-connect setup');
 } catch {
   // Pre-publish compatibility: the harness installs the registry release, which
   // may not have `setup` yet. Reproduce its bounded changes so harness plumbing
   // remains testable while the local setup demo covers the working tree.
-  setupOutput = run('npx @patchstack/connect scan');
+  setupOutput = run('npx --yes patchstack-connect scan');
   const pkg = JSON.parse(readFileSync(`${cwd}/package.json`, 'utf8'));
   pkg.scripts.build =
     `patchstack-connect scan && ${pkg.scripts.build} && patchstack-connect mark-build`;

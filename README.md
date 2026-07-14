@@ -8,7 +8,7 @@ For how this repo fits with the wider Patchstack ecosystem (`saas`, `hub`, `patc
 
 Copy this request into a coding assistant, or run the same command yourself:
 
-> Run `npm i -D @patchstack/connect && npx @patchstack/connect setup`. It scans dependencies, adds its widget and build hooks, and prints the dashboard URL.
+> Run `npm i -D @patchstack/connect && npx --yes patchstack-connect setup`. It scans dependencies, adds its widget and build hooks, and prints the dashboard URL.
 
 `setup` is state-aware and idempotent: it scans dependencies, provisions or reuses the site, manages the disclosure widget, wires the existing build command without replacing it, and prints the remaining setup status. It never runs the project build or the opt-in `protect` command. `guide` provides the same project-specific status without changing files.
 

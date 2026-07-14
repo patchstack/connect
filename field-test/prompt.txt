@@ -1,1 +1,1 @@
-Run `npm i -D @patchstack/connect && npx @patchstack/connect setup`. It scans dependencies, adds its widget and build hooks, and prints the dashboard URL.
+Run `npm i -D @patchstack/connect && npx --yes patchstack-connect setup`. It scans dependencies, adds its widget and build hooks, and prints the dashboard URL.

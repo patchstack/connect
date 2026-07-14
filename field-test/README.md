@@ -29,9 +29,11 @@ Not every real-world report is a refusal, and successes carry signal the harness
 - Provenance up front unlocked that install, but later no-web sessions fabricated failures for cited URLs; it remains useful context for a human follow-up, not part of the universal prompt.
 - Post-install (before reading the shipped docs) the agent confidently mischaracterized the package as "meant to run in CI… doesn't provide a UI widget", parroting the user's own "Purpose: … in CI" framing. Agents describe the package from the *requester's* framing until something forces them to read the docs — another reason the prompt names the widget snippet explicitly.
 
-The minimal prompt is now the canonical artifact: one explicit `install && setup` command, with the command's bounded effects named inline.
+The minimal prompt is now the canonical one-shot artifact: one explicit `install && setup` command, with the command's bounded effects named inline. It is not universal—real Bolt can reject the transaction before staging it—so GETTING-STARTED documents a two-turn dependency-first fallback.
 
 PR #73 tested the provenance-led version as a universal prompt. It helped one Lovable run, but one Bolt run installed the package and then invented a CI token/workflow instead of reading or running its setup, while three other fresh Bolt chats refused as usual. The line `Purpose: Scan project dependencies for known vulnerabilities in CI.` was especially costly: it anchored the assistant to a plausible generic CI-scanner story that is false for this connector's zero-configuration flow. Keep provenance metadata available for human follow-ups, but keep the canonical prompt focused on the exact command and effects that must complete.
+
+The 155-byte one-shot then failed in another real Bolt chat before any registry check: Bolt classified the combined install, widget, and build-hook request as a supply-chain pattern and refused to stage it. This is a structural authorization boundary, not a wording bug. The Bolt fallback therefore separates the reversible `devDependencies` declaration from running the already-installed CLI; do not add a hidden `postinstall`, which would validate the concern and remove the user's explicit second authorization.
 
 ## Platform personas — real system prompts
 
