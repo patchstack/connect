@@ -11,8 +11,14 @@ import {
   injectMarker,
   resolveBuildDir,
 } from './mark-build.js';
-import { collectGuideState, countRemainingSteps, renderGuideChecklist } from './guide.js';
+import {
+  collectGuideState,
+  countRemainingSteps,
+  installCommand,
+  renderGuideChecklist,
+} from './guide.js';
 import { runProtect } from './protect/install.js';
+import { wireBuildScripts } from './setup.js';
 import { detectStack, type StackDescriptor } from './stack.js';
 import { PatchstackError } from './types.js';
 import { buildWidgetTag, ensureSourceWidget, ensureWidgetInHtml } from './widget.js';
@@ -28,6 +34,9 @@ Usage:
                                                      HTML shell (index.html, public/index.html,
                                                      or src/app.html) — opt out with
                                                      "widget": false in .patchstackrc.json
+  patchstack-connect setup  [options]                Finish the bounded project setup: run scan,
+                                                     manage the widget, and wire package.json build
+                                                     scripts. Never runs a build or protect
   patchstack-connect init   <site-uuid>              Optional: pre-seed .patchstackrc.json
                                                      with an existing site UUID
   patchstack-connect status [options]                Show current configuration
@@ -43,7 +52,7 @@ Usage:
                                                      guide even when setup is complete
   patchstack-connect help                            Print this message
 
-Options (for scan and status):
+Options (for scan, setup, and status):
   --site-uuid <uuid>      Override the configured site UUID
   --endpoint <url>        Override the API endpoint
   --dry-run               (scan only) Show the payload without posting
@@ -61,6 +70,7 @@ Environment:
 Precedence: CLI flag > environment variable > .patchstackrc.json.
 
 Examples:
+  npx @patchstack/connect setup
   npx @patchstack/connect scan
   npx @patchstack/connect scan --dry-run
   npx @patchstack/connect init 550e8400-e29b-41d4-a716-446655440000
@@ -132,7 +142,10 @@ async function runInit(args: ParsedArgs): Promise<number> {
   return 0;
 }
 
-async function runScan(args: ParsedArgs): Promise<number> {
+async function runScan(
+  args: ParsedArgs,
+  options: { showRemainingSetup?: boolean } = {},
+): Promise<number> {
   const dryRun = args.flags.get('dry-run') === true;
   const config = await resolveConfig({
     cwd: process.cwd(),
@@ -213,12 +226,12 @@ async function runScan(args: ParsedArgs): Promise<number> {
     reportSourceWidget(effectiveUuid);
   }
 
-  // On the first scan (provisioning), surface the claim URL so the user can
+  // On the first scan (provisioning), surface the dashboard URL so the user can
   // attach this site to their Patchstack account. `npx @patchstack/connect status`
   // re-displays it any time.
   if (provisioning && response.uuid !== undefined && response.uuid.length > 0) {
     console.log('');
-    console.log('Claim this site to view vulnerability reports in your Patchstack dashboard:');
+    console.log('Open this dashboard link to view vulnerability reports:');
     console.log(`  ${buildClaimUrl(config.endpoint, response.uuid)}`);
     if (config.endpoint !== DEFAULT_ENDPOINT) {
       console.log('  (this URL inherits the endpoint override above)');
@@ -228,19 +241,21 @@ async function runScan(args: ParsedArgs): Promise<number> {
   // A scan can't wire the build hooks itself — an agent that runs `scan` but not
   // `guide` (a common shortcut) otherwise sees the widget + claim URL and assumes
   // setup is finished. Surface whatever is still missing so the loop actually closes.
-  try {
-    const state = await collectGuideState(process.cwd());
-    const remaining = countRemainingSteps(state);
-    if (remaining > 0) {
-      const hooksMissing = !(state.prebuildWired && state.postbuildWired);
-      console.log('');
-      console.log(
-        `Setup not complete — ${remaining} step(s) remaining${hooksMissing ? ", including the package.json build hooks (which scan can't wire)" : ''}.`,
-      );
-      console.log('Run `npx @patchstack/connect guide` for the exact steps to finish for this project.');
+  if (options.showRemainingSetup !== false) {
+    try {
+      const state = await collectGuideState(process.cwd());
+      const remaining = countRemainingSteps(state);
+      if (remaining > 0) {
+        const hooksMissing = !(state.prebuildWired && state.postbuildWired);
+        console.log('');
+        console.log(
+          `Setup not complete — ${remaining} step(s) remaining${hooksMissing ? ", including the package.json build hooks (which scan can't wire)" : ''}.`,
+        );
+        console.log('Run `npx @patchstack/connect guide` for the exact steps to finish for this project.');
+      }
+    } catch {
+      // Best-effort: never turn a successful scan into a failure over this nudge.
     }
-  } catch {
-    // Best-effort: never turn a successful scan into a failure over this nudge.
   }
 
   return 0;
@@ -330,6 +345,50 @@ async function runGuide(args: ParsedArgs): Promise<number> {
   return 0;
 }
 
+async function runSetup(args: ParsedArgs): Promise<number> {
+  if (args.flags.get('dry-run') === true) {
+    console.error('Error: setup does not support --dry-run. Use `scan --dry-run` to preview the manifest.');
+    return 1;
+  }
+
+  const before = await collectGuideState(process.cwd());
+  if (!before.hasPackageJson) {
+    console.error('Error: no package.json found. Run setup from the project root.');
+    return 1;
+  }
+  if (before.installed === null) {
+    console.error(
+      `Error: @patchstack/connect is not declared in package.json.\nRun: ${installCommand(before.packageManager)}`,
+    );
+    return 1;
+  }
+
+  console.log('Patchstack setup — applying bounded project changes');
+  console.log('  1. Scan dependencies, provision/reuse the site, and manage the source widget');
+  const scanCode = await runScan(args, { showRemainingSetup: false });
+  if (scanCode !== 0) {
+    return scanCode;
+  }
+
+  console.log('');
+  console.log('  2. Wire scan and mark-build into package.json');
+  const wired = wireBuildScripts(process.cwd(), before.packageManager);
+  console.log(`Build integration: ${wired.detail}`);
+
+  console.log('');
+  console.log('  3. Verify setup status');
+  const after = await collectGuideState(process.cwd());
+  const useColor = process.stdout.isTTY === true && process.env.NO_COLOR === undefined;
+  console.log(renderGuideChecklist(after, useColor));
+
+  const remaining = countRemainingSteps(after);
+  if (remaining > 0) {
+    console.log('');
+    console.log(`Setup applied its bounded changes; ${remaining} manual step(s) remain above.`);
+  }
+  return 0;
+}
+
 async function runStatus(args: ParsedArgs): Promise<number> {
   const config = await resolveConfig({
     cwd: process.cwd(),
@@ -343,7 +402,7 @@ async function runStatus(args: ParsedArgs): Promise<number> {
   console.log(`Timeout:     ${config.timeoutMs}ms`);
   console.log(`Environment: ${config.environment}`);
   if (config.siteUuid !== null) {
-    console.log(`Claim URL:  ${buildClaimUrl(config.endpoint, config.siteUuid)}`);
+    console.log(`Dashboard URL: ${buildClaimUrl(config.endpoint, config.siteUuid)}`);
   }
   return 0;
 }
@@ -465,6 +524,8 @@ async function main(): Promise<number> {
       return runProtectCommand(args);
     case 'guide':
       return runGuide(args);
+    case 'setup':
+      return runSetup(args);
     default:
       console.error(`Unknown command: ${args.command}\n`);
       console.error(HELP);

@@ -51,13 +51,18 @@ const INSTALL_COMMANDS: Record<PackageManager, string> = {
   bun: 'bun add -d @patchstack/connect',
 };
 
-/** Lockfile → package manager, same priority order as lockfile detection. */
+/**
+ * Lockfile → package manager for build-script semantics. Platform-native
+ * lockfiles win over package-lock.json because agents often use npm as a
+ * fallback inside Bun/pnpm/yarn projects, creating a secondary npm lockfile
+ * without changing the platform's actual build runner.
+ */
 const PM_BY_LOCKFILE: ReadonlyArray<{ filename: string; pm: PackageManager }> = [
-  { filename: 'package-lock.json', pm: 'npm' },
   { filename: 'bun.lock', pm: 'bun' },
   { filename: 'bun.lockb', pm: 'bun' },
   { filename: 'pnpm-lock.yaml', pm: 'pnpm' },
   { filename: 'yarn.lock', pm: 'yarn' },
+  { filename: 'package-lock.json', pm: 'npm' },
 ];
 
 /**
@@ -126,12 +131,17 @@ const WIDGET_SCAN_MAX_BYTES = 512 * 1024;
 
 interface PackageJson {
   name?: string;
+  packageManager?: string;
   dependencies?: Record<string, string>;
   devDependencies?: Record<string, string>;
   scripts?: Record<string, string>;
 }
 
 export function detectPackageManager(cwd: string): PackageManager {
+  const declared = readPackageJson(cwd)?.packageManager?.split('@')[0];
+  if (declared === 'npm' || declared === 'pnpm' || declared === 'yarn' || declared === 'bun') {
+    return declared;
+  }
   for (const { filename, pm } of PM_BY_LOCKFILE) {
     if (existsSync(path.join(cwd, filename))) {
       return pm;
@@ -388,8 +398,8 @@ export function renderGuideChecklist(state: GuideState, useColor: boolean): stri
   } else {
     lines.push(todo('Provision the site — run the first scan'));
     lines.push(detail('Run → npx @patchstack/connect scan'));
-    lines.push(detail('reads the lockfile, registers the project, writes .patchstackrc.json,'));
-    lines.push(detail('and prints a claim URL — show that URL to the user; never open it yourself.'));
+    lines.push(detail('Reads the lockfile, registers the project, writes .patchstackrc.json,'));
+    lines.push(detail('and prints a dashboard link. The CLI prints the link but never opens it.'));
   }
 
   // 3. Build hooks
@@ -434,17 +444,17 @@ export function renderGuideChecklist(state: GuideState, useColor: boolean): stri
     lines.push(detail('The site UUID is public by design — it ships in client-side HTML.'));
   }
 
-  // 5. Claim — the conversion moment; always the loudest line.
+  // 5. Dashboard access — always keep the URL prominent.
   lines.push('');
   if (state.claimUrl !== null) {
-    lines.push(` ${paint(ANSI.cyan, '➜')} ${paint(ANSI.bold, 'Claim the site (free, opens the dashboard):')}`);
+    lines.push(` ${paint(ANSI.cyan, '➜')} ${paint(ANSI.bold, 'Dashboard link (open to view reports):')}`);
     lines.push(`   ${paint(ANSI.cyan, state.claimUrl)}`);
-    lines.push(detail('Open in a browser. AI agents: show this URL to the user verbatim.'));
+    lines.push(detail('Open this link in a browser. The CLI never opens it.'));
     if (state.endpointOverride !== null) {
       lines.push(detail('(this URL inherits the endpoint override above)'));
     }
   } else {
-    lines.push(detail('The claim URL appears after the first scan (re-print any time with `status`).'));
+    lines.push(detail('The dashboard link appears after the first scan (re-print any time with `status`).'));
   }
 
   const remaining = countRemainingSteps(state);
@@ -459,7 +469,7 @@ export function renderGuideChecklist(state: GuideState, useColor: boolean): stri
       ),
     );
     if (state.claimUrl !== null) {
-      lines.push(detail('The only manual action left is claiming the site via the URL above (if not already claimed).'));
+      lines.push(detail('The only manual action left is opening the dashboard link above (if not already connected).'));
     }
   } else {
     lines.push(
