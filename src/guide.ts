@@ -12,9 +12,11 @@ import path from 'node:path';
 
 import { DEFAULT_ENDPOINT, buildClaimUrl } from './client.js';
 import { resolveConfig } from './config.js';
-import { detectStack } from './stack.js';
+import { WIDGET_CDN_URL } from './mark-build.js';
+import { inspectSourceWidgetPreflight } from './source-widget.js';
+import { SSR_CAPABLE_FRAMEWORKS, detectStack } from './stack.js';
 
-export const WIDGET_SCRIPT_URL = 'https://cdn.patchstack.com/patchstack-widget.js';
+export const WIDGET_SCRIPT_URL = WIDGET_CDN_URL;
 
 /** Substring that marks the widget as installed anywhere in the source tree. */
 const WIDGET_NEEDLE = 'patchstack-widget';
@@ -32,10 +34,14 @@ export interface GuideState {
   claimUrl: string | null;
   /** Non-default API endpoint in effect (rc file, env, or flag), else null. */
   endpointOverride: string | null;
+  /** Configuration error that prevents a reliable scan, else null. */
+  configError: string | null;
+  /** False when the project intentionally opts out with `"widget": false`. */
+  widgetEnabled?: boolean;
   prebuildWired: boolean;
   postbuildWired: boolean;
   widgetInstalled: boolean;
-  /** False when the widget is present but its userToken isn't the site UUID. */
+  /** False when the widget is present but its configured UUID isn't the site UUID. */
   widgetTokenMatches: boolean | null;
   /** Framework label from the declared dependencies (e.g. "next"), best-effort. */
   framework: string | null;
@@ -48,6 +54,14 @@ const INSTALL_COMMANDS: Record<PackageManager, string> = {
   pnpm: 'pnpm add -D @patchstack/connect',
   yarn: 'yarn add -D @patchstack/connect',
   bun: 'bun add -d @patchstack/connect',
+};
+
+/** Invoke the already-installed binary without falling back to a registry fetch. */
+const CONNECTOR_COMMANDS: Record<PackageManager, string> = {
+  npm: 'npx --no-install patchstack-connect',
+  pnpm: 'pnpm exec patchstack-connect',
+  yarn: 'yarn patchstack-connect',
+  bun: 'bun run patchstack-connect',
 };
 
 /** Lockfile → package manager, same priority order as lockfile detection. */
@@ -125,12 +139,23 @@ const WIDGET_SCAN_MAX_BYTES = 512 * 1024;
 
 interface PackageJson {
   name?: string;
+  packageManager?: string;
   dependencies?: Record<string, string>;
   devDependencies?: Record<string, string>;
   scripts?: Record<string, string>;
 }
 
 export function detectPackageManager(cwd: string): PackageManager {
+  // packageManager is the project's explicit choice and wins when stale
+  // lockfiles from a previous migration are still present.
+  const declared = readPackageJson(cwd)?.packageManager;
+  if (typeof declared === 'string') {
+    const match = /^(npm|pnpm|yarn|bun)@[^\s]+$/i.exec(declared.trim());
+    if (match !== null) {
+      return match[1]!.toLowerCase() as PackageManager;
+    }
+  }
+
   for (const { filename, pm } of PM_BY_LOCKFILE) {
     if (existsSync(path.join(cwd, filename))) {
       return pm;
@@ -141,6 +166,10 @@ export function detectPackageManager(cwd: string): PackageManager {
 
 export function installCommand(pm: PackageManager): string {
   return INSTALL_COMMANDS[pm];
+}
+
+export function connectorCommand(pm: PackageManager): string {
+  return CONNECTOR_COMMANDS[pm];
 }
 
 function readPackageJson(cwd: string): PackageJson | null {
@@ -170,11 +199,21 @@ export interface WidgetScanResult {
   found: boolean;
   /**
    * When a site UUID is known: does any file carrying the widget also carry
-   * that UUID as its userToken? null when the widget is absent or no UUID is
-   * known yet. A stale/wrong userToken makes the widget silently no-op, so a
-   * mismatch is worth surfacing rather than passing the check.
+   * that UUID as its managed `data-site-uuid` or legacy `userToken`? null when
+   * the widget is absent or no UUID is known yet. A stale/wrong UUID makes the
+   * widget silently no-op, so a mismatch is worth surfacing.
    */
   uuidMatches: boolean | null;
+}
+
+function widgetConfigMatches(content: string, siteUuid: string): boolean {
+  const uuid = siteUuid.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const managedAttribute = new RegExp(
+    `data-site-uuid\\s*=\\s*(["'])${uuid}\\1`,
+    'i',
+  );
+  const legacyInitialiser = new RegExp(`userToken\\s*:\\s*(["'])${uuid}\\1`);
+  return managedAttribute.test(content) || legacyInitialiser.test(content);
 }
 
 /**
@@ -225,7 +264,7 @@ export function findWidgetMarker(cwd: string, siteUuid?: string | null): WidgetS
           continue;
         }
         sawWidget = true;
-        if (siteUuid != null && content.includes(siteUuid)) {
+        if (siteUuid != null && widgetConfigMatches(content, siteUuid)) {
           sawTokenMatch = true;
         }
       } catch {
@@ -254,6 +293,158 @@ function resolveWidgetFileHint(cwd: string, framework: string | null): string | 
   return null;
 }
 
+type ConnectorAction = 'scan' | 'mark-build';
+
+const CONNECTOR_EXECUTABLE_PATTERN =
+  String.raw`(?:patchstack-connect|npx\s+--no-install\s+patchstack-connect|pnpm\s+exec\s+patchstack-connect|yarn\s+patchstack-connect|bun\s+run\s+patchstack-connect)`;
+const CONNECTOR_ACTION_PATTERN = new RegExp(
+  String.raw`^\s*${CONNECTOR_EXECUTABLE_PATTERN}\s+(scan|mark-build)(?=\s|$)([\s\S]*)$`,
+);
+const CONNECTOR_PREFIX_PATTERN = new RegExp(
+  String.raw`^\s*${CONNECTOR_EXECUTABLE_PATTERN}(?=\s|$)`,
+);
+
+/** Split only on top-level `&&`; quoted examples must never look executable. */
+function splitAndThenCommands(script: string): string[] {
+  const commands: string[] = [];
+  let start = 0;
+  let quote: "'" | '"' | '`' | null = null;
+  let parentheses = 0;
+
+  for (let index = 0; index < script.length; index += 1) {
+    const character = script[index]!;
+    if (quote !== null) {
+      if (character === '\\' && quote !== "'") {
+        index += 1;
+      } else if (character === quote) {
+        quote = null;
+      }
+      continue;
+    }
+    if (character === '\\') {
+      index += 1;
+      continue;
+    }
+    if (character === "'" || character === '"' || character === '`') {
+      quote = character;
+      continue;
+    }
+    if (character === '(') {
+      parentheses += 1;
+      continue;
+    }
+    if (character === ')' && parentheses > 0) {
+      parentheses -= 1;
+      continue;
+    }
+    if (parentheses === 0 && character === '&' && script[index + 1] === '&') {
+      commands.push(script.slice(start, index).trim());
+      start = index + 2;
+      index += 1;
+    }
+  }
+
+  commands.push(script.slice(start).trim());
+  return commands;
+}
+
+function connectorAction(
+  command: string,
+  requireStrictMarker = false,
+  requireStaticOutput = false,
+): ConnectorAction | null {
+  const match = CONNECTOR_ACTION_PATTERN.exec(command);
+  if (match === null) return null;
+
+  const trailing = match[2] ?? '';
+  // A dry run/help command does not perform the lifecycle action. Shell
+  // alternatives and pipelines also do not provide fail-closed sequencing.
+  if (
+    /(?:^|\s)(?:--dry-run|--help|-h|--version)(?=\s|$)/.test(trailing) ||
+    /[;&|\n\r]/.test(trailing)
+  ) {
+    return null;
+  }
+  const action = match[1] as ConnectorAction;
+  if (
+    action === 'mark-build' &&
+    ((requireStrictMarker && !/(?:^|\s)--strict(?=\s|$)/.test(trailing)) ||
+      (requireStaticOutput &&
+        !/(?:^|\s)--static-output(?=\s|$)/.test(trailing)))
+  ) {
+    return null;
+  }
+  return action;
+}
+
+function hasConnectorAction(
+  script: string,
+  action: ConnectorAction,
+  requireStrictMarker = false,
+  requireStaticOutput = false,
+): boolean {
+  const commands = splitAndThenCommands(script);
+  return (
+    commands.every((command) => command.length > 0) &&
+    commands.some(
+      (command) =>
+        connectorAction(command, requireStrictMarker, requireStaticOutput) === action,
+    )
+  );
+}
+
+function isExistingBuildCommand(command: string): boolean {
+  const trimmed = command.trim();
+  if (trimmed.length === 0 || CONNECTOR_PREFIX_PATTERN.test(trimmed)) return false;
+  // These are common ways a connector command is mentioned without building.
+  return !/^(?:#|echo(?:\s|$)|printf(?:\s|$)|true\s*$|false\s*$|:\s*$)/.test(trimmed);
+}
+
+function inspectBuildLifecycle(
+  scripts: Record<string, string> | undefined,
+  packageManager: PackageManager,
+  framework: string | null,
+): Pick<GuideState, 'prebuildWired' | 'postbuildWired'> {
+  const requireStaticOutput =
+    framework !== null && SSR_CAPABLE_FRAMEWORKS.has(framework);
+  const buildCommands = splitAndThenCommands(scripts?.build ?? '');
+  if (buildCommands.some((command) => command.length === 0)) {
+    return { prebuildWired: false, postbuildWired: false };
+  }
+  const existingBuildIndices = buildCommands.flatMap((command, index) =>
+    isExistingBuildCommand(command) ? [index] : [],
+  );
+  const hasExistingBuild = existingBuildIndices.length > 0;
+  const scanBeforeBuild = buildCommands.some(
+    (command, index) =>
+      connectorAction(command) === 'scan' &&
+      existingBuildIndices.some((buildIndex) => buildIndex > index),
+  );
+  const markerAfterBuild = buildCommands.some(
+    (command, index) =>
+      connectorAction(command, true, requireStaticOutput) === 'mark-build' &&
+      existingBuildIndices.some((buildIndex) => buildIndex < index),
+  );
+  const lifecycleHooksRun = packageManager !== 'yarn';
+
+  return {
+    prebuildWired:
+      hasExistingBuild &&
+      (scanBeforeBuild ||
+        (lifecycleHooksRun && hasConnectorAction(scripts?.prebuild ?? '', 'scan'))),
+    postbuildWired:
+      hasExistingBuild &&
+      (markerAfterBuild ||
+        (lifecycleHooksRun &&
+          hasConnectorAction(
+            scripts?.postbuild ?? '',
+            'mark-build',
+            true,
+            requireStaticOutput,
+          ))),
+  };
+}
+
 export async function collectGuideState(cwd: string): Promise<GuideState> {
   const pkg = readPackageJson(cwd);
   const packageManager = detectPackageManager(cwd);
@@ -274,17 +465,20 @@ export async function collectGuideState(cwd: string): Promise<GuideState> {
   let siteUuid: string | null = null;
   let claimUrl: string | null = null;
   let endpointOverride: string | null = null;
+  let configError: string | null = null;
+  let widgetEnabled = true;
   try {
     const config = await resolveConfig({ cwd });
     siteUuid = config.siteUuid;
+    widgetEnabled = config.widgetEnabled !== false;
     if (siteUuid !== null) {
       claimUrl = buildClaimUrl(config.endpoint, siteUuid);
     }
     if (config.endpoint !== DEFAULT_ENDPOINT) {
       endpointOverride = config.endpoint;
     }
-  } catch {
-    // invalid config — the checklist just shows the site as not provisioned
+  } catch (err) {
+    configError = err instanceof Error ? err.message : 'Unknown connector configuration error.';
   }
 
   // Framework detection needs only the declared top-level dependencies, so we
@@ -295,7 +489,38 @@ export async function collectGuideState(cwd: string): Promise<GuideState> {
     {},
   );
 
-  const widget = findWidgetMarker(cwd, siteUuid);
+  let widgetInstalled = false;
+  let widgetTokenMatches: boolean | null = null;
+  let inspectedWidgetFileHint: string | null = null;
+  try {
+    const widget = await inspectSourceWidgetPreflight({
+      cwd,
+      stack,
+      expectedSiteUuid: siteUuid,
+    });
+    widgetInstalled =
+      widget.shells.length > 0 &&
+      widget.status !== 'ambiguous' &&
+      widget.missingRequiredShells.length === 0 &&
+      widget.externalWidgetShells.length === 0 &&
+      widget.shells.every((shell) =>
+        shell.identity.occurrences.some(
+          (occurrence) =>
+            occurrence.kind === 'script-tag' || occurrence.kind === 'dynamic-loader',
+        ),
+      );
+    if (widgetInstalled && siteUuid !== null) {
+      widgetTokenMatches =
+        widget.status === 'configured' && widget.matchesExpectedUuid === true;
+    }
+    if (widget.files[0] !== undefined) {
+      inspectedWidgetFileHint = path.relative(cwd, widget.files[0]);
+    }
+  } catch {
+    // Source inspection is advisory. Preserve the rest of the checklist when
+    // a file disappears or becomes unreadable during the probe.
+  }
+  const lifecycle = inspectBuildLifecycle(pkg?.scripts, packageManager, stack.framework);
 
   return {
     projectName: pkg?.name ?? null,
@@ -305,18 +530,14 @@ export async function collectGuideState(cwd: string): Promise<GuideState> {
     siteUuid,
     claimUrl,
     endpointOverride,
-    // bun run doesn't execute npm-style pre/post scripts, so chaining inside
-    // the build script itself also counts as wired (and is what we suggest on bun).
-    prebuildWired:
-      (pkg?.scripts?.prebuild ?? '').includes('patchstack-connect scan') ||
-      (pkg?.scripts?.build ?? '').includes('patchstack-connect scan'),
-    postbuildWired:
-      (pkg?.scripts?.postbuild ?? '').includes('patchstack-connect mark-build') ||
-      (pkg?.scripts?.build ?? '').includes('patchstack-connect mark-build'),
-    widgetInstalled: widget.found,
-    widgetTokenMatches: widget.uuidMatches,
+    configError,
+    widgetEnabled,
+    ...lifecycle,
+    widgetInstalled,
+    widgetTokenMatches,
     framework: stack.framework,
-    widgetFileHint: resolveWidgetFileHint(cwd, stack.framework),
+    widgetFileHint:
+      inspectedWidgetFileHint ?? resolveWidgetFileHint(cwd, stack.framework),
   };
 }
 
@@ -335,7 +556,8 @@ export function countRemainingSteps(state: GuideState): number {
     state.installed !== null,
     state.siteUuid !== null,
     state.prebuildWired && state.postbuildWired,
-    state.widgetInstalled && state.widgetTokenMatches !== false,
+    state.widgetEnabled === false ||
+      (state.widgetInstalled && state.widgetTokenMatches !== false),
   ].filter((step) => !step).length;
 }
 
@@ -346,6 +568,12 @@ export function renderGuideChecklist(state: GuideState, useColor: boolean): stri
   const todo = (text: string): string => ` ${paint(ANSI.yellow, '✖')} ${paint(ANSI.bold, text)}`;
   const detail = (text: string): string => `     ${paint(ANSI.dim, text)}`;
   const lines: string[] = [];
+  const connector = connectorCommand(state.packageManager);
+  const requiresStaticOutputAssertion =
+    state.framework !== null && SSR_CAPABLE_FRAMEWORKS.has(state.framework);
+  const markBuildFlags = requiresStaticOutputAssertion
+    ? '--strict --static-output'
+    : '--strict';
 
   const headerParts = [state.framework, state.packageManager].filter(
     (part): part is string => part !== null,
@@ -379,50 +607,80 @@ export function renderGuideChecklist(state: GuideState, useColor: boolean): stri
   }
 
   // 2. Provision (first scan)
-  if (state.siteUuid !== null) {
+  if (state.configError !== null) {
+    lines.push(todo('Fix the invalid connector configuration before scanning'));
+    lines.push(detail(state.configError));
+    lines.push(detail('Correct .patchstackrc.json or the PATCHSTACK_* override shown above, then rerun the guide.'));
+  } else if (state.siteUuid !== null) {
     lines.push(done(`Site provisioned (${state.siteUuid})`));
   } else {
     lines.push(todo('Provision the site — run the first scan'));
-    lines.push(detail('→ npx @patchstack/connect scan'));
+    lines.push(detail(`→ ${connector} scan`));
     lines.push(detail('Reads the lockfile, registers the project, writes .patchstackrc.json,'));
-    lines.push(detail('and prints a claim URL — show that URL to the user; never open it yourself.'));
+    lines.push(
+      detail(
+        state.widgetEnabled === false
+          ? 'keeps the disclosure widget disabled, and prints a claim URL.'
+          : 'installs the managed disclosure widget, and prints a claim URL.',
+      ),
+    );
+    lines.push(detail('Reload the app preview after the scan; show the claim URL to the user.'));
   }
 
-  // 3. Build hooks
+  // 3. Build lifecycle
   if (state.prebuildWired && state.postbuildWired) {
-    lines.push(done('Build hooks wired (scan before builds, mark-build after)'));
+    lines.push(
+      done(`Build lifecycle wired (scan before builds, mark-build ${markBuildFlags} after)`),
+    );
+  } else if (state.packageManager === 'yarn') {
+    lines.push(
+      todo(
+        'Wire builds — chain into the package.json build script (modern Yarn skips arbitrary pre/post hooks)',
+      ),
+    );
+    lines.push(detail(`→ "build": "patchstack-connect scan && <existing build command> && patchstack-connect mark-build ${markBuildFlags}"`));
   } else if (state.packageManager === 'bun') {
-    // bun run skips npm-style pre/post scripts, so chain inside the build script.
-    lines.push(todo('Wire builds — chain into the package.json build script (bun skips pre/post hooks)'));
-    lines.push(detail('→ "build": "patchstack-connect scan && <existing build command> && patchstack-connect mark-build"'));
+    lines.push(
+      todo('Wire builds — use an explicit build chain for portability across Bun-based hosts'),
+    );
+    lines.push(detail(`→ "build": "patchstack-connect scan && <existing build command> && patchstack-connect mark-build ${markBuildFlags}"`));
   } else {
     lines.push(todo('Wire builds — add to package.json scripts (chain with && if a hook exists)'));
     if (!state.prebuildWired) {
       lines.push(detail('→ "prebuild": "patchstack-connect scan"'));
     }
     if (!state.postbuildWired) {
-      lines.push(detail('→ "postbuild": "patchstack-connect mark-build"'));
+      lines.push(detail(`→ "postbuild": "patchstack-connect mark-build ${markBuildFlags}"`));
     }
+  }
+  if (requiresStaticOutputAssertion) {
+    lines.push(
+      detail(
+        `--static-output is an assertion that every deployed ${state.framework} route is complete static HTML; do not use it for SSR or hybrid deployments.`,
+      ),
+    );
   }
 
   // 4. Disclosure widget
   const widgetOk = state.widgetInstalled && state.widgetTokenMatches !== false;
-  if (widgetOk) {
+  if (state.widgetEnabled === false) {
+    lines.push(done('Disclosure widget intentionally disabled ("widget": false)'));
+  } else if (widgetOk) {
     lines.push(done('Disclosure widget installed'));
   } else if (state.widgetInstalled) {
-    lines.push(todo("Disclosure widget found, but its userToken doesn't match this project's site UUID"));
-    lines.push(detail(`→ a wrong userToken makes the widget silently no-op; set it to '${state.siteUuid}'`));
+    lines.push(todo("Disclosure widget found, but its configured UUID doesn't match this site's UUID"));
+    lines.push(detail(`→ ${connector} scan`));
+    lines.push(detail('Move/remove any loader outside the true global shell, repair the reported shell identity, rerun scan, and reload the preview.'));
   } else {
-    lines.push(todo('Add the "Report a vulnerability" widget'));
-    const placement =
-      state.widgetFileHint !== null
-        ? `→ add to ${state.widgetFileHint}, just before </body> (via the framework's HTML/layout mechanism):`
-        : "→ add just before </body> via the framework's HTML/layout mechanism (never a JS entry point):";
-    lines.push(detail(placement));
-    lines.push(detail(`  <script src="${WIDGET_SCRIPT_URL}"></script>`));
-    const token = state.siteUuid ?? '<SITE_UUID from .patchstackrc.json — run scan first>';
-    lines.push(detail(`  <script>PatchstackWidget.init({ userToken: '${token}' });</script>`));
-    lines.push(detail('The userToken is public by design — it ships in client-side HTML.'));
+    lines.push(todo('Install the "Report a vulnerability" widget'));
+    lines.push(detail(`→ ${connector} scan, then reload the app preview`));
+    lines.push(
+      detail(
+        state.widgetFileHint !== null
+          ? `If scan blocks, repair the true global shell or coverage group beginning at ${state.widgetFileHint}, then rerun scan; do not paste a fallback into a nested component.`
+          : 'If scan blocks, create/repair the framework global shell(s), move or remove external loaders, and rerun scan; do not paste a fallback into a nested component.',
+      ),
+    );
   }
 
   // 5. Claim — the conversion moment; always the loudest line.
@@ -435,7 +693,9 @@ export function renderGuideChecklist(state: GuideState, useColor: boolean): stri
       lines.push(detail('(this URL inherits the endpoint override above)'));
     }
   } else {
-    lines.push(detail('The claim URL appears after the first scan (re-print any time with `status`).'));
+    lines.push(
+      detail(`The claim URL appears after the first scan (re-print any time with \`${connector} status\`).`),
+    );
   }
 
   const remaining = countRemainingSteps(state);
@@ -445,7 +705,9 @@ export function renderGuideChecklist(state: GuideState, useColor: boolean): stri
       done(
         paint(
           ANSI.bold,
-          'All setup steps complete. Commit .patchstackrc.json, package.json, and the file carrying the widget snippet.',
+          state.widgetEnabled === false
+            ? 'All setup steps complete. Commit .patchstackrc.json and package.json.'
+            : 'All setup steps complete. Commit .patchstackrc.json, package.json, and the file carrying the widget tag.',
         ),
       ),
     );

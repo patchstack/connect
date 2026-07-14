@@ -1,0 +1,5 @@
+node_modules/
+dist/
+.patchstackrc.json
+browser-*.png
+/index.html

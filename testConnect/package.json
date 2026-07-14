@@ -1,0 +1,23 @@
+{
+  "name": "patchstack-connect-test-app",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "postinstall": "node scripts/prepare-fixture.mjs",
+    "fixture:prepare": "node scripts/prepare-fixture.mjs",
+    "fixture:reset-source": "node scripts/prepare-fixture.mjs --reset",
+    "dev": "vite --host 127.0.0.1",
+    "patchstack:scan": "patchstack-connect scan",
+    "patchstack:status": "patchstack-connect status",
+    "prebuild": "patchstack-connect scan",
+    "build": "vite build",
+    "postbuild": "patchstack-connect mark-build --strict",
+    "build:static": "vite build && patchstack-connect mark-build --strict",
+    "preview": "vite preview --host 127.0.0.1"
+  },
+  "devDependencies": {
+    "@patchstack/connect": "file:..",
+    "vite": "^6.4.1"
+  }
+}

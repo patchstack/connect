@@ -2,6 +2,9 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { buildClaimUrl, buildEndpointUrl, postManifest } from '../src/client.js';
 import { PatchstackError } from '../src/types.js';
 
+const SITE_UUID = '550e8400-e29b-41d4-a716-446655440000';
+const OTHER_UUID = '11111111-1111-1111-1111-111111111111';
+
 describe('buildEndpointUrl', () => {
   it('joins base and uuid cleanly', () => {
     expect(buildEndpointUrl('http://api.patchstack.com/monitor/pulse/manifest', 'abc')).toBe(
@@ -21,6 +24,21 @@ describe('buildEndpointUrl', () => {
     expect(buildEndpointUrl('https://example.com/x')).toBe('https://example.com/x');
     expect(buildEndpointUrl('https://example.com/x', null)).toBe('https://example.com/x');
     expect(buildEndpointUrl('https://example.com/x', '')).toBe('https://example.com/x');
+  });
+
+  it('appends the UUID to the path while preserving endpoint query parameters', () => {
+    expect(buildEndpointUrl('https://example.com/x/?channel=test', 'abc')).toBe(
+      'https://example.com/x/abc?channel=test',
+    );
+  });
+
+  it.each([
+    'not a URL',
+    'file:///tmp/manifest',
+    'https://user:pass@example.com/manifest',
+    'https://example.com/manifest#fragment',
+  ])('rejects an unsafe endpoint (%s)', (endpoint) => {
+    expect(() => buildEndpointUrl(endpoint, 'abc')).toThrow(PatchstackError);
   });
 });
 
@@ -67,6 +85,24 @@ describe('postManifest', () => {
     vi.unstubAllGlobals();
   });
 
+  it.each(['', 'not-a-uuid'])('rejects an invalid configured UUID before fetching (%j)', async (siteUuid) => {
+    const fetchMock = vi.fn();
+    vi.stubGlobal('fetch', fetchMock);
+
+    await expect(
+      postManifest(
+        {
+          siteUuid,
+          endpoint: 'https://example.com',
+          timeoutMs: 30_000,
+          environment: 'production',
+        },
+        { ecosystem: 'npm', packages: [] },
+      ),
+    ).rejects.toMatchObject({ code: 'CONFIG_INVALID' });
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
   it('returns the parsed JSON body on 200', async () => {
     const fetchMock = vi.fn().mockResolvedValue(
       new Response(JSON.stringify({ stored: true, manifest_id: 1, checksum: 'abc123abc123' }), {
@@ -77,11 +113,106 @@ describe('postManifest', () => {
     vi.stubGlobal('fetch', fetchMock);
 
     const result = await postManifest(
-      { siteUuid: 'uuid', endpoint: 'https://example.com', timeoutMs: 30_000, environment: 'production' },
+      { siteUuid: SITE_UUID, endpoint: 'https://example.com', timeoutMs: 30_000, environment: 'production' },
       { ecosystem: 'npm', packages: [{ name: 'lodash', version: '4.17.21' }] },
     );
     expect(result.stored).toBe(true);
     expect(result.manifest_id).toBe(1);
+  });
+
+  it.each([
+    [{ message: 'missing stored' }, '"stored" must be a boolean'],
+    [{ stored: 'yes' }, '"stored" must be a boolean'],
+    [{ stored: true, uuid: 'not-a-uuid' }, '"uuid" must be a valid UUID'],
+    [{ stored: true, uuid: null }, '"uuid" must be a valid UUID'],
+  ])('rejects an invalid successful response body %#', async (body, message) => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockResolvedValue(new Response(JSON.stringify(body), { status: 200 })),
+    );
+
+    await expect(
+      postManifest(
+        {
+          siteUuid: SITE_UUID,
+          endpoint: 'https://example.com',
+          timeoutMs: 30_000,
+          environment: 'production',
+        },
+        { ecosystem: 'npm', packages: [] },
+      ),
+    ).rejects.toMatchObject({ code: 'SERVER_ERROR', message: expect.stringContaining(message) });
+  });
+
+  it('requires a UUID in a successful provisioning response', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockResolvedValue(
+        new Response(JSON.stringify({ stored: true, manifest_id: 1 }), { status: 200 }),
+      ),
+    );
+
+    await expect(
+      postManifest(
+        {
+          siteUuid: null,
+          endpoint: 'https://example.com',
+          timeoutMs: 30_000,
+          environment: 'production',
+        },
+        { ecosystem: 'npm', packages: [] },
+      ),
+    ).rejects.toMatchObject({
+      code: 'SERVER_ERROR',
+      message: expect.stringContaining('required to finish provisioning'),
+    });
+  });
+
+  it('rejects a returned UUID that does not match the configured site', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockResolvedValue(
+        new Response(JSON.stringify({ stored: true, uuid: OTHER_UUID }), { status: 200 }),
+      ),
+    );
+
+    await expect(
+      postManifest(
+        {
+          siteUuid: SITE_UUID,
+          endpoint: 'https://example.com',
+          timeoutMs: 30_000,
+          environment: 'production',
+        },
+        { ecosystem: 'npm', packages: [] },
+      ),
+    ).rejects.toMatchObject({
+      code: 'SERVER_ERROR',
+      message: expect.stringContaining('No local files were changed'),
+    });
+  });
+
+  it('accepts the same UUID with different hexadecimal casing', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockResolvedValue(
+        new Response(JSON.stringify({ stored: false, uuid: SITE_UUID.toUpperCase() }), {
+          status: 200,
+        }),
+      ),
+    );
+
+    await expect(
+      postManifest(
+        {
+          siteUuid: SITE_UUID,
+          endpoint: 'https://example.com',
+          timeoutMs: 30_000,
+          environment: 'production',
+        },
+        { ecosystem: 'npm', packages: [] },
+      ),
+    ).resolves.toMatchObject({ stored: false, uuid: SITE_UUID.toUpperCase() });
   });
 
   it('sends the configured environment in the request body', async () => {
@@ -91,7 +222,7 @@ describe('postManifest', () => {
     vi.stubGlobal('fetch', fetchMock);
 
     await postManifest(
-      { siteUuid: 'uuid', endpoint: 'https://example.com', timeoutMs: 30_000, environment: 'sandbox' },
+      { siteUuid: SITE_UUID, endpoint: 'https://example.com', timeoutMs: 30_000, environment: 'sandbox' },
       { ecosystem: 'npm', packages: [{ name: 'lodash', version: '4.17.21' }] },
     );
 
@@ -111,7 +242,7 @@ describe('postManifest', () => {
 
     await expect(
       postManifest(
-        { siteUuid: 'uuid', endpoint: 'https://example.com', timeoutMs: 30_000, environment: 'production' },
+        { siteUuid: SITE_UUID, endpoint: 'https://example.com', timeoutMs: 30_000, environment: 'production' },
         { ecosystem: 'npm', packages: [] },
       ),
     ).rejects.toMatchObject({ code: 'SITE_NOT_FOUND' });
@@ -129,7 +260,7 @@ describe('postManifest', () => {
 
     await expect(
       postManifest(
-        { siteUuid: 'uuid', endpoint: 'https://example.com', timeoutMs: 30_000, environment: 'production' },
+        { siteUuid: SITE_UUID, endpoint: 'https://example.com', timeoutMs: 30_000, environment: 'production' },
         { ecosystem: 'npm', packages: [] },
       ),
     ).rejects.toMatchObject({ code: 'VALIDATION_ERROR' });
@@ -140,7 +271,7 @@ describe('postManifest', () => {
 
     await expect(
       postManifest(
-        { siteUuid: 'uuid', endpoint: 'https://example.com', timeoutMs: 30_000, environment: 'production' },
+        { siteUuid: SITE_UUID, endpoint: 'https://example.com', timeoutMs: 30_000, environment: 'production' },
         { ecosystem: 'npm', packages: [] },
       ),
     ).rejects.toBeInstanceOf(PatchstackError);
@@ -153,7 +284,7 @@ describe('postManifest', () => {
     vi.stubGlobal('fetch', fetchMock);
 
     await postManifest(
-      { siteUuid: 'uuid', endpoint: 'https://example.com', timeoutMs: 12345, environment: 'production' },
+      { siteUuid: SITE_UUID, endpoint: 'https://example.com', timeoutMs: 12345, environment: 'production' },
       { ecosystem: 'npm', packages: [] },
     );
 
@@ -188,7 +319,7 @@ describe('postManifest', () => {
 
     await expect(
       postManifest(
-        { siteUuid: 'uuid', endpoint: 'https://example.com', timeoutMs: 1, environment: 'production' },
+        { siteUuid: SITE_UUID, endpoint: 'https://example.com', timeoutMs: 1, environment: 'production' },
         { ecosystem: 'npm', packages: [] },
       ),
     ).rejects.toMatchObject({ code: 'NETWORK_TIMEOUT' });

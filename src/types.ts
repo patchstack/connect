@@ -37,6 +37,12 @@ export interface Config {
   timeoutMs: number;
   /** Environment to report the manifest under. Defaults to 'production'. */
   environment: Environment;
+  /**
+   * Whether CLI scans/builds should manage the disclosure widget. Defaults to
+   * true. This is optional on the public type so existing programmatic Config
+   * objects remain source-compatible.
+   */
+  widgetEnabled?: boolean;
 }
 
 export interface StoreManifestResponse {

@@ -27,6 +27,25 @@ export interface StackDescriptor {
   hostingEnvKeys: string[];
 }
 
+/**
+ * Frameworks whose dependency alone cannot prove that every deployed route is
+ * represented by generated HTML. Their strict lifecycle must either include an
+ * explicit static-output assertion or use a tested framework-specific SSR path.
+ */
+export const SSR_CAPABLE_FRAMEWORKS: ReadonlySet<string> = new Set([
+  'next',
+  'nuxt',
+  'tanstack-start',
+  'remix',
+  'react-router',
+  'astro',
+  'sveltekit',
+  'qwik-city',
+  'gatsby',
+  'express',
+  'fastify',
+]);
+
 type Category = 'framework' | 'ui' | 'bundler' | 'runtime' | 'builder';
 
 interface StackRule {

@@ -48,7 +48,7 @@ export async function scanAndReport(
   // First-run convenience: if we didn't have a UUID and the server provisioned
   // one for us, persist it so subsequent runs target the same site.
   if (config.siteUuid === null && response.uuid !== undefined && response.uuid.length > 0) {
-    await persistSiteUuid(cwd, response.uuid);
+    await persistSiteUuid(cwd, response.uuid, config.endpoint);
   }
 
   return {

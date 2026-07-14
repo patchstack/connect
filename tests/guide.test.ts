@@ -6,6 +6,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 import {
   collectGuideState,
+  connectorCommand,
   detectPackageManager,
   findWidgetMarker,
   installCommand,
@@ -50,6 +51,21 @@ describe('guide', () => {
       writeFileSync(path.join(cwd, 'package-lock.json'), '{}');
       expect(detectPackageManager(cwd)).toBe('npm');
     });
+
+    it('prefers package.json packageManager over stale lockfiles', () => {
+      writeJson('package.json', { packageManager: 'yarn@4.9.2' });
+      writeFileSync(path.join(cwd, 'package-lock.json'), '{}');
+      writeFileSync(path.join(cwd, 'pnpm-lock.yaml'), '');
+
+      expect(detectPackageManager(cwd)).toBe('yarn');
+    });
+
+    it('falls back to lockfiles when packageManager is malformed or unsupported', () => {
+      writeJson('package.json', { packageManager: 'deno@2.0.0' });
+      writeFileSync(path.join(cwd, 'pnpm-lock.yaml'), '');
+
+      expect(detectPackageManager(cwd)).toBe('pnpm');
+    });
   });
 
   describe('collectGuideState', () => {
@@ -72,6 +88,8 @@ describe('guide', () => {
       expect(state.prebuildWired).toBe(false);
       expect(state.postbuildWired).toBe(false);
       expect(state.widgetInstalled).toBe(false);
+      expect(state.widgetEnabled).toBe(true);
+      expect(state.configError).toBeNull();
       expect(state.framework).toBe('next');
       expect(state.widgetFileHint).toBe('app/layout.tsx');
     });
@@ -82,15 +100,15 @@ describe('guide', () => {
         devDependencies: { '@patchstack/connect': '^0.2.11' },
         scripts: {
           prebuild: 'lint && patchstack-connect scan',
-          postbuild: 'patchstack-connect mark-build',
+          build: 'vite build',
+          postbuild: 'patchstack-connect mark-build --strict',
         },
       });
       writeJson('.patchstackrc.json', { siteUuid: VALID_UUID });
-      mkdirSync(path.join(cwd, 'src'));
       writeFileSync(
-        path.join(cwd, 'src', 'layout.tsx'),
-        '<script src="https://cdn.patchstack.com/patchstack-widget.js"></script>' +
-          `<script>PatchstackWidget.init({ userToken: '${VALID_UUID}' });</script>`,
+        path.join(cwd, 'index.html'),
+        '<script src="https://cdn.patchstack.com/patchstack-widget.js" ' +
+          `data-site-uuid="${VALID_UUID}" defer data-patchstack-connect-widget="true"></script>`,
       );
 
       const state = await collectGuideState(cwd);
@@ -133,6 +151,39 @@ describe('guide', () => {
       writeFileSync(path.join(cwd, '.patchstackrc.json'), 'not json');
       const state = await collectGuideState(cwd);
       expect(state.siteUuid).toBeNull();
+      expect(state.configError).toContain('contains invalid JSON');
+
+      const output = renderGuideChecklist(state, false);
+      expect(output).toContain('Fix the invalid connector configuration before scanning');
+      expect(output).toContain('contains invalid JSON');
+      expect(output).not.toContain('Provision the site — run the first scan');
+    });
+
+    it('does not count a widget in an unrelated nested example as the app widget', async () => {
+      writeJson('package.json', { name: 'root-app' });
+      writeFileSync(path.join(cwd, 'index.html'), '<html><body>Root app</body></html>');
+      mkdirSync(path.join(cwd, 'examples', 'demo'), { recursive: true });
+      writeFileSync(
+        path.join(cwd, 'examples', 'demo', 'index.html'),
+        `<script src="patchstack-widget.js" data-site-uuid="${VALID_UUID}"></script>`,
+      );
+
+      const state = await collectGuideState(cwd);
+      expect(state.widgetInstalled).toBe(false);
+      expect(state.widgetTokenMatches).toBeNull();
+    });
+
+    it('does not call an initializer without a widget loader installed', async () => {
+      writeJson('package.json', { name: 'initializer-only' });
+      writeJson('.patchstackrc.json', { siteUuid: VALID_UUID });
+      writeFileSync(
+        path.join(cwd, 'index.html'),
+        `<script>PatchstackWidget.init({ userToken: '${VALID_UUID}' });</script>`,
+      );
+
+      const state = await collectGuideState(cwd);
+      expect(state.widgetInstalled).toBe(false);
+      expect(state.widgetTokenMatches).toBeNull();
     });
   });
 
@@ -157,10 +208,11 @@ describe('guide', () => {
       expect(findWidgetMarker(cwd)).toEqual({ found: true, uuidMatches: null });
     });
 
-    it('checks the userToken against the site UUID when one is known', () => {
+    it('checks the managed data-site-uuid against the site UUID when one is known', () => {
       writeFileSync(
         path.join(cwd, 'index.html'),
-        `patchstack-widget.js userToken: '${VALID_UUID}'`,
+        `<script src="patchstack-widget.js" data-site-uuid="${VALID_UUID}" ` +
+          'data-patchstack-connect-widget="true"></script>',
       );
       expect(findWidgetMarker(cwd, VALID_UUID)).toEqual({ found: true, uuidMatches: true });
       expect(findWidgetMarker(cwd, '11111111-1111-1111-1111-111111111111')).toEqual({
@@ -168,9 +220,26 @@ describe('guide', () => {
         uuidMatches: false,
       });
     });
+
+    it('still recognises a matching UUID in the legacy userToken initialiser', () => {
+      writeFileSync(
+        path.join(cwd, 'index.html'),
+        `patchstack-widget.js; PatchstackWidget.init({ userToken: '${VALID_UUID}' });`,
+      );
+      expect(findWidgetMarker(cwd, VALID_UUID)).toEqual({ found: true, uuidMatches: true });
+    });
   });
 
   describe('renderGuideChecklist', () => {
+    it.each([
+      ['npm', 'npx --no-install patchstack-connect'],
+      ['pnpm', 'pnpm exec patchstack-connect'],
+      ['yarn', 'yarn patchstack-connect'],
+      ['bun', 'bun run patchstack-connect'],
+    ] as const)('uses the installed %s CLI without a registry fallback', (manager, command) => {
+      expect(connectorCommand(manager)).toBe(command);
+    });
+
     it('prints the package-manager-specific install command for missing installs', async () => {
       writeJson('package.json', { name: 'bun-app' });
       writeFileSync(path.join(cwd, 'bun.lock'), '');
@@ -178,28 +247,29 @@ describe('guide', () => {
       const output = renderGuideChecklist(await collectGuideState(cwd), false);
 
       expect(output).toContain(installCommand('bun'));
-      expect(output).toContain('npx @patchstack/connect scan');
-      expect(output).toContain('bun skips pre/post hooks');
+      expect(output).toContain('bun run patchstack-connect scan');
+      expect(output).toContain('portability across Bun-based hosts');
       expect(output).toContain(
-        '"build": "patchstack-connect scan && <existing build command> && patchstack-connect mark-build"',
+        '"build": "patchstack-connect scan && <existing build command> && patchstack-connect mark-build --strict"',
       );
       expect(output).not.toContain('\u001B[');
     });
 
-    it('suggests prebuild/postbuild hooks on non-bun projects', async () => {
+    it('suggests prebuild/postbuild hooks on npm projects', async () => {
       writeJson('package.json', { name: 'npm-app' });
 
       const output = renderGuideChecklist(await collectGuideState(cwd), false);
 
       expect(output).toContain('"prebuild": "patchstack-connect scan"');
-      expect(output).toContain('"postbuild": "patchstack-connect mark-build"');
+      expect(output).toContain('"postbuild": "patchstack-connect mark-build --strict"');
     });
 
     it('counts a chained build script as wired (the bun pattern)', async () => {
       writeJson('package.json', {
         name: 'bun-wired-app',
         scripts: {
-          build: 'patchstack-connect scan && vite build && patchstack-connect mark-build',
+          build:
+            'patchstack-connect scan && vite build && patchstack-connect mark-build --strict',
         },
       });
       writeFileSync(path.join(cwd, 'bun.lock'), '');
@@ -209,13 +279,164 @@ describe('guide', () => {
       expect(state.postbuildWired).toBe(true);
     });
 
-    it('substitutes the real UUID into the widget snippet once provisioned', async () => {
+    it('also recognises Bun prebuild/postbuild hooks supported by bun run', async () => {
+      writeJson('package.json', {
+        name: 'bun-hooks-app',
+        scripts: {
+          prebuild: 'patchstack-connect scan',
+          build: 'vite build',
+          postbuild: 'patchstack-connect mark-build --strict',
+        },
+      });
+      writeFileSync(path.join(cwd, 'bun.lock'), '');
+
+      const state = await collectGuideState(cwd);
+      expect(state.prebuildWired).toBe(true);
+      expect(state.postbuildWired).toBe(true);
+    });
+
+    it('requires mark-build --strict before declaring the lifecycle complete', async () => {
+      writeJson('package.json', {
+        name: 'non-strict-app',
+        scripts: {
+          prebuild: 'patchstack-connect scan',
+          build: 'vite build',
+          postbuild: 'patchstack-connect mark-build',
+        },
+      });
+
+      const state = await collectGuideState(cwd);
+      expect(state.prebuildWired).toBe(true);
+      expect(state.postbuildWired).toBe(false);
+      expect(renderGuideChecklist(state, false)).toContain(
+        '"postbuild": "patchstack-connect mark-build --strict"',
+      );
+    });
+
+    it('requires a static-output assertion before a hybrid-capable framework can be complete', async () => {
+      writeJson('package.json', {
+        name: 'next-static-app',
+        dependencies: { next: '15.0.0', react: '19.0.0' },
+        scripts: {
+          prebuild: 'patchstack-connect scan',
+          build: 'next build',
+          postbuild: 'patchstack-connect mark-build --strict',
+        },
+      });
+
+      let state = await collectGuideState(cwd);
+      expect(state.prebuildWired).toBe(true);
+      expect(state.postbuildWired).toBe(false);
+      let output = renderGuideChecklist(state, false);
+      expect(output).toContain('mark-build --strict --static-output');
+      expect(output).toContain('do not use it for SSR or hybrid deployments');
+
+      writeJson('package.json', {
+        name: 'next-static-app',
+        dependencies: { next: '15.0.0', react: '19.0.0' },
+        scripts: {
+          prebuild: 'patchstack-connect scan',
+          build: 'next build',
+          postbuild: 'patchstack-connect mark-build --strict --static-output',
+        },
+      });
+      state = await collectGuideState(cwd);
+      expect(state.postbuildWired).toBe(true);
+      output = renderGuideChecklist(state, false);
+      expect(output).toContain(
+        'Build lifecycle wired (scan before builds, mark-build --strict --static-output after)',
+      );
+    });
+
+    it('requires an explicit build chain for Yarn even when pre/post scripts exist', async () => {
+      writeJson('package.json', {
+        name: 'yarn-hooks-app',
+        scripts: {
+          prebuild: 'patchstack-connect scan',
+          build: 'vite build',
+          postbuild: 'patchstack-connect mark-build --strict',
+        },
+      });
+      writeFileSync(path.join(cwd, 'yarn.lock'), '');
+
+      const state = await collectGuideState(cwd);
+      expect(state.prebuildWired).toBe(false);
+      expect(state.postbuildWired).toBe(false);
+
+      const output = renderGuideChecklist(state, false);
+      expect(output).toContain('modern Yarn skips arbitrary pre/post hooks');
+      expect(output).toContain(
+        '"build": "patchstack-connect scan && <existing build command> && patchstack-connect mark-build --strict"',
+      );
+    });
+
+    it('counts the explicit Yarn build chain as wired', async () => {
+      writeJson('package.json', {
+        name: 'yarn-wired-app',
+        scripts: {
+          build:
+            'yarn patchstack-connect scan && vite build && yarn patchstack-connect mark-build --strict',
+        },
+      });
+      writeFileSync(path.join(cwd, 'yarn.lock'), '');
+
+      const state = await collectGuideState(cwd);
+      expect(state.prebuildWired).toBe(true);
+      expect(state.postbuildWired).toBe(true);
+    });
+
+    it('requires a real build command between scan and mark-build', async () => {
+      writeJson('package.json', {
+        name: 'no-build-app',
+        scripts: {
+          prebuild: 'patchstack-connect scan',
+          postbuild: 'patchstack-connect mark-build --strict',
+        },
+      });
+
+      const state = await collectGuideState(cwd);
+      expect(state.prebuildWired).toBe(false);
+      expect(state.postbuildWired).toBe(false);
+    });
+
+    it.each([
+      [
+        'reversed commands',
+        'patchstack-connect mark-build --strict && vite build && patchstack-connect scan',
+      ],
+      [
+        'an echoed example',
+        'echo "patchstack-connect scan && vite build && patchstack-connect mark-build --strict"',
+      ],
+      [
+        'a dry scan',
+        'patchstack-connect scan --dry-run && vite build && patchstack-connect mark-build --strict',
+      ],
+      [
+        'an echo in place of a build',
+        'patchstack-connect scan && echo building && patchstack-connect mark-build --strict',
+      ],
+    ])('does not accept %s as a wired build', async (_label, build) => {
+      writeJson('package.json', {
+        name: 'unsafe-build-app',
+        packageManager: 'yarn@4.9.2',
+        scripts: { build },
+      });
+
+      const state = await collectGuideState(cwd);
+      expect(state.prebuildWired && state.postbuildWired).toBe(false);
+    });
+
+    it('shows the automatic scan/reload flow without suggesting a manual fallback', async () => {
       writeJson('package.json', { name: 'uuid-app' });
       writeJson('.patchstackrc.json', { siteUuid: VALID_UUID });
 
       const output = renderGuideChecklist(await collectGuideState(cwd), false);
 
-      expect(output).toContain(`userToken: '${VALID_UUID}'`);
+      expect(output).toContain('npx --no-install patchstack-connect scan, then reload the app preview');
+      expect(output).toContain('repair the framework global shell');
+      expect(output).not.toContain(`data-site-uuid="${VALID_UUID}"`);
+      expect(output).not.toContain('PatchstackWidget.init');
       expect(output).toContain('/monitor/claim?site=');
     });
 
@@ -225,11 +446,16 @@ describe('guide', () => {
         devDependencies: { '@patchstack/connect': '0.2.11' },
         scripts: {
           prebuild: 'patchstack-connect scan',
-          postbuild: 'patchstack-connect mark-build',
+          build: 'vite build',
+          postbuild: 'patchstack-connect mark-build --strict',
         },
       });
       writeJson('.patchstackrc.json', { siteUuid: VALID_UUID });
-      writeFileSync(path.join(cwd, 'index.html'), `patchstack-widget.js userToken: '${VALID_UUID}'`);
+      writeFileSync(
+        path.join(cwd, 'index.html'),
+        `<script src="patchstack-widget.js" data-site-uuid="${VALID_UUID}" ` +
+          'data-patchstack-connect-widget="true"></script>',
+      );
 
       const output = renderGuideChecklist(await collectGuideState(cwd), false);
 
@@ -238,12 +464,13 @@ describe('guide', () => {
       expect(output).not.toContain('✖');
     });
 
-    it('flags a widget whose userToken does not match the site UUID', async () => {
+    it('flags a widget whose configured UUID does not match the site UUID', async () => {
       writeJson('package.json', { name: 'stale-token-app' });
       writeJson('.patchstackrc.json', { siteUuid: VALID_UUID });
       writeFileSync(
         path.join(cwd, 'index.html'),
-        "patchstack-widget.js userToken: '11111111-1111-1111-1111-111111111111'",
+        '<script src="patchstack-widget.js" ' +
+          'data-site-uuid="11111111-1111-1111-1111-111111111111"></script>',
       );
 
       const state = await collectGuideState(cwd);
@@ -251,8 +478,32 @@ describe('guide', () => {
       expect(state.widgetTokenMatches).toBe(false);
 
       const output = renderGuideChecklist(state, false);
-      expect(output).toContain("userToken doesn't match");
-      expect(output).toContain(VALID_UUID);
+      expect(output).toContain("configured UUID doesn't match");
+      expect(output).toContain('Move/remove any loader outside the true global shell');
+      expect(output).not.toContain(`data-site-uuid="${VALID_UUID}"`);
+      expect(output).not.toContain('PatchstackWidget.init');
+    });
+
+    it('treats an intentional widget opt-out as complete without requesting a tag', async () => {
+      writeJson('package.json', {
+        name: 'widget-disabled-app',
+        devDependencies: { '@patchstack/connect': '0.2.11' },
+        scripts: {
+          prebuild: 'patchstack-connect scan',
+          build: 'vite build',
+          postbuild: 'patchstack-connect mark-build --strict',
+        },
+      });
+      writeJson('.patchstackrc.json', { siteUuid: VALID_UUID, widget: false });
+
+      const state = await collectGuideState(cwd);
+      expect(state.widgetEnabled).toBe(false);
+      expect(state.widgetInstalled).toBe(false);
+
+      const output = renderGuideChecklist(state, false);
+      expect(output).toContain('Disclosure widget intentionally disabled ("widget": false)');
+      expect(output).toContain('All setup steps complete');
+      expect(output).not.toContain('Install the "Report a vulnerability" widget');
     });
 
     it('points at the project root when package.json is missing', async () => {

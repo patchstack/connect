@@ -132,9 +132,13 @@ function verify(fixtureDir, mock, agentOutput) {
   const scanWired = ['prebuild', 'build'].some((key) =>
     (scripts[key] ?? '').includes('patchstack-connect scan'),
   );
-  const markWired = ['postbuild', 'build'].some((key) =>
-    (scripts[key] ?? '').includes('patchstack-connect mark-build'),
-  );
+  const markWired = ['postbuild', 'build'].some((key) => {
+    const script = scripts[key] ?? '';
+    return (
+      script.includes('patchstack-connect mark-build') &&
+      /(?:^|\s)--strict(?=\s|$)/.test(script)
+    );
+  });
 
   const checks = {
     installed: {
@@ -151,7 +155,7 @@ function verify(fixtureDir, mock, agentOutput) {
     },
     hooksWired: {
       pass: scanWired && markWired,
-      detail: `scan wired=${scanWired}, mark-build wired=${markWired}`,
+      detail: `scan wired=${scanWired}, strict mark-build wired=${markWired}`,
     },
     widgetInstalled: {
       pass: fixtureContains(fixtureDir, 'patchstack-widget'),

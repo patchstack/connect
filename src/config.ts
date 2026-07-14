@@ -1,7 +1,8 @@
-import { readFile, writeFile } from 'node:fs/promises';
+import { readFile } from 'node:fs/promises';
 import path from 'node:path';
+import { atomicWriteTextFile } from './atomic-write.js';
 import { PatchstackError, type Config, type Environment } from './types.js';
-import { DEFAULT_ENDPOINT, DEFAULT_TIMEOUT_MS } from './client.js';
+import { DEFAULT_ENDPOINT, DEFAULT_TIMEOUT_MS, isUuid, validateEndpoint } from './client.js';
 
 const CONFIG_FILENAME = '.patchstackrc.json';
 
@@ -12,6 +13,7 @@ interface ConfigFile {
   endpoint?: string;
   timeoutMs?: number;
   environment?: string;
+  widget?: boolean;
 }
 
 export interface ResolveConfigOptions {
@@ -31,17 +33,25 @@ export async function resolveConfig(options: ResolveConfigOptions): Promise<Conf
   const fromFile = await readConfigFile(options.cwd);
   const fromEnv = readEnv();
 
+  if (options.cliSiteUuid !== undefined && options.cliSiteUuid.trim().length === 0) {
+    throw new PatchstackError(
+      '--site-uuid requires a non-empty UUID; refusing to provision or replace a site from a blank override.',
+      'CONFIG_INVALID',
+    );
+  }
+
   const siteUuid =
     options.cliSiteUuid ??
-    fromEnv.siteUuid ??
-    fromFile.siteUuid ??
+    nonBlank(fromEnv.siteUuid) ??
+    nonBlank(fromFile.siteUuid) ??
     null;
 
   const endpoint =
     options.cliEndpoint ??
-    fromEnv.endpoint ??
+    nonBlank(fromEnv.endpoint) ??
     fromFile.endpoint ??
     DEFAULT_ENDPOINT;
+  validateEndpoint(endpoint);
 
   const timeoutMs = fromEnv.timeoutMs ?? fromFile.timeoutMs ?? DEFAULT_TIMEOUT_MS;
 
@@ -73,23 +83,57 @@ export async function resolveConfig(options: ResolveConfigOptions): Promise<Conf
     endpoint,
     timeoutMs,
     environment,
+    widgetEnabled: fromFile.widget ?? true,
   };
 }
 
 export async function writeConfigFile(cwd: string, config: ConfigFile): Promise<string> {
   const target = path.join(cwd, CONFIG_FILENAME);
   const content = JSON.stringify(config, null, 2) + '\n';
-  await writeFile(target, content, 'utf8');
+  await atomicWriteTextFile(target, content);
   return target;
 }
 
 /**
  * Merge a new siteUuid into the existing `.patchstackrc.json` (or create it).
- * Preserves any `endpoint` / `timeoutMs` the user already wrote.
+ * Preserves all existing connector settings, including the widget opt-out.
  */
-export async function persistSiteUuid(cwd: string, siteUuid: string): Promise<string> {
+export async function persistSiteUuid(
+  cwd: string,
+  siteUuid: string,
+  endpoint?: string,
+): Promise<string> {
+  if (!isUuid(siteUuid)) {
+    throw new PatchstackError(
+      `Site UUID "${siteUuid}" does not look like a valid UUID.`,
+      'CONFIG_INVALID',
+    );
+  }
+
   const existing = await readConfigFile(cwd);
-  return writeConfigFile(cwd, { ...existing, siteUuid });
+  const existingSiteUuid = nonBlank(existing.siteUuid);
+  if (existingSiteUuid !== undefined) {
+    if (!isUuid(existingSiteUuid)) {
+      throw new PatchstackError(
+        `Existing site UUID "${existingSiteUuid}" in ${path.join(cwd, CONFIG_FILENAME)} does not look like a valid UUID.`,
+        'CONFIG_INVALID',
+      );
+    }
+    if (existingSiteUuid.toLowerCase() !== siteUuid.toLowerCase()) {
+      throw new PatchstackError(
+        `Refusing to replace existing site UUID ${existingSiteUuid} with ${siteUuid}. Remove or update ${CONFIG_FILENAME} explicitly if this project should target a different site.`,
+        'CONFIG_INVALID',
+      );
+    }
+  }
+  if (endpoint !== undefined) {
+    validateEndpoint(endpoint);
+  }
+  return writeConfigFile(cwd, {
+    ...existing,
+    siteUuid,
+    ...(endpoint !== undefined ? { endpoint } : {}),
+  });
 }
 
 async function readConfigFile(cwd: string): Promise<ConfigFile> {
@@ -109,8 +153,59 @@ async function readConfigFile(cwd: string): Promise<ConfigFile> {
   }
 
   try {
-    return JSON.parse(raw) as ConfigFile;
+    const parsed: unknown = JSON.parse(raw);
+    if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) {
+      throw new PatchstackError(
+        `Config file ${target} must contain a JSON object.`,
+        'CONFIG_INVALID',
+      );
+    }
+
+    const config = parsed as Record<string, unknown>;
+    if (config.siteUuid !== undefined && typeof config.siteUuid !== 'string') {
+      throw new PatchstackError(
+        `Config file ${target} field "siteUuid" must be a string.`,
+        'CONFIG_INVALID',
+      );
+    }
+    if (
+      config.endpoint !== undefined &&
+      (typeof config.endpoint !== 'string' || config.endpoint.length === 0)
+    ) {
+      throw new PatchstackError(
+        `Config file ${target} field "endpoint" must be a non-empty string.`,
+        'CONFIG_INVALID',
+      );
+    }
+    if (
+      config.timeoutMs !== undefined &&
+      (typeof config.timeoutMs !== 'number' ||
+        !Number.isFinite(config.timeoutMs) ||
+        config.timeoutMs <= 0)
+    ) {
+      throw new PatchstackError(
+        `Config file ${target} field "timeoutMs" must be a positive number.`,
+        'CONFIG_INVALID',
+      );
+    }
+    if (config.environment !== undefined && typeof config.environment !== 'string') {
+      throw new PatchstackError(
+        `Config file ${target} field "environment" must be a string.`,
+        'CONFIG_INVALID',
+      );
+    }
+    if (config.widget !== undefined && typeof config.widget !== 'boolean') {
+      throw new PatchstackError(
+        `Config file ${target} field "widget" must be a boolean.`,
+        'CONFIG_INVALID',
+      );
+    }
+
+    return config as ConfigFile;
   } catch (err) {
+    if (err instanceof PatchstackError) {
+      throw err;
+    }
     throw new PatchstackError(
       `Config file ${target} contains invalid JSON.`,
       'CONFIG_INVALID',
@@ -142,8 +237,8 @@ function readEnv(): ConfigFile {
   };
 }
 
-function isUuid(value: string): boolean {
-  return /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(value);
+function nonBlank(value: string | undefined): string | undefined {
+  return value !== undefined && value.trim().length > 0 ? value : undefined;
 }
 
 function isEnvironment(value: string): value is Environment {

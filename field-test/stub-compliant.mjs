@@ -9,7 +9,7 @@ const cwd = process.cwd();
 const run = (cmd) => execSync(cmd, { cwd, stdio: 'pipe', env: process.env }).toString();
 
 run('npm install --save-dev --no-audit --no-fund @patchstack/connect');
-const scanOutput = run('npx @patchstack/connect scan');
+const scanOutput = run('npx --no-install patchstack-connect scan');
 
 const rc = JSON.parse(readFileSync(`${cwd}/.patchstackrc.json`, 'utf8'));
 
@@ -17,13 +17,13 @@ const pkg = JSON.parse(readFileSync(`${cwd}/package.json`, 'utf8'));
 pkg.scripts = {
   ...pkg.scripts,
   prebuild: 'patchstack-connect scan',
-  postbuild: 'patchstack-connect mark-build',
+  postbuild: 'patchstack-connect mark-build --strict',
 };
 writeFileSync(`${cwd}/package.json`, JSON.stringify(pkg, null, 2) + '\n');
 
 const widget =
-  `    <script src="https://cdn.patchstack.com/patchstack-widget.js"></script>\n` +
-  `    <script>PatchstackWidget.init({ userToken: '${rc.siteUuid}' });</script>\n`;
+  `    <script src="https://cdn.patchstack.com/patchstack-widget.js" ` +
+  `data-site-uuid="${rc.siteUuid}" defer data-patchstack-connect-widget="true"></script>\n`;
 const html = readFileSync(`${cwd}/index.html`, 'utf8');
 writeFileSync(`${cwd}/index.html`, html.replace('</body>', `${widget}  </body>`));
 
