@@ -1,0 +1,45 @@
+{
+  "_comment": "DEMO / EXAMPLE rules for public CVEs only — NOT the Patchstack production corpus. In a real deployment the per-site, version-scoped rule set is fetched from the Patchstack API (createProtection({ token })). Hand-derived from public advisories for the example below.",
+  "firewall": [
+    {
+      "id": "demo-CVE-2019-10744",
+      "title": "Prototype pollution in lodash (defaultsDeep / merge / set)",
+      "vulnerability_id": "CVE-2019-10744",
+      "category": "prototype-pollution",
+      "rule_v2": [
+        { "parameter": "raw", "mutations": ["urldecode"], "match": { "type": "contains", "value": "__proto__" } },
+        {
+          "parameter": "rules",
+          "rules": [
+            { "parameter": "raw", "mutations": ["urldecode"], "match": { "type": "contains", "value": "constructor" }, "inclusive": true },
+            { "parameter": "raw", "mutations": ["urldecode"], "match": { "type": "contains", "value": "prototype" }, "inclusive": true }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "demo-path-traversal",
+      "title": "Path traversal in a file/path parameter",
+      "category": "lfi",
+      "rule_v2": [
+        { "parameter": ["get.file", "post.file", "raw.file", "get.path", "post.path"], "mutations": ["urldecode"], "match": { "type": "contains", "value": ".." } }
+      ]
+    },
+    {
+      "id": "demo-ssrf-url-param",
+      "title": "SSRF via a url parameter (request-side)",
+      "category": "ssrf",
+      "rule_v2": [
+        {
+          "parameter": "rules",
+          "rules": [
+            { "parameter": ["get.url", "post.url", "raw.url"], "mutations": ["urldecode"], "match": { "type": "contains", "value": "localhost" } },
+            { "parameter": ["get.url", "post.url", "raw.url"], "mutations": ["urldecode"], "match": { "type": "regex", "value": "/(127\\.0\\.0\\.1|169\\.254\\.169\\.254|::1|metadata\\.google)/i" } }
+          ]
+        }
+      ]
+    }
+  ],
+  "whitelists": [],
+  "whitelist_keys": {}
+}
