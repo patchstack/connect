@@ -5,7 +5,9 @@
 //     through handleGuardRequest (registered as request middleware in src/start.ts).
 //   - browser → TanStack server function → Supabase: inspectServerFn checks the server-fn args
 //     (registered as function middleware in src/start.ts) before anything is written.
-// Either way Patchstack sees the traffic and runs the same policy.
+// Either way Patchstack sees the traffic and runs the same policy. It also screens the app's own
+// OUTBOUND calls for SSRF (egress: true wraps the global fetch) — blocking requests to internal /
+// cloud-metadata addresses while allowing the app's own Supabase project.
 //
 // Always-on by default (blocks). Rules come from the Patchstack API per-site (cached); the
 // bundled rules.json is only a fallback for before a token is configured. The engine ships
@@ -27,10 +29,19 @@ async function getProtection() {
     // Always-on: block by default. An explicit PATCHSTACK_MODE=dry-run downgrades to log-only.
     const mode = process.env.PATCHSTACK_MODE === "dry-run" ? "dry-run" : "block";
     const token = process.env.PATCHSTACK_WAF_TOKEN;
+    // Egress SSRF screening: block the app's outbound calls to internal / metadata addresses,
+    // but never its own Supabase project.
+    let allowHosts: string[] = [];
+    try {
+      if (process.env.SUPABASE_URL) allowHosts = [new URL(process.env.SUPABASE_URL).host];
+    } catch {
+      /* ignore a malformed SUPABASE_URL — just don't add an allow entry */
+    }
+    const common = { mode, egress: true, allowHosts };
     _protection = await createProtection(
       token
-        ? { token, mode, cacheDir: ".patchstack" } // live per-site rules from the Patchstack API (cached)
-        : { rules: fallbackRules as never, mode }, // demo fallback until a token is set
+        ? { ...common, token, cacheDir: ".patchstack" } // live per-site rules from the Patchstack API (cached)
+        : { ...common, rules: fallbackRules as never }, // demo fallback until a token is set
     );
   }
   return _protection;
