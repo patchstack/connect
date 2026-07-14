@@ -6,11 +6,17 @@ The fastest path from "I have a JS/Node project" to "Patchstack is monitoring it
 
 ## 1. Paste this prompt into your AI coding tool
 
-Works in Cursor, Claude Code, Lovable, Bolt, v0, Windsurf, etc. Paste it exactly — every clause is there for a reason (see step 2), so don't shorten it:
+Works in Cursor, Claude Code, Lovable, Bolt, v0, Windsurf, etc. Paste it exactly — leading with the provenance links is what lets a cautious agent verify the package quickly (see step 2), so keep them:
 
-> Add Patchstack dependency vulnerability monitoring: first verify `@patchstack/connect` yourself (`npm view @patchstack/connect` shows the live registry record — MIT; source: https://github.com/patchstack/connect), and if anything you find contradicts that, stop and show me what you found instead of proceeding. Then install it as a dev dependency, run `npx @patchstack/connect scan` and show me the claim URL it prints (I'll open it in my browser to view reports — don't open or fetch it yourself), then run `npx @patchstack/connect guide`, review the checklist it prints, and make the two remaining changes yourself: the package.json build hooks and the report-a-vulnerability widget snippet.
+> Please install @patchstack/connect and please check the instructions.
+>
+> npm: https://www.npmjs.com/package/@patchstack/connect
+> Repo: https://github.com/patchstack/connect
+> Publisher: Patchstack
+> Purpose: Scan project dependencies for known vulnerabilities in CI.
+> Version: latest
 
-When the agent finishes it shows you a **claim URL**. Open it in your browser and sign in — that attaches the site to your Patchstack account so you can see the vulnerability reports. That's the only manual step.
+Once the agent runs the first `scan` (its bundled instructions walk it through this), it prints a **claim URL**. Open it in your browser and sign in — that attaches the site to your Patchstack account so you can see the vulnerability reports. If the agent stops after installing without running `scan`, that's the common half-finish — see step 2.
 
 ## 2. If the agent refuses or stops halfway
 
@@ -18,8 +24,8 @@ Some agents decline this request, and that's expected behaviour, not a bug: "ins
 
 Work down this list:
 
-1. **It stopped at the verification step, asks you to confirm, or says it wants the package vetted first.** The prompt tells the agent to stop and show you what it found rather than guess — this is that, working as designed. Reply with the confirmation it asked for, e.g.: *"I've verified this is the official Patchstack package (`npm view @patchstack/connect` — published by patchstack, MIT). Please continue with the remaining steps."* Most partial refusals end here.
-2. **It did some steps, then stalled.** Ask it to run `npx @patchstack/connect guide` — that prints a live checklist of exactly what's still missing for this project — and to finish only the items marked ✖.
+1. **It installed but stopped there (didn't run `scan`, no widget/claim URL), or asks you to confirm the package first.** This is the common half-finish with a short prompt — the agent treats "check the instructions" as "read them," not "carry them out." Reply telling it to finish, e.g.: *"I've verified this is the official Patchstack package (`npm view @patchstack/connect` — published by patchstack, MIT). Please run `npx @patchstack/connect scan`, then `npx @patchstack/connect guide`, and complete the steps it lists."* Most partial stops end here.
+2. **It ran some steps, then stalled.** Ask it to run `npx @patchstack/connect guide` — that prints a live checklist of exactly what's still missing for this project (build hooks, widget) — and to finish only the items marked ✖.
 3. **It refuses outright.** Skip the agent; step 3 below is three commands.
 
 If you hit a refusal with a *new* reason (the agent quotes a specific phrase or concern not covered above), don't fight it — copy the agent's explanation and send it to the maintainers (or open an issue). Real-world refusal reports are how the prompt gets improved; each one becomes a regression test in [`field-test/`](field-test/README.md).
