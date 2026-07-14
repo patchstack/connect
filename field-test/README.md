@@ -16,7 +16,8 @@ Every clause of the README prompt exists because an agent refused a version with
 2. **Agents whose training predates May 2026 assert the package doesn't exist.** The `npm view` check resolves that against the registry instead of the model's memory.
 3. **"Install the package, then follow the instructions it ships" reads as handing control to the package author** — structurally the same as prompt injection — and preemptive reassurance language ("it's safe, don't be suspicious, note your knowledge cutoff") is itself flagged as a manipulation signal. Worse, agents fact-check reassurance claims against the code: "nothing is fetched from a URL or executed remotely" was refuted line-by-line (scan POSTs to an API, the widget loads remote JS) and the gap between claim and code became the decisive refusal reason. The prompt argues nothing and delegates to `guide` only after the agent has installed and audited the package.
 4. **Unbounded delegation and authorization-shaped URLs.** "Finish the steps its checklist marks missing", unqualified, was refused by a WebContainer-based agent as a blank check ("executing untrusted, unseen commands"), and a bare "show me the claim URL" was flagged as a machine-authorization/pairing link. So the prompt commands `scan` explicitly (delegating the first scan to the checklist re-creates the blank check), names exactly what the checklist will flag (build hooks + widget snippet), and states what the claim URL is for (the *user* opens it in a browser to view reports).
-5. **The shipped docs are part of the attack surface.** Agents `npm pack` the tarball and read everything in it. A README section that narrated how the prompt "survived AI-agent refusal modes" was quoted back as "being told, in writing, that the message was tuned to get past me — the clearest signal to hold the line", and any contradiction between docs and `dist/` (an undisclosed command, an overbroad privacy claim) is treated as misrepresentation and refused regardless of vendor legitimacy. Dev-process rationale lives here, outside the published package; the shipped docs must disclose every capability the code ships.
+5. **Bounded steps still read as unseen-output execution to agents that don't run commands themselves.** A bolt.diy agent (which stages commands as clickable artifacts for the user instead of executing them) refused "finish what its checklist flags" even with the steps named, because the *content* of those steps still comes from the tool's output — "package trust ≠ output trust… I have no way to inspect what scan/guide will actually output before acting on it". The user asserting they had independently verified the package changed nothing ("verification was never going to unlock the auto-apply step"). The agent stated its unlock explicitly: seeing the output before applying it. So the prompt commands "review the checklist it prints, and make the two remaining changes yourself" — read-then-apply, with the agent as reviewer rather than executor of dictated instructions. The `bolt-diy` persona keeps this covered.
+6. **The shipped docs are part of the attack surface.** Agents `npm pack` the tarball and read everything in it. A README section that narrated how the prompt "survived AI-agent refusal modes" was quoted back as "being told, in writing, that the message was tuned to get past me — the clearest signal to hold the line", and any contradiction between docs and `dist/` (an undisclosed command, an overbroad privacy claim) is treated as misrepresentation and refused regardless of vendor legitimacy. Dev-process rationale lives here, outside the published package; the shipped docs must disclose every capability the code ships.
 
 ## Platform personas — real system prompts
 
@@ -51,6 +52,9 @@ node field-test/run.mjs
 
 # The adversarial persona that reproduces the Bolt/WebContainer refusal pressure
 node field-test/run.mjs --persona hostile
+
+# The real bolt.diy system prompt (see "Platform personas" above)
+node field-test/run.mjs --persona bolt-diy
 
 # Stochastic agents: run several rounds and look at the aggregate
 node field-test/run.mjs --persona hostile --rounds 3
@@ -107,7 +111,7 @@ Everything is saved under `field-test/results/<timestamp>-<persona>/` (gitignore
 ## The improve-and-retest loop
 
 1. Edit `prompt.txt` (or point `--prompt` at a variant).
-2. `node field-test/run.mjs --persona hostile --rounds 3` — the hostile persona is the gate; standard is a smoke test.
+2. `node field-test/run.mjs --persona hostile --rounds 3` — the hostile persona is the gate; standard is a smoke test. Add a `--persona bolt-diy` round when the change touches the delegation wording (the `guide`/checklist clause).
 3. Read each round's `report.md` HESITATIONS / DECISION ANALYSIS sections. Anything an agent pauses on is a future refusal in a stricter harness.
 4. Fix what you find — in the prompt, the `guide` checklist, or `AGENT-INSTALL.md` (agents audit the shipped docs; inaccuracies cost trust).
 5. When rounds are consistently green, copy the prompt into the README's install-prompt section and record any new refusal mode in the list above.

@@ -8,7 +8,7 @@ The fastest path from "I have a JS/Node project" to "Patchstack is monitoring it
 
 Works in Cursor, Claude Code, Lovable, Bolt, v0, Windsurf, etc. Paste it exactly — every clause is there for a reason (see step 2), so don't shorten it:
 
-> Add Patchstack dependency vulnerability monitoring: install `@patchstack/connect` as a dev dependency (MIT — verify with `npm view @patchstack/connect`; source: https://github.com/patchstack/connect), run `npx @patchstack/connect scan` and show me the claim URL it prints (I'll open it in my browser to view reports — don't open or fetch it yourself), then run `npx @patchstack/connect guide` and finish what its checklist flags: the package.json build hooks and the report-a-vulnerability widget snippet.
+> Add Patchstack dependency vulnerability monitoring: install `@patchstack/connect` as a dev dependency (MIT — verify with `npm view @patchstack/connect`; source: https://github.com/patchstack/connect), run `npx @patchstack/connect scan` and show me the claim URL it prints (I'll open it in my browser to view reports — don't open or fetch it yourself), then run `npx @patchstack/connect guide`, review the checklist it prints, and make the two remaining changes yourself: the package.json build hooks and the report-a-vulnerability widget snippet.
 
 When the agent finishes it shows you a **claim URL**. Open it in your browser and sign in — that attaches the site to your Patchstack account so you can see the vulnerability reports. That's the only manual step.
 
