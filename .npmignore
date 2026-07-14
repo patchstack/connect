@@ -11,4 +11,3 @@ coverage
 # a belt-and-suspenders backstop in case that allowlist is ever loosened. (tests/pack-safety
 # enforces the invariant.)
 examples
-field-test
