@@ -6,3 +6,9 @@ tsup.config.ts
 .github
 coverage
 *.tsbuildinfo
+# examples/ installs a REAL vulnerable dependency (lodash@4.17.11) for the demo — it must
+# never ship to consumers. The package.json "files" allowlist already excludes it; these are
+# a belt-and-suspenders backstop in case that allowlist is ever loosened. (tests/pack-safety
+# enforces the invariant.)
+examples
+field-test

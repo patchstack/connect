@@ -1,0 +1,162 @@
+{
+  "_comment": "COMPREHENSIVE DEMO / TEST rule set for @patchstack/connect/protect — NOT the Patchstack production corpus. Generic, public signatures spanning all three phases (request WAF / response leak / egress SSRF), each carrying an `_demo` block { desc, exploit, benign } used by gallery.mjs (live demonstration) and tests/protect/demo-rules.test.ts (every rule is proven to block its exploit and pass its benign). Load with createProtection({ rules: <this bundle> }); phase-tagged response/egress rules ADD to the built-in defaults. In production the per-site, version-scoped ruleset comes from the Patchstack API via createProtection({ token }).",
+  "firewall": [
+    {
+      "id": "demo-prototype-pollution",
+      "title": "Prototype pollution in request body",
+      "category": "prototype-pollution",
+      "rule_v2": [
+        { "parameter": "raw", "mutations": ["urldecode"], "match": { "type": "contains", "value": "__proto__" } },
+        {
+          "parameter": "rules",
+          "rules": [
+            { "parameter": "raw", "mutations": ["urldecode"], "match": { "type": "contains", "value": "constructor" }, "inclusive": true },
+            { "parameter": "raw", "mutations": ["urldecode"], "match": { "type": "contains", "value": "prototype" }, "inclusive": true }
+          ]
+        }
+      ],
+      "_demo": {
+        "desc": "Deep-merge sink pollutes Object.prototype via a crafted body",
+        "exploit": { "method": "POST", "body": "{\"constructor\":{\"prototype\":{\"polluted\":\"yes\"}}}" },
+        "benign": { "method": "POST", "body": "{\"theme\":\"dark\"}" }
+      }
+    },
+    {
+      "id": "demo-path-traversal",
+      "title": "Path traversal in a file/path parameter",
+      "category": "lfi",
+      "rule_v2": [
+        { "parameter": ["get.file", "post.file", "raw.file", "get.path", "post.path"], "mutations": ["urldecode"], "match": { "type": "contains", "value": ".." } }
+      ],
+      "_demo": {
+        "desc": "../ sequence in a file parameter escapes the intended directory",
+        "exploit": { "method": "GET", "path": "/download?file=../../etc/passwd" },
+        "benign": { "method": "GET", "path": "/download?file=report.pdf" }
+      }
+    },
+    {
+      "id": "demo-sqli",
+      "title": "SQL injection in a query parameter",
+      "category": "sqli",
+      "rule_v2": [
+        { "parameter": ["get.q", "post.q", "get.id", "post.id", "raw"], "mutations": ["urldecode"], "match": { "type": "regex", "value": "/union\\s+select|;\\s*drop\\s+table|\\bor\\s+1\\s*=\\s*1\\b/i" } }
+      ],
+      "_demo": {
+        "desc": "UNION SELECT injected into a search parameter",
+        "exploit": { "method": "POST", "body": "{\"q\":\"1 UNION SELECT password FROM users\"}" },
+        "benign": { "method": "POST", "body": "{\"q\":\"union station cafe\"}" }
+      }
+    },
+    {
+      "id": "demo-xss",
+      "title": "Reflected/stored XSS in a text field",
+      "category": "xss",
+      "rule_v2": [
+        { "parameter": ["get.q", "post.comment", "post.title", "raw"], "mutations": ["urldecode", "htmlentitydecode"], "match": { "type": "regex", "value": "/<script\\b|onerror\\s*=|javascript:/i" } }
+      ],
+      "_demo": {
+        "desc": "<script> tag submitted in a comment field",
+        "exploit": { "method": "POST", "body": "{\"comment\":\"<script>alert(1)</script>\"}" },
+        "benign": { "method": "POST", "body": "{\"comment\":\"great write-up, thanks\"}" }
+      }
+    },
+    {
+      "id": "demo-command-injection",
+      "title": "OS command injection in a host/cmd parameter",
+      "category": "command-injection",
+      "rule_v2": [
+        { "parameter": ["get.host", "post.host", "get.cmd", "post.cmd"], "mutations": ["urldecode"], "match": { "type": "regex", "value": "/[;&|`$()<>]/" } }
+      ],
+      "_demo": {
+        "desc": "Shell metacharacters appended to a ping host parameter",
+        "exploit": { "method": "POST", "body": "{\"host\":\"127.0.0.1; cat /etc/passwd\"}" },
+        "benign": { "method": "POST", "body": "{\"host\":\"127.0.0.1\"}" }
+      }
+    },
+    {
+      "id": "demo-nosql-injection",
+      "title": "NoSQL operator injection in request body",
+      "category": "nosqli",
+      "rule_v2": [
+        { "parameter": "raw", "match": { "type": "regex", "value": "/\"\\$(?:ne|gt|lt|gte|lte|where|regex|in|nin)\"\\s*:/i" } }
+      ],
+      "_demo": {
+        "desc": "Mongo operator ($ne) injected to bypass an equality check",
+        "exploit": { "method": "POST", "body": "{\"user\":{\"$ne\":null}}" },
+        "benign": { "method": "POST", "body": "{\"user\":\"alice\"}" }
+      }
+    },
+    {
+      "id": "demo-xxe",
+      "title": "XML external entity (XXE) in request body",
+      "category": "xxe",
+      "rule_v2": [
+        { "parameter": "raw", "match": { "type": "regex", "value": "/<!ENTITY|<!DOCTYPE[^>]*SYSTEM/i" } }
+      ],
+      "_demo": {
+        "desc": "External DOCTYPE/ENTITY referencing a local file",
+        "exploit": { "method": "POST", "body": "<?xml version=\"1.0\"?><!DOCTYPE foo SYSTEM \"file:///etc/passwd\"><foo/>" },
+        "benign": { "method": "POST", "body": "<?xml version=\"1.0\"?><note>hi</note>" }
+      }
+    },
+    {
+      "id": "demo-ssrf-request",
+      "title": "SSRF via a url parameter (request-side)",
+      "category": "ssrf",
+      "rule_v2": [
+        { "parameter": ["get.url", "post.url", "raw.url"], "mutations": ["urldecode"], "match": { "type": "regex", "value": "/localhost|127\\.0\\.0\\.1|169\\.254\\.169\\.254|::1|metadata\\.google/i" } }
+      ],
+      "_demo": {
+        "desc": "url parameter points at the cloud metadata endpoint",
+        "exploit": { "method": "POST", "body": "{\"url\":\"http://169.254.169.254/latest/meta-data/\"}" },
+        "benign": { "method": "POST", "body": "{\"url\":\"https://example.com/logo.png\"}" }
+      }
+    },
+    {
+      "id": "demo-resp-pii-email",
+      "title": "Email address leaking in response body",
+      "phase": "response",
+      "category": "pii-exposure",
+      "action": "redact",
+      "rule_v2": [
+        { "parameter": "response.body", "match": { "type": "regex", "value": "/[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\\.[A-Za-z]{2,}/" } }
+      ],
+      "_demo": {
+        "desc": "An endpoint returns a user's email; the address is masked",
+        "exploit": { "body": "{\"contact\":\"alice@example.com\"}" },
+        "benign": { "body": "{\"contact\":\"see profile page\"}" }
+      }
+    },
+    {
+      "id": "demo-resp-credit-card",
+      "title": "Credit-card number leaking in response body",
+      "phase": "response",
+      "category": "pii-exposure",
+      "action": "redact",
+      "rule_v2": [
+        { "parameter": "response.body", "match": { "type": "regex", "value": "/(?:\\d[ -]?){13,16}/" } }
+      ],
+      "_demo": {
+        "desc": "A 16-digit card number in the payload is masked",
+        "exploit": { "body": "{\"card\":\"4111 1111 1111 1111\"}" },
+        "benign": { "body": "{\"orderId\":\"12345\"}" }
+      }
+    },
+    {
+      "id": "demo-egress-blocklist-host",
+      "title": "Outbound request to a known exfiltration host",
+      "phase": "egress",
+      "category": "exfiltration",
+      "rule_v2": [
+        { "parameter": "egress.host", "match": { "type": "equals", "value": "evil.example.com" } }
+      ],
+      "_demo": {
+        "desc": "The app tries to POST data to a blocklisted host",
+        "exploit": { "url": "https://evil.example.com/steal?data=1" },
+        "benign": { "url": "https://api.github.com/repos" }
+      }
+    }
+  ],
+  "whitelists": [],
+  "whitelist_keys": {}
+}
