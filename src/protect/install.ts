@@ -12,8 +12,11 @@ import { readFileSync, writeFileSync, existsSync, mkdirSync, copyFileSync } from
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-// Guard templates ship next to the built CLI (dist/protect/templates).
-const TEMPLATES = join(dirname(fileURLToPath(import.meta.url)), 'protect', 'templates');
+// Guard templates ship next to the built CLI (dist/protect/templates). When this module runs
+// unbundled (e.g. under test, imported straight from src/), templates sit alongside it instead
+// (src/protect/templates) — try that layout first, then fall back to the bundled one.
+const HERE = dirname(fileURLToPath(import.meta.url));
+const TEMPLATES = existsSync(join(HERE, 'templates')) ? join(HERE, 'templates') : join(HERE, 'protect', 'templates');
 const APP = process.cwd();
 const PS_DIR = join(APP, 'src/integrations/patchstack');
 
@@ -83,6 +86,28 @@ function scaffold(cwd: string): void {
   copyFileSync(join(TEMPLATES, 'guard.ts'), join(dst, 'guard.ts'));
   copyFileSync(join(TEMPLATES, 'rules.json'), join(dst, 'rules.json'));
   log('scaffolded guard.ts + rules.json');
+}
+
+// Bake the site UUID from .patchstackrc.json (written by `patchstack-connect scan`) into the
+// scaffolded guard, so the deployed Worker calls the live Pulse rules API with zero user config.
+// Left as the inert placeholder (guard falls back to PATCHSTACK_SITE_UUID env / bundled rules)
+// when the app hasn't been scanned yet or the file can't be read.
+function bakeSiteUuid(cwd: string): void {
+  const rc = join(cwd, '.patchstackrc.json');
+  if (!existsSync(rc)) return log('no .patchstackrc.json — guard uses PATCHSTACK_SITE_UUID env or the bundled fallback');
+  let uuid: string | undefined;
+  try {
+    uuid = JSON.parse(read(rc)).siteUuid;
+  } catch {
+    return log('.patchstackrc.json unreadable — skipping site-UUID bake');
+  }
+  if (!uuid) return;
+  const p = join(cwd, 'src/integrations/patchstack/guard.ts');
+  if (!existsSync(p)) return;
+  const s = read(p);
+  if (!s.includes('__PATCHSTACK_SITE_UUID__')) return log('guard.ts site UUID already baked');
+  writeFileSync(p, s.replace('__PATCHSTACK_SITE_UUID__', uuid));
+  log('baked site UUID into guard.ts — live rules from the Patchstack API');
 }
 
 function patchClient(cwd: string): void {
@@ -156,6 +181,7 @@ export function runProtect(cwd: string): void {
     return;
   }
   scaffold(cwd);
+  bakeSiteUuid(cwd);
   patchClient(cwd);
   patchStart(cwd);
   log('done — guard wired and always-on (blocks by default). Set PATCHSTACK_MODE=dry-run for log-only.');

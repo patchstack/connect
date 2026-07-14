@@ -18,6 +18,9 @@ import {
 } from "@patchstack/connect/protect";
 import fallbackRules from "./rules.json";
 
+// Baked by `patchstack-connect protect` from .patchstackrc.json (empty if the app isn't scanned yet).
+const PS_SITE_UUID = "__PATCHSTACK_SITE_UUID__";
+
 export { GUARD_PATH };
 
 // One shared protection policy for both guards (rules load once).
@@ -27,10 +30,13 @@ async function getProtection() {
     // Always-on: block by default. An explicit PATCHSTACK_MODE=dry-run downgrades to log-only.
     const mode = process.env.PATCHSTACK_MODE === "dry-run" ? "dry-run" : "block";
     const token = process.env.PATCHSTACK_WAF_TOKEN;
+    const siteUuid = PS_SITE_UUID.startsWith("__") ? process.env.PATCHSTACK_SITE_UUID : PS_SITE_UUID;
     _protection = await createProtection(
-      token
-        ? { token, mode, cacheDir: ".patchstack" } // live per-site rules from the Patchstack API (cached)
-        : { rules: fallbackRules as never, mode }, // demo fallback until a token is set
+      siteUuid
+        ? { siteUuid, rules: fallbackRules as never, mode, cacheDir: ".patchstack" } // live per-site rules; bundled = offline fallback
+        : token
+          ? { token, mode, cacheDir: ".patchstack" }
+          : { rules: fallbackRules as never, mode },
     );
   }
   return _protection;
