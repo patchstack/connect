@@ -1,5 +1,7 @@
 # Getting started — connect a project to Patchstack
 
+<!-- Editing this file? The prompt block in step 1 is a load-bearing, adversarially-tuned artifact that must stay byte-identical with README.md and field-test/prompt.txt. Read MAINTAINING.md before changing it or any setup-guide content. -->
+
 The fastest path from "I have a JS/Node project" to "Patchstack is monitoring its dependencies". Share this doc with anyone setting up a project; the whole flow is 2–5 minutes.
 
 ## 1. Paste this prompt into your AI coding tool
