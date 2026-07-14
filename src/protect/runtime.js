@@ -13,6 +13,8 @@
 import { RuleEngine, PatchstackRuleClient } from './engine/index.js';
 import { fromFetchRequest } from './engine/fetch.js';
 import { fromNodeRequest } from './engine/node.js';
+import { installEgressGuard } from './egress.js';
+import { DEFAULT_RESPONSE_RULES, DEFAULT_EGRESS_RULES } from './defaults.js';
 import { readFileSync, writeFileSync, mkdirSync } from 'node:fs';
 import { join } from 'node:path';
 
@@ -57,20 +59,94 @@ export async function createProtection(options = {}) {
   const onDetect = options.onDetect ?? defaultOnDetect;
 
   const bundle = await resolveRules(options);
-  const engine = new RuleEngine({ ...bundle, onError });
+  const incoming = bundle.firewall ?? [];
 
-  // Given an evaluation result, either enforce (block mode) or just record (dry-run).
-  const decide = (result, block, allow) => {
+  // Split the delivered ruleset by phase (default "request"), merging phase defaults +
+  // per-call overrides. Detection is fully rule-driven — nothing hardcoded.
+  const requestRules = byPhase(incoming, 'request');
+  const responseRules = [...(options.responseRules ?? DEFAULT_RESPONSE_RULES), ...byPhase(incoming, 'response')];
+  const egressRules = [...(options.egressRules ?? DEFAULT_EGRESS_RULES), ...byPhase(incoming, 'egress')];
+
+  const engine = new RuleEngine({
+    firewall: requestRules,
+    whitelists: bundle.whitelists,
+    whitelist_keys: bundle.whitelist_keys,
+    onError
+  });
+  // One engine per response rule so we can find ALL matches (to redact each). `action:
+  // "redact"` masks the offending span(s); anything else withholds the whole response.
+  const responseRuleSet = responseRules.map((rule) => ({
+    rule,
+    engine: new RuleEngine({ firewall: [rule], onError }),
+    redactors: rule.action === 'redact' ? extractRedactors(rule) : null
+  }));
+  const egressEngine = new RuleEngine({ firewall: egressRules, onError });
+  const maskFn =
+    typeof options.maskWith === 'function'
+      ? options.maskWith
+      : () => (typeof options.maskWith === 'string' ? options.maskWith : '[REDACTED]');
+
+  // Given a request/egress result, enforce (block mode) or just record (dry-run).
+  const decide = (phase, result, block, allow) => {
     if (!result || !result.blocked) return allow();
-    onDetect({ mode, rule: result.rule, message: result.message });
+    onDetect({ phase, mode, category: result.rule?.category, rule: result.rule, message: result.message });
     return mode === 'block' ? block() : allow();
+  };
+
+  // Response phase: redact matched spans (default) or withhold; block wins over redact.
+  const screenFetchResponse = async (response) => {
+    const text = await readTextResponse(response);
+    if (text == null) return response;
+    const meta = { status: response.status, headers: headerObject(response.headers) };
+
+    let blockRule = null;
+    const redactions = [];
+    for (const { rule, engine: re, redactors } of responseRuleSet) {
+      let result;
+      try {
+        result = re.evaluate({ _response: { ...meta, body: text } });
+      } catch (err) {
+        onError?.(err);
+        continue;
+      }
+      if (!result.blocked) continue;
+      onDetect({ phase: 'response', mode, category: rule.category, rule, message: result.message });
+      if (mode !== 'block') continue; // dry-run: observe only
+      if (redactors && redactors.length) redactions.push({ rule, redactors });
+      else if (!blockRule) blockRule = rule;
+    }
+
+    if (mode !== 'block') return response;
+    if (blockRule) return leakResponse();
+    if (redactions.length) {
+      let body = text;
+      for (const { rule, redactors } of redactions) body = applyRedactors(body, redactors, maskFn(rule.category));
+      return rebuildResponse(response, body);
+    }
+    return response;
+  };
+
+  // Egress phase: is this outbound call blocked? (records detection either way)
+  const allow = new Set((options.allowHosts ?? []).map((h) => String(h).toLowerCase()));
+  const egressShouldBlock = (url, host, method) => {
+    if (host && allow.has(host.toLowerCase())) return false;
+    let result;
+    try {
+      result = egressEngine.evaluate({ _egress: { url, host, method } });
+    } catch (err) {
+      onError?.(err);
+      return false;
+    }
+    if (!result.blocked) return false;
+    onDetect({ phase: 'egress', mode, category: result.rule?.category, rule: result.rule, message: result.message });
+    return mode === 'block';
   };
 
   const protection = {
     mode,
-    rules: bundle,
+    rules: { request: requestRules, response: responseRules, egress: egressRules },
 
-    // (request) => Response | null   (null = allow, caller proceeds)
+    // (request) => Response | null   (null = allow, caller proceeds). Request phase only.
     fetchGuard() {
       return async (request) => {
         let result;
@@ -80,17 +156,22 @@ export async function createProtection(options = {}) {
           onError?.(err);
           return null; // fail open
         }
-        return decide(result, () => blockResponse(result), () => null);
+        return decide('request', result, () => blockResponse(result), () => null);
       };
     },
 
-    // Wrap a fetch handler: export default { fetch: protection.fetch(app.fetch) }
+    // Wrap a fetch handler: screens the request, then the response (redact/block).
     fetch(handler) {
       const guard = protection.fetchGuard();
-      return async (request, ...rest) => (await guard(request)) ?? handler(request, ...rest);
+      return async (request, ...rest) => {
+        const blocked = await guard(request);
+        if (blocked) return blocked;
+        const response = await handler(request, ...rest);
+        return screenFetchResponse(response);
+      };
     },
 
-    // Express middleware (expects express-parsed req.query/req.body).
+    // Express middleware (request phase; expects express-parsed req.query/req.body).
     express() {
       return (req, res, next) => {
         let result;
@@ -100,11 +181,11 @@ export async function createProtection(options = {}) {
           onError?.(err);
           return next();
         }
-        decide(result, () => res.status(403).json(blockBody(result)), () => next());
+        decide('request', result, () => res.status(403).json(blockBody(result)), () => next());
       };
     },
 
-    // Node / Connect middleware — buffers the body itself (no body-parser needed).
+    // Node / Connect middleware — buffers the body itself (request phase).
     node(nodeOptions = {}) {
       const maxBytes = nodeOptions.maxBodyBytes ?? 1024 * 1024;
       return (req, res, next) => {
@@ -125,28 +206,119 @@ export async function createProtection(options = {}) {
         });
         req.on('end', () => {
           const rawBody = overflow ? '' : Buffer.concat(chunks).toString('utf8');
+          let shaped;
           let result;
           try {
-            result = engine.evaluate(fromNodeRequest(req, rawBody));
+            shaped = fromNodeRequest(req, rawBody);
+            result = engine.evaluate(shaped);
           } catch (err) {
             onError?.(err);
             return next();
           }
           decide(
+            'request',
             result,
             () => {
               res.statusCode = 403;
               res.setHeader('content-type', 'application/json');
               res.end(JSON.stringify(blockBody(result)));
             },
-            () => next(),
+            () => {
+              // This guard consumed the request stream to screen it; re-expose the parsed
+              // body so a downstream handler (without its own body-parser) can read it.
+              if (req.body === undefined) req.body = shaped.body;
+              next();
+            },
           );
         });
       };
     },
   };
 
+  // Egress interception is opt-in (it wraps the global fetch).
+  if (options.egress) {
+    protection.uninstallEgress = installEgressGuard({ shouldBlock: egressShouldBlock, onBlock: options.onEgressBlock });
+  }
+
   return protection;
+}
+
+// --- phase / response helpers -------------------------------------------
+
+function byPhase(rules, phase) {
+  return (rules ?? []).filter((r) => (r.phase ?? 'request') === phase);
+}
+
+async function readTextResponse(response) {
+  if (!response || typeof response.clone !== 'function') return null;
+  const ct = (response.headers?.get?.('content-type') || '').toLowerCase();
+  const isText = ct === '' || /(json|text|xml|html|javascript|csv|yaml|x-www-form-urlencoded)/.test(ct);
+  if (!isText) return null;
+  const len = Number(response.headers?.get?.('content-length') || 0);
+  if (len && len > 512 * 1024) return null;
+  try {
+    const text = await response.clone().text();
+    return text.length > 512 * 1024 ? null : text;
+  } catch {
+    return null;
+  }
+}
+
+function headerObject(headers) {
+  const out = {};
+  headers?.forEach?.((v, k) => { out[k.toLowerCase()] = v; });
+  return out;
+}
+
+// Derive redaction targets from a rule's own conditions: regex → mask every match;
+// contains/stripos → mask the literal. (Other match types can't identify a span → the
+// rule falls back to block.)
+function extractRedactors(rule) {
+  const out = [];
+  const walk = (conds) => {
+    for (const c of conds ?? []) {
+      if (Array.isArray(c.rules)) walk(c.rules);
+      const m = c.match;
+      if (!m) continue;
+      if (m.type === 'regex' && typeof m.value === 'string') {
+        const parsed = m.value.match(/^\/(.+)\/([a-z]*)$/is);
+        if (parsed) {
+          const flags = parsed[2].includes('g') ? parsed[2] : parsed[2] + 'g';
+          try {
+            out.push({ re: new RegExp(parsed[1], flags) });
+          } catch {
+            /* skip invalid */
+          }
+        }
+      } else if ((m.type === 'contains' || m.type === 'stripos') && m.value != null) {
+        out.push({ literal: String(m.value) });
+      }
+    }
+  };
+  walk(rule.rule_v2);
+  return out;
+}
+
+function applyRedactors(body, redactors, mask) {
+  let out = body;
+  for (const r of redactors) {
+    if (r.re) out = out.replace(r.re, mask);
+    else if (r.literal) out = out.split(r.literal).join(mask);
+  }
+  return out;
+}
+
+function rebuildResponse(response, body) {
+  const headers = new Headers(response.headers);
+  headers.delete('content-length'); // body length changed after redaction
+  return new Response(body, { status: response.status, statusText: response.statusText, headers });
+}
+
+function leakResponse() {
+  return new Response(JSON.stringify({ error: 'Response withheld by Patchstack (sensitive data detected)' }), {
+    status: 500,
+    headers: { 'content-type': 'application/json' }
+  });
 }
 
 // --- rule source --------------------------------------------------------
@@ -228,7 +400,7 @@ function blockResponse(result) {
   });
 }
 
-function defaultOnDetect({ mode, rule, message }) {
+function defaultOnDetect({ phase, mode, category, rule, message }) {
   const tag = mode === 'block' ? 'BLOCK' : 'DETECT (dry-run)';
-  console.warn(`[patchstack] ${tag} rule=${rule?.id ?? '?'} ${message ?? ''}`.trim());
+  console.warn(`[patchstack] ${tag} phase=${phase ?? 'request'} category=${category ?? '?'} rule=${rule?.id ?? '?'} ${message ?? ''}`.trim());
 }

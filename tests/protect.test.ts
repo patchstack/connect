@@ -83,3 +83,83 @@ describe('createServerFnGuard (TanStack server-function path)', () => {
     expect(detections.length).toBe(1);
   });
 });
+
+const jsonReq = (body: unknown) =>
+  new Request('https://app.example.com/x', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: typeof body === 'string' ? body : JSON.stringify(body),
+  });
+
+describe('array parameters (rule_v2 ["post.a","post.b"])', () => {
+  it('matches when ANY listed source has the payload', async () => {
+    const arrRules = {
+      firewall: [{ id: 'arr', rule_v2: [{ parameter: ['post.a', 'post.b'], match: { type: 'contains', value: 'evil' } }] }],
+      whitelists: [],
+      whitelist_keys: {},
+    };
+    const g = (await createProtection({ rules: arrRules, mode: 'block' })).fetchGuard();
+    expect((await g(jsonReq({ a: 'evil' })))?.status).toBe(403);
+    expect((await g(jsonReq({ b: 'evil' })))?.status).toBe(403);
+    expect(await g(jsonReq({ a: 'ok' }))).toBeNull();
+  });
+});
+
+describe('response phase — leak detection', () => {
+  const leak = () => new Response(JSON.stringify({ ok: true, awsKey: 'AKIAIOSFODNN7EXAMPLE' }), { status: 200, headers: { 'content-type': 'application/json' } });
+
+  it('default rules REDACT the leaked span and still serve the page', async () => {
+    const detections: any[] = [];
+    const p = await createProtection({ mode: 'block', onDetect: (d: any) => detections.push(d) });
+    const res: any = await p.fetch(leak)(jsonReq({}));
+    expect(res.status).toBe(200);
+    const body = await res.text();
+    expect(body.includes('AKIAIOSFODNN7EXAMPLE')).toBe(false);
+    expect(body.includes('[REDACTED]')).toBe(true);
+    expect(detections.some((d) => d.phase === 'response' && d.category === 'secret-exposure')).toBe(true);
+  });
+
+  it('action:block rule withholds the whole response', async () => {
+    const p = await createProtection({
+      mode: 'block',
+      responseRules: [{ id: 'r-block', phase: 'response', action: 'block', category: 'secret-exposure', rule_v2: [{ parameter: 'response.body', match: { type: 'contains', value: 'TOPSECRET' } }] }],
+    });
+    const res: any = await p.fetch(() => new Response('x TOPSECRET y', { headers: { 'content-type': 'text/plain' } }))(jsonReq({}));
+    expect(res.status).toBe(500);
+  });
+
+  it('dry-run serves the ORIGINAL (unmasked) response', async () => {
+    const p = await createProtection({ mode: 'dry-run' });
+    const res: any = await p.fetch(leak)(jsonReq({}));
+    expect((await res.text()).includes('AKIAIOSFODNN7EXAMPLE')).toBe(true);
+  });
+});
+
+describe('egress phase — SSRF', () => {
+  it('block mode: internal host blocked, external allowed', async () => {
+    const orig = globalThis.fetch;
+    globalThis.fetch = (async (u: any) => ({ marker: 'stub', url: String(u) })) as any;
+    const p = await createProtection({ egress: true, mode: 'block' });
+    try {
+      await expect(globalThis.fetch('http://169.254.169.254/latest/meta-data/')).rejects.toThrow();
+      expect((await (globalThis.fetch as any)('https://api.example.com/')).marker).toBe('stub');
+    } finally {
+      p.uninstallEgress?.();
+      globalThis.fetch = orig;
+    }
+  });
+
+  it('dry-run: detected but allowed', async () => {
+    const orig = globalThis.fetch;
+    globalThis.fetch = (async () => ({ marker: 'stub' })) as any;
+    const detections: any[] = [];
+    const p = await createProtection({ egress: true, mode: 'dry-run', onDetect: (d: any) => detections.push(d) });
+    try {
+      expect((await (globalThis.fetch as any)('http://127.0.0.1:9000/')).marker).toBe('stub');
+    } finally {
+      p.uninstallEgress?.();
+      globalThis.fetch = orig;
+    }
+    expect(detections.some((d) => d.phase === 'egress')).toBe(true);
+  });
+});

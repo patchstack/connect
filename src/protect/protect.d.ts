@@ -7,14 +7,20 @@ export interface RuleBundle {
   whitelist_keys: Record<string, unknown>;
 }
 
+export type Phase = "request" | "response" | "egress";
+
 export interface Protection {
   mode: "block" | "dry-run";
-  rules: RuleBundle;
-  /** (request) => Response (403 when blocked) | null (allow / dry-run). */
+  /** Active rules split by phase. */
+  rules: { request: unknown[]; response: unknown[]; egress: unknown[] };
+  /** (request) => Response (403 when blocked) | null (allow / dry-run). Request phase only. */
   fetchGuard(): (request: Request) => Promise<Response | null>;
+  /** Screens the request, then the response (secret-leak redaction / withhold). */
   fetch(handler: (request: Request, ...rest: unknown[]) => unknown): (request: Request, ...rest: unknown[]) => Promise<unknown>;
   express(): (req: unknown, res: unknown, next: () => void) => void;
   node(options?: { maxBodyBytes?: number }): (req: unknown, res: unknown, next: () => void) => void;
+  /** Present when `egress: true` — restores the original global fetch. */
+  uninstallEgress?: () => void;
 }
 
 export interface CreateProtectionOptions {
@@ -27,8 +33,25 @@ export interface CreateProtectionOptions {
   baseUrl?: string;
   /** Directory for the last-known-good rule cache. */
   cacheDir?: string;
+  /** Override the default response-phase (secret-leak) rule set. */
+  responseRules?: unknown[];
+  /** Override the default egress-phase (SSRF) rule set. */
+  egressRules?: unknown[];
+  /** Opt in to wrapping global fetch to screen the app's outbound calls (SSRF). */
+  egress?: boolean;
+  /** Hosts exempt from egress screening. */
+  allowHosts?: string[];
+  /** Redaction mask (string or per-category function). Default "[REDACTED]". */
+  maskWith?: string | ((category?: string) => string);
   onError?: (err: unknown) => void;
-  onDetect?: (detection: { mode: string; rule?: { id?: string }; message?: string }) => void;
+  onEgressBlock?: (info: { url: string; host: string | null; method: string }) => void;
+  onDetect?: (detection: {
+    phase?: Phase;
+    mode: string;
+    category?: string;
+    rule?: { id?: string; category?: string };
+    message?: string;
+  }) => void;
 }
 
 export function createProtection(options?: CreateProtectionOptions): Promise<Protection>;
