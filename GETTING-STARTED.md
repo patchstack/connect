@@ -28,11 +28,11 @@ If you hit a refusal with a *new* reason (the agent quotes a specific phrase or 
 
 ```bash
 npm install --save-dev @patchstack/connect   # bun-managed projects (Lovable, Bolt): bun add -d @patchstack/connect
-npx @patchstack/connect scan                 # registers the project, prints the claim URL — open it in your browser
+npx @patchstack/connect scan                 # registers the project, installs the widget tag, prints the claim URL — open it in your browser
 npx @patchstack/connect guide                # prints what's left, with the exact snippets for your project
 ```
 
-`guide` tailors its output to your project — right package manager, real site UUID, framework-specific widget placement — so finishing setup is copy-paste: the `prebuild`/`postbuild` hooks into `package.json`, and the report-a-vulnerability widget snippet into your HTML/layout file.
+`scan` also drops the report-a-vulnerability widget tag into your root HTML file (`index.html`-style shells) automatically. `guide` tailors the rest to your project — right package manager, real site UUID, framework-specific widget placement when your root layout is code instead of HTML — so finishing setup is copy-paste: the `prebuild`/`postbuild` hooks into `package.json`, plus the widget one-liner if `scan` couldn't place it itself.
 
 ## 4. You're done when
 
