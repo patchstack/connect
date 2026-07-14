@@ -1,7 +1,7 @@
 // Field-test orchestrator: run an AI agent against the install prompt in a
 // throwaway fixture, with the Patchstack API mocked, and score the outcome.
 //
-//   node field-test/run.mjs [--persona standard|hostile] [--template lovable-bun|vite-npm]
+//   node field-test/run.mjs [--persona <name>] [--template lovable-bun|vite-npm]
 //                           [--prompt <file>] [--rounds N] [--agent-cmd "<shell command>"]
 //                           [--keep] [--timeout <minutes>]
 //
