@@ -93,6 +93,30 @@ function warnUnsupportedMatchType(type) {
   );
 }
 
+// Internal / private / loopback / link-local / cloud-metadata host check, used by the
+// `internal_host` match type for SSRF egress rules. Handles IPv4 (incl. IPv4-mapped IPv6),
+// IPv6 loopback/link-local/unique-local, and localhost / *.local / GCP metadata names.
+function isInternalHost(hostname) {
+  if (!hostname) return false;
+  const host = String(hostname).toLowerCase().replace(/^\[|\]$/g, '');
+
+  if (host === 'localhost' || host.endsWith('.localhost') || host.endsWith('.local')) return true;
+  if (host === 'metadata.google.internal') return true;
+  if (host === '::1' || host === '::') return true;
+  if (host.startsWith('fe80:') || host.startsWith('fc') || host.startsWith('fd')) return true;
+
+  const v4 = host.match(/(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/);
+  if (v4) {
+    const a = Number(v4[1]);
+    const b = Number(v4[2]);
+    if (a === 127 || a === 10 || a === 0) return true; // loopback / private / this-host
+    if (a === 169 && b === 254) return true; // link-local incl. 169.254.169.254 metadata
+    if (a === 172 && b >= 16 && b <= 31) return true; // 172.16.0.0/12
+    if (a === 192 && b === 168) return true; // 192.168.0.0/16
+  }
+  return false;
+}
+
 // `matchObj` is the full match object; needed by types that read sibling fields
 // (array_key_value reads `key`/`match`). Optional so direct callers/tests can keep
 // using the (type, value, matchVal) signature.
@@ -178,6 +202,10 @@ function matchValue(type, value, matchVal, matchObj) {
         return false;
       }
     }
+
+    case 'internal_host':
+      // SSRF egress: private / loopback / link-local / cloud-metadata destinations.
+      return isInternalHost(strValue);
 
     case 'quotes':
     // engine-php exposes `inline_js_xss` as an alias of `quotes`.
@@ -323,7 +351,11 @@ export class RuleEngine {
       return this.#evaluateRule(condition.rules, resolver);
     }
 
-    const values = resolver.resolve(parameter);
+    // `parameter` may be an array (e.g. ["get.action","post.action"]) — the rule_v2 format
+    // uses these pervasively to mean "any of these sources". Resolve each and OR the
+    // candidate values together. (A bare string resolves as a single source.)
+    const params = Array.isArray(parameter) ? parameter : [parameter];
+    const values = params.flatMap((p) => resolver.resolve(p));
 
     if (values.length === 0) {
       return false;
@@ -384,4 +416,4 @@ export class RuleEngine {
   }
 }
 
-export const _testExports = { matchValue, safeRegExp };
+export const _testExports = { matchValue, safeRegExp, isInternalHost };
