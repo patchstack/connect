@@ -142,7 +142,10 @@ async function runInit(args: ParsedArgs): Promise<number> {
   return 0;
 }
 
-async function runScan(args: ParsedArgs): Promise<number> {
+async function runScan(
+  args: ParsedArgs,
+  options: { showRemainingSetup?: boolean } = {},
+): Promise<number> {
   const dryRun = args.flags.get('dry-run') === true;
   const config = await resolveConfig({
     cwd: process.cwd(),
@@ -232,6 +235,26 @@ async function runScan(args: ParsedArgs): Promise<number> {
     console.log(`  ${buildClaimUrl(config.endpoint, response.uuid)}`);
     if (config.endpoint !== DEFAULT_ENDPOINT) {
       console.log('  (this URL inherits the endpoint override above)');
+    }
+  }
+
+  // A scan can't wire the build hooks itself — an agent that runs `scan` but not
+  // `guide` (a common shortcut) otherwise sees the widget + claim URL and assumes
+  // setup is finished. Surface whatever is still missing so the loop actually closes.
+  if (options.showRemainingSetup !== false) {
+    try {
+      const state = await collectGuideState(process.cwd());
+      const remaining = countRemainingSteps(state);
+      if (remaining > 0) {
+        const hooksMissing = !(state.prebuildWired && state.postbuildWired);
+        console.log('');
+        console.log(
+          `Setup not complete — ${remaining} step(s) remaining${hooksMissing ? ", including the package.json build hooks (which scan can't wire)" : ''}.`,
+        );
+        console.log('Run `npx @patchstack/connect guide` for the exact steps to finish for this project.');
+      }
+    } catch {
+      // Best-effort: never turn a successful scan into a failure over this nudge.
     }
   }
 
@@ -342,7 +365,7 @@ async function runSetup(args: ParsedArgs): Promise<number> {
 
   console.log('Patchstack setup — applying bounded project changes');
   console.log('  1. Scan dependencies, provision/reuse the site, and manage the source widget');
-  const scanCode = await runScan(args);
+  const scanCode = await runScan(args, { showRemainingSetup: false });
   if (scanCode !== 0) {
     return scanCode;
   }

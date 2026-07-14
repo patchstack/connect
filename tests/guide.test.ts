@@ -190,6 +190,9 @@ describe('guide', () => {
       expect(output).toContain(
         '"build": "patchstack-connect scan && <existing build command> && patchstack-connect mark-build"',
       );
+      // Consistent action labels: "Run →" for a command, "Edit … →" for a file change.
+      expect(output).toContain('Run → ');
+      expect(output).toContain('Edit package.json → ');
       expect(output).not.toContain('\u001B[');
     });
 

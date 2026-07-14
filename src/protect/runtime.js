@@ -11,6 +11,7 @@
 // every runtime an AI builder deploys to.
 // Vendored node-waf engine (this package is self-contained — no @patchstack/node-waf dep).
 import { RuleEngine, PatchstackRuleClient } from './engine/index.js';
+import { PulseRuleClient } from './engine/pulse-client.js';
 import { fromFetchRequest } from './engine/fetch.js';
 import { fromNodeRequest } from './engine/node.js';
 import { installEgressGuard } from './egress.js';
@@ -20,6 +21,9 @@ import { join } from 'node:path';
 
 // Supabase-tunnel guard for AI-builder apps (Lovable / TanStack Start + Supabase).
 export { createSupabaseGuard, GUARD_PATH } from './supabase-guard.js';
+
+// Per-site live rule client (Pulse). Re-exported for callers/tests that want to use it directly.
+export { PulseRuleClient };
 
 // Server-function guard. Modern Lovable apps mutate data through TanStack server functions
 // (browser → server fn → server-side Supabase client), which bypass the browser-side tunnel the
@@ -403,8 +407,25 @@ function leakResponse() {
 // --- rule source --------------------------------------------------------
 
 async function resolveRules(options) {
-  if (options.rules) {
-    return normalizeBundle(options.rules);
+  if (options.siteUuid) {
+    const client = new PulseRuleClient({ siteUuid: options.siteUuid, baseUrl: options.pulseRulesUrl });
+    const res = await client.getRules();
+    if (res.success) {
+      const bundle = normalizeBundle(res);
+      cacheWrite(options.cacheDir, bundle);
+      return bundle;
+    }
+    const cached = cacheRead(options.cacheDir);
+    if (cached) {
+      options.onError?.(new Error(`pulse rule fetch failed (${res.error}); using cached bundle`));
+      return normalizeBundle(cached);
+    }
+    if (options.rules) {
+      options.onError?.(new Error(`pulse rule fetch failed (${res.error}); using bundled fallback`));
+      return normalizeBundle(options.rules);
+    }
+    options.onError?.(new Error(`pulse rule fetch failed (${res.error}); no cache — running with no rules`));
+    return emptyBundle();
   }
 
   if (options.token) {
@@ -422,6 +443,10 @@ async function resolveRules(options) {
     }
     options.onError?.(new Error(`rule fetch failed (${res.error}); no cache — running with no rules`));
     return emptyBundle();
+  }
+
+  if (options.rules) {
+    return normalizeBundle(options.rules);
   }
 
   return emptyBundle();
