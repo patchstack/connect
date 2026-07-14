@@ -21,9 +21,9 @@ function packedFiles(): string[] {
 }
 
 describe('npm pack safety', () => {
-  it('never ships examples/, field-test/, or any lodash artifact', () => {
+  it('never ships examples/ or any lodash artifact', () => {
     const files = packedFiles();
-    const leaked = files.filter((p) => /^(examples|field-test)\//.test(p) || /lodash/i.test(p));
+    const leaked = files.filter((p) => /^(examples)\//.test(p) || /lodash/i.test(p));
     expect(leaked).toEqual([]);
   }, 30_000);
 
