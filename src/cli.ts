@@ -41,7 +41,6 @@ Usage:
                                                      what's missing, with tailored commands), then
                                                      print the full setup guide. --full prints the
                                                      guide even when setup is complete
-                                                     (also at https://patchstack.com/install.txt)
   patchstack-connect help                            Print this message
 
 Options (for scan and status):
