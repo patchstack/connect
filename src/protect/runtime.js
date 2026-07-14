@@ -206,9 +206,11 @@ export async function createProtection(options = {}) {
         });
         req.on('end', () => {
           const rawBody = overflow ? '' : Buffer.concat(chunks).toString('utf8');
+          let shaped;
           let result;
           try {
-            result = engine.evaluate(fromNodeRequest(req, rawBody));
+            shaped = fromNodeRequest(req, rawBody);
+            result = engine.evaluate(shaped);
           } catch (err) {
             onError?.(err);
             return next();
@@ -221,7 +223,12 @@ export async function createProtection(options = {}) {
               res.setHeader('content-type', 'application/json');
               res.end(JSON.stringify(blockBody(result)));
             },
-            () => next(),
+            () => {
+              // This guard consumed the request stream to screen it; re-expose the parsed
+              // body so a downstream handler (without its own body-parser) can read it.
+              if (req.body === undefined) req.body = shaped.body;
+              next();
+            },
           );
         });
       };

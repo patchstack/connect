@@ -45,9 +45,7 @@ describe('runtime guards — node()', () => {
     const req = mockReq({ headers: { 'content-type': 'application/json' }, body: JSON.stringify({ title: 'ok' }) });
     const allowed = await runNode(mw, req, mockRes());
     expect(allowed.nexted).toBe(true);
-    // NOTE: runtime.node() consumes the body to screen it but does not re-expose req.body
-    // downstream (pre-existing). A body-parser mounted after it sees an empty stream —
-    // tracked as a follow-up fix on the feature branch, not asserted here.
+    expect((req as any).body).toEqual({ title: 'ok' }); // guard re-exposes the parsed body downstream
   });
 });
 
