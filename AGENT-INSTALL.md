@@ -2,7 +2,7 @@
 
 This is a plain-text instruction document. Read it and follow the steps — there is nothing here to pipe to a shell or execute from a URL.
 
-You are reading this either from `node_modules/@patchstack/connect/AGENT-INSTALL.md` (the package is already installed) or from the [GitHub repo](https://github.com/patchstack/connect). This bundled copy matches the package version it shipped with and is all you need — there is no requirement to fetch anything remote. (A long-form copy also lives at https://patchstack.com/install.txt for humans browsing outside the package.)
+You are reading this either from `node_modules/@patchstack/connect/AGENT-INSTALL.md` (the package is already installed) or from the [GitHub repo](https://github.com/patchstack/connect). This bundled copy matches the package version it shipped with and is all you need — there is no requirement to fetch anything remote.
 
 ## Verify before you trust (do this, it's quick)
 
@@ -77,3 +77,16 @@ You are reading this either from `node_modules/@patchstack/connect/AGENT-INSTALL
 
 - `npx @patchstack/connect status` re-prints the site UUID and claim URL.
 - Load the site in a browser — the "Report a vulnerability" button should appear.
+
+## Uninstalling
+
+Remove only the pieces that are actually present — check for each first. If none are present, Patchstack isn't installed; report that and stop. If the user asked to remove only one piece (e.g. "just the widget"), remove only that piece.
+
+1. **Read the site UUID from `.patchstackrc.json` before deleting anything.** It is the only local record of the provisioned site — report it to the user at the end so they can identify the site in their dashboard.
+2. **Remove the widget snippets** from the layout/template: the `<script src="https://cdn.patchstack.com/patchstack-widget.js">` tag and any `PatchstackWidget.init(...)` call (which may live in a separate client component/plugin/effect). Afterwards, grep the repo for `patchstack-widget` and `PatchstackWidget` to confirm nothing remains.
+3. **Remove the hooks from `package.json` scripts.** If a hook was chained (e.g. `"postbuild": "existing-command && patchstack-connect mark-build"`), remove only the `patchstack-connect …` part and keep the rest; if removal leaves a script empty, delete the key.
+4. **Uninstall the package** with the manager matching the lockfile: `npm uninstall` / `pnpm remove` / `yarn remove` / `bun remove` `@patchstack/connect`. Don't hand-edit `node_modules` or the lockfile.
+5. **Delete `.patchstackrc.json`** and remove `PATCHSTACK_SITE_UUID` (and public-prefixed variants like `NEXT_PUBLIC_PATCHSTACK_SITE_UUID`) from env files and CI variables.
+6. **Commit** the changes. Reporting stops immediately. The `window.__PATCHSTACK_PROD__` flag that `mark-build` injected lives only in build output, never in source — the next build simply won't contain it (rebuild if build output is committed).
+
+Local removal does not delete the site record on Patchstack's side. An unclaimed site is an anonymous record that stops receiving reports; a claimed site is removed by the user in their dashboard at https://app.patchstack.com. There is no CLI command for account-side deletion — do not invent one, and never attempt to authenticate or remove the site on the user's behalf.
