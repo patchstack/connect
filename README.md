@@ -2,6 +2,11 @@
 
 Connect a JavaScript / Node.js application to [Patchstack](https://patchstack.com) for continuous vulnerability monitoring. Scans your `package-lock.json` and reports installed packages so Patchstack can match them against its vulnerability database and notify you when something needs patching.
 
+**Two separate capabilities — don't conflate them:**
+
+- **Dependency vulnerability monitoring** (the default `scan` flow): reads your lockfile and reports package names + versions so Patchstack can match them against its vulnerability database. This is monitoring and reporting — it does not block anything at request time.
+- **Opt-in runtime exploit guard** (`protect`): currently for **TanStack Start + Supabase** apps only. Patches the app's Supabase client to route traffic through a same-origin guard. It runs **only** when you explicitly run `patchstack-connect protect`; `scan`, `setup`, `guide`, `status`, and `mark-build` never invoke it. If your app isn't TanStack Start + Supabase, this command doesn't apply and the monitoring above is what you get.
+
 For how this repo fits with the wider Patchstack ecosystem (`saas`, `hub`, `patchstack-website`, `patchstack-connect`), see [`patchstack/saas` → `docs/ecosystem.md`](https://github.com/patchstack/saas/blob/main/docs/ecosystem.md).
 
 ## Agent-assisted setup
