@@ -58,9 +58,51 @@ export class RequestResolver {
         return this.#resolveServer(key);
       case 'files':
         return this.#resolveFiles(key);
+      case 'response':
+        return this.#resolveResponse(key);
+      case 'egress':
+        return this.#resolveEgress(key);
       default:
         return [];
     }
+  }
+
+  // Response-phase sources (req._response = { status, headers, body }). Lets rules inspect
+  // what the app is about to SEND — e.g. a leaked secret in the body — regardless of route.
+  #resolveResponse(key) {
+    const resp = this.#req._response;
+    if (!resp) {
+      return [];
+    }
+    if (key === 'status') {
+      return resp.status !== undefined ? [String(resp.status)] : [];
+    }
+    if (key === 'body') {
+      return resp.body != null && resp.body !== '' ? [resp.body] : [];
+    }
+    if (key === 'headers') {
+      const headers = resp.headers ?? {};
+      return [Object.entries(headers).map(([k, v]) => `${k}: ${v}`).join('\n')];
+    }
+    if (key.startsWith('header.')) {
+      const name = key.slice('header.'.length).toLowerCase();
+      const value = (resp.headers ?? {})[name];
+      return value !== undefined ? [value] : [];
+    }
+    return [];
+  }
+
+  // Egress-phase sources (req._egress = { url, host, method }). Lets rules inspect an
+  // OUTBOUND request the app is about to make — SSRF at the egress boundary.
+  #resolveEgress(key) {
+    const eg = this.#req._egress;
+    if (!eg) {
+      return [];
+    }
+    if (key === 'url') return eg.url ? [eg.url] : [];
+    if (key === 'host') return eg.host ? [eg.host] : [];
+    if (key === 'method') return eg.method ? [eg.method] : [];
+    return [];
   }
 
   applyMutations(mutations, value) {
