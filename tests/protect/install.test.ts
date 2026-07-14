@@ -77,6 +77,15 @@ describe('runProtect scaffolder', () => {
     expect(start).toContain('functionMiddleware: [patchstackFunctionGuard, attachSupabaseAuth]');
   });
 
+  it('scaffolds a type-safe guard.ts (compiles under a strict TanStack build)', () => {
+    runProtect(dir);
+    const guard = read(dir, 'src/integrations/patchstack/guard.ts');
+    // Regression: a strict `tsc` build in the target app rejected a `string` mode and a
+    // `Promise<unknown>` from screenResponse (the middleware return type). Keep both type-safe.
+    expect(guard).toContain('const mode: "block" | "dry-run" =');
+    expect(guard).toContain('export async function screenResponse<T>(response: T): Promise<T>');
+  });
+
   it('is idempotent — re-running does not duplicate wiring', () => {
     runProtect(dir);
     runProtect(dir);
