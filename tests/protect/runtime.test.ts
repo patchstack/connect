@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 // The vendored runtime (node-waf engine + createProtection + Supabase guard),
 // exported as @patchstack/connect/protect.
-import { createProtection, createSupabaseGuard, createServerFnGuard } from '../src/protect/runtime.js';
+import { createProtection, createSupabaseGuard, createServerFnGuard } from '../../src/protect/runtime.js';
 
 const rules = {
   firewall: [
