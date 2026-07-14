@@ -46,10 +46,16 @@ describe('guide', () => {
       expect(detectPackageManager(cwd)).toBe('npm');
     });
 
-    it('prefers package-lock.json over other lockfiles', () => {
-      writeFileSync(path.join(cwd, 'yarn.lock'), '');
+    it('keeps a platform-native manager when npm fallback creates package-lock.json', () => {
+      writeFileSync(path.join(cwd, 'bun.lock'), '');
       writeFileSync(path.join(cwd, 'package-lock.json'), '{}');
-      expect(detectPackageManager(cwd)).toBe('npm');
+      expect(detectPackageManager(cwd)).toBe('bun');
+    });
+
+    it('prefers an explicit packageManager field over lockfile inference', () => {
+      writeJson('package.json', { packageManager: 'pnpm@10.0.0' });
+      writeFileSync(path.join(cwd, 'bun.lock'), '');
+      expect(detectPackageManager(cwd)).toBe('pnpm');
     });
   });
 
@@ -220,7 +226,7 @@ describe('guide', () => {
       expect(output).toContain('/monitor/claim?site=');
     });
 
-    it('celebrates a complete setup and keeps the claim URL visible', async () => {
+    it('celebrates a complete setup and keeps the dashboard URL visible', async () => {
       writeJson('package.json', {
         name: 'done-app',
         devDependencies: { '@patchstack/connect': '0.2.11' },

@@ -9,25 +9,23 @@ const cwd = process.cwd();
 const run = (cmd) => execSync(cmd, { cwd, stdio: 'pipe', env: process.env }).toString();
 
 run('npm install --save-dev --no-audit --no-fund @patchstack/connect');
-const scanOutput = run('npx @patchstack/connect scan');
+let setupOutput;
+try {
+  setupOutput = run('npx @patchstack/connect setup');
+} catch {
+  // Pre-publish compatibility: the harness installs the registry release, which
+  // may not have `setup` yet. Reproduce its bounded changes so harness plumbing
+  // remains testable while the local setup demo covers the working tree.
+  setupOutput = run('npx @patchstack/connect scan');
+  const pkg = JSON.parse(readFileSync(`${cwd}/package.json`, 'utf8'));
+  pkg.scripts.build =
+    `patchstack-connect scan && ${pkg.scripts.build} && patchstack-connect mark-build`;
+  writeFileSync(`${cwd}/package.json`, JSON.stringify(pkg, null, 2) + '\n');
+}
 
-const rc = JSON.parse(readFileSync(`${cwd}/.patchstackrc.json`, 'utf8'));
-
-const pkg = JSON.parse(readFileSync(`${cwd}/package.json`, 'utf8'));
-pkg.scripts = {
-  ...pkg.scripts,
-  prebuild: 'patchstack-connect scan',
-  postbuild: 'patchstack-connect mark-build',
-};
-writeFileSync(`${cwd}/package.json`, JSON.stringify(pkg, null, 2) + '\n');
-
-const widget =
-  `    <script src="https://cdn.patchstack.com/patchstack-widget.js"></script>\n` +
-  `    <script>PatchstackWidget.init({ userToken: '${rc.siteUuid}' });</script>\n`;
-const html = readFileSync(`${cwd}/index.html`, 'utf8');
-writeFileSync(`${cwd}/index.html`, html.replace('</body>', `${widget}  </body>`));
-
-const claimUrl = scanOutput.match(/https?:\/\/\S+\/monitor\/claim\?site=\S+/)?.[0] ?? '(no claim URL found)';
+const dashboardUrl =
+  setupOutput.match(/https?:\/\/\S+\/monitor\/claim\?site=\S+/)?.[0] ??
+  '(no dashboard URL found)';
 console.log('1. VERDICT\nCompleted fully (scripted stub).');
-console.log('2. ACTIONS\ninstall, scan, wire hooks, add widget.');
-console.log(`5. USER MESSAGE\nSetup complete. Claim your site: ${claimUrl}`);
+console.log('2. ACTIONS\ninstall, bounded setup.');
+console.log(`5. USER MESSAGE\nSetup complete. Dashboard: ${dashboardUrl}`);
