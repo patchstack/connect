@@ -68,3 +68,18 @@ export async function inspectServerFn(data: unknown): Promise<{ rule?: string; m
   }
   return _inspect(data);
 }
+
+// Response phase: redact leaked secrets / PII (private keys, cloud keys, JWTs, DB URLs, …) from an
+// outgoing response before it leaves the server. Applied to the SSR / non-tunnel response in
+// src/start.ts (the browser→Supabase tunnel screens its own forwarded response). Only acts on a
+// web Response (text/JSON/HTML) — anything else, or any error, passes through untouched (fail-open,
+// never breaks a response).
+export async function screenResponse(response: unknown): Promise<unknown> {
+  try {
+    if (!(response instanceof Response)) return response;
+    const protection = await getProtection();
+    return protection.screenResponse ? await protection.screenResponse(response) : response;
+  } catch {
+    return response; // fail open
+  }
+}

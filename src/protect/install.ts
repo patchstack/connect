@@ -12,8 +12,13 @@ import { readFileSync, writeFileSync, existsSync, mkdirSync, copyFileSync } from
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-// Guard templates ship next to the built CLI (dist/protect/templates).
-const TEMPLATES = join(dirname(fileURLToPath(import.meta.url)), 'protect', 'templates');
+// Guard templates ship next to the built CLI (dist/protect/templates). Resolve for both the
+// built layout (install.ts is bundled into dist/cli.js at the dist root → protect/templates) and
+// the source layout (install.ts lives in src/protect/ → templates is a sibling).
+const HERE = dirname(fileURLToPath(import.meta.url));
+const TEMPLATES =
+  [join(HERE, 'protect', 'templates'), join(HERE, 'templates')].find((p) => existsSync(p)) ??
+  join(HERE, 'protect', 'templates');
 const APP = process.cwd();
 const PS_DIR = join(APP, 'src/integrations/patchstack');
 
@@ -36,19 +41,20 @@ const CLIENT_TUNNEL = [
 
 const START_IMPORTS = [
   'import { getRequest } from "@tanstack/react-start/server";',
-  'import { GUARD_PATH, handleGuardRequest, inspectServerFn } from "@/integrations/patchstack/guard";',
+  'import { GUARD_PATH, handleGuardRequest, inspectServerFn, screenResponse } from "@/integrations/patchstack/guard";',
 ].join('\n');
 
 const REQUEST_MIDDLEWARE_DEF = [
   '',
-  '// Patchstack guard (browser tunnel): intercept tunneled Supabase traffic before anything else.',
+  '// Patchstack guard (browser tunnel): intercept tunneled Supabase traffic before anything else,',
+  '// then screen the outgoing response (SSR HTML / data) for leaked secrets & PII.',
   'const patchstackGuard = createMiddleware().server(async ({ next }) => {',
   '  const request = getRequest();',
   '  if (request) {',
   '    const { pathname } = new URL(request.url);',
   '    if (pathname === GUARD_PATH) return handleGuardRequest(request);',
   '  }',
-  '  return next();',
+  '  return screenResponse(await next());',
   '});',
   '',
 ].join('\n');
