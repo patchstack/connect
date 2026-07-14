@@ -14,6 +14,7 @@ on:
 
 permissions:
   contents: write
+  actions: write
 
 concurrency:
   group: release
@@ -56,3 +57,9 @@ jobs:
             --target "${{ github.sha }}" \
             --title "v${{ steps.version.outputs.next }}" \
             --generate-notes
+
+      - name: Trigger publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh workflow run publish.yml -f version="${{ steps.version.outputs.next }}"

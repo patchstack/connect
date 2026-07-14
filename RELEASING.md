@@ -13,9 +13,10 @@ be bumped before a release.
 
 Run the **`Release`** workflow from the Actions tab (or `gh` below) and pick a
 `bump` — `patch`, `minor`, or `major`. It reads the current `latest` from npm,
-computes the next semver version, and cuts the GitHub release + tag on the
-current `main`. That release then triggers `Publish`, which validates
-(typecheck, test, build, `npm pack`) and publishes to npm with provenance.
+computes the next semver version, cuts the GitHub release + tag on the current
+`main`, and then dispatches `Publish` for that version. `Publish` validates
+(typecheck, test, build, `npm pack`) and publishes to npm with provenance,
+recording a deployment to the `npm` environment linked to the published version.
 
 ```bash
 gh workflow run Release -f bump=patch
@@ -24,9 +25,16 @@ gh workflow run Release -f bump=patch
 No version math, no `npm view` lookup, no chance of colliding with an existing
 version — the workflow does all of that.
 
+`Release` triggers `Publish` explicitly via `workflow_dispatch` rather than
+relying on the release event. This is deliberate: GitHub does **not** fire
+`release`-triggered workflows for releases created by the built-in
+`GITHUB_TOKEN` (an anti-recursion safeguard), and `workflow_dispatch` is the
+one event type that is exempt.
+
 ## Manual fallback
 
-You can still cut a release by hand, which triggers `Publish` the same way:
+You can still cut a release by hand. Because a human token (not `GITHUB_TOKEN`)
+creates it, the release event fires `Publish` on its own:
 
 ```bash
 gh release create v0.3.3 --generate-notes --title "v0.3.3"
@@ -34,11 +42,17 @@ gh release create v0.3.3 --generate-notes --title "v0.3.3"
 
 or use the GitHub UI (Releases → Draft a new release → new tag `v0.3.3`).
 
+You can also publish an existing tag directly:
+
+```bash
+gh workflow run publish.yml -f version=0.3.3
+```
+
 ## Notes
 
 - Tags must be `vX.Y.Z` (the leading `v` is stripped to get the npm version).
 - For a manual release, pick a version higher than the current `latest` on npm
   (`npm view @patchstack/connect version`); npm rejects re-publishing an
   existing version. The `Release` workflow handles this for you.
-- Run the `Publish` workflow via **workflow_dispatch** for a dry-run publish
-  without cutting a release.
+- Run `Publish` via **workflow_dispatch** with a blank `version` for a dry-run
+  publish without cutting a release.
