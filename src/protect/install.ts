@@ -91,6 +91,32 @@ function scaffold(cwd: string): void {
   log('scaffolded guard.ts + rules.json');
 }
 
+// Bake the site UUID from .patchstackrc.json (written by `patchstack-connect scan`) into the
+// scaffolded guard, so the deployed Worker calls the live Pulse rules API with zero user config.
+// Left as the inert placeholder (guard falls back to PATCHSTACK_SITE_UUID env / bundled rules)
+// when the app hasn't been scanned yet or the file can't be read.
+function bakeSiteUuid(cwd: string): void {
+  const rc = join(cwd, '.patchstackrc.json');
+  if (!existsSync(rc)) return log('no .patchstackrc.json — guard uses PATCHSTACK_SITE_UUID env or the bundled fallback');
+  let uuid: string | undefined;
+  try {
+    uuid = JSON.parse(read(rc)).siteUuid;
+  } catch {
+    return log('.patchstackrc.json unreadable — skipping site-UUID bake');
+  }
+  // Guard on UUID format so a malformed value falls through to the inert placeholder rather
+  // than baking junk into a TS string literal (broken build / replace-token hazards).
+  if (!uuid || !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(uuid)) {
+    return log('.patchstackrc.json siteUuid missing or malformed — guard uses PATCHSTACK_SITE_UUID env or the bundled fallback');
+  }
+  const p = join(cwd, 'src/integrations/patchstack/guard.ts');
+  if (!existsSync(p)) return;
+  const s = read(p);
+  if (!s.includes('__PATCHSTACK_SITE_UUID__')) return log('guard.ts site UUID already baked');
+  writeFileSync(p, s.replace('__PATCHSTACK_SITE_UUID__', uuid));
+  log('baked site UUID into guard.ts — live rules from the Patchstack API');
+}
+
 function patchClient(cwd: string): void {
   const p = join(cwd, 'src/integrations/supabase/client.ts');
   let s = read(p);
@@ -162,6 +188,7 @@ export function runProtect(cwd: string): void {
     return;
   }
   scaffold(cwd);
+  bakeSiteUuid(cwd);
   patchClient(cwd);
   patchStart(cwd);
   log('done — guard wired and always-on (blocks by default). Set PATCHSTACK_MODE=dry-run for log-only.');

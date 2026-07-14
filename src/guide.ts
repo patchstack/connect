@@ -376,7 +376,7 @@ export function renderGuideChecklist(state: GuideState, useColor: boolean): stri
     lines.push(done(`@patchstack/connect installed (${state.installed.version}, ${state.installed.section})`));
   } else {
     lines.push(todo('Install @patchstack/connect as a dev dependency'));
-    lines.push(detail(`→ ${installCommand(state.packageManager)}`));
+    lines.push(detail(`Run → ${installCommand(state.packageManager)}`));
     if (state.packageManager === 'bun') {
       lines.push(detail(`(if bun isn't available here, ${INSTALL_COMMANDS.npm} works too)`));
     }
@@ -387,8 +387,8 @@ export function renderGuideChecklist(state: GuideState, useColor: boolean): stri
     lines.push(done(`Site provisioned (${state.siteUuid})`));
   } else {
     lines.push(todo('Provision the site — run the first scan'));
-    lines.push(detail('→ npx @patchstack/connect scan'));
-    lines.push(detail('Reads the lockfile, registers the project, writes .patchstackrc.json,'));
+    lines.push(detail('Run → npx @patchstack/connect scan'));
+    lines.push(detail('reads the lockfile, registers the project, writes .patchstackrc.json,'));
     lines.push(detail('and prints a claim URL — show that URL to the user; never open it yourself.'));
   }
 
@@ -397,15 +397,15 @@ export function renderGuideChecklist(state: GuideState, useColor: boolean): stri
     lines.push(done('Build hooks wired (scan before builds, mark-build after)'));
   } else if (state.packageManager === 'bun') {
     // bun run skips npm-style pre/post scripts, so chain inside the build script.
-    lines.push(todo('Wire builds — chain into the package.json build script (bun skips pre/post hooks)'));
-    lines.push(detail('→ "build": "patchstack-connect scan && <existing build command> && patchstack-connect mark-build"'));
+    lines.push(todo('Wire the build hooks yourself — edit package.json (bun skips pre/post hooks, so chain inside "build")'));
+    lines.push(detail('Edit package.json → "build": "patchstack-connect scan && <existing build command> && patchstack-connect mark-build"'));
   } else {
-    lines.push(todo('Wire builds — add to package.json scripts (chain with && if a hook exists)'));
+    lines.push(todo('Wire the build hooks yourself — edit package.json "scripts" (chain with && if a hook already exists)'));
     if (!state.prebuildWired) {
-      lines.push(detail('→ "prebuild": "patchstack-connect scan"'));
+      lines.push(detail('Edit package.json → "prebuild": "patchstack-connect scan"'));
     }
     if (!state.postbuildWired) {
-      lines.push(detail('→ "postbuild": "patchstack-connect mark-build"'));
+      lines.push(detail('Edit package.json → "postbuild": "patchstack-connect mark-build"'));
     }
   }
 
@@ -416,19 +416,19 @@ export function renderGuideChecklist(state: GuideState, useColor: boolean): stri
   } else if (widgetOk) {
     lines.push(done('Disclosure widget installed'));
   } else if (state.widgetInstalled) {
-    lines.push(todo("Disclosure widget found, but its site UUID doesn't match this project's"));
-    lines.push(detail(`→ a wrong site UUID makes the widget silently no-op; set data-site-uuid (or userToken) to '${state.siteUuid}'`));
+    lines.push(todo("Fix the disclosure widget yourself — its site UUID doesn't match this project's"));
+    lines.push(detail(`Edit the widget tag → set data-site-uuid (or userToken) to '${state.siteUuid}' (a wrong UUID makes the widget silently no-op)`));
   } else if (state.siteUuid === null) {
     lines.push(todo('Add the "Report a vulnerability" widget — the first scan does this for you'));
-    lines.push(detail('→ `npx @patchstack/connect scan` provisions the site and adds the widget tag'));
-    lines.push(detail('  to the root HTML shell (index.html / public/index.html / src/app.html).'));
+    lines.push(detail('Run → npx @patchstack/connect scan  (provisions the site and adds the widget tag'));
+    lines.push(detail('  to the root HTML shell: index.html / public/index.html / src/app.html)'));
   } else {
-    lines.push(todo('Add the "Report a vulnerability" widget'));
-    lines.push(detail('→ a normal `scan` adds this tag to a plain HTML shell automatically;'));
+    lines.push(todo('Add the "Report a vulnerability" widget yourself — this root is code, not a plain HTML shell'));
+    lines.push(detail('Note → a normal `scan` adds this tag to a plain HTML shell automatically; add it by hand here:'));
     const placement =
       state.widgetFileHint !== null
-        ? `  for this project put it in ${state.widgetFileHint}, just before </body>:`
-        : "  put it just before </body> via the framework's HTML/layout mechanism (never a JS entry point):";
+        ? `Edit ${state.widgetFileHint} → put it just before </body>:`
+        : "Edit your root layout → put it just before </body> (the framework's HTML/layout mechanism, never a JS entry point):";
     lines.push(detail(placement));
     lines.push(detail(`  ${buildWidgetTag(state.siteUuid)}`));
     lines.push(detail('The site UUID is public by design — it ships in client-side HTML.'));
