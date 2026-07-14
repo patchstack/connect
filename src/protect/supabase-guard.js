@@ -73,6 +73,10 @@ export function createSupabaseGuard({ protection, supabaseUrl, fetchImpl = fetch
       if (!HOP_BY_HOP.has(key.toLowerCase())) outHeaders.set(key, value);
     });
     const buf = await upstream.arrayBuffer();
-    return new Response(buf, { status: upstream.status, statusText: upstream.statusText, headers: outHeaders });
+    const forwarded = new Response(buf, { status: upstream.status, statusText: upstream.statusText, headers: outHeaders });
+
+    // Response phase: screen what Supabase returned (query results can leak secrets/PII) —
+    // redact the offending spans / withhold, per the response rules. Fail-open if unavailable.
+    return protection.screenResponse ? protection.screenResponse(forwarded) : forwarded;
   };
 }
