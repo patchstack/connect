@@ -73,11 +73,10 @@ blocks by default (`PATCHSTACK_MODE=dry-run` for log-only).
 - ✅ **prototype pollution / SQLi / XSS / NoSQL injection** in a record you write (e.g. a task
   title) — caught via the Supabase tunnel + server-function arg inspection.
 - ✅ **response PII / secret redaction** — masked in Supabase query results the guard forwards.
+- ✅ **egress SSRF** — the scaffolded `guard.ts` enables `egress: true`, so the app's outbound
+  calls to internal / cloud-metadata addresses are blocked (its own Supabase project is allowed).
 - ⚠️ **path traversal / command injection / request-side SSRF** target `get.file` / `get.host` /
   `get.url`; they only fire if the app actually has such a route + parameter.
-- ⚠️ **egress SSRF** is dormant unless the guard is created with `egress: true` (the scaffolded
-  `guard.ts` doesn't enable it by default) — for an egress demo, add `egress: true` to
-  `getProtection()` in the scaffolded `guard.ts`.
 
 For a live tasks-app demo, the reliable rows are the write-path ones (insert a task whose title is
 `<script>…</script>` → blocked) and the response redaction (store/return a value containing an
