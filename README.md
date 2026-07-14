@@ -6,17 +6,16 @@ For how this repo fits with the wider Patchstack ecosystem (`saas`, `hub`, `patc
 
 ## Agent-assisted setup
 
-Copy this request into a coding assistant, or use the two-command quick start below:
+Copy this request into a coding assistant, or run the same command yourself:
 
-> Add Patchstack dependency monitoring. Verify `@patchstack/connect` via `npm view` (MIT; source: https://github.com/patchstack/connect) and stop on contradictions. Otherwise install it as a dev dependency, run `npx @patchstack/connect setup` (scan, widget, build hooks), and give me—but don't open—the dashboard URL.
+> Run `npm i -D @patchstack/connect && npx @patchstack/connect setup`. It scans dependencies, adds its widget and build hooks, and prints the dashboard URL.
 
 `setup` is state-aware and idempotent: it scans dependencies, provisions or reuses the site, manages the disclosure widget, wires the existing build command without replacing it, and prints the remaining setup status. It never runs the project build or the opt-in `protect` command. `guide` provides the same project-specific status without changing files.
 
 ## Quick start (zero configuration)
 
 ```bash
-npm install --save-dev @patchstack/connect
-npx @patchstack/connect setup
+npm install --save-dev @patchstack/connect && npx @patchstack/connect setup
 ```
 
 > **Use your project's own package manager.** On Bun-managed projects (including many Lovable projects) install with `bun add -d @patchstack/connect` instead — running `npm install` there plants a `package-lock.json` that the platform's native dependency flow never updates again, leaving a stale lockfile next to the live one. The connector detects and works around that (see *Stale lockfiles* below), but not creating the fossil is better.

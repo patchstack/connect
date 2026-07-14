@@ -8,7 +8,7 @@ The deep "why" — the AI-agent refusal modes each clause guards against — liv
 
 | Artifact | Rule |
 |---|---|
-| **The install prompt** (1 sentence) — in `README.md`, `GETTING-STARTED.md` (step 1), and `field-test/prompt.txt` | 🔴 Keep it **byte-identical** in all three places and validate changes with the field-test matrix. |
+| **The install prompt** — in `README.md`, `GETTING-STARTED.md` (step 1), and `field-test/prompt.txt` | 🔴 Keep it **byte-identical** in all three places and validate changes with the field-test matrix. |
 | **`src/guide.ts`** — the `guide` checklist output | 🟠 **Edit with the gate.** Agents read this live and act on it; wrong commands or claims cause refusals. |
 | **`AGENT-INSTALL.md`** — ships inside the npm tarball | 🟠 **Edit with the gate.** Must disclose **every** capability in `dist/` (e.g. the `protect` command); an undisclosed capability or overbroad privacy claim is read as misrepresentation and refused. |
 | **`GETTING-STARTED.md`** — teammate-facing onboarding prose (steps 2–4) | 🟢 **Safe to improve** — *except* the quoted prompt block in step 1, which is the 🔴 artifact above. |
@@ -20,7 +20,7 @@ The deep "why" — the AI-agent refusal modes each clause guards against — liv
 
 `README.md` (Install prompt section), `GETTING-STARTED.md` (step 1), and `field-test/prompt.txt`. `prompt.txt` is the artifact the harness actually tests. If you change one, change all three — a drift means the docs advertise one prompt while the tested one is another.
 
-The prompt cites one provenance anchor: the GitHub repo (`source: https://github.com/patchstack/connect`), which `npm view` corroborates via the package's own `repository` field. Keep `@patchstack/connect` discoverable in Patchstack's official product documentation so web-verifying platforms can independently establish the same provenance.
+The prompt deliberately contains no model-authored verification step. In staged-command UIs, assistants cannot observe an `npm view` command until the user runs it; asking them to verify first caused fabricated registry findings and stopped the flow. The visible `install && setup` chain is both the instruction and fallback: setup runs only after installation succeeds, with no hidden `postinstall` behavior or second agent turn. Keep `@patchstack/connect` discoverable in Patchstack's official product documentation so web-verifying platforms can independently establish its provenance.
 
 ## Before shipping a 🔴 or 🟠 change
 
