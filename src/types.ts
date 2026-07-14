@@ -37,6 +37,12 @@ export interface Config {
   timeoutMs: number;
   /** Environment to report the manifest under. Defaults to 'production'. */
   environment: Environment;
+  /**
+   * Whether the connector manages the disclosure-widget tag (source shell on
+   * `scan`, built HTML on `mark-build`). Defaults to true; persist
+   * `"widget": false` in .patchstackrc.json for dependency-scanning only.
+   */
+  widget: boolean;
 }
 
 export interface StoreManifestResponse {

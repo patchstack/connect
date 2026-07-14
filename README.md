@@ -29,7 +29,8 @@ That's it. The first `scan`:
 2. POSTs the package list to Patchstack with **no** UUID.
 3. Patchstack provisions a fresh site and returns its UUID.
 4. The connector writes the UUID to `.patchstackrc.json` so the next `scan` targets the same site.
-5. The connector prints a claim URL — open it in a browser to attach the new site to your Patchstack account. You can re-display it any time with `npx @patchstack/connect status`.
+5. The connector installs the disclosure widget's `<script>` tag into your root HTML shell (see *The disclosure widget* below) so the "Report a vulnerability" button shows up on the next preview reload.
+6. The connector prints a claim URL — open it in a browser to attach the new site to your Patchstack account. You can re-display it any time with `npx @patchstack/connect status`.
 
 Then wire it into builds:
 
@@ -57,12 +58,16 @@ npx @patchstack/connect scan
 ```
 patchstack-connect scan   [options]                Scan the lockfile and POST to Patchstack.
                                                    If no UUID is configured the server provisions
-                                                   one and the connector persists it.
+                                                   one and the connector persists it. After a
+                                                   successful post, adds/updates the disclosure
+                                                   widget tag in the root HTML shell (opt out
+                                                   with "widget": false in .patchstackrc.json)
 patchstack-connect init   <site-uuid>              Optional: pre-seed .patchstackrc.json with
                                                    an existing site UUID
 patchstack-connect status [options]                Show current configuration
 patchstack-connect mark-build [options]            Stamp built HTML with a production flag +
-                                                   build fingerprint (run as a postbuild step)
+                                                   build fingerprint and ensure the widget tag
+                                                   in built pages (run as a postbuild step)
 patchstack-connect guide                           Show this project's setup status (what's done,
                                                    what's missing, with tailored commands), then
                                                    print the full setup guide
@@ -97,11 +102,30 @@ Environment variables:
 
 ```json
 {
-  "siteUuid": "550e8400-e29b-41d4-a716-446655440000"
+  "siteUuid": "550e8400-e29b-41d4-a716-446655440000",
+  "widget": true
 }
 ```
 
-The site UUID identifies the site; it is not a secret — the disclosure widget ships the same UUID in client-side HTML as its `userToken`, and committing `.patchstackrc.json` is the intended workflow so every developer and CI run reports to the same site. Possession of the UUID lets someone submit dependency manifests for that site (noise, not data access). In CI setups where the file isn't committed, set `PATCHSTACK_SITE_UUID` instead.
+`"widget"` is optional and defaults to `true`; set it to `false` to stop the connector from managing the disclosure-widget tag (see *The disclosure widget*).
+
+The site UUID identifies the site; it is not a secret — the disclosure widget ships the same UUID in client-side HTML, and committing `.patchstackrc.json` is the intended workflow so every developer and CI run reports to the same site. Possession of the UUID lets someone submit dependency manifests for that site (noise, not data access). In CI setups where the file isn't committed, set `PATCHSTACK_SITE_UUID` instead.
+
+## The disclosure widget
+
+The widget is a floating "Report a vulnerability" button — a disclosure channel for anyone who spots a bug on the site. The connector manages its install so the UUID never has to be copied by hand:
+
+- **`scan`** (after a successful post) adds this managed tag to the first root HTML shell it finds — `index.html`, `public/index.html`, or `src/app.html` — immediately before `</body>`:
+
+  ```html
+  <script src="https://cdn.patchstack.com/patchstack-widget.js" data-site-uuid="<SITE_UUID>" defer data-patchstack-connect-widget="true"></script>
+  ```
+
+  Re-runs update the tag in place (the `data-patchstack-connect-widget` attribute marks it as connector-managed); a pre-existing manual widget tag is left untouched. `--dry-run` and failed posts never edit anything. Projects whose root layout is code rather than HTML (Next.js, Nuxt, Astro, …) get the exact snippet and target file printed instead — `guide` shows framework-specific placement.
+
+- **`mark-build`** ensures the same tag in built HTML output, covering builds whose source shell the connector couldn't edit, and stamps `window.__PATCHSTACK_PROD__` so the widget hides the claim/login UI on the published site (owners reach it by appending `#patchstack` to the live URL).
+
+- **Opting out:** persist `"widget": false` in `.patchstackrc.json` to disable both passes (dependency scanning only). Without it, the next successful scan re-adds the managed tag.
 
 ## Programmatic API
 

@@ -15,6 +15,17 @@ export {
   type StackDescriptor,
 } from './stack.js';
 export {
+  WIDGET_SCRIPT_URL,
+  WIDGET_MARKER_ATTR,
+  buildWidgetTag,
+  ensureWidgetInHtml,
+  ensureSourceWidget,
+  findSourceShell,
+  type WidgetEnsureAction,
+  type WidgetEnsureResult,
+  type SourceWidgetResult,
+} from './widget.js';
+export {
   PatchstackError,
   type Config,
   type Ecosystem,
