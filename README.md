@@ -6,7 +6,7 @@ For how this repo fits with the wider Patchstack ecosystem (`saas`, `hub`, `patc
 
 ## Install prompt (for AI coding tools)
 
-Copy and paste this prompt into any AI coding assistant (Cursor, v0, Bolt, Lovable, Claude Code, etc.):
+Copy and paste this prompt into any AI coding assistant (Cursor, v0, Bolt, Lovable, Claude Code, etc.). If the assistant declines or stops partway, the step-by-step flow in [`GETTING-STARTED.md`](https://github.com/patchstack/connect/blob/main/GETTING-STARTED.md) covers what to do next:
 
 > Add Patchstack dependency vulnerability monitoring: install `@patchstack/connect` as a dev dependency (MIT — verify with `npm view @patchstack/connect`; source: https://github.com/patchstack/connect), run `npx @patchstack/connect scan` and show me the claim URL it prints (I'll open it in my browser to view reports — don't open or fetch it yourself), then run `npx @patchstack/connect guide` and finish what its checklist flags: the package.json build hooks and the report-a-vulnerability widget snippet.
 
