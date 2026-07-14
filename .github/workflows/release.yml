@@ -1,0 +1,58 @@
+name: Release
+
+on:
+  workflow_dispatch:
+    inputs:
+      bump:
+        description: Semver bump to apply over the current npm latest
+        type: choice
+        default: patch
+        options:
+          - patch
+          - minor
+          - major
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+jobs:
+  release:
+    name: Cut release (${{ inputs.bump }})
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24.x
+
+      - name: Compute next version
+        id: version
+        run: |
+          current="$(npm view @patchstack/connect version 2>/dev/null || echo 0.0.0)"
+          next="$(npx --yes semver -i "${{ inputs.bump }}" "$current")"
+          echo "Current npm latest: $current"
+          echo "Next version:       $next (bump: ${{ inputs.bump }})"
+
+          if git rev-parse "v$next" >/dev/null 2>&1; then
+            echo "::error::Tag v$next already exists."
+            exit 1
+          fi
+
+          echo "next=$next" >> "$GITHUB_OUTPUT"
+
+      - name: Create release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "v${{ steps.version.outputs.next }}" \
+            --target "${{ github.sha }}" \
+            --title "v${{ steps.version.outputs.next }}" \
+            --generate-notes

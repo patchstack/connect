@@ -15,10 +15,9 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  publish:
-    name: Publish package
+  validate:
+    name: Validate package
     runs-on: ubuntu-latest
-    environment: npm
 
     steps:
       - name: Checkout
@@ -39,13 +38,6 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
-      - name: Set version from release tag
-        if: github.event_name == 'release'
-        run: |
-          version="${GITHUB_REF_NAME#v}"
-          echo "Publishing version $version (from tag $GITHUB_REF_NAME)"
-          npm version "$version" --no-git-tag-version --allow-same-version
-
       - name: Typecheck
         run: npm run typecheck
 
@@ -62,6 +54,39 @@ jobs:
         if: github.event_name == 'workflow_dispatch'
         run: npm publish --access public --provenance --dry-run
 
+  publish:
+    name: Publish to npm
+    if: github.event_name == 'release'
+    needs: validate
+    runs-on: ubuntu-latest
+    environment:
+      name: npm
+      url: ${{ steps.version.outputs.url }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24.x
+          registry-url: https://registry.npmjs.org
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Set version from release tag
+        id: version
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          echo "Publishing version $version (from tag $GITHUB_REF_NAME)"
+          npm version "$version" --no-git-tag-version --allow-same-version
+          echo "url=https://www.npmjs.com/package/@patchstack/connect/v/$version" >> "$GITHUB_OUTPUT"
+
+      - name: Build
+        run: npm run build
+
       - name: Publish to npm
-        if: github.event_name == 'release'
         run: npm publish --access public --provenance
