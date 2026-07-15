@@ -16,6 +16,7 @@ import { fromFetchRequest } from './engine/fetch.js';
 import { fromNodeRequest } from './engine/node.js';
 import { installEgressGuard } from './egress.js';
 import { DEFAULT_RESPONSE_RULES, DEFAULT_EGRESS_RULES } from './defaults.js';
+import { renderBlockPage } from './block-page.js';
 import { readFileSync, writeFileSync, mkdirSync } from 'node:fs';
 import { join } from 'node:path';
 
@@ -227,7 +228,7 @@ export async function createProtection(options = {}) {
           onError?.(err);
           return null; // fail open
         }
-        return decide('request', result, () => blockResponse(result), () => null);
+        return decide('request', result, () => blockResponse(result, request), () => null);
       };
     },
 
@@ -257,7 +258,13 @@ export async function createProtection(options = {}) {
         decide(
           'request',
           result,
-          () => res.status(403).json(blockBody(result)),
+          () => {
+            if (isDocumentNavigation((n) => req.headers?.[n])) {
+              res.status(403).type('html').send(renderBlockPage({ url: req.originalUrl || req.url || '/', code: result?.rule?.id }));
+            } else {
+              res.status(403).json(blockBody(result));
+            }
+          },
           () => {
             if (exprOptions.screenResponses) wrapNodeResponse(res);
             next();
@@ -302,8 +309,13 @@ export async function createProtection(options = {}) {
             result,
             () => {
               res.statusCode = 403;
-              res.setHeader('content-type', 'application/json');
-              res.end(JSON.stringify(blockBody(result)));
+              if (isDocumentNavigation((n) => req.headers?.[n])) {
+                res.setHeader('content-type', 'text/html; charset=utf-8');
+                res.end(renderBlockPage({ url: req.url || '/', code: result?.rule?.id }));
+              } else {
+                res.setHeader('content-type', 'application/json');
+                res.end(JSON.stringify(blockBody(result)));
+              }
             },
             () => {
               // This guard consumed the request stream to screen it; re-expose the parsed
@@ -489,15 +501,33 @@ function cacheRead(dir) {
 
 // --- responses ----------------------------------------------------------
 
+// Client-facing block text — deliberately generic: no WAF narrative, no rule title. The reason
+// detail stays in the server-side log via onDetect.
+const BLOCK_MESSAGE = 'This request has been blocked by Patchstack.';
+
 function blockBody(result) {
-  return {
-    error: 'Blocked by Patchstack',
-    rule: result.rule?.id,
-    message: result.message,
-  };
+  // Human text is masked (no WAF narrative, no rule title). The opaque rule id stays for machine
+  // consumers (server-fn receipts, support reference); full rule detail lives in the server log.
+  return { error: BLOCK_MESSAGE, message: BLOCK_MESSAGE, rule: result?.rule?.id };
 }
 
-function blockResponse(result) {
+// A top-level document navigation (vs an XHR/fetch)? Browsers set Sec-Fetch-Dest on navigations;
+// fall back to the Accept header. Governs whether a block returns the HTML page or JSON.
+function isDocumentNavigation(getHeader) {
+  const dest = getHeader('sec-fetch-dest');
+  if (dest) return dest === 'document';
+  return (getHeader('accept') || '').includes('text/html');
+}
+
+// Request-phase block. Serves the branded HTML "Access Denied" page to a browser navigation, and
+// masked JSON to XHR/fetch/programmatic clients.
+function blockResponse(result, request) {
+  if (request && isDocumentNavigation((n) => request.headers.get(n))) {
+    return new Response(renderBlockPage({ url: request.url, code: result?.rule?.id }), {
+      status: 403,
+      headers: { 'content-type': 'text/html; charset=utf-8' },
+    });
+  }
   return new Response(JSON.stringify(blockBody(result)), {
     status: 403,
     headers: { 'content-type': 'application/json' },
