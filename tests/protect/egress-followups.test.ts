@@ -1,8 +1,8 @@
 import { describe, expect, it } from 'vitest';
 import { createProtection } from '../../src/protect/runtime.js';
 
-// Egress hardening follow-ups: IPv6 host handling on the node:http path (#2), WebSocket
-// screening (#6), and the allowHosts allowlist overriding an internal-host block (#9).
+// Egress hardening follow-ups: IPv6 host handling on the node:http path, WebSocket screening,
+// and the allowHosts allowlist overriding an internal-host block.
 
 async function withEgress(opts: any, fn: (p: any) => Promise<void>) {
   const origFetch = globalThis.fetch;
@@ -21,7 +21,7 @@ async function nodeHttp() {
   return ns.default ?? ns;
 }
 
-describe('egress — node:http IPv6 hosts (#2)', () => {
+describe('egress — node:http IPv6 hosts', () => {
   it('blocks IPv6 loopback given as options host/hostname (not just as a URL)', async () => {
     await withEgress({ allowHosts: [] }, async () => {
       const http = await nodeHttp();
@@ -40,7 +40,7 @@ describe('egress — node:http IPv6 hosts (#2)', () => {
   });
 });
 
-describe('egress — WebSocket screening (#6)', () => {
+describe('egress — WebSocket screening', () => {
   it('blocks a ws:// connection to an internal host and restores the global on uninstall', async () => {
     if (typeof globalThis.WebSocket !== 'function') return; // runtime without global WebSocket
     await withEgress({ allowHosts: [] }, async () => {
@@ -58,7 +58,7 @@ describe('egress — WebSocket screening (#6)', () => {
   });
 });
 
-describe('egress — allowHosts overrides an internal block (#9)', () => {
+describe('egress — allowHosts overrides an internal block', () => {
   it('permits a normally-internal host that is explicitly allowlisted', async () => {
     await withEgress({ allowHosts: ['169.254.169.254'] }, async () => {
       const res = await globalThis.fetch('http://169.254.169.254/latest/meta-data/');
