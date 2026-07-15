@@ -5,7 +5,7 @@
 
 import { writeFileSync, existsSync, mkdirSync, copyFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { read, log, templatesDir } from '../util.js';
+import { bakeSiteUuid, read, log, templatesDir } from '../util.js';
 import type { Adapter, WireOptions, WireResult, VerifyResult } from '../types.js';
 
 function hasNextDep(cwd: string): boolean {
@@ -64,6 +64,7 @@ function wire(cwd: string, opts: WireOptions): WireResult {
 
   // Fresh (or already-ours) → write the managed middleware.
   copyFileSync(join(templates, 'next-middleware.ts'), mwPath);
+  if (!opts.demo) bakeSiteUuid(cwd, mw.relFile);
   changed.push(mw.relFile);
   log(mw.exists ? `refreshed ${mw.relFile} (Patchstack middleware)` : `scaffolded ${mw.relFile} (Patchstack middleware)`);
   return { ok: true, changed: [...new Set(changed)] };

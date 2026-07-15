@@ -7,7 +7,7 @@
 
 import { writeFileSync, existsSync, mkdirSync, copyFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { read, log, templatesDir } from '../util.js';
+import { bakeSiteUuid, read, log, templatesDir } from '../util.js';
 import type { Adapter, WireOptions, WireResult, VerifyResult } from '../types.js';
 
 const CLIENT_TUNNEL = [
@@ -133,40 +133,6 @@ function scaffold(cwd: string, opts: WireOptions): string[] {
   return changed;
 }
 
-// Bake the site UUID from .patchstackrc.json (written by `scan`) into the scaffolded guard, so the
-// deployed Worker calls the live Pulse rules API with zero user config. Left as the inert
-// placeholder when the app hasn't been scanned yet or the file can't be read. Returns whether it baked.
-function bakeSiteUuid(cwd: string): boolean {
-  const rc = join(cwd, '.patchstackrc.json');
-  if (!existsSync(rc)) {
-    log('no .patchstackrc.json — guard uses PATCHSTACK_SITE_UUID env or the bundled fallback');
-    return false;
-  }
-  let uuid: string | undefined;
-  try {
-    uuid = JSON.parse(read(rc)).siteUuid;
-  } catch {
-    log('.patchstackrc.json unreadable — skipping site-UUID bake');
-    return false;
-  }
-  // Guard on UUID format so a malformed value falls through to the inert placeholder rather than
-  // baking junk into a TS string literal (broken build / replace-token hazards).
-  if (!uuid || !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(uuid)) {
-    log('.patchstackrc.json siteUuid missing or malformed — guard uses PATCHSTACK_SITE_UUID env or the bundled fallback');
-    return false;
-  }
-  const p = join(cwd, GUARD_FILE);
-  if (!existsSync(p)) return false;
-  const s = read(p);
-  if (!s.includes('__PATCHSTACK_SITE_UUID__')) {
-    log('guard.ts site UUID already baked');
-    return false;
-  }
-  writeFileSync(p, s.replace('__PATCHSTACK_SITE_UUID__', uuid));
-  log('baked site UUID into guard.ts — live rules from the Patchstack API');
-  return true;
-}
-
 function patchClient(cwd: string): boolean {
   const p = join(cwd, 'src/integrations/supabase/client.ts');
   const s = read(p);
@@ -238,7 +204,7 @@ function wire(cwd: string, opts: WireOptions): WireResult {
   const changed = scaffold(cwd, opts);
   // In demo mode, keep the local sample rules active — don't bake a site UUID (which would make
   // the guard fetch live Pulse rules instead of the bundled demo set).
-  if (!opts.demo && bakeSiteUuid(cwd)) changed.push(GUARD_FILE);
+  if (!opts.demo && bakeSiteUuid(cwd, GUARD_FILE)) changed.push(GUARD_FILE);
   if (patchClient(cwd)) changed.push('src/integrations/supabase/client.ts');
   if (patchStart(cwd)) changed.push('src/start.ts');
   log(

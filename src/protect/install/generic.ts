@@ -5,7 +5,7 @@
 
 import { readFileSync, existsSync, mkdirSync, copyFileSync, readdirSync, statSync } from 'node:fs';
 import { join } from 'node:path';
-import { read, templatesDir } from './util.js';
+import { bakeSiteUuid, read, templatesDir } from './util.js';
 import type { WireOptions, VerifyResult } from './types.js';
 
 const GUARD_MARKER = 'patchstack/guard';
@@ -21,6 +21,7 @@ export function scaffoldGeneric(cwd: string, opts: WireOptions, guardTemplate = 
   mkdirSync(dst, { recursive: true });
   copyFileSync(join(templates, guardTemplate), join(dst, 'guard.ts'));
   const changed = [`${dir}/guard.ts`];
+  if (!opts.demo) bakeSiteUuid(cwd, `${dir}/guard.ts`);
   const rulesDst = join(dst, 'rules.json');
   if (opts.demo || !existsSync(rulesDst)) {
     copyFileSync(join(templates, opts.demo ? 'demo-rules.json' : 'rules.json'), rulesDst);

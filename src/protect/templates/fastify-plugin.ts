@@ -5,12 +5,14 @@
 import { createProtection } from "@patchstack/connect/protect";
 import fallbackRules from "./rules.json";
 
+const PS_SITE_UUID = "__PATCHSTACK_SITE_UUID__";
+
 let _protection: Awaited<ReturnType<typeof createProtection>> | undefined;
 async function getProtection() {
   if (!_protection) {
     const mode = process.env.PATCHSTACK_MODE === "dry-run" ? "dry-run" : "block";
     const token = process.env.PATCHSTACK_WAF_TOKEN;
-    const siteUuid = process.env.PATCHSTACK_SITE_UUID;
+    const siteUuid = PS_SITE_UUID.startsWith("__") ? process.env.PATCHSTACK_SITE_UUID : PS_SITE_UUID;
     const common = { mode, egress: true } as const;
     _protection = await createProtection(
       siteUuid
