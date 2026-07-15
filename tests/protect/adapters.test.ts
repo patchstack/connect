@@ -79,3 +79,95 @@ describe('Next.js adapter', () => {
     }
   });
 });
+
+describe('SvelteKit adapter', () => {
+  it('scaffolds src/hooks.server.ts + co-located rules when none exists', () => {
+    const dir = tmp('ps-svelte-');
+    writeFileSync(path.join(dir, 'package.json'), JSON.stringify({ name: 'x', devDependencies: { '@sveltejs/kit': '^2.0.0' } }));
+    try {
+      const res: any = runProtect(dir);
+      expect(res.status).toBe('wired');
+      expect(res.adapter).toBe('sveltekit');
+      const hooks = read(dir, 'src/hooks.server.ts');
+      expect(hooks).toContain('patchstack-sveltekit');
+      expect(hooks).toContain('export const handle');
+      expect(existsSync(path.join(dir, 'src/patchstack.rules.json'))).toBe(true);
+      expect(runVerify(dir).wired).toBe(true);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('does NOT overwrite an existing hooks.server.ts (verify not wired)', () => {
+    const dir = tmp('ps-svelte2-');
+    writeFileSync(path.join(dir, 'package.json'), JSON.stringify({ name: 'x', devDependencies: { '@sveltejs/kit': '^2.0.0' } }));
+    mkdirSync(path.join(dir, 'src'), { recursive: true });
+    const own = 'export const handle = async ({ event, resolve }) => resolve(event);\n';
+    writeFileSync(path.join(dir, 'src/hooks.server.ts'), own);
+    try {
+      runProtect(dir);
+      expect(read(dir, 'src/hooks.server.ts')).toBe(own); // untouched
+      expect(existsSync(path.join(dir, 'src/patchstack.rules.json'))).toBe(true);
+      expect(runVerify(dir).wired).toBe(false);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
+
+describe('Astro adapter', () => {
+  it('scaffolds src/middleware.ts + co-located rules when none exists', () => {
+    const dir = tmp('ps-astro-');
+    writeFileSync(path.join(dir, 'package.json'), JSON.stringify({ name: 'x', dependencies: { astro: '^4.0.0' } }));
+    try {
+      const res: any = runProtect(dir);
+      expect(res.status).toBe('wired');
+      expect(res.adapter).toBe('astro');
+      const mw = read(dir, 'src/middleware.ts');
+      expect(mw).toContain('patchstack-astro');
+      expect(mw).toContain('export const onRequest');
+      expect(existsSync(path.join(dir, 'src/patchstack.rules.json'))).toBe(true);
+      expect(runVerify(dir).wired).toBe(true);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
+
+describe('Fastify adapter', () => {
+  function fastifyApp(): string {
+    const dir = tmp('ps-fastify-');
+    writeFileSync(path.join(dir, 'package.json'), JSON.stringify({ name: 'x', dependencies: { fastify: '^4.26.0' } }));
+    mkdirSync(path.join(dir, 'src'), { recursive: true });
+    writeFileSync(path.join(dir, 'src/server.ts'), "import Fastify from 'fastify';\nconst app = fastify();\napp.listen({ port: 3000 });\n");
+    return dir;
+  }
+
+  it('scaffolds the plugin and registers app.register(patchstackFastify) after the fastify() app', () => {
+    const dir = fastifyApp();
+    try {
+      const res: any = runProtect(dir);
+      expect(res.status).toBe('wired');
+      expect(res.adapter).toBe('fastify');
+      expect(read(dir, 'src/patchstack/guard.ts')).toContain('patchstackFastify');
+      const server = read(dir, 'src/server.ts');
+      expect(server).toContain('import { patchstackFastify } from "./patchstack/guard";');
+      expect(server).toContain('app.register(patchstackFastify);');
+      expect(server.indexOf('const app = fastify()')).toBeLessThan(server.indexOf('app.register(patchstackFastify)'));
+      expect(runVerify(dir).wired).toBe(true);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('is idempotent (re-run does not duplicate the registration)', () => {
+    const dir = fastifyApp();
+    try {
+      runProtect(dir);
+      runProtect(dir);
+      expect(count(read(dir, 'src/server.ts'), 'app.register(patchstackFastify)')).toBe(1);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});

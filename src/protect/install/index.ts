@@ -9,12 +9,23 @@
 import { log } from './util.js';
 import { tanstackSupabaseAdapter } from './adapters/tanstack-supabase.js';
 import { nextAdapter } from './adapters/next.js';
+import { sveltekitAdapter } from './adapters/sveltekit.js';
+import { astroAdapter } from './adapters/astro.js';
+import { fastifyAdapter } from './adapters/fastify.js';
 import { expressAdapter } from './adapters/express.js';
 import { scaffoldGeneric, wiringPlan, genericVerify } from './generic.js';
 import type { Adapter, WireOptions, ProtectResult, VerifyReport } from './types.js';
 
-// Registry — order = match priority (most specific first). Add new stacks here.
-const ADAPTERS: Adapter[] = [tanstackSupabaseAdapter, nextAdapter, expressAdapter];
+// Registry — order = match priority (most specific first): framework meta-frameworks before the
+// bare server libraries (a SvelteKit/Astro app may also carry express/fastify as a transitive dep).
+const ADAPTERS: Adapter[] = [
+  tanstackSupabaseAdapter,
+  nextAdapter,
+  sveltekitAdapter,
+  astroAdapter,
+  fastifyAdapter,
+  expressAdapter,
+];
 
 /** Scaffold + wire the runtime guard into the app at `cwd`. Best-effort — never throws. */
 export function runProtect(cwd: string, opts: WireOptions = {}): ProtectResult {
