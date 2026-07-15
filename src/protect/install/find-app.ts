@@ -44,8 +44,9 @@ export function findAppInstance(cwd: string, re: RegExp): { relPath: string; app
 }
 
 /** Relative ESM specifier from `fromRel` to `toRel` (both repo-relative, extension stripped). */
-export function importSpecifier(fromRel: string, toRel: string): string {
-  let spec = relative(dirname(fromRel), toRel).replace(/\\/g, '/').replace(/\.(?:ts|js)$/, '');
+export function importSpecifier(fromRel: string, toRel: string, preserveExtension = false): string {
+  let spec = relative(dirname(fromRel), toRel).replace(/\\/g, '/');
+  if (!preserveExtension) spec = spec.replace(/\.(?:ts|js)$/, '');
   if (!spec.startsWith('.')) spec = `./${spec}`;
   return spec;
 }
