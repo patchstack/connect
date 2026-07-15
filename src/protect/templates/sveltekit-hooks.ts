@@ -1,0 +1,33 @@
+// Patchstack runtime guard for SvelteKit — server hook. Managed by `patchstack-connect protect`.
+// Runs the request-phase WAF (+ egress SSRF) and screens the response body/headers for every request.
+// If you already have a `handle`, compose them with `sequence()` from "@sveltejs/kit/hooks".
+import type { Handle } from "@sveltejs/kit";
+import { createProtection } from "@patchstack/connect/protect";
+import fallbackRules from "./patchstack.rules.json";
+
+let _protection: Awaited<ReturnType<typeof createProtection>> | undefined;
+async function getProtection() {
+  if (!_protection) {
+    const mode = process.env.PATCHSTACK_MODE === "dry-run" ? "dry-run" : "block";
+    const token = process.env.PATCHSTACK_WAF_TOKEN;
+    const siteUuid = process.env.PATCHSTACK_SITE_UUID;
+    const common = { mode, egress: true } as const;
+    _protection = await createProtection(
+      siteUuid
+        ? { ...common, siteUuid, rules: fallbackRules as never, cacheDir: ".patchstack" }
+        : token
+          ? { ...common, token, cacheDir: ".patchstack" }
+          : { ...common, rules: fallbackRules as never },
+    );
+  }
+  return _protection;
+}
+
+// #region patchstack-sveltekit (managed by patchstack-connect protect — do not edit)
+export const handle: Handle = async ({ event, resolve }) => {
+  const protection = await getProtection();
+  const blocked = await protection.fetchGuard()(event.request);
+  if (blocked) return blocked; // 403 — blocked before it reaches your route
+  return protection.screenResponse(await resolve(event));
+};
+// #endregion patchstack-sveltekit
