@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { buildClaimUrl, buildEndpointUrl, postManifest } from '../src/client.js';
+import { buildClaimUrl, buildEndpointUrl, buildRulesUrl, postManifest } from '../src/client.js';
 import { PatchstackError } from '../src/types.js';
 
 describe('buildEndpointUrl', () => {
@@ -21,6 +21,25 @@ describe('buildEndpointUrl', () => {
     expect(buildEndpointUrl('https://example.com/x')).toBe('https://example.com/x');
     expect(buildEndpointUrl('https://example.com/x', null)).toBe('https://example.com/x');
     expect(buildEndpointUrl('https://example.com/x', '')).toBe('https://example.com/x');
+  });
+});
+
+describe('buildRulesUrl', () => {
+  it('maps the production manifest endpoint to the per-site rules endpoint', () => {
+    expect(
+      buildRulesUrl(
+        'https://api.patchstack.com/monitor/pulse/manifest',
+        '550e8400-e29b-41d4-a716-446655440000',
+      ),
+    ).toBe(
+      'https://api.patchstack.com/monitor/pulse/rules/550e8400-e29b-41d4-a716-446655440000',
+    );
+  });
+
+  it('preserves custom manifest paths and removes query/hash fragments', () => {
+    expect(buildRulesUrl('http://localhost:8000/custom/manifest?x=1#test', 'site/id')).toBe(
+      'http://localhost:8000/custom/rules/site%2Fid',
+    );
   });
 });
 

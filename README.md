@@ -62,16 +62,23 @@ patchstack-connect guide                           Show this project's setup sta
                                                    what's missing, with tailored commands), then
                                                    print the full setup guide
 patchstack-connect protect                         Opt-in: install the always-on runtime exploit
-                                                   guard (currently TanStack Start + Supabase; it
-                                                   patches the app's Supabase client to route
-                                                   traffic through a same-origin guard). Never
-                                                   run by scan/setup/guide/mark-build.
+                                                   guard. Auto-wires supported server stacks;
+                                                   use --check to verify or --demo for local rules.
+                                                   Never run by scan/setup/guide/mark-build.
+patchstack-connect demo node-serialize             Production-backed walkthrough: require
+                                                   node-serialize@0.0.4, scan it, wait for live
+                                                   rule 18843, install + verify the runtime guard,
+                                                   and print exploit/benign test requests.
 patchstack-connect help                            Print help
 
-Options (for scan and status):
+Options (for scan, setup, and status):
   --site-uuid <uuid>      Override the configured site UUID
   --endpoint <url>        Override the API endpoint
   --dry-run               (scan only) Print the payload without posting
+
+Options (for demo):
+  --url <url>             Test endpoint printed at the end
+                          (default: http://localhost:3000/api/tasks)
 ```
 
 ## Configuration
@@ -100,6 +107,19 @@ Environment variables:
 `"widget"` is optional and defaults to `true`; set it to `false` to stop the connector from managing the disclosure-widget tag (see *The disclosure widget*).
 
 The site UUID identifies the site; it is not a secret — the disclosure widget ships the same UUID in client-side HTML, and committing `.patchstackrc.json` is the intended workflow so every developer and CI run reports to the same site. Possession of the UUID lets someone submit dependency manifests for that site (noise, not data access). In CI setups where the file isn't committed, set `PATCHSTACK_SITE_UUID` instead.
+
+## Production virtual-patch demo
+
+The `node-serialize` scenario demonstrates dependency detection and a live, version-scoped virtual patch against a throwaway Express application. Connect/provision the project first, deliberately add the known-vulnerable package, then run:
+
+```bash
+npm install --save-exact node-serialize@0.0.4
+npx @patchstack/connect demo node-serialize
+```
+
+The demo command does not install the vulnerable package. It verifies the exact version in the lockfile, posts the production npm manifest to the configured site, polls the corresponding Pulse rules endpoint for rule `18843`, runs the normal `protect` installer, checks that the guard is wired, and prints one exploit request plus one benign control request. It never starts or restarts the application and never sends either test request itself.
+
+Use `--url http://localhost:PORT/api/tasks` when the app does not use the default `http://localhost:3000/api/tasks`. Remove the deliberately vulnerable dependency after the walkthrough.
 
 ## The disclosure widget
 
