@@ -8,9 +8,14 @@
 // free of Node-only APIs.
 import { RuleEngine } from './engine.js';
 
+// Cap how much request body we buffer for inspection. A larger body is left UNSCANNED
+// (fail-open) rather than buffered into memory — matches the node adapter's maxBodyBytes.
+const MAX_BODY_BYTES = 1024 * 1024;
+
 // Build the engine's request shape from a WHATWG Request. The body is read from a
 // CLONE so the downstream handler still receives an intact request.
-export async function fromFetchRequest(request) {
+export async function fromFetchRequest(request, options = {}) {
+  const maxBodyBytes = options.maxBodyBytes ?? MAX_BODY_BYTES;
   const url = new URL(request.url);
   const method = (request.method || 'GET').toUpperCase();
 
@@ -30,15 +35,12 @@ export async function fromFetchRequest(request) {
 
   let rawBody = '';
   if (method !== 'GET' && method !== 'HEAD') {
-    try {
-      rawBody = await request.clone().text();
-    } catch {
-      rawBody = '';
-    }
+    rawBody = await readCappedText(request, maxBodyBytes);
   }
 
   const contentType = headers['content-type'] || '';
   let body = {};
+  let files;
   if (rawBody) {
     if (contentType.includes('application/json')) {
       try {
@@ -50,6 +52,13 @@ export async function fromFetchRequest(request) {
       body = {};
       for (const [k, v] of new URLSearchParams(rawBody)) {
         body[k] = k in body ? [].concat(body[k], v) : v;
+      }
+    } else if (contentType.includes('multipart/form-data')) {
+      const boundary = /boundary=("?)([^";]+)\1/i.exec(contentType)?.[2];
+      if (boundary) {
+        const parsed = parseMultipart(rawBody, boundary);
+        body = parsed.body;
+        files = parsed.files;
       }
     }
   }
@@ -64,6 +73,7 @@ export async function fromFetchRequest(request) {
     originalUrl: uri,
     query,
     body,
+    files,
     headers,
     ip: forwarded.split(',')[0].trim(),
     cookies: parseCookies(headers.cookie),
@@ -71,6 +81,52 @@ export async function fromFetchRequest(request) {
     // drops, so prototype-pollution rules on `raw` are robust.
     _rawBody: rawBody
   };
+}
+
+// Read a request body as text, but leave it UNSCANNED (fail-open) past `max` bytes so a huge
+// upload can't be buffered for inspection. A declared oversize (Content-Length) is skipped before
+// reading; anything else is read from a clone (so the downstream handler keeps an intact body) and
+// discarded if it turns out over the cap.
+async function readCappedText(request, max) {
+  const declared = Number(request.headers?.get?.('content-length') || 0);
+  if (declared && declared > max) return '';
+  let clone;
+  try {
+    clone = request.clone();
+  } catch {
+    return '';
+  }
+  try {
+    const text = await clone.text();
+    return text.length > max ? '' : text;
+  } catch {
+    return '';
+  }
+}
+
+// Minimal multipart/form-data parser: enough to expose field names + values (so `post.<field>`
+// and `raw` rules match uploads, e.g. a `__proto__` field name) and file metadata (filename via
+// `files.<field>`). We only need the textual structure, not the binary file contents.
+function parseMultipart(rawBody, boundary) {
+  const body = {};
+  const files = {};
+  for (const part of rawBody.split('--' + boundary)) {
+    const headerEnd = part.indexOf('\r\n\r\n');
+    if (headerEnd === -1) continue;
+    const rawHeaders = part.slice(0, headerEnd);
+    const disposition = /content-disposition:[^\r\n]*/i.exec(rawHeaders)?.[0];
+    if (!disposition) continue;
+    const name = /name="([^"]*)"/i.exec(disposition)?.[1];
+    if (name == null) continue;
+    const content = part.slice(headerEnd + 4).replace(/\r\n$/, '');
+    const filename = /filename="([^"]*)"/i.exec(disposition)?.[1];
+    if (filename !== undefined) {
+      files[name] = filename; // engine resolves files.<name> → the uploaded filename
+    } else {
+      body[name] = name in body ? [].concat(body[name], content) : content;
+    }
+  }
+  return { body, files };
 }
 
 function parseCookies(header) {

@@ -125,8 +125,18 @@ export async function createProtection(options = {}) {
     if (mode !== 'block' || (!blockRule && !redactions.length)) return { verdict: 'pass' };
     if (blockRule) return { verdict: 'block' };
     let body = text;
-    for (const { rule, redactors } of redactions) body = applyRedactors(body, redactors, maskFn(rule.category));
-    return { verdict: 'redact', body };
+    // Redact the offending spans in the body AND in every (string) header value — so a secret
+    // that leaks in a header (Set-Cookie, an echoed X-Api-Key, …) is masked too, and a rule that
+    // targets `response.header.*` actually strips the header rather than just detecting it.
+    const headers = { ...(meta.headers || {}) };
+    for (const { rule, redactors } of redactions) {
+      const mask = maskFn(rule.category);
+      body = applyRedactors(body, redactors, mask);
+      for (const name of Object.keys(headers)) {
+        if (typeof headers[name] === 'string') headers[name] = applyRedactors(headers[name], redactors, mask);
+      }
+    }
+    return { verdict: 'redact', body, headers };
   };
 
   // Screen a fetch Response (used by .fetch() and — via protection.screenResponse — the Supabase guard).
@@ -135,7 +145,7 @@ export async function createProtection(options = {}) {
     if (text == null) return response;
     const r = screenText(text, { status: response.status, headers: headerObject(response.headers) });
     if (r.verdict === 'block') return leakResponse();
-    if (r.verdict === 'redact') return rebuildResponse(response, r.body);
+    if (r.verdict === 'redact') return rebuildResponse(response, r.body, r.headers);
     return response;
   };
 
@@ -174,7 +184,7 @@ export async function createProtection(options = {}) {
       if (!isTextCT(ct)) { for (const c of chunks) origWrite(c); return origEnd(cb); }
       let r;
       try {
-        r = screenText(text, { status: res.statusCode, headers: {} });
+        r = screenText(text, { status: res.statusCode, headers: res.getHeaders ? res.getHeaders() : {} });
       } catch (err) {
         onError?.(err);
         for (const c of chunks) origWrite(c);
@@ -187,6 +197,14 @@ export async function createProtection(options = {}) {
       }
       if (r.verdict === 'redact') {
         try { res.removeHeader && res.removeHeader('content-length'); } catch { /* ignore */ }
+        if (r.headers && res.setHeader) {
+          const current = res.getHeaders ? res.getHeaders() : {};
+          for (const [name, value] of Object.entries(r.headers)) {
+            if (typeof value === 'string' && current[name] !== value) {
+              try { res.setHeader(name, value); } catch { /* ignore invalid header */ }
+            }
+          }
+        }
         return origEnd(r.body, cb);
       }
       for (const c of chunks) origWrite(c);
@@ -330,9 +348,9 @@ export async function createProtection(options = {}) {
     },
   };
 
-  // Egress interception is opt-in (it wraps the global fetch).
+  // Egress interception is opt-in (it wraps the global fetch, and node:http/https on Node).
   if (options.egress) {
-    protection.uninstallEgress = installEgressGuard({ shouldBlock: egressShouldBlock, onBlock: options.onEgressBlock });
+    protection.uninstallEgress = await installEgressGuard({ shouldBlock: egressShouldBlock, onBlock: options.onEgressBlock });
   }
 
   return protection;
@@ -403,9 +421,16 @@ function applyRedactors(body, redactors, mask) {
   return out;
 }
 
-function rebuildResponse(response, body) {
+function rebuildResponse(response, body, redactedHeaders) {
   const headers = new Headers(response.headers);
   headers.delete('content-length'); // body length changed after redaction
+  if (redactedHeaders) {
+    for (const [name, value] of Object.entries(redactedHeaders)) {
+      if (typeof value === 'string' && headers.get(name) !== value) {
+        try { headers.set(name, value); } catch { /* invalid header name — skip */ }
+      }
+    }
+  }
   return new Response(body, { status: response.status, statusText: response.statusText, headers });
 }
 
