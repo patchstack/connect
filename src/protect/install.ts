@@ -19,9 +19,6 @@ const HERE = dirname(fileURLToPath(import.meta.url));
 const TEMPLATES =
   [join(HERE, 'protect', 'templates'), join(HERE, 'templates')].find((p) => existsSync(p)) ??
   join(HERE, 'protect', 'templates');
-const APP = process.cwd();
-const PS_DIR = join(APP, 'src/integrations/patchstack');
-
 const read = (p: string) => readFileSync(p, 'utf8');
 const log = (msg: string) => console.log(`patchstack protect: ${msg}`);
 
@@ -39,37 +36,72 @@ const CLIENT_TUNNEL = [
   '',
 ].join('\n');
 
-const START_IMPORTS = [
-  'import { getRequest } from "@tanstack/react-start/server";',
-  'import { GUARD_PATH, handleGuardRequest, inspectServerFn, screenResponse } from "@/integrations/patchstack/guard";',
-].join('\n');
+const GUARD_IMPORT =
+  'import { GUARD_PATH, handleGuardRequest, inspectServerFn, screenResponse, guardRequest } from "@/integrations/patchstack/guard";';
+const GUARD_IMPORT_RE = /import \{[^}]*\} from "@\/integrations\/patchstack\/guard";/;
 
-const REQUEST_MIDDLEWARE_DEF = [
-  '',
-  '// Patchstack guard (browser tunnel): intercept tunneled Supabase traffic before anything else,',
-  '// then screen the outgoing response (SSR HTML / data) for leaked secrets & PII.',
+const START_IMPORTS = ['import { getRequest } from "@tanstack/react-start/server";', GUARD_IMPORT].join('\n');
+
+// Managed middleware blocks, delimited by #region markers so a re-run can UPGRADE them in place
+// (e.g. adding the route-WAF hook to an already-wired app) instead of skipping. Keep the markers —
+// reconcileBlock() keys off them.
+const REQUEST_MIDDLEWARE_BLOCK = [
+  '// #region patchstack-guard (managed by patchstack-connect protect — do not edit)',
+  '// Browser→Supabase tunnel + response screening; optional route WAF via PATCHSTACK_ROUTE_WAF=1.',
   'const patchstackGuard = createMiddleware().server(async ({ next }) => {',
   '  const request = getRequest();',
   '  if (request) {',
   '    const { pathname } = new URL(request.url);',
   '    if (pathname === GUARD_PATH) return handleGuardRequest(request);',
+  '    if (process.env.PATCHSTACK_ROUTE_WAF === "1") {',
+  '      const blocked = await guardRequest(request);',
+  '      if (blocked) return blocked;',
+  '    }',
   '  }',
   '  return screenResponse(await next());',
   '});',
-  '',
+  '// #endregion patchstack-guard',
 ].join('\n');
 
-const FUNCTION_MIDDLEWARE_DEF = [
-  '',
-  '// Patchstack guard (server functions): inspect server-fn args before they reach the database,',
-  '// covering apps that mutate via TanStack server functions (which bypass the browser tunnel).',
+const FUNCTION_MIDDLEWARE_BLOCK = [
+  '// #region patchstack-function-guard (managed by patchstack-connect protect — do not edit)',
+  '// Inspect server-function args before they reach the database.',
   'const patchstackFunctionGuard = createMiddleware({ type: "function" }).server(async ({ next, data }) => {',
   '  const blocked = await inspectServerFn(data);',
   '  if (blocked) throw new Error(blocked.message);',
   '  return next();',
   '});',
-  '',
+  '// #endregion patchstack-function-guard',
 ].join('\n');
+
+// Reconcile a managed block: replace a marked region in place (UPGRADE), migrate a legacy
+// (un-marked) block, or insert before `insertBefore` (fresh). Legacy blocks are our own single
+// arrow-fn statements whose only line-leading `});` is the terminator, so we bound them from the
+// `const` line (plus the comment header immediately above) to that `});`.
+function reconcileBlock(s: string, region: string, block: string, legacyConst: string, insertBefore: string): string {
+  const lines = s.split('\n');
+  const startMarker = `// #region ${region} `;
+  const endMarker = `// #endregion ${region}`;
+  const si = lines.findIndex((l) => l.includes(startMarker));
+  if (si !== -1) {
+    const ei = lines.findIndex((l, i) => i > si && l.trim() === endMarker);
+    if (ei !== -1) {
+      lines.splice(si, ei - si + 1, ...block.split('\n'));
+      return lines.join('\n');
+    }
+  }
+  const ci = lines.findIndex((l) => l.includes(legacyConst));
+  if (ci !== -1) {
+    const close = lines.findIndex((l, i) => i >= ci && l.trim() === '});');
+    if (close !== -1) {
+      let start = ci;
+      while (start > 0 && (lines[start - 1] ?? '').trim().startsWith('//')) start--; // eat old comment header
+      lines.splice(start, close - start + 1, ...block.split('\n'));
+      return lines.join('\n');
+    }
+  }
+  return s.replace(insertBefore, block + '\n\n' + insertBefore);
+}
 
 export function detectSupportedStack(cwd: string): boolean {
   const pkgPath = join(cwd, 'package.json');
@@ -83,12 +115,22 @@ export function detectSupportedStack(cwd: string): boolean {
   );
 }
 
-function scaffold(cwd: string): void {
+function scaffold(cwd: string, opts: { demo?: boolean } = {}): void {
   const dst = join(cwd, 'src/integrations/patchstack');
   mkdirSync(dst, { recursive: true });
-  copyFileSync(join(TEMPLATES, 'guard.ts'), join(dst, 'guard.ts'));
-  copyFileSync(join(TEMPLATES, 'rules.json'), join(dst, 'rules.json'));
-  log('scaffolded guard.ts + rules.json');
+  copyFileSync(join(TEMPLATES, 'guard.ts'), join(dst, 'guard.ts')); // guard.ts is managed — always refreshed
+  const rulesDst = join(dst, 'rules.json');
+  // Default: the high-precision starter, written only if absent (don't clobber the user's rules on
+  // re-run). --demo: (re)seed the broad multi-class sample bundle for a self-contained demonstration.
+  if (opts.demo) {
+    copyFileSync(join(TEMPLATES, 'demo-rules.json'), rulesDst);
+    log('scaffolded guard.ts + rules.json (demo sample rule set)');
+  } else if (!existsSync(rulesDst)) {
+    copyFileSync(join(TEMPLATES, 'rules.json'), rulesDst);
+    log('scaffolded guard.ts + rules.json (starter rules)');
+  } else {
+    log('scaffolded guard.ts (kept existing rules.json)');
+  }
 }
 
 // Bake the site UUID from .patchstackrc.json (written by `patchstack-connect scan`) into the
@@ -137,29 +179,20 @@ function patchStart(cwd: string): void {
     return log('start.ts anchors not found — skipping (template changed?)');
   }
 
-  // Each step is independently idempotent, so re-running `protect` (including after a connect
-  // upgrade that adds a new guard) reconciles only what's missing — never duplicates, never
-  // silently skips a newly-added piece.
+  // Each step reconciles idempotently: a re-run (including after a connect upgrade) refreshes the
+  // managed blocks in place — never duplicates, never leaves a stale version behind.
   const original = s;
 
-  // Imports.
-  if (!s.includes('@/integrations/patchstack/guard')) {
+  // Imports — refresh the managed guard import line wholesale (upgrade), else insert both imports.
+  if (GUARD_IMPORT_RE.test(s)) {
+    s = s.replace(GUARD_IMPORT_RE, GUARD_IMPORT);
+  } else {
     s = s.replace(importAnchor, importAnchor + '\n' + START_IMPORTS);
-  } else if (!s.includes('inspectServerFn')) {
-    // Upgrade from a build that only wired the browser tunnel: pull in inspectServerFn.
-    s = s.replace(
-      'import { GUARD_PATH, handleGuardRequest } from "@/integrations/patchstack/guard";',
-      'import { GUARD_PATH, handleGuardRequest, inspectServerFn } from "@/integrations/patchstack/guard";',
-    );
   }
 
-  // Middleware definitions (each only if its const isn't already present).
-  if (!s.includes('const patchstackGuard =')) {
-    s = s.replace(exportAnchor, REQUEST_MIDDLEWARE_DEF + '\n' + exportAnchor);
-  }
-  if (!s.includes('const patchstackFunctionGuard =')) {
-    s = s.replace(exportAnchor, FUNCTION_MIDDLEWARE_DEF + '\n' + exportAnchor);
-  }
+  // Middleware blocks — upgrade a marked region / migrate a legacy block / insert fresh.
+  s = reconcileBlock(s, 'patchstack-guard', REQUEST_MIDDLEWARE_BLOCK, 'const patchstackGuard =', exportAnchor);
+  s = reconcileBlock(s, 'patchstack-function-guard', FUNCTION_MIDDLEWARE_BLOCK, 'const patchstackFunctionGuard =', exportAnchor);
 
   // Register the browser-tunnel guard in requestMiddleware.
   if (s.includes(rmAnchor) && !s.includes('requestMiddleware: [patchstackGuard')) {
@@ -182,14 +215,20 @@ function patchStart(cwd: string): void {
 }
 
 /** Scaffold + wire the runtime guard into the app. */
-export function runProtect(cwd: string): void {
+export function runProtect(cwd: string, opts: { demo?: boolean } = {}): void {
   if (!detectSupportedStack(cwd)) {
     log('runtime protection currently supports TanStack Start + Supabase apps; stack not detected — skipping.');
     return;
   }
-  scaffold(cwd);
-  bakeSiteUuid(cwd);
+  scaffold(cwd, opts);
+  // In demo mode, keep the local sample rules active — don't bake a site UUID (which would make the
+  // guard fetch live Pulse rules instead of the bundled demo set).
+  if (!opts.demo) bakeSiteUuid(cwd);
   patchClient(cwd);
   patchStart(cwd);
-  log('done — guard wired and always-on (blocks by default). Set PATCHSTACK_MODE=dry-run for log-only.');
+  log(
+    opts.demo
+      ? 'done — guard wired with the demo sample rules (blocks by default). Set PATCHSTACK_MODE=dry-run for log-only.'
+      : 'done — guard wired and always-on (blocks by default). Set PATCHSTACK_MODE=dry-run for log-only.',
+  );
 }

@@ -1,0 +1,238 @@
+{
+  "_comment": "DEMO sample rules scaffolded by `patchstack-connect protect --demo` — a broad, many-class set (SQLi/XSS/XXE/SSRF/PII/…) for demonstrations, NOT the production corpus. In production, rules come from the Patchstack API per site (via a baked site UUID / token). Kept in sync with examples/protect/demo-rules.json (minus its _demo test vectors).",
+  "firewall": [
+    {
+      "id": "demo-prototype-pollution",
+      "title": "Prototype pollution in request body",
+      "category": "prototype-pollution",
+      "rule_v2": [
+        {
+          "parameter": "raw",
+          "mutations": [
+            "urldecode"
+          ],
+          "match": {
+            "type": "contains",
+            "value": "__proto__"
+          }
+        },
+        {
+          "parameter": "rules",
+          "rules": [
+            {
+              "parameter": "raw",
+              "mutations": [
+                "urldecode"
+              ],
+              "match": {
+                "type": "contains",
+                "value": "constructor"
+              },
+              "inclusive": true
+            },
+            {
+              "parameter": "raw",
+              "mutations": [
+                "urldecode"
+              ],
+              "match": {
+                "type": "contains",
+                "value": "prototype"
+              },
+              "inclusive": true
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "demo-path-traversal",
+      "title": "Path traversal in a file/path parameter",
+      "category": "lfi",
+      "rule_v2": [
+        {
+          "parameter": [
+            "get.file",
+            "post.file",
+            "raw.file",
+            "get.path",
+            "post.path"
+          ],
+          "mutations": [
+            "urldecode"
+          ],
+          "match": {
+            "type": "contains",
+            "value": ".."
+          }
+        }
+      ]
+    },
+    {
+      "id": "demo-sqli",
+      "title": "SQL injection in a query parameter",
+      "category": "sqli",
+      "rule_v2": [
+        {
+          "parameter": [
+            "get.q",
+            "post.q",
+            "get.id",
+            "post.id",
+            "raw"
+          ],
+          "mutations": [
+            "urldecode"
+          ],
+          "match": {
+            "type": "regex",
+            "value": "/union\\s+select|;\\s*drop\\s+table|\\bor\\s+1\\s*=\\s*1\\b/i"
+          }
+        }
+      ]
+    },
+    {
+      "id": "demo-xss",
+      "title": "Reflected/stored XSS in a text field",
+      "category": "xss",
+      "rule_v2": [
+        {
+          "parameter": [
+            "get.q",
+            "post.comment",
+            "post.title",
+            "raw"
+          ],
+          "mutations": [
+            "urldecode",
+            "htmlentitydecode"
+          ],
+          "match": {
+            "type": "regex",
+            "value": "/<script\\b|onerror\\s*=|javascript:/i"
+          }
+        }
+      ]
+    },
+    {
+      "id": "demo-command-injection",
+      "title": "OS command injection in a host/cmd parameter",
+      "category": "command-injection",
+      "rule_v2": [
+        {
+          "parameter": [
+            "get.host",
+            "post.host",
+            "get.cmd",
+            "post.cmd"
+          ],
+          "mutations": [
+            "urldecode"
+          ],
+          "match": {
+            "type": "regex",
+            "value": "/[;&|`$()<>]/"
+          }
+        }
+      ]
+    },
+    {
+      "id": "demo-nosql-injection",
+      "title": "NoSQL operator injection in request body",
+      "category": "nosqli",
+      "rule_v2": [
+        {
+          "parameter": "raw",
+          "match": {
+            "type": "regex",
+            "value": "/\"\\$(?:ne|gt|lt|gte|lte|where|regex|in|nin)\"\\s*:/i"
+          }
+        }
+      ]
+    },
+    {
+      "id": "demo-xxe",
+      "title": "XML external entity (XXE) in request body",
+      "category": "xxe",
+      "rule_v2": [
+        {
+          "parameter": "raw",
+          "match": {
+            "type": "regex",
+            "value": "/<!ENTITY|<!DOCTYPE[^>]*SYSTEM/i"
+          }
+        }
+      ]
+    },
+    {
+      "id": "demo-ssrf-request",
+      "title": "SSRF via a url parameter (request-side)",
+      "category": "ssrf",
+      "rule_v2": [
+        {
+          "parameter": [
+            "get.url",
+            "post.url",
+            "raw.url"
+          ],
+          "mutations": [
+            "urldecode"
+          ],
+          "match": {
+            "type": "regex",
+            "value": "/localhost|127\\.0\\.0\\.1|169\\.254\\.169\\.254|::1|metadata\\.google/i"
+          }
+        }
+      ]
+    },
+    {
+      "id": "demo-resp-pii-email",
+      "title": "Email address leaking in response body",
+      "phase": "response",
+      "category": "pii-exposure",
+      "action": "redact",
+      "rule_v2": [
+        {
+          "parameter": "response.body",
+          "match": {
+            "type": "regex",
+            "value": "/[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\\.[A-Za-z]{2,}/"
+          }
+        }
+      ]
+    },
+    {
+      "id": "demo-resp-credit-card",
+      "title": "Credit-card number leaking in response body",
+      "phase": "response",
+      "category": "pii-exposure",
+      "action": "redact",
+      "rule_v2": [
+        {
+          "parameter": "response.body",
+          "match": {
+            "type": "regex",
+            "value": "/(?:\\d[ -]?){13,16}/"
+          }
+        }
+      ]
+    },
+    {
+      "id": "demo-egress-blocklist-host",
+      "title": "Outbound request to a known exfiltration host",
+      "phase": "egress",
+      "category": "exfiltration",
+      "rule_v2": [
+        {
+          "parameter": "egress.host",
+          "match": {
+            "type": "equals",
+            "value": "evil.example.com"
+          }
+        }
+      ]
+    }
+  ],
+  "whitelists": [],
+  "whitelist_keys": {}
+}

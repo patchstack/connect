@@ -43,9 +43,11 @@ Usage:
   patchstack-connect mark-build [options]            Stamp built HTML with a production flag +
                                                      build fingerprint, and ensure the widget
                                                      tag in built pages (run as a postbuild step)
-  patchstack-connect protect                         Install always-on runtime protection (the
+  patchstack-connect protect [--demo]                Install always-on runtime protection (the
                                                      guard) into a TanStack Start + Supabase app.
                                                      Covers the browser + server-function paths.
+                                                     --demo seeds a broad sample rule set (for
+                                                     demonstrations, not production).
   patchstack-connect guide [--full]                  Show this project's setup status (what's done,
                                                      what's missing, with tailored commands), then
                                                      print the full setup guide. --full prints the
@@ -66,6 +68,8 @@ Environment:
   PATCHSTACK_ENDPOINT     API endpoint (default: https://api.patchstack.com/monitor/pulse/manifest)
   PATCHSTACK_TIMEOUT_MS   Request timeout in ms (default: 30000)
   PATCHSTACK_ENVIRONMENT  Manifest environment: production | sandbox (default: production)
+  PATCHSTACK_MODE         (protect) Runtime guard mode: block (default) | dry-run
+  PATCHSTACK_ROUTE_WAF    (protect) Set to 1 to also screen every request at the route level (opt-in)
 
 Precedence: CLI flag > environment variable > .patchstackrc.json.
 
@@ -300,10 +304,11 @@ function reportSourceWidget(siteUuid: string): void {
   }
 }
 
-async function runProtectCommand(_args: ParsedArgs): Promise<number> {
+async function runProtectCommand(args: ParsedArgs): Promise<number> {
   // Best-effort: like mark-build, this runs during builds and must never fail one.
+  const demo = args.flags.get('demo') === true;
   try {
-    runProtect(process.cwd());
+    runProtect(process.cwd(), { demo });
   } catch (err) {
     console.warn(`patchstack protect: skipped (${(err as Error).message}).`);
   }
