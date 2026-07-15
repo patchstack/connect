@@ -133,7 +133,13 @@ export async function createProtection(options = {}) {
       const mask = maskFn(rule.category);
       body = applyRedactors(body, redactors, mask);
       for (const name of Object.keys(headers)) {
-        if (typeof headers[name] === 'string') headers[name] = applyRedactors(headers[name], redactors, mask);
+        const value = headers[name];
+        if (typeof value === 'string') {
+          headers[name] = applyRedactors(value, redactors, mask);
+        } else if (Array.isArray(value)) {
+          // Multi-valued headers (Set-Cookie) — redact each entry.
+          headers[name] = value.map((item) => (typeof item === 'string' ? applyRedactors(item, redactors, mask) : item));
+        }
       }
     }
     return { verdict: 'redact', body, headers };
@@ -200,7 +206,9 @@ export async function createProtection(options = {}) {
         if (r.headers && res.setHeader) {
           const current = res.getHeaders ? res.getHeaders() : {};
           for (const [name, value] of Object.entries(r.headers)) {
-            if (typeof value === 'string' && current[name] !== value) {
+            if (Array.isArray(value)) {
+              try { res.setHeader(name, value); } catch { /* ignore invalid header */ } // Set-Cookie array
+            } else if (typeof value === 'string' && current[name] !== value) {
               try { res.setHeader(name, value); } catch { /* ignore invalid header */ }
             }
           }
@@ -380,6 +388,10 @@ async function readTextResponse(response) {
 function headerObject(headers) {
   const out = {};
   headers?.forEach?.((v, k) => { out[k.toLowerCase()] = v; });
+  // Set-Cookie is multi-valued; forEach collapses it. Recover the individual cookies so each can
+  // be screened (and re-emitted) separately.
+  const setCookies = headers?.getSetCookie?.();
+  if (setCookies && setCookies.length) out['set-cookie'] = setCookies;
   return out;
 }
 
@@ -426,8 +438,16 @@ function rebuildResponse(response, body, redactedHeaders) {
   headers.delete('content-length'); // body length changed after redaction
   if (redactedHeaders) {
     for (const [name, value] of Object.entries(redactedHeaders)) {
-      if (typeof value === 'string' && headers.get(name) !== value) {
-        try { headers.set(name, value); } catch { /* invalid header name — skip */ }
+      if (typeof value === 'string') {
+        if (headers.get(name) !== value) {
+          try { headers.set(name, value); } catch { /* invalid header name — skip */ }
+        }
+      } else if (Array.isArray(value)) {
+        // Re-emit each (possibly redacted) Set-Cookie separately (Headers collapses them otherwise).
+        try {
+          headers.delete(name);
+          for (const item of value) headers.append(name, String(item));
+        } catch { /* skip */ }
       }
     }
   }

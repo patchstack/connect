@@ -11,30 +11,37 @@ const post = (body: string, ct = 'application/json', maxBodyBytes?: number) =>
     maxBodyBytes ? { maxBodyBytes } : {},
   );
 
+const rules = {
+  firewall: [{ id: 'proto', title: 'proto', rule_v2: [{ parameter: 'raw', match: { type: 'contains', value: '__proto__' } }] }],
+  whitelists: [],
+  whitelist_keys: {},
+};
+const jsonReq = (body: string) =>
+  new Request('https://app/x', { method: 'POST', headers: { 'content-type': 'application/json' }, body });
+
 describe('fetch request-body cap', () => {
-  it('skips a body larger than the cap, keeps a small one', async () => {
+  it('truncates an oversize body to the cap and still scans the prefix', async () => {
     const overCap = await post('x'.repeat(200), 'text/plain', 32);
-    expect(overCap._rawBody).toBe('');
-    expect(overCap.body).toEqual({});
+    expect(overCap._rawBody).toBe('x'.repeat(32)); // prefix kept for scanning, not discarded
 
     const underCap = await post('small', 'text/plain', 32);
     expect(underCap._rawBody).toBe('small');
   });
 
-  it('does not block a malicious payload buried in an oversized body (fail-open)', async () => {
-    const rules = {
-      firewall: [{ id: 'proto', title: 'proto', rule_v2: [{ parameter: 'raw', match: { type: 'contains', value: '__proto__' } }] }],
-      whitelists: [],
-      whitelist_keys: {},
-    };
+  it('catches a front-loaded payload in an oversize body; a payload pushed past the cap still slips', async () => {
     const p = await createProtection({ rules, mode: 'block' });
     const guard = p.fetchGuard();
 
-    const huge = '{"__proto__":{"x":1},"pad":"' + 'a'.repeat(1024 * 1024 + 64) + '"}';
-    const oversized = await guard(new Request('https://app/x', { method: 'POST', headers: { 'content-type': 'application/json' }, body: huge }));
-    expect(oversized).toBeNull(); // over the 1 MiB cap → body unscanned → allowed
+    // __proto__ at the front → within the scanned first 1 MiB → blocked.
+    const frontLoaded = '{"__proto__":{"x":1},"pad":"' + 'a'.repeat(1024 * 1024 + 64) + '"}';
+    expect(await guard(jsonReq(frontLoaded))).not.toBeNull();
 
-    const small = await guard(new Request('https://app/x', { method: 'POST', headers: { 'content-type': 'application/json' }, body: '{"__proto__":{"x":1}}' }));
-    expect(small).not.toBeNull(); // within cap → scanned → blocked
+    // __proto__ pushed beyond the 1 MiB cap by leading padding → outside the prefix → slips
+    // (documented residual: partial-scan can't see past the cap).
+    const buried = '{"pad":"' + 'a'.repeat(1024 * 1024 + 64) + '","__proto__":{"x":1}}';
+    expect(await guard(jsonReq(buried))).toBeNull();
+
+    // a small body is still fully scanned.
+    expect(await guard(jsonReq('{"__proto__":{"x":1}}'))).not.toBeNull();
   });
 });
