@@ -8,11 +8,13 @@
 
 import { log } from './util.js';
 import { tanstackSupabaseAdapter } from './adapters/tanstack-supabase.js';
+import { nextAdapter } from './adapters/next.js';
+import { expressAdapter } from './adapters/express.js';
 import { scaffoldGeneric, wiringPlan, genericVerify } from './generic.js';
 import type { Adapter, WireOptions, ProtectResult, VerifyReport } from './types.js';
 
-// Registry — order = match priority. Add new stacks here.
-const ADAPTERS: Adapter[] = [tanstackSupabaseAdapter];
+// Registry — order = match priority (most specific first). Add new stacks here.
+const ADAPTERS: Adapter[] = [tanstackSupabaseAdapter, nextAdapter, expressAdapter];
 
 /** Scaffold + wire the runtime guard into the app at `cwd`. Best-effort — never throws. */
 export function runProtect(cwd: string, opts: WireOptions = {}): ProtectResult {
