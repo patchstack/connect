@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { runProtect } from '../../src/protect/install.js';
+import { runProtect } from '../../src/protect/install/index.js';
 
 let dir: string;
 beforeEach(() => {

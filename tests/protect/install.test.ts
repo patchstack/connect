@@ -2,7 +2,7 @@ import { describe, expect, it, beforeEach } from 'vitest';
 import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, existsSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
-import { runProtect } from '../../src/protect/install.js';
+import { runProtect } from '../../src/protect/install/index.js';
 
 // Scaffolder coverage for `patchstack-connect protect` (runProtect): it must detect a TanStack
 // Start + Supabase app, scaffold the guard, and patch client.ts + start.ts at the right anchors —
@@ -193,6 +193,23 @@ export const startInstance = createStart(() => ({
     writeFileSync(path.join(plain, 'package.json'), JSON.stringify({ name: 'x', dependencies: {} }));
     runProtect(plain);
     expect(existsSync(path.join(plain, 'src/integrations/patchstack/guard.ts'))).toBe(false);
+    rmSync(plain, { recursive: true, force: true });
+  });
+
+  it('returns a wired result naming the matched adapter + changed files', () => {
+    const res: any = runProtect(dir);
+    expect(res.status).toBe('wired');
+    expect(res.adapter).toBe('tanstack-supabase');
+    expect(res.changed).toContain('src/integrations/patchstack/guard.ts');
+    expect(res.changed).toContain('src/start.ts');
+  });
+
+  it('escalates (does not silently skip) on an unmatched stack', () => {
+    const plain = mkdtempSync(path.join(tmpdir(), 'ps-plain-'));
+    writeFileSync(path.join(plain, 'package.json'), JSON.stringify({ name: 'x', dependencies: {} }));
+    const res: any = runProtect(plain);
+    expect(res.status).toBe('unsupported');
+    expect(res.supported).toContain('tanstack-supabase');
     rmSync(plain, { recursive: true, force: true });
   });
 });

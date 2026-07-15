@@ -1,26 +1,14 @@
-// `patchstack-connect protect` — installs the runtime guard into a TanStack Start + Supabase app.
+// Adapter: TanStack Start + Supabase (the shape Lovable emits).
 //
-// "Add Patchstack" already installs the connector; this wires the always-on guard so exploit
-// requests against known-vulnerable packages are blocked, with zero changes to the user's own
-// code. Idempotent (safe to re-run).
-//
-// The engine ships inside @patchstack/connect (exported as @patchstack/connect/protect), so the
-// scaffolded guard just imports it — no extra dependency, no local manifest. Rules come from the
-// Patchstack API at runtime (cached), with a bundled fallback until a token is configured.
+// Wires the always-on guard with zero changes to the user's own code — patches the generated
+// Supabase client (browser→Supabase tunnel) and src/start.ts (request + function middleware),
+// scaffolds src/integrations/patchstack/{guard.ts,rules.json}, and bakes the site UUID.
+// Idempotent + upgrades in place via the managed `#region` blocks.
 
-import { readFileSync, writeFileSync, existsSync, mkdirSync, copyFileSync } from 'node:fs';
-import { join, dirname } from 'node:path';
-import { fileURLToPath } from 'node:url';
-
-// Guard templates ship next to the built CLI (dist/protect/templates). Resolve for both the
-// built layout (install.ts is bundled into dist/cli.js at the dist root → protect/templates) and
-// the source layout (install.ts lives in src/protect/ → templates is a sibling).
-const HERE = dirname(fileURLToPath(import.meta.url));
-const TEMPLATES =
-  [join(HERE, 'protect', 'templates'), join(HERE, 'templates')].find((p) => existsSync(p)) ??
-  join(HERE, 'protect', 'templates');
-const read = (p: string) => readFileSync(p, 'utf8');
-const log = (msg: string) => console.log(`patchstack protect: ${msg}`);
+import { writeFileSync, existsSync, mkdirSync, copyFileSync } from 'node:fs';
+import { join } from 'node:path';
+import { read, log, templatesDir } from '../util.js';
+import type { Adapter, WireOptions, WireResult } from '../types.js';
 
 const CLIENT_TUNNEL = [
   '',
@@ -103,10 +91,15 @@ function reconcileBlock(s: string, region: string, block: string, legacyConst: s
   return s.replace(insertBefore, block + '\n\n' + insertBefore);
 }
 
-export function detectSupportedStack(cwd: string): boolean {
+function detect(cwd: string): boolean {
   const pkgPath = join(cwd, 'package.json');
   if (!existsSync(pkgPath)) return false;
-  const pkg = JSON.parse(read(pkgPath));
+  let pkg: { dependencies?: Record<string, string>; devDependencies?: Record<string, string> };
+  try {
+    pkg = JSON.parse(read(pkgPath));
+  } catch {
+    return false;
+  }
   const deps = { ...pkg.dependencies, ...pkg.devDependencies };
   return (
     Boolean(deps['@tanstack/react-start']) &&
@@ -115,68 +108,91 @@ export function detectSupportedStack(cwd: string): boolean {
   );
 }
 
-function scaffold(cwd: string, opts: { demo?: boolean } = {}): void {
+const GUARD_FILE = 'src/integrations/patchstack/guard.ts';
+
+function scaffold(cwd: string, opts: WireOptions): string[] {
+  const templates = templatesDir();
   const dst = join(cwd, 'src/integrations/patchstack');
   mkdirSync(dst, { recursive: true });
-  copyFileSync(join(TEMPLATES, 'guard.ts'), join(dst, 'guard.ts')); // guard.ts is managed — always refreshed
+  copyFileSync(join(templates, 'guard.ts'), join(dst, 'guard.ts')); // guard.ts is managed — always refreshed
+  const changed = [GUARD_FILE];
   const rulesDst = join(dst, 'rules.json');
   // Default: the high-precision starter, written only if absent (don't clobber the user's rules on
   // re-run). --demo: (re)seed the broad multi-class sample bundle for a self-contained demonstration.
   if (opts.demo) {
-    copyFileSync(join(TEMPLATES, 'demo-rules.json'), rulesDst);
+    copyFileSync(join(templates, 'demo-rules.json'), rulesDst);
+    changed.push('src/integrations/patchstack/rules.json');
     log('scaffolded guard.ts + rules.json (demo sample rule set)');
   } else if (!existsSync(rulesDst)) {
-    copyFileSync(join(TEMPLATES, 'rules.json'), rulesDst);
+    copyFileSync(join(templates, 'rules.json'), rulesDst);
+    changed.push('src/integrations/patchstack/rules.json');
     log('scaffolded guard.ts + rules.json (starter rules)');
   } else {
     log('scaffolded guard.ts (kept existing rules.json)');
   }
+  return changed;
 }
 
-// Bake the site UUID from .patchstackrc.json (written by `patchstack-connect scan`) into the
-// scaffolded guard, so the deployed Worker calls the live Pulse rules API with zero user config.
-// Left as the inert placeholder (guard falls back to PATCHSTACK_SITE_UUID env / bundled rules)
-// when the app hasn't been scanned yet or the file can't be read.
-function bakeSiteUuid(cwd: string): void {
+// Bake the site UUID from .patchstackrc.json (written by `scan`) into the scaffolded guard, so the
+// deployed Worker calls the live Pulse rules API with zero user config. Left as the inert
+// placeholder when the app hasn't been scanned yet or the file can't be read. Returns whether it baked.
+function bakeSiteUuid(cwd: string): boolean {
   const rc = join(cwd, '.patchstackrc.json');
-  if (!existsSync(rc)) return log('no .patchstackrc.json — guard uses PATCHSTACK_SITE_UUID env or the bundled fallback');
+  if (!existsSync(rc)) {
+    log('no .patchstackrc.json — guard uses PATCHSTACK_SITE_UUID env or the bundled fallback');
+    return false;
+  }
   let uuid: string | undefined;
   try {
     uuid = JSON.parse(read(rc)).siteUuid;
   } catch {
-    return log('.patchstackrc.json unreadable — skipping site-UUID bake');
+    log('.patchstackrc.json unreadable — skipping site-UUID bake');
+    return false;
   }
-  // Guard on UUID format so a malformed value falls through to the inert placeholder rather
-  // than baking junk into a TS string literal (broken build / replace-token hazards).
+  // Guard on UUID format so a malformed value falls through to the inert placeholder rather than
+  // baking junk into a TS string literal (broken build / replace-token hazards).
   if (!uuid || !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(uuid)) {
-    return log('.patchstackrc.json siteUuid missing or malformed — guard uses PATCHSTACK_SITE_UUID env or the bundled fallback');
+    log('.patchstackrc.json siteUuid missing or malformed — guard uses PATCHSTACK_SITE_UUID env or the bundled fallback');
+    return false;
   }
-  const p = join(cwd, 'src/integrations/patchstack/guard.ts');
-  if (!existsSync(p)) return;
+  const p = join(cwd, GUARD_FILE);
+  if (!existsSync(p)) return false;
   const s = read(p);
-  if (!s.includes('__PATCHSTACK_SITE_UUID__')) return log('guard.ts site UUID already baked');
+  if (!s.includes('__PATCHSTACK_SITE_UUID__')) {
+    log('guard.ts site UUID already baked');
+    return false;
+  }
   writeFileSync(p, s.replace('__PATCHSTACK_SITE_UUID__', uuid));
   log('baked site UUID into guard.ts — live rules from the Patchstack API');
+  return true;
 }
 
-function patchClient(cwd: string): void {
+function patchClient(cwd: string): boolean {
   const p = join(cwd, 'src/integrations/supabase/client.ts');
-  let s = read(p);
-  if (s.includes('x-ps-target')) return log('client.ts already wired');
+  const s = read(p);
+  if (s.includes('x-ps-target')) {
+    log('client.ts already wired');
+    return false;
+  }
   const anchor = "headers.set('apikey', supabaseKey);";
-  if (!s.includes(anchor)) return log('client.ts anchor not found — skipping (template changed?)');
+  if (!s.includes(anchor)) {
+    log('client.ts anchor not found — skipping (template changed?)');
+    return false;
+  }
   writeFileSync(p, s.replace(anchor, anchor + '\n' + CLIENT_TUNNEL));
   log('patched client.ts (tunnel Supabase through the guard)');
+  return true;
 }
 
-function patchStart(cwd: string): void {
+function patchStart(cwd: string): boolean {
   const p = join(cwd, 'src/start.ts');
   let s = read(p);
   const importAnchor = 'import { createStart, createMiddleware } from "@tanstack/react-start";';
   const exportAnchor = 'export const startInstance';
   const rmAnchor = 'requestMiddleware: [';
   if (!s.includes(importAnchor) || !s.includes(exportAnchor)) {
-    return log('start.ts anchors not found — skipping (template changed?)');
+    log('start.ts anchors not found — skipping (template changed?)');
+    return false;
   }
 
   // Each step reconciles idempotently: a re-run (including after a connect upgrade) refreshes the
@@ -209,26 +225,33 @@ function patchStart(cwd: string): void {
     }
   }
 
-  if (s === original) return log('start.ts already wired');
+  if (s === original) {
+    log('start.ts already wired');
+    return false;
+  }
   writeFileSync(p, s);
   log('patched start.ts (guard registered as request + function middleware)');
+  return true;
 }
 
-/** Scaffold + wire the runtime guard into the app. */
-export function runProtect(cwd: string, opts: { demo?: boolean } = {}): void {
-  if (!detectSupportedStack(cwd)) {
-    log('runtime protection currently supports TanStack Start + Supabase apps; stack not detected — skipping.');
-    return;
-  }
-  scaffold(cwd, opts);
-  // In demo mode, keep the local sample rules active — don't bake a site UUID (which would make the
-  // guard fetch live Pulse rules instead of the bundled demo set).
-  if (!opts.demo) bakeSiteUuid(cwd);
-  patchClient(cwd);
-  patchStart(cwd);
+function wire(cwd: string, opts: WireOptions): WireResult {
+  const changed = scaffold(cwd, opts);
+  // In demo mode, keep the local sample rules active — don't bake a site UUID (which would make
+  // the guard fetch live Pulse rules instead of the bundled demo set).
+  if (!opts.demo && bakeSiteUuid(cwd)) changed.push(GUARD_FILE);
+  if (patchClient(cwd)) changed.push('src/integrations/supabase/client.ts');
+  if (patchStart(cwd)) changed.push('src/start.ts');
   log(
     opts.demo
       ? 'done — guard wired with the demo sample rules (blocks by default). Set PATCHSTACK_MODE=dry-run for log-only.'
       : 'done — guard wired and always-on (blocks by default). Set PATCHSTACK_MODE=dry-run for log-only.',
   );
+  return { ok: true, changed: [...new Set(changed)] };
 }
+
+export const tanstackSupabaseAdapter: Adapter = {
+  name: 'tanstack-supabase',
+  label: 'TanStack Start + Supabase',
+  detect,
+  wire,
+};

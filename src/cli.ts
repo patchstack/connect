@@ -17,7 +17,7 @@ import {
   installCommand,
   renderGuideChecklist,
 } from './guide.js';
-import { runProtect } from './protect/install.js';
+import { runProtect } from './protect/install/index.js';
 import { wireBuildScripts } from './setup.js';
 import { detectStack, type StackDescriptor } from './stack.js';
 import { PatchstackError } from './types.js';
