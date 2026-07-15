@@ -17,7 +17,7 @@ import {
   installCommand,
   renderGuideChecklist,
 } from './guide.js';
-import { runProtect } from './protect/install/index.js';
+import { runProtect, runVerify } from './protect/install/index.js';
 import { wireBuildScripts } from './setup.js';
 import { detectStack, type StackDescriptor } from './stack.js';
 import { PatchstackError } from './types.js';
@@ -43,11 +43,14 @@ Usage:
   patchstack-connect mark-build [options]            Stamp built HTML with a production flag +
                                                      build fingerprint, and ensure the widget
                                                      tag in built pages (run as a postbuild step)
-  patchstack-connect protect [--demo]                Install always-on runtime protection (the
-                                                     guard) into a TanStack Start + Supabase app.
-                                                     Covers the browser + server-function paths.
+  patchstack-connect protect [--demo|--check]        Install always-on runtime protection (the
+                                                     guard). Auto-wires known stacks (TanStack
+                                                     Start + Supabase); for others it scaffolds a
+                                                     generic guard + prints a wiring plan.
                                                      --demo seeds a broad sample rule set (for
                                                      demonstrations, not production).
+                                                     --check verifies the guard is wired (exit 1
+                                                     if not) — for the wire-then-verify loop.
   patchstack-connect guide [--full]                  Show this project's setup status (what's done,
                                                      what's missing, with tailored commands), then
                                                      print the full setup guide. --full prints the
@@ -305,6 +308,16 @@ function reportSourceWidget(siteUuid: string): void {
 }
 
 async function runProtectCommand(args: ParsedArgs): Promise<number> {
+  // `--check`: verify the guard is wired (for the agent/CI loop). Non-zero exit if not.
+  if (args.flags.get('check') === true) {
+    const report = runVerify(process.cwd());
+    console.log(`patchstack protect --check (${report.stack}):`);
+    for (const c of report.checks) {
+      console.log(`  ${c.ok ? '✓' : '✗'} ${c.label}${!c.ok && c.hint ? ` — ${c.hint}` : ''}`);
+    }
+    console.log(report.wired ? 'guard is wired ✓' : 'guard is NOT fully wired ✗');
+    return report.wired ? 0 : 1;
+  }
   // Best-effort: like mark-build, this runs during builds and must never fail one.
   const demo = args.flags.get('demo') === true;
   try {

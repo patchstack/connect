@@ -2,7 +2,7 @@ import { describe, expect, it, beforeEach } from 'vitest';
 import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, existsSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
-import { runProtect } from '../../src/protect/install/index.js';
+import { runProtect, runVerify } from '../../src/protect/install/index.js';
 
 // Scaffolder coverage for `patchstack-connect protect` (runProtect): it must detect a TanStack
 // Start + Supabase app, scaffold the guard, and patch client.ts + start.ts at the right anchors —
@@ -188,11 +188,13 @@ export const startInstance = createStart(() => ({
     expect(count(client, 'x-ps-target')).toBe(1);
   });
 
-  it('skips an unsupported stack (no @tanstack/react-start)', () => {
+  it('does not take the tanstack path for an unmatched stack (scaffolds generic instead)', () => {
     const plain = mkdtempSync(path.join(tmpdir(), 'ps-plain-'));
     writeFileSync(path.join(plain, 'package.json'), JSON.stringify({ name: 'x', dependencies: {} }));
-    runProtect(plain);
-    expect(existsSync(path.join(plain, 'src/integrations/patchstack/guard.ts'))).toBe(false);
+    const res: any = runProtect(plain);
+    expect(res.status).toBe('scaffolded'); // generic fallback, not silent skip
+    expect(existsSync(path.join(plain, 'src/integrations/patchstack/guard.ts'))).toBe(false); // not the tanstack path
+    expect(existsSync(path.join(plain, 'patchstack/guard.ts'))).toBe(true); // generic guard scaffolded
     rmSync(plain, { recursive: true, force: true });
   });
 
@@ -204,12 +206,13 @@ export const startInstance = createStart(() => ({
     expect(res.changed).toContain('src/start.ts');
   });
 
-  it('escalates (does not silently skip) on an unmatched stack', () => {
-    const plain = mkdtempSync(path.join(tmpdir(), 'ps-plain-'));
-    writeFileSync(path.join(plain, 'package.json'), JSON.stringify({ name: 'x', dependencies: {} }));
-    const res: any = runProtect(plain);
-    expect(res.status).toBe('unsupported');
-    expect(res.supported).toContain('tanstack-supabase');
-    rmSync(plain, { recursive: true, force: true });
+  it('verify reports not-wired before install and wired after (tanstack adapter)', () => {
+    let report: any = runVerify(dir);
+    expect(report.stack).toBe('TanStack Start + Supabase');
+    expect(report.wired).toBe(false); // fresh fixture, guard not installed yet
+    runProtect(dir);
+    report = runVerify(dir);
+    expect(report.wired).toBe(true);
+    expect(report.checks.every((c: any) => c.ok)).toBe(true);
   });
 });

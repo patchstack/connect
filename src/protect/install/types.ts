@@ -16,6 +16,18 @@ export interface WireResult {
   changed: string[];
 }
 
+export interface VerifyCheck {
+  label: string;
+  ok: boolean;
+  /** How to fix it, shown when `ok` is false. */
+  hint?: string;
+}
+
+export interface VerifyResult {
+  wired: boolean;
+  checks: VerifyCheck[];
+}
+
 export interface Adapter {
   /** Stable id, e.g. "tanstack-supabase". */
   name: string;
@@ -25,8 +37,16 @@ export interface Adapter {
   detect(cwd: string): boolean;
   /** Scaffold + wire the guard. Only called when `detect()` returned true. */
   wire(cwd: string, opts: WireOptions): WireResult;
+  /** Inspect the app and report whether the guard is correctly wired (for `protect --check`). */
+  verify(cwd: string): VerifyResult;
 }
 
 export type ProtectResult =
   | { status: 'wired'; adapter: string; changed: string[] }
+  | { status: 'scaffolded'; adapter: string; changed: string[]; plan: string }
   | { status: 'unsupported'; supported: string[] };
+
+export interface VerifyReport extends VerifyResult {
+  /** Which adapter/stack the verification ran against (or "generic"). */
+  stack: string;
+}

@@ -8,7 +8,7 @@
 import { writeFileSync, existsSync, mkdirSync, copyFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { read, log, templatesDir } from '../util.js';
-import type { Adapter, WireOptions, WireResult } from '../types.js';
+import type { Adapter, WireOptions, WireResult, VerifyResult } from '../types.js';
 
 const CLIENT_TUNNEL = [
   '',
@@ -249,9 +249,27 @@ function wire(cwd: string, opts: WireOptions): WireResult {
   return { ok: true, changed: [...new Set(changed)] };
 }
 
+function verify(cwd: string): VerifyResult {
+  const guardPath = join(cwd, GUARD_FILE);
+  const clientPath = join(cwd, 'src/integrations/supabase/client.ts');
+  const startPath = join(cwd, 'src/start.ts');
+  const guard = existsSync(guardPath) ? read(guardPath) : '';
+  const client = existsSync(clientPath) ? read(clientPath) : '';
+  const start = existsSync(startPath) ? read(startPath) : '';
+
+  const checks = [
+    { label: 'guard.ts scaffolded', ok: guard.length > 0, hint: 'run `patchstack-connect protect`' },
+    { label: 'Supabase client tunnels through the guard', ok: client.includes('x-ps-target'), hint: 'run `patchstack-connect protect` to re-patch src/integrations/supabase/client.ts' },
+    { label: 'request middleware defined + registered', ok: start.includes('const patchstackGuard =') && start.includes('requestMiddleware: [patchstackGuard'), hint: 'run `patchstack-connect protect` to re-patch src/start.ts' },
+    { label: 'server-function middleware defined + registered', ok: start.includes('const patchstackFunctionGuard =') && start.includes('functionMiddleware: [patchstackFunctionGuard'), hint: 'run `patchstack-connect protect` to re-patch src/start.ts' },
+  ];
+  return { wired: checks.every((c) => c.ok), checks };
+}
+
 export const tanstackSupabaseAdapter: Adapter = {
   name: 'tanstack-supabase',
   label: 'TanStack Start + Supabase',
   detect,
   wire,
+  verify,
 };
