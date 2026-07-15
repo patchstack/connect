@@ -8,7 +8,8 @@
 
 import { log } from './util.js';
 import { tanstackSupabaseAdapter } from './adapters/tanstack-supabase.js';
-import type { Adapter, WireOptions, ProtectResult } from './types.js';
+import { scaffoldGeneric, wiringPlan, genericVerify } from './generic.js';
+import type { Adapter, WireOptions, ProtectResult, VerifyReport } from './types.js';
 
 // Registry — order = match priority. Add new stacks here.
 const ADAPTERS: Adapter[] = [tanstackSupabaseAdapter];
@@ -16,18 +17,24 @@ const ADAPTERS: Adapter[] = [tanstackSupabaseAdapter];
 /** Scaffold + wire the runtime guard into the app at `cwd`. Best-effort — never throws. */
 export function runProtect(cwd: string, opts: WireOptions = {}): ProtectResult {
   const adapter = ADAPTERS.find((a) => a.detect(cwd));
-
-  if (!adapter) {
-    log(
-      `no built-in adapter matched this app's stack. Auto-wire currently supports: ` +
-        `${ADAPTERS.map((a) => a.label).join(', ')}. The guard engine is stack-agnostic; ` +
-        `wiring for this stack needs a new adapter or an agent-assisted install (see AGENT-INSTALL.md) — not skipped silently.`,
-    );
-    return { status: 'unsupported', supported: ADAPTERS.map((a) => a.name) };
+  if (adapter) {
+    const result = adapter.wire(cwd, opts);
+    return { status: 'wired', adapter: adapter.name, changed: result.changed };
   }
 
-  const result = adapter.wire(cwd, opts);
-  return { status: 'wired', adapter: adapter.name, changed: result.changed };
+  // No adapter matched — DON'T silently skip. Scaffold the framework-agnostic guard and print a
+  // wiring plan the builder's agent (or user) can finish, then verify with `protect --check`.
+  const { changed, dir } = scaffoldGeneric(cwd, opts);
+  const plan = wiringPlan(cwd, dir);
+  log(plan);
+  return { status: 'scaffolded', adapter: 'generic', changed, plan };
 }
 
-export type { Adapter, WireOptions, WireResult, ProtectResult } from './types.js';
+/** Verify the guard is correctly wired (backs `protect --check`). Fail-open — never throws. */
+export function runVerify(cwd: string): VerifyReport {
+  const adapter = ADAPTERS.find((a) => a.detect(cwd));
+  if (adapter) return { stack: adapter.label, ...adapter.verify(cwd) };
+  return { stack: 'generic', ...genericVerify(cwd) };
+}
+
+export type { Adapter, WireOptions, WireResult, VerifyResult, VerifyReport, ProtectResult } from './types.js';
