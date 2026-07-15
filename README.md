@@ -69,6 +69,9 @@ patchstack-connect demo node-serialize             Production-backed walkthrough
                                                    node-serialize@0.0.4, scan it, wait for live
                                                    rule 18843, install + verify the runtime guard,
                                                    and print exploit/benign test requests.
+patchstack-connect demo-guide node-serialize       Read-only, state-aware instructions for the
+                                                   local demo, including the next exact command,
+                                                   expected proof, and cleanup.
 patchstack-connect help                            Print help
 
 Options (for scan, setup, and status):
@@ -76,7 +79,7 @@ Options (for scan, setup, and status):
   --endpoint <url>        Override the API endpoint
   --dry-run               (scan only) Print the payload without posting
 
-Options (for demo):
+Options (for demo and demo-guide):
   --url <url>             Test endpoint printed at the end
                           (default: http://localhost:3000/api/tasks)
 ```
@@ -118,6 +121,14 @@ npx @patchstack/connect demo node-serialize
 ```
 
 The demo command does not install the vulnerable package. It verifies the exact version in the lockfile, posts the production npm manifest to the configured site, polls the corresponding Pulse rules endpoint for rule `18843`, runs the normal `protect` installer, checks that the guard is wired, and prints one exploit request plus one benign control request. It never starts or restarts the application and never sends either test request itself.
+
+For a read-only walkthrough that can be run before or during the demo, use:
+
+```bash
+npx @patchstack/connect demo-guide node-serialize
+```
+
+The guide inspects the Host-created site configuration and lockfile, explains that no deployment is required, shows the complete prepare → run → restart → prove → clean-up sequence, and ends with the next exact command for the project's current state. Pass the same `--url` option when the test endpoint differs from the default.
 
 Use `--url http://localhost:PORT/api/tasks` when the app does not use the default `http://localhost:3000/api/tasks`. Remove the deliberately vulnerable dependency after the walkthrough.
 

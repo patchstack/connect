@@ -6,7 +6,9 @@ import {
   assertDemoDependency,
   assertPersistedSiteUuid,
   DemoError,
+  inspectDemoDependency,
   NODE_SERIALIZE_DEMO,
+  renderDemoGuide,
   renderDemoTestCommands,
   resolveDemoScenario,
   waitForDemoRule,
@@ -79,6 +81,10 @@ describe('assertDemoDependency', () => {
   it('accepts the exact vulnerable version in the lockfile', async () => {
     await writeProject('0.0.4');
     await expect(assertDemoDependency(cwd, NODE_SERIALIZE_DEMO)).resolves.toBeUndefined();
+    await expect(inspectDemoDependency(cwd, NODE_SERIALIZE_DEMO)).resolves.toEqual({
+      ready: true,
+      versions: ['0.0.4'],
+    });
   });
 
   it('does not install the package and prints the explicit prerequisite', async () => {
@@ -91,6 +97,56 @@ describe('assertDemoDependency', () => {
   it('rejects a different installed version', async () => {
     await writeProject('0.0.3');
     await expect(assertDemoDependency(cwd, NODE_SERIALIZE_DEMO)).rejects.toThrow(/Found: 0\.0\.3/);
+  });
+});
+
+describe('renderDemoGuide', () => {
+  const base = {
+    scenario: NODE_SERIALIZE_DEMO,
+    packageManager: 'npm' as const,
+    siteUuid: UUID,
+    dependency: { ready: true, versions: ['0.0.4'] },
+    environment: 'production' as const,
+    url: 'http://localhost:3000/api/tasks',
+  };
+
+  it('explains the entire local workflow and chooses the ready next command', () => {
+    const output = renderDemoGuide(base);
+    expect(output).toContain('Deployment required: no');
+    expect(output).toContain('expect HTTP 403 with Patchstack rule 18843');
+    expect(output).toContain('expect HTTP 201');
+    expect(output).toContain('npm uninstall node-serialize');
+    expect(output).toContain('Next: npx @patchstack/connect demo node-serialize');
+  });
+
+  it('directs an unconnected project to the Bolt button first', () => {
+    const output = renderDemoGuide({ ...base, siteUuid: null });
+    expect(output).toContain('Next: Click “Connect Patchstack” in Bolt');
+    expect(output).toContain('no separate CLI login is needed');
+  });
+
+  it('uses the detected package manager when the dependency is missing', () => {
+    const output = renderDemoGuide({
+      ...base,
+      packageManager: 'pnpm',
+      dependency: { ready: false, versions: ['0.0.3'] },
+    });
+    expect(output).toContain('found node-serialize@0.0.3; 0.0.4 is required');
+    expect(output).toContain('Next: pnpm add --save-exact node-serialize@0.0.4');
+    expect(output).toContain('pnpm remove node-serialize');
+  });
+
+  it('stops on a sandbox environment before suggesting the active demo', () => {
+    const output = renderDemoGuide({ ...base, environment: 'sandbox' });
+    expect(output).toContain('Blocked for now');
+    expect(output).toContain('Next: Unset PATCHSTACK_ENVIRONMENT');
+  });
+
+  it('shell-quotes a custom endpoint in the next command', () => {
+    const output = renderDemoGuide({ ...base, url: "http://localhost:4000/api/tasks?name=it's" });
+    expect(output).toContain(
+      "demo node-serialize --url 'http://localhost:4000/api/tasks?name=it'\\''s'",
+    );
   });
 });
 
