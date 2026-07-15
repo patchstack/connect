@@ -37,8 +37,16 @@ export interface CreateProtectionOptions {
   siteUuid?: string;
   /** Override the Pulse rules API base URL. */
   pulseRulesUrl?: string;
-  /** Directory for the last-known-good rule cache. */
+  /** Directory for the last-known-good rule cache (disk — the default cache backend). */
   cacheDir?: string;
+  /**
+   * Pluggable last-known-good cache, for runtimes without a filesystem (Workers/Deno). Overrides
+   * the disk cache. Stores/returns an opaque envelope; read may return null when nothing is cached.
+   */
+  ruleCache?: {
+    read(): unknown | Promise<unknown>;
+    write(envelope: unknown): unknown | Promise<unknown>;
+  };
   /** Override the default response-phase (secret-leak) rule set. */
   responseRules?: unknown[];
   /** Override the default egress-phase (SSRF) rule set. */
