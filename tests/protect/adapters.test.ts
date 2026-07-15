@@ -171,3 +171,44 @@ describe('Fastify adapter', () => {
     }
   });
 });
+
+describe('NestJS adapter', () => {
+  function nestApp(): string {
+    const dir = tmp('ps-nest-');
+    writeFileSync(path.join(dir, 'package.json'), JSON.stringify({ name: 'x', dependencies: { '@nestjs/core': '^10.0.0' } }));
+    mkdirSync(path.join(dir, 'src'), { recursive: true });
+    writeFileSync(
+      path.join(dir, 'src/main.ts'),
+      "import { NestFactory } from '@nestjs/core';\nimport { AppModule } from './app.module';\nasync function bootstrap() {\n  const app = await NestFactory.create(AppModule);\n  await app.listen(3000);\n}\nbootstrap();\n",
+    );
+    return dir;
+  }
+
+  it('scaffolds the guard and wires app.use(patchstackMiddleware) after NestFactory.create', () => {
+    const dir = nestApp();
+    try {
+      const res: any = runProtect(dir);
+      expect(res.status).toBe('wired');
+      expect(res.adapter).toBe('nestjs');
+      expect(existsSync(path.join(dir, 'src/patchstack/guard.ts'))).toBe(true);
+      const main = read(dir, 'src/main.ts');
+      expect(main).toContain('import { patchstackMiddleware } from "./patchstack/guard";');
+      expect(main).toContain('app.use(patchstackMiddleware);');
+      expect(main.indexOf('NestFactory.create')).toBeLessThan(main.indexOf('app.use(patchstackMiddleware)'));
+      expect(runVerify(dir).wired).toBe(true);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('is idempotent (re-run does not duplicate the middleware)', () => {
+    const dir = nestApp();
+    try {
+      runProtect(dir);
+      runProtect(dir);
+      expect(count(read(dir, 'src/main.ts'), 'app.use(patchstackMiddleware)')).toBe(1);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
