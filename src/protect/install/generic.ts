@@ -14,14 +14,20 @@ function genericDir(cwd: string): string {
   return existsSync(join(cwd, 'src')) ? 'src/patchstack' : 'patchstack';
 }
 
-export function scaffoldGeneric(cwd: string, opts: WireOptions, guardTemplate = 'generic-guard.ts'): { changed: string[]; dir: string } {
+export function scaffoldGeneric(
+  cwd: string,
+  opts: WireOptions,
+  guardTemplate = 'generic-guard.ts',
+  guardFile = 'guard.ts',
+): { changed: string[]; dir: string } {
   const templates = templatesDir();
   const dir = genericDir(cwd);
   const dst = join(cwd, dir);
   mkdirSync(dst, { recursive: true });
-  copyFileSync(join(templates, guardTemplate), join(dst, 'guard.ts'));
-  const changed = [`${dir}/guard.ts`];
-  if (!opts.demo) bakeSiteUuid(cwd, `${dir}/guard.ts`);
+  copyFileSync(join(templates, guardTemplate), join(dst, guardFile));
+  const guardRel = `${dir}/${guardFile}`;
+  const changed = [guardRel];
+  if (!opts.demo) bakeSiteUuid(cwd, guardRel);
   const rulesDst = join(dst, 'rules.json');
   if (opts.demo || !existsSync(rulesDst)) {
     copyFileSync(join(templates, opts.demo ? 'demo-rules.json' : 'rules.json'), rulesDst);
