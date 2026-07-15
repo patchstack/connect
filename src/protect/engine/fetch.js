@@ -83,13 +83,16 @@ export async function fromFetchRequest(request, options = {}) {
   };
 }
 
-// Read a request body as text, but leave it UNSCANNED (fail-open) past `max` bytes so a huge
-// upload can't be buffered for inspection. A declared oversize (Content-Length) is skipped before
-// reading; anything else is read from a clone (so the downstream handler keeps an intact body) and
-// discarded if it turns out over the cap.
+// Read a request body as text for inspection. Memory is bounded by a hard ceiling (4× the scan
+// cap): a body whose declared Content-Length exceeds it is left UNSCANNED (fail-open). Within the
+// ceiling, an oversize body is TRUNCATED to `max` and its prefix is still scanned — so a
+// front-loaded payload is caught — rather than being discarded outright. Reads a clone so the
+// downstream handler keeps an intact body. (`max` is compared in bytes against Content-Length; the
+// prefix slice is by character, which can only over-scan a multibyte body — the safe direction.)
 async function readCappedText(request, max) {
+  const ceiling = Math.max(max, max * 4);
   const declared = Number(request.headers?.get?.('content-length') || 0);
-  if (declared && declared > max) return '';
+  if (declared && declared > ceiling) return '';
   let clone;
   try {
     clone = request.clone();
@@ -98,7 +101,7 @@ async function readCappedText(request, max) {
   }
   try {
     const text = await clone.text();
-    return text.length > max ? '' : text;
+    return text.length > max ? text.slice(0, max) : text;
   } catch {
     return '';
   }
@@ -111,17 +114,18 @@ function parseMultipart(rawBody, boundary) {
   const body = {};
   const files = {};
   for (const part of rawBody.split('--' + boundary)) {
-    const headerEnd = part.indexOf('\r\n\r\n');
-    if (headerEnd === -1) continue;
-    const rawHeaders = part.slice(0, headerEnd);
+    // Tolerate both CRLF and LF-only line endings (some clients/proxies send bare \n).
+    const sep = /\r?\n\r?\n/.exec(part);
+    if (!sep) continue;
+    const rawHeaders = part.slice(0, sep.index);
     const disposition = /content-disposition:[^\r\n]*/i.exec(rawHeaders)?.[0];
     if (!disposition) continue;
     const name = /name="([^"]*)"/i.exec(disposition)?.[1];
     if (name == null) continue;
-    const content = part.slice(headerEnd + 4).replace(/\r\n$/, '');
+    const content = part.slice(sep.index + sep[0].length).replace(/\r?\n$/, '');
     const filename = /filename="([^"]*)"/i.exec(disposition)?.[1];
     if (filename !== undefined) {
-      files[name] = filename; // engine resolves files.<name> → the uploaded filename
+      files[name] = name in files ? [].concat(files[name], filename) : filename;
     } else {
       body[name] = name in body ? [].concat(body[name], content) : content;
     }

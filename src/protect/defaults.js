@@ -63,6 +63,17 @@ export const DEFAULT_RESPONSE_RULES = [
     category: 'info-exposure',
     action: 'redact',
     rule_v2: [{ parameter: 'response.body', match: { type: 'regex', value: '/(SQLSTATE\\[[0-9A-Z]+\\]|SequelizeDatabaseError|ER_[A-Z_]+|ORA-\\d{5}|PG::[A-Za-z]+Error|SQLITE_ERROR|You have an error in your SQL syntax)/i' } }]
+  },
+  {
+    id: 'resp-exception-trace',
+    title: 'Backend exception / stack trace disclosure in response body',
+    phase: 'response',
+    category: 'info-exposure',
+    action: 'redact',
+    // Multi-language exception/traceback signatures a normal API response never carries:
+    // Python traceback, Java "Exception in thread", .NET System.*Exception, JVM stack frames,
+    // Go goroutine dumps. (Node `at fn (file:line:col)` frames are handled by resp-stack-trace.)
+    rule_v2: [{ parameter: 'response.body', match: { type: 'regex', value: '/(Traceback \\(most recent call last\\)|Exception in thread "|System\\.[A-Za-z.]+Exception|\\bat [\\w.$]+\\([\\w]+\\.(?:java|kt|scala|rb|py|cs):\\d+\\)|goroutine \\d+ \\[)/' } }]
   }
 ];
 

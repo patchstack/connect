@@ -38,6 +38,30 @@ describe('response-header screening', () => {
     const res: any = await p.screenResponse(json('{"ok":true}', { 'x-request-id': 'abc-123' }));
     expect(res.headers.get('x-request-id')).toBe('abc-123');
   });
+
+  it('redacts a secret across multi-valued Set-Cookie headers, re-emitting each cookie', async () => {
+    const p = await createProtection({ mode: 'block' }); // default AWS body rule supplies the redactor
+    const headers = new Headers([
+      ['content-type', 'application/json'],
+      ['set-cookie', 'sid=abc123; HttpOnly'],
+      ['set-cookie', `token=${AWS}; Secure`],
+    ]);
+    const res: any = await p.screenResponse(new Response(`{"leaked":"${AWS}"}`, { status: 200, headers }));
+    const cookies = res.headers.getSetCookie?.() ?? [];
+    expect(cookies.length).toBe(2); // both cookies preserved
+    expect(cookies.some((c: string) => c.includes('AKIA'))).toBe(false); // secret masked in the array
+    expect(cookies.some((c: string) => c.includes('sid=abc123'))).toBe(true); // benign cookie intact
+  });
+});
+
+describe('verbose-error suppression — backend exceptions/tracebacks', () => {
+  it('redacts a Python traceback and a JVM stack frame', async () => {
+    const p = await createProtection({ mode: 'block' });
+    const py: any = await p.screenResponse(json('{"e":"Traceback (most recent call last): File x"}'));
+    expect((await py.text()).includes('Traceback (most recent call last)')).toBe(false);
+    const jvm: any = await p.screenResponse(json('{"e":"... at com.acme.Svc(Svc.java:42) ..."}'));
+    expect((await jvm.text()).includes('Svc.java:42')).toBe(false);
+  });
 });
 
 describe('verbose-error suppression (SQL/ORM disclosure)', () => {

@@ -55,6 +55,32 @@ export async function installEgressGuard({ shouldBlock, onBlock } = {}) {
     }
   }
 
+  // 3. global WebSocket — ws:// / wss:// egress that never touches fetch or node:http.
+  const OriginalWS = globalThis.WebSocket;
+  if (typeof OriginalWS === 'function' && !OriginalWS.__patchstackGuarded) {
+    const GuardedWS = new Proxy(OriginalWS, {
+      construct(target, args, newTarget) {
+        const url = String(args?.[0] ?? '');
+        let host = null;
+        try {
+          host = new URL(url).hostname;
+        } catch {
+          host = null;
+        }
+        if (block(url, host, 'WEBSOCKET')) {
+          throw new Error(`Patchstack blocked an outbound WebSocket to a disallowed address: ${host ?? url}`);
+        }
+        return Reflect.construct(target, args, newTarget);
+      },
+    });
+    OriginalWS.__patchstackGuarded = true; // marker on the original guards against double-wrap
+    globalThis.WebSocket = GuardedWS;
+    restores.push(() => {
+      if (globalThis.WebSocket === GuardedWS) globalThis.WebSocket = OriginalWS;
+      delete OriginalWS.__patchstackGuarded;
+    });
+  }
+
   return () => {
     for (const restore of restores) {
       try {
@@ -102,7 +128,7 @@ function extractHttpTarget(args) {
       return { url: url.href, host: url.hostname, method: (opts && opts.method) || 'GET' };
     }
     if (first && typeof first === 'object') {
-      const host = String(first.hostname || first.host || '').split(':')[0];
+      const host = normalizeHost(first.hostname || first.host);
       const protocol = first.protocol || 'http:';
       const port = first.port ? `:${first.port}` : '';
       const path = first.path || '/';
@@ -112,4 +138,15 @@ function extractHttpTarget(args) {
     /* fall through */
   }
   return null;
+}
+
+// Extract the bare host from a node http(s) options `host`/`hostname`, WITHOUT mangling IPv6.
+// `[::1]:8080` → `::1`, bare `::1`/`fe80::1` → unchanged, `example.com:443` → `example.com`.
+// (isInternalHost strips brackets and matches ::1 / fe80: / fc / fd, so this must not corrupt them.)
+function normalizeHost(raw) {
+  const host = String(raw || '').trim();
+  const bracketed = /^\[([^\]]+)\]/.exec(host);
+  if (bracketed) return bracketed[1];
+  if ((host.match(/:/g) || []).length > 1) return host; // bare IPv6 — no host:port to split
+  return host.split(':')[0];
 }

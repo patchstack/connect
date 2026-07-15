@@ -46,6 +46,24 @@ describe('multipart/form-data parsing', () => {
     expect(shaped._rawBody).toContain('__proto__');
   });
 
+  it('tolerates LF-only line endings and collects duplicate field names', async () => {
+    const lfBody = [
+      `--${BOUNDARY}`,
+      'Content-Disposition: form-data; name="tag"',
+      '',
+      'first',
+      `--${BOUNDARY}`,
+      'Content-Disposition: form-data; name="tag"',
+      '',
+      '<script>x</script>',
+      `--${BOUNDARY}--`,
+      '',
+    ].join('\n'); // bare LF, not CRLF
+    const shaped: any = await fromFetchRequest(req(lfBody));
+    expect(shaped.body.tag).toEqual(['first', '<script>x</script>']); // duplicates collected
+    expect(shaped._rawBody).toContain('<script>');
+  });
+
   it('a post.<field> rule blocks a malicious multipart field', async () => {
     const rules = {
       firewall: [{ id: 'xss', title: 'xss', rule_v2: [{ parameter: ['post.title'], match: { type: 'contains', value: '<script' } }] }],
