@@ -55,6 +55,14 @@ export const DEFAULT_RESPONSE_RULES = [
     category: 'info-exposure',
     action: 'redact',
     rule_v2: [{ parameter: 'response.body', match: { type: 'regex', value: '/\\n\\s+at\\s+.+\\(.+:\\d+:\\d+\\)/' } }]
+  },
+  {
+    id: 'resp-sql-error',
+    title: 'SQL / ORM error disclosure in response body',
+    phase: 'response',
+    category: 'info-exposure',
+    action: 'redact',
+    rule_v2: [{ parameter: 'response.body', match: { type: 'regex', value: '/(SQLSTATE\\[[0-9A-Z]+\\]|SequelizeDatabaseError|ER_[A-Z_]+|ORA-\\d{5}|PG::[A-Za-z]+Error|SQLITE_ERROR|You have an error in your SQL syntax)/i' } }]
   }
 ];
 

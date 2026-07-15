@@ -1,43 +1,115 @@
-// Egress guard MECHANISM only. Wraps the global `fetch` so the app's outbound requests
-// can be screened; the block DECISION is delegated to a caller-supplied `shouldBlock`
-// predicate (which the runtime builds from egress-phase rules — see defaults.js).
-// No policy is hardcoded here: what counts as "internal"/disallowed lives in rules.
-// WinterCG — works on Node 18+, Cloudflare Workers, Bun, Deno.
+// Egress guard MECHANISM only. Wraps the app's outbound calls so they can be screened; the
+// block DECISION is delegated to a caller-supplied `shouldBlock` predicate (which the runtime
+// builds from egress-phase rules — see defaults.js). No policy is hardcoded here.
+// WinterCG-first: always wraps the global `fetch` (Node 18+, Workers, Bun, Deno). On Node it
+// ALSO patches `node:http`/`node:https` so outbound calls made via those modules (axios, got,
+// the raw http client, …) — which never touch `fetch` — are screened too.
 
 /**
  * @param {{ shouldBlock: (url:string, host:string|null, method:string)=>boolean,
  *           onBlock?: (info:{url:string,host:string|null,method:string})=>void }} opts
- * @returns {() => void} uninstall (restores the original fetch)
+ * @returns {Promise<() => void>} uninstall (restores every patched surface)
  */
-export function installEgressGuard({ shouldBlock, onBlock } = {}) {
-  const original = globalThis.fetch;
-  if (typeof original !== 'function' || original.__patchstackGuarded || typeof shouldBlock !== 'function') {
-    return () => {};
+export async function installEgressGuard({ shouldBlock, onBlock } = {}) {
+  const restores = [];
+  if (typeof shouldBlock !== 'function') return () => {};
+
+  const block = (url, host, method) => {
+    if (!shouldBlock(url, host, method)) return false;
+    onBlock?.({ url, host, method });
+    return true;
+  };
+
+  // 1. global fetch — synchronous, so it's active the instant this returns (no startup race).
+  const originalFetch = globalThis.fetch;
+  if (typeof originalFetch === 'function' && !originalFetch.__patchstackGuarded) {
+    const guarded = async (input, init) => {
+      const url = typeof input === 'string' ? input : (input && input.url) || String(input);
+      let host = null;
+      try {
+        host = new URL(url).hostname;
+      } catch {
+        host = null;
+      }
+      const method = (init && init.method) || (input && input.method) || 'GET';
+      if (block(url, host, method)) {
+        throw new Error(`Patchstack blocked an outbound request to a disallowed address: ${host ?? url}`);
+      }
+      return originalFetch(input, init);
+    };
+    guarded.__patchstackGuarded = true;
+    globalThis.fetch = guarded;
+    restores.push(() => {
+      if (globalThis.fetch === guarded) globalThis.fetch = originalFetch;
+    });
   }
 
-  const guarded = async (input, init) => {
-    const url = typeof input === 'string' ? input : (input && input.url) || String(input);
-    let host = null;
+  // 2. node:http / node:https — best-effort; absent on Workers/Deno-without-node (import throws).
+  for (const moduleName of ['node:http', 'node:https']) {
     try {
-      host = new URL(url).hostname;
+      const mod = await import(moduleName);
+      const restore = patchHttpModule(mod.default ?? mod, block);
+      if (restore) restores.push(restore);
     } catch {
-      host = null;
+      /* module not available on this runtime — skip */
     }
-    const method = (init && init.method) || (input && input.method) || 'GET';
-
-    if (shouldBlock(url, host, method)) {
-      onBlock?.({ url, host, method });
-      throw new Error(`Patchstack blocked an outbound request to a disallowed address: ${host ?? url}`);
-    }
-    return original(input, init);
-  };
-
-  guarded.__patchstackGuarded = true;
-  globalThis.fetch = guarded;
+  }
 
   return () => {
-    if (globalThis.fetch === guarded) {
-      globalThis.fetch = original;
+    for (const restore of restores) {
+      try {
+        restore();
+      } catch {
+        /* ignore */
+      }
     }
   };
+}
+
+// Wrap http(s).request/get so a blocked destination throws before the socket opens.
+function patchHttpModule(http, block) {
+  if (!http || typeof http.request !== 'function' || http.__patchstackGuarded) return null;
+  const originalRequest = http.request;
+  const originalGet = http.get;
+
+  const wrap = (original) =>
+    function (...args) {
+      const target = extractHttpTarget(args);
+      if (target && block(target.url, target.host, target.method)) {
+        throw new Error(`Patchstack blocked an outbound request to a disallowed address: ${target.host ?? target.url}`);
+      }
+      return original.apply(this, args);
+    };
+
+  http.request = wrap(originalRequest);
+  if (typeof originalGet === 'function') http.get = wrap(originalGet);
+  http.__patchstackGuarded = true;
+
+  return () => {
+    http.request = originalRequest;
+    if (typeof originalGet === 'function') http.get = originalGet;
+    delete http.__patchstackGuarded;
+  };
+}
+
+// http.request accepts (url), (url, options), or (options) — with an optional trailing callback.
+function extractHttpTarget(args) {
+  const first = args[0];
+  try {
+    if (typeof first === 'string' || first instanceof URL) {
+      const url = new URL(String(first));
+      const opts = args.find((a) => a && typeof a === 'object' && !(a instanceof URL));
+      return { url: url.href, host: url.hostname, method: (opts && opts.method) || 'GET' };
+    }
+    if (first && typeof first === 'object') {
+      const host = String(first.hostname || first.host || '').split(':')[0];
+      const protocol = first.protocol || 'http:';
+      const port = first.port ? `:${first.port}` : '';
+      const path = first.path || '/';
+      return { url: `${protocol}//${host}${port}${path}`, host, method: first.method || 'GET' };
+    }
+  } catch {
+    /* fall through */
+  }
+  return null;
 }
