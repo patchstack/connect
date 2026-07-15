@@ -86,6 +86,45 @@ describe('runProtect scaffolder', () => {
     expect(guard).toContain('export async function screenResponse<T>(response: T): Promise<T>');
   });
 
+  it('scaffolds the opt-in route-level WAF (gated on PATCHSTACK_ROUTE_WAF)', () => {
+    runProtect(dir);
+    const start = read(dir, 'src/start.ts');
+    const guard = read(dir, 'src/integrations/patchstack/guard.ts');
+    expect(start).toContain('process.env.PATCHSTACK_ROUTE_WAF === "1"');
+    expect(start).toContain('const blocked = await guardRequest(request);');
+    expect(guard).toContain('export async function guardRequest(');
+  });
+
+  it('--demo seeds the broad sample rule set and keeps it local (no baked site UUID)', () => {
+    writeFileSync(path.join(dir, '.patchstackrc.json'), JSON.stringify({ siteUuid: '123e4567-e89b-12d3-a456-426614174000' }));
+    runProtect(dir, { demo: true });
+    const ids = JSON.parse(read(dir, 'src/integrations/patchstack/rules.json')).firewall.map((r: any) => r.id);
+    expect(ids).toContain('demo-sqli'); // the broad sample bundle
+    expect(ids).toContain('demo-egress-blocklist-host');
+    // demo keeps the local rules active → the site UUID is NOT baked (else the guard fetches live rules)
+    const guard = read(dir, 'src/integrations/patchstack/guard.ts');
+    expect(guard).toContain('__PATCHSTACK_SITE_UUID__');
+    expect(guard).not.toContain('123e4567-e89b-12d3-a456-426614174000');
+  });
+
+  it('default install writes the starter rules and bakes a present site UUID', () => {
+    writeFileSync(path.join(dir, '.patchstackrc.json'), JSON.stringify({ siteUuid: '123e4567-e89b-12d3-a456-426614174000' }));
+    runProtect(dir);
+    const ids = JSON.parse(read(dir, 'src/integrations/patchstack/rules.json')).firewall.map((r: any) => r.id);
+    expect(ids.some((id: string) => id.startsWith('ps-fallback-'))).toBe(true);
+    const guard = read(dir, 'src/integrations/patchstack/guard.ts');
+    expect(guard).toContain('123e4567-e89b-12d3-a456-426614174000'); // baked → live Pulse rules
+    expect(guard).not.toContain('__PATCHSTACK_SITE_UUID__');
+  });
+
+  it('does not clobber an existing rules.json on a plain re-run', () => {
+    runProtect(dir);
+    const custom = JSON.stringify({ firewall: [{ id: 'my-custom-rule' }], whitelists: [], whitelist_keys: {} });
+    writeFileSync(path.join(dir, 'src/integrations/patchstack/rules.json'), custom);
+    runProtect(dir);
+    expect(JSON.parse(read(dir, 'src/integrations/patchstack/rules.json')).firewall[0].id).toBe('my-custom-rule');
+  });
+
   it('is idempotent — re-running does not duplicate wiring', () => {
     runProtect(dir);
     runProtect(dir);

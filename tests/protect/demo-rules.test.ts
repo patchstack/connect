@@ -28,4 +28,14 @@ describe('demo rule set (examples/protect/demo-rules.json)', () => {
     expect(failures.map((f) => ({ id: f.id, exploitCaught: f.exploitCaught, benignOk: f.benignOk }))).toEqual([]);
     expect(results.length).toBe(withDemo.length);
   });
+
+  it('the scaffolded demo template (templates/demo-rules.json) matches this bundle, minus _demo', () => {
+    // `protect --demo` ships src/protect/templates/demo-rules.json; keep it in lockstep with this
+    // validated bundle so the scaffolded sample rules are exactly the ones proven above.
+    const tmpl = JSON.parse(
+      readFileSync(new URL('../../src/protect/templates/demo-rules.json', import.meta.url), 'utf8'),
+    );
+    const stripped = bundle.firewall.map(({ _demo, ...rule }: any) => rule);
+    expect(tmpl.firewall).toEqual(stripped);
+  });
 });

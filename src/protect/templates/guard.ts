@@ -89,3 +89,17 @@ export async function screenResponse<T>(response: T): Promise<T> {
     return response; // fail open
   }
 }
+
+// Optional route-level WAF: evaluate the request-phase rules on EVERY incoming request (not just
+// the Supabase tunnel / server functions) and return a 403 on a match. Off unless the app sets
+// PATCHSTACK_ROUTE_WAF=1 — enabling it runs the request rules on all traffic, which is a classic
+// WAF false-positive surface, so it is opt-in. `request.clone()` so the app can still read the body.
+let _reqGuard: ((request: Request) => Promise<Response | null>) | undefined;
+export async function guardRequest(request: Request): Promise<Response | null> {
+  try {
+    if (!_reqGuard) _reqGuard = (await getProtection()).fetchGuard();
+    return await _reqGuard(request.clone());
+  } catch {
+    return null; // fail open
+  }
+}

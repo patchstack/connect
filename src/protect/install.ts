@@ -19,9 +19,6 @@ const HERE = dirname(fileURLToPath(import.meta.url));
 const TEMPLATES =
   [join(HERE, 'protect', 'templates'), join(HERE, 'templates')].find((p) => existsSync(p)) ??
   join(HERE, 'protect', 'templates');
-const APP = process.cwd();
-const PS_DIR = join(APP, 'src/integrations/patchstack');
-
 const read = (p: string) => readFileSync(p, 'utf8');
 const log = (msg: string) => console.log(`patchstack protect: ${msg}`);
 
@@ -41,7 +38,7 @@ const CLIENT_TUNNEL = [
 
 const START_IMPORTS = [
   'import { getRequest } from "@tanstack/react-start/server";',
-  'import { GUARD_PATH, handleGuardRequest, inspectServerFn, screenResponse } from "@/integrations/patchstack/guard";',
+  'import { GUARD_PATH, handleGuardRequest, inspectServerFn, screenResponse, guardRequest } from "@/integrations/patchstack/guard";',
 ].join('\n');
 
 const REQUEST_MIDDLEWARE_DEF = [
@@ -53,6 +50,12 @@ const REQUEST_MIDDLEWARE_DEF = [
   '  if (request) {',
   '    const { pathname } = new URL(request.url);',
   '    if (pathname === GUARD_PATH) return handleGuardRequest(request);',
+  '    // Optional route-level WAF: screen every request and 403 on a match. Opt-in via',
+  '    // PATCHSTACK_ROUTE_WAF=1 (runs the request rules on all traffic — classic-WAF FP surface).',
+  '    if (process.env.PATCHSTACK_ROUTE_WAF === "1") {',
+  '      const blocked = await guardRequest(request);',
+  '      if (blocked) return blocked;',
+  '    }',
   '  }',
   '  return screenResponse(await next());',
   '});',
@@ -83,12 +86,22 @@ export function detectSupportedStack(cwd: string): boolean {
   );
 }
 
-function scaffold(cwd: string): void {
+function scaffold(cwd: string, opts: { demo?: boolean } = {}): void {
   const dst = join(cwd, 'src/integrations/patchstack');
   mkdirSync(dst, { recursive: true });
-  copyFileSync(join(TEMPLATES, 'guard.ts'), join(dst, 'guard.ts'));
-  copyFileSync(join(TEMPLATES, 'rules.json'), join(dst, 'rules.json'));
-  log('scaffolded guard.ts + rules.json');
+  copyFileSync(join(TEMPLATES, 'guard.ts'), join(dst, 'guard.ts')); // guard.ts is managed — always refreshed
+  const rulesDst = join(dst, 'rules.json');
+  // Default: the high-precision starter, written only if absent (don't clobber the user's rules on
+  // re-run). --demo: (re)seed the broad multi-class sample bundle for a self-contained demonstration.
+  if (opts.demo) {
+    copyFileSync(join(TEMPLATES, 'demo-rules.json'), rulesDst);
+    log('scaffolded guard.ts + rules.json (demo sample rule set)');
+  } else if (!existsSync(rulesDst)) {
+    copyFileSync(join(TEMPLATES, 'rules.json'), rulesDst);
+    log('scaffolded guard.ts + rules.json (starter rules)');
+  } else {
+    log('scaffolded guard.ts (kept existing rules.json)');
+  }
 }
 
 // Bake the site UUID from .patchstackrc.json (written by `patchstack-connect scan`) into the
@@ -182,14 +195,20 @@ function patchStart(cwd: string): void {
 }
 
 /** Scaffold + wire the runtime guard into the app. */
-export function runProtect(cwd: string): void {
+export function runProtect(cwd: string, opts: { demo?: boolean } = {}): void {
   if (!detectSupportedStack(cwd)) {
     log('runtime protection currently supports TanStack Start + Supabase apps; stack not detected — skipping.');
     return;
   }
-  scaffold(cwd);
-  bakeSiteUuid(cwd);
+  scaffold(cwd, opts);
+  // In demo mode, keep the local sample rules active — don't bake a site UUID (which would make the
+  // guard fetch live Pulse rules instead of the bundled demo set).
+  if (!opts.demo) bakeSiteUuid(cwd);
   patchClient(cwd);
   patchStart(cwd);
-  log('done — guard wired and always-on (blocks by default). Set PATCHSTACK_MODE=dry-run for log-only.');
+  log(
+    opts.demo
+      ? 'done — guard wired with the demo sample rules (blocks by default). Set PATCHSTACK_MODE=dry-run for log-only.'
+      : 'done — guard wired and always-on (blocks by default). Set PATCHSTACK_MODE=dry-run for log-only.',
+  );
 }
