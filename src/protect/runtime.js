@@ -464,41 +464,45 @@ function leakResponse() {
 // --- rule source --------------------------------------------------------
 
 async function resolveRules(options) {
+  const cache = makeCache(options);
+
   if (options.siteUuid) {
-    const client = new PulseRuleClient({ siteUuid: options.siteUuid, baseUrl: options.pulseRulesUrl });
+    const prior = await cache.read(); // { bundle, etag } | null
+    const client = new PulseRuleClient({ siteUuid: options.siteUuid, baseUrl: options.pulseRulesUrl, etag: prior?.etag });
     const res = await client.getRules();
-    if (res.success) {
+    if (res.success && res.notModified && prior?.bundle) return normalizeBundle(prior.bundle);
+    if (res.success && !res.notModified) {
       const bundle = normalizeBundle(res);
-      cacheWrite(options.cacheDir, bundle);
+      await cache.write({ bundle, etag: res.etag ?? null });
       return bundle;
     }
-    const cached = cacheRead(options.cacheDir);
-    if (cached) {
-      options.onError?.(new Error(`pulse rule fetch failed (${res.error}); using cached bundle`));
-      return normalizeBundle(cached);
+    if (prior?.bundle) {
+      options.onError?.(new Error(`pulse rule fetch failed (${res.error ?? 'no usable response'}); using cached bundle`));
+      return normalizeBundle(prior.bundle);
     }
     if (options.rules) {
-      options.onError?.(new Error(`pulse rule fetch failed (${res.error}); using bundled fallback`));
+      options.onError?.(new Error(`pulse rule fetch failed (${res.error ?? 'no usable response'}); using bundled fallback`));
       return normalizeBundle(options.rules);
     }
-    options.onError?.(new Error(`pulse rule fetch failed (${res.error}); no cache — running with no rules`));
+    options.onError?.(new Error(`pulse rule fetch failed (${res.error ?? 'no usable response'}); no cache — running with no rules`));
     return emptyBundle();
   }
 
   if (options.token) {
-    const client = new PatchstackRuleClient({ token: options.token, baseUrl: options.baseUrl });
+    const prior = await cache.read();
+    const client = new PatchstackRuleClient({ token: options.token, baseUrl: options.baseUrl, etag: prior?.etag });
     const res = await client.getRules();
-    if (res.success) {
+    if (res.success && res.notModified && prior?.bundle) return normalizeBundle(prior.bundle);
+    if (res.success && !res.notModified) {
       const bundle = normalizeBundle(res);
-      cacheWrite(options.cacheDir, bundle);
+      await cache.write({ bundle, etag: res.etag ?? null });
       return bundle;
     }
-    const cached = cacheRead(options.cacheDir);
-    if (cached) {
-      options.onError?.(new Error(`rule fetch failed (${res.error}); using cached bundle`));
-      return normalizeBundle(cached);
+    if (prior?.bundle) {
+      options.onError?.(new Error(`rule fetch failed (${res.error ?? 'no usable response'}); using cached bundle`));
+      return normalizeBundle(prior.bundle);
     }
-    options.onError?.(new Error(`rule fetch failed (${res.error}); no cache — running with no rules`));
+    options.onError?.(new Error(`rule fetch failed (${res.error ?? 'no usable response'}); no cache — running with no rules`));
     return emptyBundle();
   }
 
@@ -521,15 +525,46 @@ function emptyBundle() {
   return { firewall: [], whitelists: [], whitelist_keys: {} };
 }
 
+// The cache stores an envelope { bundle, etag } so a restart can revalidate with If-None-Match. A
+// pluggable adapter (options.ruleCache) lets runtimes without a filesystem (Workers/Deno) persist
+// last-known-good in their own store; the default is a disk cache under options.cacheDir. Both
+// paths are best-effort — a read/write error yields no cache rather than throwing.
+function makeCache(options) {
+  const adapter = options.ruleCache;
+  if (adapter && typeof adapter.read === 'function' && typeof adapter.write === 'function') {
+    return {
+      read: async () => {
+        try {
+          return toEnvelope(await adapter.read());
+        } catch {
+          return null;
+        }
+      },
+      write: async (env) => {
+        try {
+          await adapter.write(env);
+        } catch {
+          /* best-effort */
+        }
+      },
+    };
+  }
+  const dir = options.cacheDir;
+  return {
+    read: async () => cacheRead(dir),
+    write: async (env) => cacheWrite(dir, env),
+  };
+}
+
 function cachePath(dir) {
   return join(dir, 'patchstack-rules.json');
 }
 
-function cacheWrite(dir, bundle) {
+function cacheWrite(dir, env) {
   if (!dir) return;
   try {
     mkdirSync(dir, { recursive: true });
-    writeFileSync(cachePath(dir), JSON.stringify(bundle));
+    writeFileSync(cachePath(dir), JSON.stringify(env));
   } catch {
     /* cache is best-effort */
   }
@@ -538,10 +573,22 @@ function cacheWrite(dir, bundle) {
 function cacheRead(dir) {
   if (!dir) return null;
   try {
-    return JSON.parse(readFileSync(cachePath(dir), 'utf8'));
+    return toEnvelope(JSON.parse(readFileSync(cachePath(dir), 'utf8')));
   } catch {
     return null;
   }
+}
+
+// Accept the current { bundle, etag } envelope and a legacy bare bundle (pre-envelope cache files).
+function toEnvelope(value) {
+  if (!value || typeof value !== 'object') return null;
+  if (value.bundle && typeof value.bundle === 'object') {
+    return { bundle: value.bundle, etag: value.etag ?? null };
+  }
+  if (Array.isArray(value.firewall) || Array.isArray(value.whitelists)) {
+    return { bundle: value, etag: null }; // legacy bare-bundle cache file
+  }
+  return null;
 }
 
 // --- responses ----------------------------------------------------------

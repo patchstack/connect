@@ -17,3 +17,6 @@ field-test/results/
 
 # test-build throwaway fixture (recreated on every run)
 test-build/.work/
+
+# template typecheck scratch dir
+.template-typecheck/
