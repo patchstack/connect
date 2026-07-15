@@ -11,6 +11,18 @@ export function buildEndpointUrl(base: string, siteUuid?: string | null): string
     : trimmed;
 }
 
+/** Build the live Pulse rules URL corresponding to a manifest endpoint override. */
+export function buildRulesUrl(manifestEndpoint: string, siteUuid: string): string {
+  const url = new URL(manifestEndpoint);
+  const path = url.pathname.replace(/\/$/, '');
+  url.pathname = path.endsWith('/manifest')
+    ? `${path.slice(0, -'/manifest'.length)}/rules/${encodeURIComponent(siteUuid)}`
+    : `/monitor/pulse/rules/${encodeURIComponent(siteUuid)}`;
+  url.search = '';
+  url.hash = '';
+  return url.toString();
+}
+
 /**
  * Build the claim URL for a site. The claim page lives on the same origin as
  * the API endpoint, at `/monitor/claim?site=<uuid>`. Using the API endpoint's
