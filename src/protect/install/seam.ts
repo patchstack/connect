@@ -5,7 +5,7 @@
 
 import { existsSync, mkdirSync, copyFileSync } from 'node:fs';
 import { join, dirname } from 'node:path';
-import { read, log, templatesDir } from './util.js';
+import { bakeSiteUuid, read, log, templatesDir } from './util.js';
 import type { WireOptions, WireResult, VerifyResult } from './types.js';
 
 export interface SeamSpec {
@@ -43,6 +43,7 @@ export function wireSeam(cwd: string, opts: WireOptions, spec: SeamSpec): WireRe
   }
 
   copyFileSync(join(templates, spec.templateName), join(cwd, seamRel));
+  if (!opts.demo) bakeSiteUuid(cwd, seamRel);
   changed.push(seamRel);
   log(existing ? `refreshed ${seamRel}` : `scaffolded ${seamRel}`);
   return { ok: true, changed: [...new Set(changed)] };
