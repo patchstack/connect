@@ -4,6 +4,17 @@ import { scanLockfile } from './parsers/index.js';
 import { buildWirePayload } from './normalize.js';
 import { computeManifestChecksum } from './checksum.js';
 import { DEFAULT_ENDPOINT, buildClaimUrl, postManifest } from './client.js';
+import {
+  assertDemoDependency,
+  assertPersistedSiteUuid,
+  DemoError,
+  inspectDemoDependency,
+  readPersistedSiteUuid,
+  renderDemoGuide,
+  renderDemoTestCommands,
+  resolveDemoScenario,
+  waitForDemoRule,
+} from './demo.js';
 import { persistSiteUuid, resolveConfig, writeConfigFile } from './config.js';
 import {
   buildInjectionSnippet,
@@ -14,6 +25,7 @@ import {
 import {
   collectGuideState,
   countRemainingSteps,
+  detectPackageManager,
   installCommand,
   renderGuideChecklist,
 } from './guide.js';
@@ -44,13 +56,21 @@ Usage:
                                                      build fingerprint, and ensure the widget
                                                      tag in built pages (run as a postbuild step)
   patchstack-connect protect [--demo|--check]        Install always-on runtime protection (the
-                                                     guard). Auto-wires known stacks (TanStack
-                                                     Start + Supabase); for others it scaffolds a
+                                                     guard). Auto-wires supported server stacks;
+                                                     for others it scaffolds a
                                                      generic guard + prints a wiring plan.
                                                      --demo seeds a broad sample rule set (for
                                                      demonstrations, not production).
                                                      --check verifies the guard is wired (exit 1
                                                      if not) — for the wire-then-verify loop.
+  patchstack-connect demo node-serialize [--url URL] Run the production-backed node-serialize
+                                                     walkthrough: verify the vulnerable package,
+                                                     scan it, wait for live rule 18843, install +
+                                                     verify the guard, and print test requests.
+                                                     Does not install vulnerable dependencies.
+  patchstack-connect demo-guide node-serialize       Show a read-only, state-aware walkthrough for
+                                                     preparing, running, proving, and cleaning up
+                                                     the production-backed local demo.
   patchstack-connect guide [--full]                  Show this project's setup status (what's done,
                                                      what's missing, with tailored commands), then
                                                      print the full setup guide. --full prints the
@@ -65,6 +85,10 @@ Options (for scan, setup, and status):
 Options (for mark-build):
   --dir <path>            Build output directory (default: auto-detect
                           dist/ build/ out/ .output/public)
+
+Options (for demo and demo-guide):
+  --url <url>             Test endpoint printed at the end
+                          (default: http://localhost:3000/api/tasks)
 
 Environment:
   PATCHSTACK_SITE_UUID    Site UUID
@@ -82,9 +106,11 @@ Examples:
   npx @patchstack/connect scan --dry-run
   npx @patchstack/connect init 550e8400-e29b-41d4-a716-446655440000
   npx @patchstack/connect scan --site-uuid 550e8400-...-446655440000
+  npx @patchstack/connect demo node-serialize
+  npx @patchstack/connect demo-guide node-serialize
 `;
 
-const VALUE_FLAGS = new Set(['site-uuid', 'endpoint', 'dir']);
+const VALUE_FLAGS = new Set(['site-uuid', 'endpoint', 'dir', 'url']);
 
 interface ParsedArgs {
   command: string | null;
@@ -328,6 +354,105 @@ async function runProtectCommand(args: ParsedArgs): Promise<number> {
   return 0;
 }
 
+async function runDemoCommand(args: ParsedArgs): Promise<number> {
+  try {
+    const scenario = resolveDemoScenario(args.positional[0]);
+    const cwd = process.cwd();
+    const config = await resolveConfig({
+      cwd,
+      cliSiteUuid: getStringFlag(args.flags, 'site-uuid'),
+      cliEndpoint: getStringFlag(args.flags, 'endpoint'),
+      requireSiteUuid: true,
+    });
+    if (config.environment !== 'production') {
+      throw new DemoError(
+        'The production-backed demo requires PATCHSTACK_ENVIRONMENT=production. Unset the sandbox override and try again.',
+      );
+    }
+
+    await assertPersistedSiteUuid(cwd, config.siteUuid!);
+    await assertDemoDependency(cwd, scenario);
+    console.log(`Patchstack production demo — ${scenario.packageName}@${scenario.packageVersion}`);
+    console.log(`  Site: ${config.siteUuid}`);
+    console.log('');
+    console.log('1. Report the current npm manifest');
+    const scanCode = await runScan(args, { showRemainingSetup: false });
+    if (scanCode !== 0) return scanCode;
+
+    console.log('');
+    console.log(`2. Wait for live virtual-patch rule ${scenario.ruleId}`);
+    const rule = await waitForDemoRule(config.endpoint, config.siteUuid!, scenario, {
+      requestTimeoutMs: config.timeoutMs,
+    });
+    console.log(`Rule ready: ${rule.id}${rule.title ? ` — ${rule.title}` : ''}`);
+
+    console.log('');
+    console.log('3. Install and verify the runtime guard');
+    const result = runProtect(cwd);
+    if (result.status === 'unsupported') {
+      throw new DemoError(
+        `Runtime protection is not supported for this stack. Supported: ${result.supported.join(', ')}.`,
+      );
+    }
+    console.log(`Guard installer: ${result.adapter} (${result.status})`);
+    const report = runVerify(cwd);
+    for (const check of report.checks) {
+      console.log(`  ${check.ok ? '✓' : '✗'} ${check.label}${!check.ok && check.hint ? ` — ${check.hint}` : ''}`);
+    }
+    if (!report.wired) {
+      throw new DemoError(
+        `The ${report.stack} guard is not fully wired. Complete the failed check above, then run this command again.`,
+      );
+    }
+
+    console.log('');
+    console.log('Production virtual patch is ready.');
+    console.log('');
+    console.log(
+      renderDemoTestCommands(
+        getStringFlag(args.flags, 'url') ?? 'http://localhost:3000/api/tasks',
+        scenario,
+      ),
+    );
+    return 0;
+  } catch (error) {
+    if (error instanceof DemoError) {
+      console.error(`Demo error: ${error.message}`);
+      return 1;
+    }
+    throw error;
+  }
+}
+
+async function runDemoGuideCommand(args: ParsedArgs): Promise<number> {
+  try {
+    const scenario = resolveDemoScenario(args.positional[0]);
+    const cwd = process.cwd();
+    const config = await resolveConfig({ cwd });
+    const [siteUuid, dependency] = await Promise.all([
+      readPersistedSiteUuid(cwd),
+      inspectDemoDependency(cwd, scenario),
+    ]);
+    console.log(
+      renderDemoGuide({
+        scenario,
+        packageManager: detectPackageManager(cwd),
+        siteUuid,
+        dependency,
+        environment: config.environment,
+        url: getStringFlag(args.flags, 'url') ?? 'http://localhost:3000/api/tasks',
+      }),
+    );
+    return 0;
+  } catch (error) {
+    if (error instanceof DemoError) {
+      console.error(`Demo guide error: ${error.message}`);
+      return 1;
+    }
+    throw error;
+  }
+}
+
 async function runGuide(args: ParsedArgs): Promise<number> {
   // The live checklist first: what this project already has and what's missing,
   // with commands tailored to it. Best-effort — a project we can't inspect
@@ -540,6 +665,10 @@ async function main(): Promise<number> {
       return runMarkBuild(args);
     case 'protect':
       return runProtectCommand(args);
+    case 'demo':
+      return runDemoCommand(args);
+    case 'demo-guide':
+      return runDemoGuideCommand(args);
     case 'guide':
       return runGuide(args);
     case 'setup':
