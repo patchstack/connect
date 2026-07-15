@@ -125,6 +125,58 @@ describe('runProtect scaffolder', () => {
     expect(JSON.parse(read(dir, 'src/integrations/patchstack/rules.json')).firewall[0].id).toBe('my-custom-rule');
   });
 
+  it('upgrades a legacy (pre-markers, no route-WAF) start.ts in place', () => {
+    // Simulate an app wired by an older published version: un-marked blocks, import lacking
+    // guardRequest, and no PATCHSTACK_ROUTE_WAF hook.
+    const legacy = `import { createStart, createMiddleware } from "@tanstack/react-start";
+import { getRequest } from "@tanstack/react-start/server";
+import { GUARD_PATH, handleGuardRequest, inspectServerFn, screenResponse } from "@/integrations/patchstack/guard";
+import { attachSupabaseAuth } from "@/integrations/supabase/auth-attacher";
+
+const errorMiddleware = createMiddleware().server(async ({ next }) => next());
+
+// Patchstack guard (browser tunnel): intercept tunneled Supabase traffic before anything else,
+// then screen the outgoing response (SSR HTML / data) for leaked secrets & PII.
+const patchstackGuard = createMiddleware().server(async ({ next }) => {
+  const request = getRequest();
+  if (request) {
+    const { pathname } = new URL(request.url);
+    if (pathname === GUARD_PATH) return handleGuardRequest(request);
+  }
+  return screenResponse(await next());
+});
+
+// Patchstack guard (server functions): inspect server-fn args before they reach the database.
+const patchstackFunctionGuard = createMiddleware({ type: "function" }).server(async ({ next, data }) => {
+  const blocked = await inspectServerFn(data);
+  if (blocked) throw new Error(blocked.message);
+  return next();
+});
+
+export const startInstance = createStart(() => ({
+  functionMiddleware: [patchstackFunctionGuard, attachSupabaseAuth],
+  requestMiddleware: [patchstackGuard, errorMiddleware],
+}));
+`;
+    writeFileSync(path.join(dir, 'src/start.ts'), legacy);
+    runProtect(dir);
+    const start = read(dir, 'src/start.ts');
+    // upgraded in place: route-WAF hook + guardRequest import now present, wrapped in markers
+    expect(start).toContain('// #region patchstack-guard ');
+    expect(start).toContain('process.env.PATCHSTACK_ROUTE_WAF === "1"');
+    expect(start).toContain('const blocked = await guardRequest(request);');
+    expect(start).toMatch(/import \{[^}]*guardRequest[^}]*\} from "@\/integrations\/patchstack\/guard";/);
+    // no duplication, old comment header gone, registrations intact
+    expect(count(start, 'const patchstackGuard =')).toBe(1);
+    expect(count(start, 'const patchstackFunctionGuard =')).toBe(1);
+    expect(start).not.toContain('intercept tunneled Supabase traffic before anything else');
+    expect(start).toContain('requestMiddleware: [patchstackGuard, errorMiddleware]');
+    // and a second run is a no-op
+    const twice = () => runProtect(dir);
+    twice();
+    expect(count(read(dir, 'src/start.ts'), 'const patchstackGuard =')).toBe(1);
+  });
+
   it('is idempotent — re-running does not duplicate wiring', () => {
     runProtect(dir);
     runProtect(dir);
