@@ -10,6 +10,8 @@ import type { Adapter } from '../types.js';
 const SPEC: RegisterSpec = {
   appRe: /(?:const|let|var)\s+([A-Za-z_$][\w$]*)\s*=\s*await\s+NestFactory\.create/,
   guardTemplate: 'generic-guard.ts',
+  guardTemplateEsm: 'generic-guard.js',
+  guardTemplateCjs: 'generic-guard.cjs',
   importName: 'patchstackMiddleware',
   call: (v) => `${v}.use(patchstackMiddleware);`,
   label: 'NestJS app',

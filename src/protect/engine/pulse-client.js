@@ -25,7 +25,7 @@ export class PulseRuleClient {
   constructor({ siteUuid, baseUrl, cacheTtl, etag } = {}) {
     this.#siteUuid = siteUuid ?? process.env.PATCHSTACK_SITE_UUID;
     this.#baseUrl = baseUrl ?? process.env.PATCHSTACK_PULSE_RULES_URL ?? DEFAULT_BASE_URL;
-    this.#cacheTtl = cacheTtl ?? DEFAULT_CACHE_TTL;
+    this.#cacheTtl = Number.isFinite(cacheTtl) && cacheTtl > 0 ? cacheTtl : DEFAULT_CACHE_TTL;
     this.#etag = etag ?? null;
     if (!this.#siteUuid) {
       throw new Error('Patchstack site UUID is required. Pass { siteUuid } or set PATCHSTACK_SITE_UUID.');
@@ -51,11 +51,17 @@ export class PulseRuleClient {
         return { success: false, error: `API returned ${response.status}`, firewall: [], whitelists: [], whitelist_keys: {} };
       }
       const data = await response.json();
+      // A 200 that isn't a genuine rule envelope (schema drift, a proxy/interstitial page, an
+      // {error} body) must not be treated as "no rules". Report failure so the caller falls back to
+      // the cache / bundled rules rather than caching an empty bundle.
+      if (!data || !Array.isArray(data.firewall)) {
+        return { success: false, error: 'unexpected response shape (no firewall array)', firewall: [], whitelists: [], whitelist_keys: {} };
+      }
       const result = {
         success: true,
         notModified: false,
         etag: response.headers?.get?.('etag') ?? null,
-        firewall: Array.isArray(data.firewall) ? data.firewall : [],
+        firewall: data.firewall,
         whitelists: Array.isArray(data.whitelists) ? data.whitelists : [],
         whitelist_keys: data.whitelist_keys ?? {},
       };

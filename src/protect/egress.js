@@ -12,9 +12,10 @@
  *           lookup?: Function }} opts
  * @returns {Promise<() => void>} uninstall (restores every patched surface)
  */
-export async function installEgressGuard({ shouldBlock, onBlock, dnsScreen = true, lookup } = {}) {
+export async function installEgressGuard({ shouldBlock, onBlock, dnsScreen = true, lookup, allowHosts } = {}) {
   const restores = [];
   if (typeof shouldBlock !== 'function') return () => {};
+  const exempt = new Set((allowHosts ?? []).map((h) => String(h).toLowerCase()));
 
   const block = (url, host, method) => {
     if (!shouldBlock(url, host, method)) return false;
@@ -57,7 +58,7 @@ export async function installEgressGuard({ shouldBlock, onBlock, dnsScreen = tru
       const resolveLookup = lookup ?? (await import('node:dns')).lookup;
       const { isIP } = await import('node:net');
       if (typeof resolveLookup === 'function' && typeof isIP === 'function') {
-        screen = { lookup: resolveLookup, isIP };
+        screen = { lookup: resolveLookup, isIP, isExempt: (h) => exempt.has(String(h).toLowerCase()) };
       }
     } catch {
       screen = null; // no node:dns/net here — skip, hostname rules still apply
@@ -124,8 +125,9 @@ function patchHttpModule(http, block, screen) {
       if (target && block(target.url, target.host, target.method)) {
         throw new Error(`Patchstack blocked an outbound request to a disallowed address: ${target.host ?? target.url}`);
       }
-      // DNS screen: only for real hostnames (a literal IP was already covered by the check above).
-      if (target && screen && target.host && screen.isIP(target.host) === 0) {
+      // DNS screen: only for real hostnames (a literal IP was already covered by the check above),
+      // and skip an explicitly allowlisted host (the operator trusts it — don't second-guess its DNS).
+      if (target && screen && target.host && screen.isIP(target.host) === 0 && !screen.isExempt(target.host)) {
         try {
           args = withScreeningLookup(args, target, block, screen.lookup);
         } catch {
@@ -135,13 +137,20 @@ function patchHttpModule(http, block, screen) {
       return original.apply(this, args);
     };
 
-  http.request = wrap(originalRequest);
-  if (typeof originalGet === 'function') http.get = wrap(originalGet);
+  const guardedRequest = wrap(originalRequest);
+  http.request = guardedRequest;
+  let guardedGet;
+  if (typeof originalGet === 'function') {
+    guardedGet = wrap(originalGet);
+    http.get = guardedGet;
+  }
   http.__patchstackGuarded = true;
 
   return () => {
-    http.request = originalRequest;
-    if (typeof originalGet === 'function') http.get = originalGet;
+    // Only restore if our wrapper is still installed — don't clobber a wrapper another library
+    // (an APM agent, etc.) layered on top of us after install.
+    if (http.request === guardedRequest) http.request = originalRequest;
+    if (guardedGet && http.get === guardedGet) http.get = originalGet;
     delete http.__patchstackGuarded;
   };
 }
@@ -156,7 +165,8 @@ function extractHttpTarget(args) {
       return { url: url.href, host: url.hostname, method: (opts && opts.method) || 'GET' };
     }
     if (first && typeof first === 'object') {
-      const host = normalizeHost(first.hostname || first.host);
+      // Node defaults an absent host to localhost — reflect that so the block/screen see a real target.
+      const host = normalizeHost(first.hostname || first.host) || 'localhost';
       const protocol = first.protocol || 'http:';
       const port = first.port ? `:${first.port}` : '';
       const path = first.path || '/';

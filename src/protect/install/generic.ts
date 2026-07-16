@@ -3,7 +3,7 @@
 // provide a `--check` verifier — so the builder's own agent can finish the wiring and confirm it,
 // entirely through the CLI (no server, no hosted infra).
 
-import { readFileSync, existsSync, mkdirSync, copyFileSync, readdirSync, statSync } from 'node:fs';
+import { readFileSync, existsSync, mkdirSync, copyFileSync, readdirSync, lstatSync } from 'node:fs';
 import { join } from 'node:path';
 import { bakeSiteUuid, read, templatesDir } from './util.js';
 import type { WireOptions, VerifyResult } from './types.js';
@@ -97,8 +97,8 @@ export function genericVerify(cwd: string): VerifyResult {
 function guardIsImported(cwd: string, guardPath: string): boolean {
   const root = existsSync(join(cwd, 'src')) ? join(cwd, 'src') : cwd;
   let found = false;
-  const walk = (d: string): void => {
-    if (found) return;
+  const walk = (d: string, depth: number): void => {
+    if (found || depth > 8) return;
     let entries: string[];
     try {
       entries = readdirSync(d);
@@ -107,15 +107,16 @@ function guardIsImported(cwd: string, guardPath: string): boolean {
     }
     for (const name of entries) {
       if (found) return;
-      if (name === 'node_modules' || name.startsWith('.')) continue;
+      if (name === 'node_modules' || name === 'patchstack' || name.startsWith('.')) continue;
       const p = join(d, name);
       let st;
       try {
-        st = statSync(p);
+        st = lstatSync(p); // don't follow symlinks (avoids symlink-cycle recursion)
       } catch {
         continue;
       }
-      if (st.isDirectory()) walk(p);
+      if (st.isSymbolicLink()) continue;
+      if (st.isDirectory()) walk(p, depth + 1);
       else if (/\.(?:ts|tsx|js|jsx|mjs|cjs)$/.test(name) && p !== guardPath) {
         try {
           if (readFileSync(p, 'utf8').includes(GUARD_MARKER)) found = true;
@@ -125,6 +126,6 @@ function guardIsImported(cwd: string, guardPath: string): boolean {
       }
     }
   };
-  walk(root);
+  walk(root, 0);
   return found;
 }

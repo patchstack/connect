@@ -1,15 +1,17 @@
 import { RequestResolver } from './request.js';
 import { normalizeRequest } from './normalizer.js';
 
+// Catastrophic-backtracking shapes. Broad on purpose: a group whose inner content is quantified
+// (+, *, or {n,}) and is itself quantified — (a+)+, (\w+)+, (.*)*, ([a-z]+)*, (ab+)+ — or an
+// alternation under an outer quantifier — (a|a)*, (x|y)+. A rule matching one of these is skipped
+// (safer than hanging the event loop). Earlier patterns only caught literal-letter groups and
+// missed the far more common `\w`/`.`/char-class forms.
 const REDOS_PATTERNS = [
-  /\(\w\+\)\+/,
-  /\(\w\*\)\+/,
-  /\(\w\+\)\*/,
-  /\(\w\*\)\*/,
-  /\(\w\|\w\)\+/
+  /\([^)]*[+*}][^)]*\)\s*[+*]/,
+  /\([^)]*\|[^)]*\)\s*[+*]/
 ];
 
-function safeRegExp(pattern) {
+export function safeRegExp(pattern) {
   if (!pattern) {
     return null;
   }
@@ -117,15 +119,27 @@ function isInternalHost(hostname) {
   if (host === '::1' || host === '::') return true;
   if (host.startsWith('fe80:') || host.startsWith('fc') || host.startsWith('fd')) return true;
 
+  // Dotted IPv4 (incl. dotted IPv4-mapped `::ffff:127.0.0.1`, which ends in dotted form).
   const v4 = host.match(/(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/);
-  if (v4) {
-    const a = Number(v4[1]);
-    const b = Number(v4[2]);
-    if (a === 127 || a === 10 || a === 0) return true; // loopback / private / this-host
-    if (a === 169 && b === 254) return true; // link-local incl. 169.254.169.254 metadata
-    if (a === 172 && b >= 16 && b <= 31) return true; // 172.16.0.0/12
-    if (a === 192 && b === 168) return true; // 192.168.0.0/16
+  if (v4 && isPrivateV4(Number(v4[1]), Number(v4[2]))) return true;
+
+  // Hex IPv4-mapped IPv6 (`::ffff:7f00:1` = 127.0.0.1) — Node's URL doesn't dotted-normalize this
+  // form, so classify it here too.
+  const mapped = host.match(/^::ffff:([0-9a-f]{1,4}):([0-9a-f]{1,4})$/);
+  if (mapped) {
+    const g1 = parseInt(mapped[1], 16);
+    const g2 = parseInt(mapped[2], 16);
+    if (isPrivateV4((g1 >> 8) & 0xff, g1 & 0xff)) return true;
   }
+  return false;
+}
+
+// Private / loopback / link-local / this-host IPv4 test (first two octets are enough for our ranges).
+function isPrivateV4(a, b) {
+  if (a === 127 || a === 10 || a === 0) return true; // loopback / private / this-host
+  if (a === 169 && b === 254) return true; // link-local incl. 169.254.169.254 metadata
+  if (a === 172 && b >= 16 && b <= 31) return true; // 172.16.0.0/12
+  if (a === 192 && b === 168) return true; // 192.168.0.0/16
   return false;
 }
 

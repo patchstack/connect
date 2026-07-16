@@ -17,8 +17,19 @@ export function fromNodeRequest(req, rawBody = '') {
     headers[key.toLowerCase()] = Array.isArray(value) ? value.join(', ') : value;
   }
 
+  // An unusual Host header or req.url can make `new URL` throw; shaping must never crash the
+  // request (fail-open), so fall back to a safe base.
   const host = headers.host || 'localhost';
-  const url = new URL(req.url || '/', `http://${host}`);
+  let url;
+  try {
+    url = new URL(req.url || '/', `http://${host}`);
+  } catch {
+    try {
+      url = new URL(req.url || '/', 'http://localhost');
+    } catch {
+      url = new URL('http://localhost/');
+    }
+  }
 
   const query = {};
   for (const [key, value] of url.searchParams) {
@@ -119,11 +130,11 @@ export function createNodeMiddleware(rulesData, options = {}) {
     req.on('error', (err) => next(err));
 
     req.on('end', () => {
-      const rawBody = overflow ? '' : Buffer.concat(chunks).toString('utf8');
-      const shaped = fromNodeRequest(req, rawBody);
-
       let result;
+      let shaped;
       try {
+        const rawBody = overflow ? '' : Buffer.concat(chunks).toString('utf8');
+        shaped = fromNodeRequest(req, rawBody); // shaping is inside the try too — never crash
         result = engine.evaluate(shaped);
       } catch (err) {
         if (options.onError) {

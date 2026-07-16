@@ -31,25 +31,41 @@ const ADAPTERS: Adapter[] = [
 
 /** Scaffold + wire the runtime guard into the app at `cwd`. Best-effort — never throws. */
 export function runProtect(cwd: string, opts: WireOptions = {}): ProtectResult {
-  const adapter = ADAPTERS.find((a) => a.detect(cwd));
-  if (adapter) {
-    const result = adapter.wire(cwd, opts);
-    return { status: 'wired', adapter: adapter.name, changed: result.changed };
+  let adapter;
+  try {
+    adapter = ADAPTERS.find((a) => a.detect(cwd));
+    if (adapter) {
+      const result = adapter.wire(cwd, opts);
+      return { status: 'wired', adapter: adapter.name, changed: result.changed };
+    }
+  } catch (err) {
+    // A wire/detect failure (read-only FS, EACCES, a bad source file) must not crash the CLI —
+    // fall through to the generic scaffold + plan so the user still gets something actionable.
+    log(`adapter ${adapter?.name ?? ''} failed (${(err as Error)?.message ?? err}); falling back to a generic guard`);
   }
 
-  // No adapter matched — DON'T silently skip. Scaffold the framework-agnostic guard and print a
-  // wiring plan the builder's agent (or user) can finish, then verify with `protect --check`.
-  const { changed, dir } = scaffoldGeneric(cwd, opts);
-  const plan = wiringPlan(cwd, dir);
-  log(plan);
-  return { status: 'scaffolded', adapter: 'generic', changed, plan };
+  // No adapter matched (or it failed) — DON'T silently skip. Scaffold the framework-agnostic guard
+  // and print a wiring plan the builder's agent (or user) can finish, then verify with `--check`.
+  try {
+    const { changed, dir } = scaffoldGeneric(cwd, opts);
+    const plan = wiringPlan(cwd, dir);
+    log(plan);
+    return { status: 'scaffolded', adapter: 'generic', changed, plan };
+  } catch (err) {
+    log(`could not scaffold the guard (${(err as Error)?.message ?? err})`);
+    return { status: 'scaffolded', adapter: 'generic', changed: [], plan: '' };
+  }
 }
 
 /** Verify the guard is correctly wired (backs `protect --check`). Fail-open — never throws. */
 export function runVerify(cwd: string): VerifyReport {
-  const adapter = ADAPTERS.find((a) => a.detect(cwd));
-  if (adapter) return { stack: adapter.label, ...adapter.verify(cwd) };
-  return { stack: 'generic', ...genericVerify(cwd) };
+  try {
+    const adapter = ADAPTERS.find((a) => a.detect(cwd));
+    if (adapter) return { stack: adapter.label, ...adapter.verify(cwd) };
+    return { stack: 'generic', ...genericVerify(cwd) };
+  } catch (err) {
+    return { stack: 'unknown', wired: false, checks: [{ label: 'verification failed', ok: false, hint: String((err as Error)?.message ?? err) }] };
+  }
 }
 
 export type { Adapter, WireOptions, WireResult, VerifyResult, VerifyReport, ProtectResult } from './types.js';

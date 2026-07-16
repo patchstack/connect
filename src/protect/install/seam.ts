@@ -37,7 +37,13 @@ export function wireSeam(cwd: string, opts: WireOptions, spec: SeamSpec): WireRe
   }
 
   const current = existing ? read(join(cwd, existing)) : '';
-  if (existing && !current.includes(spec.marker)) {
+  if (existing && current.includes(spec.marker)) {
+    // Already ours — do NOT re-copy the template over it: the whole seam file is user-editable
+    // (unlike the tanstack region-marked blocks), so overwriting would discard any edits.
+    log(`${existing} already has the Patchstack guard — left as-is`);
+    return { ok: true, changed };
+  }
+  if (existing) {
     log(`existing ${existing} left untouched — scaffolded ${rulesRel(seamRel)}; ${spec.planHint}`);
     return { ok: true, changed };
   }
@@ -45,7 +51,7 @@ export function wireSeam(cwd: string, opts: WireOptions, spec: SeamSpec): WireRe
   copyFileSync(join(templates, spec.templateName), join(cwd, seamRel));
   if (!opts.demo) bakeSiteUuid(cwd, seamRel);
   changed.push(seamRel);
-  log(existing ? `refreshed ${seamRel}` : `scaffolded ${seamRel}`);
+  log(`scaffolded ${seamRel}`);
   return { ok: true, changed: [...new Set(changed)] };
 }
 

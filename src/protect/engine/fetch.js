@@ -172,10 +172,10 @@ export function createFetchMiddleware(rulesData, options = {}) {
       : new RuleEngine(rulesData);
 
   const guard = async (request) => {
-    const req = await fromFetchRequest(request);
-
+    let req;
     let result;
     try {
+      req = await fromFetchRequest(request); // shaping inside the try — a bad/relative request.url must fail open
       result = engine.evaluate(req);
     } catch (err) {
       if (options.onError) {
