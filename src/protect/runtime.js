@@ -11,6 +11,7 @@
 // every runtime an AI builder deploys to.
 // Vendored node-waf engine (this package is self-contained — no @patchstack/node-waf dep).
 import { RuleEngine, PatchstackRuleClient } from './engine/index.js';
+import { matchValue, walkLeaves } from './engine/engine.js';
 import { PulseRuleClient } from './engine/pulse-client.js';
 import { fromFetchRequest } from './engine/fetch.js';
 import { fromNodeRequest } from './engine/node.js';
@@ -70,6 +71,7 @@ export async function createProtection(options = {}) {
   // per-call overrides. Detection is fully rule-driven — nothing hardcoded.
   const requestRules = byPhase(incoming, 'request');
   const responseRules = [...(options.responseRules ?? DEFAULT_RESPONSE_RULES), ...byPhase(incoming, 'response')];
+  const screenCap = responseScreenCap(responseRules); // max body we'll buffer/screen (rules can raise it)
   const egressRules = [...(options.egressRules ?? DEFAULT_EGRESS_RULES), ...byPhase(incoming, 'egress')];
 
   const engine = new RuleEngine({
@@ -131,14 +133,20 @@ export async function createProtection(options = {}) {
     const headers = { ...(meta.headers || {}) };
     for (const { rule, redactors } of redactions) {
       const mask = maskFn(rule.category);
-      body = applyRedactors(body, redactors, mask);
+      // jsonPath redactors mask a structural location in the JSON body; span redactors mask text
+      // spans in the body AND header values. Apply structural first (on clean JSON), then spans.
+      const pathRedactors = redactors.filter((r) => r.jsonPath);
+      const spanRedactors = redactors.filter((r) => !r.jsonPath);
+      if (pathRedactors.length) body = applyPathRedactors(body, pathRedactors, mask, screenCap);
+      if (!spanRedactors.length) continue;
+      body = applyRedactors(body, spanRedactors, mask);
       for (const name of Object.keys(headers)) {
         const value = headers[name];
         if (typeof value === 'string') {
-          headers[name] = applyRedactors(value, redactors, mask);
+          headers[name] = applyRedactors(value, spanRedactors, mask);
         } else if (Array.isArray(value)) {
           // Multi-valued headers (Set-Cookie) — redact each entry.
-          headers[name] = value.map((item) => (typeof item === 'string' ? applyRedactors(item, redactors, mask) : item));
+          headers[name] = value.map((item) => (typeof item === 'string' ? applyRedactors(item, spanRedactors, mask) : item));
         }
       }
     }
@@ -147,7 +155,7 @@ export async function createProtection(options = {}) {
 
   // Screen a fetch Response (used by .fetch() and — via protection.screenResponse — the Supabase guard).
   const screenResp = async (response) => {
-    const text = await readTextResponse(response);
+    const text = await readTextResponse(response, screenCap);
     if (text == null) return response;
     const r = screenText(text, { status: response.status, headers: headerObject(response.headers) });
     if (r.verdict === 'block') return leakResponse();
@@ -164,7 +172,7 @@ export async function createProtection(options = {}) {
     const chunks = [];
     let size = 0;
     let overflow = false;
-    const MAX = 512 * 1024;
+    const MAX = screenCap;
     const collect = (chunk, enc) => {
       if (chunk == null) return;
       const buf = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk, typeof enc === 'string' ? enc : 'utf8');
@@ -374,16 +382,16 @@ function byPhase(rules, phase) {
   return (rules ?? []).filter((r) => (r.phase ?? 'request') === phase);
 }
 
-async function readTextResponse(response) {
+async function readTextResponse(response, cap = DEFAULT_SCREEN_CAP) {
   if (!response || typeof response.clone !== 'function') return null;
   const ct = (response.headers?.get?.('content-type') || '').toLowerCase();
   const isText = ct === '' || /(json|text|xml|html|javascript|csv|yaml|x-www-form-urlencoded)/.test(ct);
   if (!isText) return null;
   const len = Number(response.headers?.get?.('content-length') || 0);
-  if (len && len > 512 * 1024) return null;
+  if (len && len > cap) return null;
   try {
     const text = await response.clone().text();
-    return text.length > 512 * 1024 ? null : text;
+    return text.length > cap ? null : text;
   } catch {
     return null;
   }
@@ -421,6 +429,13 @@ function extractRedactors(rule) {
         }
       } else if ((m.type === 'contains' || m.type === 'stripos') && m.value != null) {
         out.push({ literal: String(m.value) });
+      } else if (m.type === 'array_key_value' && m.match && isBodyParam(c.parameter)) {
+        // Structural redaction: mask the value at a JSON path (fanning out over arrays) rather than
+        // a text span — e.g. key "orders.customers.email" masks that field in every array element.
+        const keys = Array.isArray(m.key) ? m.key : [m.key];
+        for (const key of keys) {
+          out.push({ jsonPath: String(key).split('.'), condition: m.match });
+        }
       }
     }
   };
@@ -435,6 +450,72 @@ function applyRedactors(body, redactors, mask) {
     else if (r.literal) out = out.split(r.literal).join(mask);
   }
   return out;
+}
+
+// A response-body redaction target (array_key_value masks the JSON body). A bare condition with no
+// parameter also defaults to the body.
+function isBodyParam(parameter) {
+  return parameter == null || parameter === 'response.body' || parameter === 'raw' || parameter === 'response.raw';
+}
+
+// Build a predicate from the array_key_value nested match, so a path can be masked conditionally
+// (only leaves that match) or — with `isset` — unconditionally. Fail-closed (don't mask) on error.
+function conditionPredicate(condition) {
+  if (!condition || !condition.type) return () => true;
+  return (value) => {
+    try {
+      return matchValue(condition.type, value, condition.value, condition);
+    } catch {
+      return false;
+    }
+  };
+}
+
+const DEFAULT_SCREEN_CAP = 512 * 1024;
+
+// Effective response-screening size cap for a rule set. Bodies larger than this are passed through
+// UNSCREENED (so a redact rule can't mask them — the leak/PII would slip out). A rule can raise the
+// ceiling for the whole response phase: `bypass_limit: true` removes the cap entirely (accepts the
+// memory cost on a hostile large body), or `max_bytes: <n>` raises it to n. The cap is shared (the
+// body is buffered once), so the effective cap is the MAX across all active response rules.
+function responseScreenCap(rules) {
+  let cap = DEFAULT_SCREEN_CAP;
+  for (const r of rules ?? []) {
+    if (r && r.bypass_limit === true) return Infinity;
+    const n = Number(r && r.max_bytes);
+    if (Number.isFinite(n) && n > cap) cap = n;
+  }
+  return cap;
+}
+
+// Apply jsonPath redactors structurally: parse the JSON body, mask each targeted leaf (fanning out
+// over arrays at every path segment), re-serialize. Fail-open — a non-JSON / oversized / unparseable
+// body is returned unchanged, and any per-leaf error is swallowed.
+function applyPathRedactors(text, pathRedactors, mask, cap) {
+  if (!pathRedactors.length || typeof text !== 'string' || text.length > cap) return text;
+  const head = text.trimStart()[0];
+  if (head !== '{' && head !== '[') return text; // not a JSON object/array
+  let obj;
+  try {
+    obj = JSON.parse(text);
+  } catch {
+    return text;
+  }
+  let changed = false;
+  for (const r of pathRedactors) {
+    const pred = conditionPredicate(r.condition);
+    walkLeaves(obj, r.jsonPath, (loc) => {
+      try {
+        if (pred(loc.value)) {
+          loc.parent[loc.key] = mask;
+          changed = true;
+        }
+      } catch {
+        /* skip this leaf */
+      }
+    });
+  }
+  return changed ? JSON.stringify(obj) : text;
 }
 
 function rebuildResponse(response, body, redactedHeaders) {

@@ -47,9 +47,33 @@ function ctypeResult(strValue, isClass, matchVal) {
   return isClass === expected;
 }
 
-// array_key_value: navigate `match.key` (a dot-path, or an array of paths) inside the
-// decoded value and run the nested `match.match` against whatever it finds. Mirrors
-// engine-php's recursive array_key_value handling.
+// Walk a dot-path into a decoded object and invoke `cb({ parent, key, value })` for every leaf it
+// reaches, fanning out over arrays at EVERY segment (not just the last) — so `orders.customers.email`
+// visits the email of each customer of each order, for arbitrary-length / arbitrarily-nested arrays.
+// `cb` gets the container + key so callers can either read (match) or set (redact) the leaf.
+export function walkLeaves(node, segments, cb) {
+  if (node === null || typeof node !== 'object') return;
+  if (Array.isArray(node)) {
+    for (const el of node) walkLeaves(el, segments, cb);
+    return;
+  }
+  const [head, ...rest] = segments;
+  if (head === undefined || !Object.prototype.hasOwnProperty.call(node, head)) return;
+  if (rest.length === 0) {
+    const leaf = node[head];
+    if (Array.isArray(leaf)) {
+      for (let i = 0; i < leaf.length; i++) cb({ parent: leaf, key: i, value: leaf[i] });
+    } else {
+      cb({ parent: node, key: head, value: leaf });
+    }
+  } else {
+    walkLeaves(node[head], rest, cb);
+  }
+}
+
+// array_key_value: navigate `match.key` (a dot-path, or an array of paths) inside the decoded value
+// and run the nested `match.match` against every leaf it finds (fanning out over arrays at every
+// segment). Mirrors engine-php's recursive array_key_value handling.
 function arrayKeyValue(value, matchObj) {
   if (!matchObj || !matchObj.match || value === null || typeof value !== 'object') {
     return false;
@@ -58,23 +82,11 @@ function arrayKeyValue(value, matchObj) {
   const sub = matchObj.match;
 
   for (const key of keys) {
-    let node = value;
-    for (const part of String(key).split('.')) {
-      if (node === null || typeof node !== 'object') {
-        node = undefined;
-        break;
-      }
-      node = node[part];
-    }
-    if (node === undefined) {
-      continue;
-    }
-    const candidates = Array.isArray(node) ? node : [node];
-    for (const candidate of candidates) {
-      if (matchValue(sub.type, candidate, sub.value, sub)) {
-        return true;
-      }
-    }
+    let matched = false;
+    walkLeaves(value, String(key).split('.'), ({ value: leaf }) => {
+      if (!matched && matchValue(sub.type, leaf, sub.value, sub)) matched = true;
+    });
+    if (matched) return true;
   }
   return false;
 }
@@ -120,7 +132,7 @@ function isInternalHost(hostname) {
 // `matchObj` is the full match object; needed by types that read sibling fields
 // (array_key_value reads `key`/`match`). Optional so direct callers/tests can keep
 // using the (type, value, matchVal) signature.
-function matchValue(type, value, matchVal, matchObj) {
+export function matchValue(type, value, matchVal, matchObj) {
   if (value === null || value === undefined) {
     if (type === 'isset') {
       return false;
