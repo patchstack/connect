@@ -10,7 +10,7 @@
 // Runtime guards: .express(), .node(), .fetch(handler) / .fetchGuard() — same policy,
 // every runtime an AI builder deploys to.
 // Vendored node-waf engine (this package is self-contained — no @patchstack/node-waf dep).
-import { RuleEngine, PatchstackRuleClient } from './engine/index.js';
+import { RuleEngine } from './engine/index.js';
 import { matchValue, walkLeaves, safeRegExp } from './engine/engine.js';
 import { PulseRuleClient } from './engine/pulse-client.js';
 import { fromFetchRequest } from './engine/fetch.js';
@@ -18,8 +18,11 @@ import { fromNodeRequest } from './engine/node.js';
 import { installEgressGuard } from './egress.js';
 import { DEFAULT_RESPONSE_RULES, DEFAULT_EGRESS_RULES } from './defaults.js';
 import { renderBlockPage } from './block-page.js';
-import { readFileSync, writeFileSync, mkdirSync } from 'node:fs';
-import { join } from 'node:path';
+// Rule lifecycle (source / tiered store / refresh) lives in ./rules/ — this file stays focused on
+// composing the engine + guards and running the three screening phases.
+import { makeStore } from './rules/store.js';
+import { resolveRules } from './rules/source.js';
+import { startRefresh, makeRefreshHandler } from './rules/refresh.js';
 
 // Supabase-tunnel guard for AI-builder apps (Lovable / TanStack Start + Supabase).
 export { createSupabaseGuard, GUARD_PATH } from './supabase-guard.js';
@@ -64,9 +67,11 @@ export async function createProtection(options = {}) {
   const onError = options.onError;
   const onDetect = options.onDetect ?? defaultOnDetect;
 
-  const bundle = await resolveRules(options);
+  // One tiered store (memory → filesystem/pluggable) shared by the initial load and every refresh.
+  const store = makeStore(options);
+  const bundle = await resolveRules(options, store);
   // Rule-derived runtime state. Held in `let` bindings the guard methods below close over, so a
-  // refresh (see the interval near the end) can hot-swap the engines by reassigning them — the
+  // refresh (see the loop near the end) can hot-swap the engines by reassigning them — the
   // egress interception and the protection object itself stay in place, no re-install.
   let requestRules;
   let responseRules;
@@ -407,40 +412,51 @@ export async function createProtection(options = {}) {
   }
 
   // Live rule refresh. The guard otherwise reads its rules once, at process start — so a rule that
-  // only becomes relevant after boot (e.g. a dependency added mid-session, then flagged by Pulse)
-  // never applies until the process restarts. Where the runtime is long-lived and isn't restarted
-  // on change — the sandbox/preview of an AI builder — the host sets `refreshMs` so the engines are
-  // periodically re-fetched and hot-swapped in place. Left off (0) by default: a real deploy
-  // restarts the process, which re-fetches anyway. Only meaningful with a live rule source.
-  if (options.refreshMs > 0 && (options.siteUuid || options.token)) {
-    // On the Pulse (siteUuid) path, re-post the dependency manifest before re-fetching rules. A
-    // targeted `npm install <pkg>` fires no npm lifecycle hook, so nothing else re-scans; reporting
-    // here lets the server detect a newly-added vulnerable dependency and the SAME tick's rule fetch
-    // pick up its rule — a restart-free catch. Loaded lazily so production guards (refresh off)
-    // never pull in the scan pipeline; a load/report failure never blocks the rule refresh.
-    const cwd = options.cwd ?? (typeof process !== 'undefined' ? process.cwd() : undefined);
-    let reportManifest = null;
-    if (options.siteUuid && options.reportManifest !== false && cwd) {
+  // only becomes relevant after boot (a dependency added mid-session and flagged by Pulse, a
+  // zero-day published) never applies until the process restarts. A refresh re-fetches and
+  // hot-swaps the engines in place; the same tick can be driven by a poll loop (`refreshMs`), a
+  // manual `protection.refresh()`, or an authenticated push (`protection.refreshHandler()`).
+  const cwd = options.cwd ?? (typeof process !== 'undefined' ? process.cwd() : undefined);
+  const live = Boolean(options.siteUuid || options.token);
+  const refreshSecret = options.refreshSecret ?? (typeof process !== 'undefined' ? process.env.PATCHSTACK_REFRESH_SECRET : undefined);
+  const refreshable = live && (options.refreshMs > 0 || Boolean(refreshSecret));
+
+  // On the Pulse (siteUuid) path, re-post the dependency manifest before re-fetching. A targeted
+  // `npm install <pkg>` fires no npm lifecycle hook, so nothing else re-scans; reporting here lets
+  // the server flag a newly-added vulnerable dependency and the SAME tick's rule fetch pick up its
+  // rule. Loaded once, up front, only when a refresh path is enabled — a refresh-off production
+  // guard never pulls in the scan pipeline; a load/report failure never blocks the rule refresh.
+  let reporter = null;
+  if (refreshable && options.siteUuid && options.reportManifest !== false && cwd) {
+    try {
+      ({ reportManifest: reporter } = await import('./refresh-manifest.js'));
+    } catch (err) {
+      onError?.(err); // scan pipeline unavailable (e.g. an edge runtime) — rules still refresh
+    }
+  }
+
+  const runRefreshTick = async () => {
+    if (reporter) {
       try {
-        ({ reportManifest } = await import('./refresh-manifest.js'));
+        await reporter(cwd);
       } catch (err) {
-        onError?.(err); // scan pipeline unavailable (e.g. an edge runtime) — rules still refresh
+        onError?.(err); // a failed report must not stop the rule refresh
       }
     }
-    const timer = setInterval(() => {
-      (async () => {
-        if (reportManifest) {
-          try {
-            await reportManifest(cwd);
-          } catch (err) {
-            onError?.(err); // a failed report must not stop the rule refresh
-          }
-        }
-        applyBundle(await resolveRules(options));
-      })().catch((err) => onError?.(err));
-    }, options.refreshMs);
-    timer.unref?.(); // never keep the process alive for the refresh
-    protection.stopRefresh = () => clearInterval(timer);
+    applyBundle(await resolveRules(options, store));
+  };
+
+  if (live) {
+    // Manual one-shot refresh (also the primitive the loop + push endpoint run).
+    protection.refresh = () => runRefreshTick();
+    // Authenticated push endpoint — the platform/SaaS hits it for an immediate refresh. No secret
+    // configured → the handler 404s (never an open refresh trigger).
+    protection.refreshHandler = () => makeRefreshHandler(runRefreshTick, refreshSecret);
+  }
+
+  if (options.refreshMs > 0 && live) {
+    const loop = startRefresh(runRefreshTick, { refreshMs: options.refreshMs, onError });
+    protection.stopRefresh = loop.stop;
   }
 
   return protection;
@@ -720,135 +736,7 @@ function leakResponse() {
   });
 }
 
-// --- rule source --------------------------------------------------------
-
-async function resolveRules(options) {
-  const cache = makeCache(options);
-
-  if (options.siteUuid) {
-    const prior = await cache.read(); // { bundle, etag } | null
-    const client = new PulseRuleClient({ siteUuid: options.siteUuid, baseUrl: options.pulseRulesUrl, etag: prior?.etag });
-    const res = await client.getRules();
-    if (res.success && res.notModified && prior?.bundle) return normalizeBundle(prior.bundle);
-    if (res.success && !res.notModified) {
-      const bundle = normalizeBundle(res);
-      await cache.write({ bundle, etag: res.etag ?? null });
-      return bundle;
-    }
-    if (prior?.bundle) {
-      options.onError?.(new Error(`pulse rule fetch failed (${res.error ?? 'no usable response'}); using cached bundle`));
-      return normalizeBundle(prior.bundle);
-    }
-    if (options.rules) {
-      options.onError?.(new Error(`pulse rule fetch failed (${res.error ?? 'no usable response'}); using bundled fallback`));
-      return normalizeBundle(options.rules);
-    }
-    options.onError?.(new Error(`pulse rule fetch failed (${res.error ?? 'no usable response'}); no cache — running with no rules`));
-    return emptyBundle();
-  }
-
-  if (options.token) {
-    const prior = await cache.read();
-    const client = new PatchstackRuleClient({ token: options.token, baseUrl: options.baseUrl, etag: prior?.etag });
-    const res = await client.getRules();
-    if (res.success && res.notModified && prior?.bundle) return normalizeBundle(prior.bundle);
-    if (res.success && !res.notModified) {
-      const bundle = normalizeBundle(res);
-      await cache.write({ bundle, etag: res.etag ?? null });
-      return bundle;
-    }
-    if (prior?.bundle) {
-      options.onError?.(new Error(`rule fetch failed (${res.error ?? 'no usable response'}); using cached bundle`));
-      return normalizeBundle(prior.bundle);
-    }
-    options.onError?.(new Error(`rule fetch failed (${res.error ?? 'no usable response'}); no cache — running with no rules`));
-    return emptyBundle();
-  }
-
-  if (options.rules) {
-    return normalizeBundle(options.rules);
-  }
-
-  return emptyBundle();
-}
-
-function normalizeBundle(b) {
-  return {
-    firewall: Array.isArray(b.firewall) ? b.firewall : [],
-    whitelists: Array.isArray(b.whitelists) ? b.whitelists : [],
-    whitelist_keys: b.whitelist_keys ?? {},
-  };
-}
-
-function emptyBundle() {
-  return { firewall: [], whitelists: [], whitelist_keys: {} };
-}
-
-// The cache stores an envelope { bundle, etag } so a restart can revalidate with If-None-Match. A
-// pluggable adapter (options.ruleCache) lets runtimes without a filesystem (Workers/Deno) persist
-// last-known-good in their own store; the default is a disk cache under options.cacheDir. Both
-// paths are best-effort — a read/write error yields no cache rather than throwing.
-function makeCache(options) {
-  const adapter = options.ruleCache;
-  if (adapter && typeof adapter.read === 'function' && typeof adapter.write === 'function') {
-    return {
-      read: async () => {
-        try {
-          return toEnvelope(await adapter.read());
-        } catch {
-          return null;
-        }
-      },
-      write: async (env) => {
-        try {
-          await adapter.write(env);
-        } catch {
-          /* best-effort */
-        }
-      },
-    };
-  }
-  const dir = options.cacheDir;
-  return {
-    read: async () => cacheRead(dir),
-    write: async (env) => cacheWrite(dir, env),
-  };
-}
-
-function cachePath(dir) {
-  return join(dir, 'patchstack-rules.json');
-}
-
-function cacheWrite(dir, env) {
-  if (!dir) return;
-  try {
-    mkdirSync(dir, { recursive: true });
-    writeFileSync(cachePath(dir), JSON.stringify(env));
-  } catch {
-    /* cache is best-effort */
-  }
-}
-
-function cacheRead(dir) {
-  if (!dir) return null;
-  try {
-    return toEnvelope(JSON.parse(readFileSync(cachePath(dir), 'utf8')));
-  } catch {
-    return null;
-  }
-}
-
-// Accept the current { bundle, etag } envelope and a legacy bare bundle (pre-envelope cache files).
-function toEnvelope(value) {
-  if (!value || typeof value !== 'object') return null;
-  if (value.bundle && typeof value.bundle === 'object') {
-    return { bundle: value.bundle, etag: value.etag ?? null };
-  }
-  if (Array.isArray(value.firewall) || Array.isArray(value.whitelists)) {
-    return { bundle: value, etag: null }; // legacy bare-bundle cache file
-  }
-  return null;
-}
+// (rule source / tiered store moved to ./rules/source.js + ./rules/store.js)
 
 // --- responses ----------------------------------------------------------
 
