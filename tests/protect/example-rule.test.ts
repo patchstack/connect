@@ -8,7 +8,7 @@ const bundle = {
   firewall: [
     {
       id: 'rm-npm-test-0001',
-      title: "Dave's example test rule",
+      title: "Example test rule",
       rule_v2: [
         {
           parameter: 'get.mytestparameter',
@@ -36,7 +36,7 @@ function getReq(qs: string) {
   return new Request(`https://app.example.com/api/thing?${qs}`, { method: 'GET' });
 }
 
-describe("Dave's example rule — inline bundle via fetchGuard", () => {
+describe("Example rule — inline bundle via fetchGuard", () => {
   it('BLOCKED: ?mytestparameter=1 (isset match) -> 403', async () => {
     const protection = await createProtection({ rules: bundle, mode: 'block' });
     const guard = protection.fetchGuard(); // (request) => Promise<Response | null>
@@ -79,7 +79,7 @@ describe("Dave's example rule — inline bundle via fetchGuard", () => {
   });
 });
 
-describe("Dave's example rule — full production fetch path (PulseRuleClient)", () => {
+describe("Example rule — full production fetch path (PulseRuleClient)", () => {
   it('BLOCKED via live Pulse fetch: ?mytestparameter=1 -> 403', async () => {
     const fetchMock = vi.fn(async () =>
       new Response(JSON.stringify(bundle), {
