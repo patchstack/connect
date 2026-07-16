@@ -99,12 +99,52 @@ async function readCappedText(request, max) {
   } catch {
     return '';
   }
+
+  // Stream the read so a body WITHOUT a Content-Length can't buffer unbounded: retain only up to the
+  // scan cap (`max`) for inspection, but keep draining to completion so the original request stays
+  // intact. A front-loaded payload is still caught; anything past the cap is not scanned (same
+  // partial-scan tradeoff as before, now with a hard memory bound regardless of Content-Length).
+  const body = clone.body;
+  if (body && typeof body.getReader === 'function') {
+    const reader = body.getReader();
+    const chunks = [];
+    let buffered = 0;
+    try {
+      for (;;) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        if (!value || buffered >= max) continue; // keep draining, stop buffering past the cap
+        const take = Math.min(value.byteLength, max - buffered);
+        chunks.push(take === value.byteLength ? value : value.subarray(0, take));
+        buffered += take;
+      }
+    } catch {
+      return '';
+    }
+    try {
+      return new TextDecoder().decode(concatChunks(chunks, buffered));
+    } catch {
+      return '';
+    }
+  }
+
+  // No readable stream — fall back to text() with the post-read guard.
   try {
     const text = await clone.text();
     return text.length > max ? text.slice(0, max) : text;
   } catch {
     return '';
   }
+}
+
+function concatChunks(chunks, total) {
+  const out = new Uint8Array(total);
+  let offset = 0;
+  for (const c of chunks) {
+    out.set(c, offset);
+    offset += c.byteLength;
+  }
+  return out;
 }
 
 // Minimal multipart/form-data parser: enough to expose field names + values (so `post.<field>`
