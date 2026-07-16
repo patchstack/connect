@@ -55,6 +55,12 @@ export interface CreateProtectionOptions {
   egress?: boolean;
   /** Hosts exempt from egress screening. */
   allowHosts?: string[];
+  /**
+   * Screen the Node http/https path against DNS rebinding: resolve outbound hostnames and block +
+   * pin to the vetted address when they map to a disallowed (internal/metadata) IP. Default true;
+   * only active when `egress` is on and node:dns is available (a no-op on edge runtimes).
+   */
+  screenDns?: boolean;
   /** Redaction mask (string or per-category function). Default "[REDACTED]". */
   maskWith?: string | ((category?: string) => string);
   onError?: (err: unknown) => void;

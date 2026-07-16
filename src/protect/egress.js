@@ -7,10 +7,12 @@
 
 /**
  * @param {{ shouldBlock: (url:string, host:string|null, method:string)=>boolean,
- *           onBlock?: (info:{url:string,host:string|null,method:string})=>void }} opts
+ *           onBlock?: (info:{url:string,host:string|null,method:string})=>void,
+ *           dnsScreen?: boolean,
+ *           lookup?: Function }} opts
  * @returns {Promise<() => void>} uninstall (restores every patched surface)
  */
-export async function installEgressGuard({ shouldBlock, onBlock } = {}) {
+export async function installEgressGuard({ shouldBlock, onBlock, dnsScreen = true, lookup } = {}) {
   const restores = [];
   if (typeof shouldBlock !== 'function') return () => {};
 
@@ -44,11 +46,29 @@ export async function installEgressGuard({ shouldBlock, onBlock } = {}) {
     });
   }
 
-  // 2. node:http / node:https — best-effort; absent on Workers/Deno-without-node (import throws).
+  // DNS-rebinding screen for the Node http path: instead of trusting the hostname, resolve it
+  // ourselves, block if it maps to a disallowed address, and PIN the connection to that vetted
+  // resolution — so a name that passes the hostname check but resolves (or re-resolves) to an
+  // internal/metadata IP can't slip through (time-of-check vs time-of-use). Needs node:dns +
+  // node:net; absent on edge runtimes, where the hostname rules still apply.
+  let screen = null;
+  if (dnsScreen) {
+    try {
+      const resolveLookup = lookup ?? (await import('node:dns')).lookup;
+      const { isIP } = await import('node:net');
+      if (typeof resolveLookup === 'function' && typeof isIP === 'function') {
+        screen = { lookup: resolveLookup, isIP };
+      }
+    } catch {
+      screen = null; // no node:dns/net here — skip, hostname rules still apply
+    }
+  }
+
+  // node:http / node:https — best-effort; absent on Workers/Deno-without-node (import throws).
   for (const moduleName of ['node:http', 'node:https']) {
     try {
       const mod = await import(moduleName);
-      const restore = patchHttpModule(mod.default ?? mod, block);
+      const restore = patchHttpModule(mod.default ?? mod, block, screen);
       if (restore) restores.push(restore);
     } catch {
       /* module not available on this runtime — skip */
@@ -93,7 +113,7 @@ export async function installEgressGuard({ shouldBlock, onBlock } = {}) {
 }
 
 // Wrap http(s).request/get so a blocked destination throws before the socket opens.
-function patchHttpModule(http, block) {
+function patchHttpModule(http, block, screen) {
   if (!http || typeof http.request !== 'function' || http.__patchstackGuarded) return null;
   const originalRequest = http.request;
   const originalGet = http.get;
@@ -103,6 +123,14 @@ function patchHttpModule(http, block) {
       const target = extractHttpTarget(args);
       if (target && block(target.url, target.host, target.method)) {
         throw new Error(`Patchstack blocked an outbound request to a disallowed address: ${target.host ?? target.url}`);
+      }
+      // DNS screen: only for real hostnames (a literal IP was already covered by the check above).
+      if (target && screen && target.host && screen.isIP(target.host) === 0) {
+        try {
+          args = withScreeningLookup(args, target, block, screen.lookup);
+        } catch {
+          /* injection failed — proceed unscreened (fail-open) */
+        }
       }
       return original.apply(this, args);
     };
@@ -149,4 +177,71 @@ function normalizeHost(raw) {
   if (bracketed) return bracketed[1];
   if ((host.match(/:/g) || []).length > 1) return host; // bare IPv6 — no host:port to split
   return host.split(':')[0];
+}
+
+// Given the addresses a hostname resolved to, return the first one the policy blocks (else null).
+// Reuses the same `block` predicate as the hostname check, so egress rules + allowlist apply to
+// the resolved IP too. Exported for tests.
+export function screenResolved(addresses, target, block) {
+  for (const a of addresses || []) {
+    const ip = a && typeof a === 'object' ? a.address : a;
+    if (ip && block(target.url, ip, target.method)) return ip;
+  }
+  return null;
+}
+
+// Build a DNS `lookup` that screens every resolved address before the socket connects, then hands
+// back the vetted addresses (pinning the connection to what we checked). A blocked address errors
+// the connection; a resolver error or our own failure falls through to normal resolution (fail-open).
+function withScreeningLookup(args, target, block, lookup) {
+  const screeningLookup = (hostname, options, callback) => {
+    let opts = options;
+    let cb = callback;
+    if (typeof opts === 'function') {
+      cb = opts;
+      opts = {};
+    }
+    if (!opts || typeof opts !== 'object') opts = {};
+    try {
+      lookup(hostname, { ...opts, all: true }, (err, addresses) => {
+        if (err) return cb(err);
+        const list = Array.isArray(addresses) ? addresses : [];
+        const blocked = screenResolved(list, target, block);
+        if (blocked) {
+          return cb(new Error(`Patchstack blocked an outbound request to a disallowed address: ${target.host} resolved to ${blocked}`));
+        }
+        if (opts.all) return cb(null, list);
+        const first = list[0];
+        if (!first) return cb(new Error(`Patchstack: could not resolve ${hostname}`));
+        return cb(null, first.address, first.family);
+      });
+    } catch {
+      // Our screening threw — fall back to a plain resolution so we never break a request ourselves.
+      try {
+        lookup(hostname, opts, cb);
+      } catch {
+        cb(new Error(`Patchstack: lookup failed for ${hostname}`));
+      }
+    }
+  };
+  return injectLookupOption(args, screeningLookup);
+}
+
+// Return a new args array for http(s).request with our `lookup` set on the options object (cloned,
+// never mutating the caller's object), inserting an options object when the call didn't pass one.
+function injectLookupOption(args, lookup) {
+  const first = args[0];
+  if (first && typeof first === 'object' && !(first instanceof URL)) {
+    return [{ ...first, lookup }, ...args.slice(1)];
+  }
+  const rest = args.slice(1);
+  const optIdx = rest.findIndex((a) => a && typeof a === 'object' && !(a instanceof URL));
+  if (optIdx !== -1) {
+    const next = [...rest];
+    next[optIdx] = { ...rest[optIdx], lookup };
+    return [first, ...next];
+  }
+  const cbIdx = rest.findIndex((a) => typeof a === 'function');
+  if (cbIdx === -1) return [first, { lookup }, ...rest];
+  return [first, ...rest.slice(0, cbIdx), { lookup }, ...rest.slice(cbIdx)];
 }
