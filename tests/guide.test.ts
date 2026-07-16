@@ -36,6 +36,16 @@ describe('guide', () => {
     writeFileSync(path.join(cwd, relative), JSON.stringify(value, null, 2));
   };
 
+  const writeGenericProtection = (underSrc = false): void => {
+    const root = underSrc ? path.join(cwd, 'src') : cwd;
+    mkdirSync(path.join(root, 'patchstack'), { recursive: true });
+    writeFileSync(path.join(root, 'patchstack', 'guard.ts'), 'export const protectFetch = () => {};');
+    writeFileSync(
+      path.join(root, 'server.ts'),
+      'import { protectFetch } from "./patchstack/guard";',
+    );
+  };
+
   describe('detectPackageManager', () => {
     it('maps lockfiles to their package manager', () => {
       writeFileSync(path.join(cwd, 'bun.lock'), '');
@@ -86,8 +96,9 @@ describe('guide', () => {
     it('reports a fully wired project as all-done', async () => {
       writeJson('package.json', {
         name: 'done-app',
-        devDependencies: { '@patchstack/connect': '^0.2.11' },
+        dependencies: { '@patchstack/connect': '^0.2.11' },
         scripts: {
+          postinstall: 'patchstack-connect scan',
           prebuild: 'lint && patchstack-connect scan',
           postbuild: 'patchstack-connect mark-build',
         },
@@ -99,16 +110,18 @@ describe('guide', () => {
         '<script src="https://cdn.patchstack.com/patchstack-widget.js"></script>' +
           `<script>PatchstackWidget.init({ userToken: '${VALID_UUID}' });</script>`,
       );
+      writeGenericProtection(true);
 
       const state = await collectGuideState(cwd);
 
-      expect(state.installed).toEqual({ version: '^0.2.11', section: 'devDependencies' });
+      expect(state.installed).toEqual({ version: '^0.2.11', section: 'dependencies' });
       expect(state.siteUuid).toBe(VALID_UUID);
       expect(state.claimUrl).toContain(VALID_UUID);
       expect(state.prebuildWired).toBe(true);
       expect(state.postbuildWired).toBe(true);
       expect(state.widgetInstalled).toBe(true);
       expect(state.widgetTokenMatches).toBe(true);
+      expect(state.protectionWired).toBe(true);
     });
 
     it('survives a project with no package.json', async () => {
@@ -179,7 +192,7 @@ describe('guide', () => {
 
   describe('renderGuideChecklist', () => {
     it('prints the package-manager-specific install command for missing installs', async () => {
-      writeJson('package.json', { name: 'bun-app' });
+      writeJson('package.json', { name: 'bun-app', scripts: { build: 'vite build' } });
       writeFileSync(path.join(cwd, 'bun.lock'), '');
 
       const output = renderGuideChecklist(await collectGuideState(cwd), false);
@@ -197,12 +210,26 @@ describe('guide', () => {
     });
 
     it('suggests prebuild/postbuild hooks on non-bun projects', async () => {
-      writeJson('package.json', { name: 'npm-app' });
+      writeJson('package.json', { name: 'npm-app', scripts: { build: 'vite build' } });
 
       const output = renderGuideChecklist(await collectGuideState(cwd), false);
 
       expect(output).toContain('"prebuild": "patchstack-connect scan"');
       expect(output).toContain('"postbuild": "patchstack-connect mark-build"');
+    });
+
+    it('flags a dev-only install because the generated guard is loaded at runtime', async () => {
+      writeJson('package.json', {
+        name: 'dev-only-app',
+        devDependencies: { '@patchstack/connect': '^0.3.19' },
+      });
+
+      const state = await collectGuideState(cwd);
+      const output = renderGuideChecklist(state, false);
+
+      expect(state.installed?.section).toBe('devDependencies');
+      expect(output).toContain('Move @patchstack/connect to runtime dependencies');
+      expect(output).toContain('@patchstack/connect/protect at runtime');
     });
 
     it('counts a chained build script as wired (the bun pattern)', async () => {
@@ -232,14 +259,16 @@ describe('guide', () => {
     it('celebrates a complete setup and keeps the dashboard URL visible', async () => {
       writeJson('package.json', {
         name: 'done-app',
-        devDependencies: { '@patchstack/connect': '0.2.11' },
+        dependencies: { '@patchstack/connect': '0.2.11' },
         scripts: {
+          postinstall: 'patchstack-connect scan',
           prebuild: 'patchstack-connect scan',
           postbuild: 'patchstack-connect mark-build',
         },
       });
       writeJson('.patchstackrc.json', { siteUuid: VALID_UUID });
       writeFileSync(path.join(cwd, 'index.html'), `patchstack-widget.js userToken: '${VALID_UUID}'`);
+      writeGenericProtection();
 
       const output = renderGuideChecklist(await collectGuideState(cwd), false);
 
@@ -268,13 +297,15 @@ describe('guide', () => {
     it('treats "widget": false as a completed widget step', async () => {
       writeJson('package.json', {
         name: 'optout-app',
-        devDependencies: { '@patchstack/connect': '0.3.6' },
+        dependencies: { '@patchstack/connect': '0.3.6' },
         scripts: {
+          postinstall: 'patchstack-connect scan',
           prebuild: 'patchstack-connect scan',
           postbuild: 'patchstack-connect mark-build',
         },
       });
       writeJson('.patchstackrc.json', { siteUuid: VALID_UUID, widget: false });
+      writeGenericProtection();
 
       const state = await collectGuideState(cwd);
       expect(state.widgetOptOut).toBe(true);

@@ -12,6 +12,8 @@ import path from 'node:path';
 
 import { DEFAULT_ENDPOINT, buildClaimUrl } from './client.js';
 import { resolveConfig } from './config.js';
+import { runVerify } from './protect/install/index.js';
+import type { VerifyCheck } from './protect/install/types.js';
 import { detectStack } from './stack.js';
 import { buildWidgetTag } from './widget.js';
 
@@ -31,6 +33,8 @@ export interface GuideState {
   claimUrl: string | null;
   /** Non-default API endpoint in effect (rc file, env, or flag), else null. */
   endpointOverride: string | null;
+  hasBuildScript: boolean;
+  installScanWired: boolean;
   prebuildWired: boolean;
   postbuildWired: boolean;
   widgetInstalled: boolean;
@@ -42,13 +46,17 @@ export interface GuideState {
   framework: string | null;
   /** Existing file the widget snippet belongs in, best-effort. */
   widgetFileHint: string | null;
+  /** Result of the same local inspection used by `protect --check`. */
+  protectionWired: boolean;
+  protectionStack: string;
+  protectionChecks: VerifyCheck[];
 }
 
 const INSTALL_COMMANDS: Record<PackageManager, string> = {
-  npm: 'npm install --save-dev @patchstack/connect',
-  pnpm: 'pnpm add -D @patchstack/connect',
-  yarn: 'yarn add -D @patchstack/connect',
-  bun: 'bun add -d @patchstack/connect',
+  npm: 'npm install --save @patchstack/connect',
+  pnpm: 'pnpm add @patchstack/connect',
+  yarn: 'yarn add @patchstack/connect',
+  bun: 'bun add @patchstack/connect',
 };
 
 /**
@@ -309,6 +317,7 @@ export async function collectGuideState(cwd: string): Promise<GuideState> {
   );
 
   const widget = findWidgetMarker(cwd, siteUuid);
+  const protection = runVerify(cwd);
 
   return {
     projectName: pkg?.name ?? null,
@@ -318,6 +327,8 @@ export async function collectGuideState(cwd: string): Promise<GuideState> {
     siteUuid,
     claimUrl,
     endpointOverride,
+    hasBuildScript: Boolean(pkg?.scripts?.build?.trim()),
+    installScanWired: (pkg?.scripts?.postinstall ?? '').includes('patchstack-connect scan'),
     // bun run doesn't execute npm-style pre/post scripts, so chaining inside
     // the build script itself also counts as wired (and is what we suggest on bun).
     prebuildWired:
@@ -331,6 +342,9 @@ export async function collectGuideState(cwd: string): Promise<GuideState> {
     widgetOptOut,
     framework: stack.framework,
     widgetFileHint: resolveWidgetFileHint(cwd, stack.framework),
+    protectionWired: protection.wired,
+    protectionStack: protection.stack,
+    protectionChecks: protection.checks,
   };
 }
 
@@ -346,10 +360,12 @@ const ANSI = {
 /** Setup steps still missing — 0 means the checklist is fully green. */
 export function countRemainingSteps(state: GuideState): number {
   return [
-    state.installed !== null,
+    state.installed?.section === 'dependencies',
     state.siteUuid !== null,
-    state.prebuildWired && state.postbuildWired,
+    state.installScanWired,
+    !state.hasBuildScript || (state.prebuildWired && state.postbuildWired),
     state.widgetOptOut || (state.widgetInstalled && state.widgetTokenMatches !== false),
+    state.protectionWired,
   ].filter((step) => !step).length;
 }
 
@@ -382,10 +398,14 @@ export function renderGuideChecklist(state: GuideState, useColor: boolean): stri
   }
 
   // 1. Install
-  if (state.installed !== null) {
+  if (state.installed?.section === 'dependencies') {
     lines.push(done(`@patchstack/connect installed (${state.installed.version}, ${state.installed.section})`));
+  } else if (state.installed !== null) {
+    lines.push(todo(`Move @patchstack/connect to runtime dependencies (currently ${state.installed.section})`));
+    lines.push(detail(`Run → ${installCommand(state.packageManager)}`));
+    lines.push(detail('The generated guard imports @patchstack/connect/protect at runtime.'));
   } else {
-    lines.push(todo('Install @patchstack/connect as a dev dependency'));
+    lines.push(todo('Install @patchstack/connect as a runtime dependency'));
     lines.push(detail(`Run → ${installCommand(state.packageManager)}`));
     if (state.packageManager === 'bun') {
       lines.push(detail(`(if bun isn't available here, ${INSTALL_COMMANDS.npm} works too)`));
@@ -402,8 +422,18 @@ export function renderGuideChecklist(state: GuideState, useColor: boolean): stri
     lines.push(detail('and prints a dashboard link. The CLI prints the link but never opens it.'));
   }
 
-  // 3. Build hooks
-  if (state.prebuildWired && state.postbuildWired) {
+  // 3. Dependency-change scan
+  if (state.installScanWired) {
+    lines.push(done('Dependency-install scan wired (postinstall)'));
+  } else {
+    lines.push(todo('Scan again whenever dependencies are installed'));
+    lines.push(detail('Edit package.json → "postinstall": "patchstack-connect scan"'));
+  }
+
+  // 4. Build hooks
+  if (!state.hasBuildScript) {
+    lines.push(done('No build script to integrate (postinstall covers dependency changes)'));
+  } else if (state.prebuildWired && state.postbuildWired) {
     lines.push(done('Build hooks wired (scan before builds, mark-build after)'));
   } else if (state.packageManager === 'bun') {
     // bun run skips npm-style pre/post scripts, so chain inside the build script.
@@ -419,7 +449,7 @@ export function renderGuideChecklist(state: GuideState, useColor: boolean): stri
     }
   }
 
-  // 4. Disclosure widget
+  // 5. Disclosure widget
   const widgetOk = state.widgetInstalled && state.widgetTokenMatches !== false;
   if (state.widgetOptOut && !widgetOk) {
     lines.push(done('Disclosure widget disabled by config ("widget": false in .patchstackrc.json)'));
@@ -444,7 +474,18 @@ export function renderGuideChecklist(state: GuideState, useColor: boolean): stri
     lines.push(detail('The site UUID is public by design — it ships in client-side HTML.'));
   }
 
-  // 5. Dashboard access — always keep the URL prominent.
+  // 6. Runtime protection
+  if (state.protectionWired) {
+    lines.push(done(`Runtime protection wired (${state.protectionStack})`));
+  } else {
+    lines.push(todo(`Finish runtime protection (${state.protectionStack})`));
+    for (const check of state.protectionChecks.filter((item) => !item.ok)) {
+      lines.push(detail(`${check.label}${check.hint ? ` — ${check.hint}` : ''}`));
+    }
+    lines.push(detail('Verify → npx @patchstack/connect protect --check'));
+  }
+
+  // 7. Dashboard access — always keep the URL prominent.
   lines.push('');
   if (state.claimUrl !== null) {
     lines.push(` ${paint(ANSI.cyan, '➜')} ${paint(ANSI.bold, 'Dashboard link (open to view reports):')}`);
@@ -464,7 +505,7 @@ export function renderGuideChecklist(state: GuideState, useColor: boolean): stri
       done(
         paint(
           ANSI.bold,
-          'All setup steps complete. Commit .patchstackrc.json, package.json, and the file carrying the widget snippet.',
+          'All setup steps complete. Commit .patchstackrc.json, package.json, the runtime guard changes, and the file carrying the widget snippet.',
         ),
       ),
     );
