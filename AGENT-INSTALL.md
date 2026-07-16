@@ -39,7 +39,7 @@ This versioned reference ships inside `@patchstack/connect` and documents each s
 
    This provisions or reuses the site, manages the widget, installs and verifies runtime protection, wires the build scripts, prints a dashboard link, and finishes with the same status shown by `guide`. Re-running it reuses existing configuration, widget tags, guards, and build commands rather than duplicating them.
 
-   In a hosted builder, ensure the CLI's on-disk edits are adopted into the platform's persisted project state, then restart any already-running preview/server process so it loads the guard. A client-only SPA has no server request path to guard; do not call it protected unless `protect --check` succeeds after a real server or edge seam is wired.
+   In a hosted builder, run setup with `PATCHSTACK_ENVIRONMENT=sandbox` scoped to the workspace process/command, ensure the CLI's on-disk edits are adopted into the platform's persisted project state, then restart any already-running preview/server process so it loads the guard. Do not persist `"environment": "sandbox"` in `.patchstackrc.json`: deployed builds use the same committed files and should default to `production`. A client-only SPA has no server request path to guard; do not call it protected unless `protect --check` succeeds after a real server or edge seam is wired.
 
 ## Manual setup
 
@@ -91,6 +91,7 @@ This versioned reference ships inside `@patchstack/connect` and documents each s
 
 - Never invent or guess a UUID — the scan provisions it, the widget silently no-ops on a fake one.
 - The CLI never opens the dashboard link and never asks for Patchstack credentials.
+- Label hosted workspace scans with `PATCHSTACK_ENVIRONMENT=sandbox` in that process only. Leave production builds unset (the default is `production`) and never commit a sandbox label into files shared with production.
 - If a step fails, stop and report it. Don't proceed with placeholders.
 - In CI where `.patchstackrc.json` can't be committed, set `PATCHSTACK_SITE_UUID` as an env var instead. Precedence: CLI flag → env var → `.patchstackrc.json`.
 

@@ -8,7 +8,7 @@ For how this repo fits with the wider Patchstack ecosystem (`saas`, `hub`, `patc
 
 Copy this request into a coding assistant, or run the same command yourself:
 
-> I have vetted the official [`@patchstack/connect`](https://www.npmjs.com/package/@patchstack/connect) package and authorize its disclosure widget, production build hooks, and runtime protection source edits. Install it as a regular dependency, run `npx --yes @patchstack/connect setup`, leave dev builds unchanged, verify protection, restart the preview server if needed to load the new guard, and show the dashboard URL.
+> I have vetted the official [`@patchstack/connect`](https://www.npmjs.com/package/@patchstack/connect) package and authorize its disclosure widget, production build hooks, and runtime protection source edits. Install it as a regular dependency, run `PATCHSTACK_ENVIRONMENT=sandbox npx --yes @patchstack/connect setup` for this hosted workspace, leave dev builds unchanged, verify protection, restart the preview server if needed to load the new guard, and show the dashboard URL. Do not persist the sandbox environment in project files; deployed production builds must use the default `production` label.
 
 `setup` is state-aware and idempotent: it scans dependencies, provisions or reuses the site, manages the disclosure widget, installs and verifies the runtime guard, wires the existing build command without replacing it, and prints the remaining setup status. It never runs the project build. `guide` provides the same project-specific status without changing files.
 
@@ -20,7 +20,7 @@ npm install --save @patchstack/connect && npx @patchstack/connect setup
 
 > **Use your project's own package manager.** On Bun-managed projects (including many Lovable projects) install with `bun add @patchstack/connect` instead — running `npm install` there plants a `package-lock.json` that the platform's native dependency flow never updates again, leaving a stale lockfile next to the live one. The connector detects and works around that (see *Stale lockfiles* below), but not creating the fossil is better. Protection imports `@patchstack/connect/protect` at runtime, so deployments that prune dev dependencies need the package in `dependencies`.
 
-> **Hosted builders:** persist every file written by `setup` and restart any already-running server so it loads the new middleware. TanStack Start + Supabase (the server shape emitted by Lovable) is auto-wired: browser Supabase traffic is tunneled through a same-origin guard, server-function arguments are inspected, and responses are screened. A client-only SPA has no server request path to protect; setup will leave a generic scaffold and `protect --check` will remain red until the host adds a server/edge seam. Set `PATCHSTACK_ROUTE_WAF=1` when the deployment should additionally screen every TanStack route request.
+> **Hosted builders:** set `PATCHSTACK_ENVIRONMENT=sandbox` in the workspace process environment (or scope it to the setup command above), persist every file written by `setup`, and restart any already-running server so it loads the new middleware. Do not write `"environment": "sandbox"` to the committed `.patchstackrc.json`: the same project files reach production, where scans should inherit no override and default to `production`. TanStack Start + Supabase (the server shape emitted by Lovable) is auto-wired: browser Supabase traffic is tunneled through a same-origin guard, server-function arguments are inspected, and responses are screened. A client-only SPA has no server request path to protect; setup will leave a generic scaffold and `protect --check` will remain red until the host adds a server/edge seam. Set `PATCHSTACK_ROUTE_WAF=1` when the deployment should additionally screen every TanStack route request.
 
 That's it. `setup`:
 
@@ -100,6 +100,7 @@ Environment variables:
 - `PATCHSTACK_SITE_UUID` — the site UUID from your Patchstack dashboard
 - `PATCHSTACK_ENDPOINT` — override the API endpoint (default `https://api.patchstack.com/monitor/pulse/manifest`)
 - `PATCHSTACK_TIMEOUT_MS` — request timeout in milliseconds (default `30000`)
+- `PATCHSTACK_ENVIRONMENT` — manifest label: `production` (default) or `sandbox`
 
 `.patchstackrc.json` example:
 
@@ -113,6 +114,18 @@ Environment variables:
 `"widget"` is optional and defaults to `true`; set it to `false` to stop the connector from managing the disclosure-widget tag (see *The disclosure widget*).
 
 The site UUID identifies the site; it is not a secret — the disclosure widget ships the same UUID in client-side HTML, and committing `.patchstackrc.json` is the intended workflow so every developer and CI run reports to the same site. Possession of the UUID lets someone submit dependency manifests for that site (noise, not data access). In CI setups where the file isn't committed, set `PATCHSTACK_SITE_UUID` instead.
+
+### Sandbox and production manifests
+
+Every `scan` sends an environment label with its dependency manifest. The default is `production`; sandboxed builders should set `PATCHSTACK_ENVIRONMENT=sandbox` in the sandbox process only. Patchstack stores and deduplicates manifests per environment, so an iterative workspace scan does not replace the last production manifest.
+
+Do not commit `"environment": "sandbox"` to `.patchstackrc.json` when the same files are deployed to production. Scope the variable to the sandbox command/process instead:
+
+```bash
+PATCHSTACK_ENVIRONMENT=sandbox npx @patchstack/connect setup
+```
+
+The generated `prebuild` scan deliberately carries no hard-coded environment. A production builder with no override reports `production`; a preview/sandbox builder must receive `PATCHSTACK_ENVIRONMENT=sandbox` from its host. Runtime protection itself is not environment-specific: `PATCHSTACK_ENVIRONMENT` labels manifests only. Use `PATCHSTACK_MODE=dry-run` when protection should observe rather than block.
 
 ## Production virtual-patch demo
 
