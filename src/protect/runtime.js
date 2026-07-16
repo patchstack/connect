@@ -11,7 +11,7 @@
 // every runtime an AI builder deploys to.
 // Vendored node-waf engine (this package is self-contained — no @patchstack/node-waf dep).
 import { RuleEngine, PatchstackRuleClient } from './engine/index.js';
-import { matchValue, walkLeaves } from './engine/engine.js';
+import { matchValue, walkLeaves, safeRegExp } from './engine/engine.js';
 import { PulseRuleClient } from './engine/pulse-client.js';
 import { fromFetchRequest } from './engine/fetch.js';
 import { fromNodeRequest } from './engine/node.js';
@@ -177,7 +177,16 @@ export async function createProtection(options = {}) {
       if (chunk == null) return;
       const buf = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk, typeof enc === 'string' ? enc : 'utf8');
       size += buf.length;
-      if (size > MAX) { overflow = true; return; }
+      if (size > MAX) {
+        // Too big to screen — abandon buffering, but FLUSH what we already captured (the head) plus
+        // this chunk before switching to pass-through, so the client gets a complete body (not a
+        // truncated one missing everything before the cap was hit).
+        for (const c of chunks) origWrite(c);
+        chunks.length = 0;
+        origWrite(buf);
+        overflow = true;
+        return;
+      }
       chunks.push(buf);
     };
     res.write = function (chunk, enc, cb) {
@@ -192,6 +201,7 @@ export async function createProtection(options = {}) {
       else if (typeof enc === 'function') { cb = enc; enc = undefined; }
       if (overflow) { if (chunk != null) origWrite(chunk, enc); return origEnd(cb); }
       collect(chunk, enc);
+      if (overflow) return origEnd(cb); // collect just flushed head + final chunk on overflow
       const text = Buffer.concat(chunks).toString('utf8');
       let ct = res.getHeader ? res.getHeader('content-type') : undefined;
       if (Array.isArray(ct)) ct = ct[0];
@@ -214,6 +224,9 @@ export async function createProtection(options = {}) {
         if (r.headers && res.setHeader) {
           const current = res.getHeaders ? res.getHeaders() : {};
           for (const [name, value] of Object.entries(r.headers)) {
+            // content-length was just removed (the redacted body has a new length); never re-set a
+            // stale one here or the response truncates/hangs.
+            if (name.toLowerCase() === 'content-length') continue;
             if (Array.isArray(value)) {
               try { res.setHeader(name, value); } catch { /* ignore invalid header */ } // Set-Cookie array
             } else if (typeof value === 'string' && current[name] !== value) {
@@ -370,6 +383,7 @@ export async function createProtection(options = {}) {
       shouldBlock: egressShouldBlock,
       onBlock: options.onEgressBlock,
       dnsScreen: options.screenDns !== false,
+      allowHosts: options.allowHosts,
     });
   }
 
@@ -418,11 +432,13 @@ function extractRedactors(rule) {
       const m = c.match;
       if (!m) continue;
       if (m.type === 'regex' && typeof m.value === 'string') {
-        const parsed = m.value.match(/^\/(.+)\/([a-z]*)$/is);
-        if (parsed) {
-          const flags = parsed[2].includes('g') ? parsed[2] : parsed[2] + 'g';
+        // Route through the SAME ReDoS guard detection uses — a catastrophic redactor pattern must
+        // not hang the response path (safeRegExp returns null for dangerous/invalid patterns → skip).
+        const safe = safeRegExp(m.value);
+        if (safe) {
+          const flags = safe.flags.includes('g') ? safe.flags : safe.flags + 'g';
           try {
-            out.push({ re: new RegExp(parsed[1], flags) });
+            out.push({ re: new RegExp(safe.source, flags) });
           } catch {
             /* skip invalid */
           }

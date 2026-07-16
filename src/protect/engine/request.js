@@ -352,7 +352,12 @@ export class RequestResolver {
       return undefined;
     }
 
-    if (key in obj) {
+    // Own-property only: `key in obj` would resolve `__proto__`/`constructor`/`toString` to the
+    // prototype chain, so a rule like `post.__proto__` (detecting a literal `__proto__` field) would
+    // read Object.prototype instead of request data and never match. Use hasOwnProperty.
+    const own = (o, k) => o !== null && typeof o === 'object' && Object.prototype.hasOwnProperty.call(o, k);
+
+    if (own(obj, key)) {
       return obj[key];
     }
 
@@ -360,7 +365,7 @@ export class RequestResolver {
     let current = obj;
 
     for (const part of parts) {
-      if (current === null || current === undefined || typeof current !== 'object') {
+      if (!own(current, part)) {
         return undefined;
       }
       current = current[part];

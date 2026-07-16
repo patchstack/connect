@@ -52,8 +52,14 @@ function wire(cwd: string, opts: WireOptions): WireResult {
 
   const mwPath = join(cwd, mw.relFile);
   const existing = mw.exists ? read(mwPath) : '';
-  if (mw.exists && !existing.includes('patchstack-next')) {
-    // Don't overwrite the app's own middleware — leave it, and tell the user how to add the guard.
+  if (mw.exists && existing.includes('patchstack-next')) {
+    // Already ours — do NOT re-copy the template over it: middleware.ts is user-editable, so
+    // overwriting would discard any edits made after scaffolding.
+    log(`${mw.relFile} already has the Patchstack middleware — left as-is`);
+    return { ok: true, changed };
+  }
+  if (mw.exists) {
+    // The app's own middleware — leave it, and tell the user how to add the guard.
     log(
       `existing ${mw.relFile} left untouched — scaffolded ${rulesFile(mw.relDir)}; add the guard to your ` +
         `middleware: import { createProtection } from "@patchstack/connect/protect", run fetchGuard() on the ` +
@@ -62,11 +68,11 @@ function wire(cwd: string, opts: WireOptions): WireResult {
     return { ok: true, changed };
   }
 
-  // Fresh (or already-ours) → write the managed middleware.
+  // Fresh → write the managed middleware.
   copyFileSync(join(templates, 'next-middleware.ts'), mwPath);
   if (!opts.demo) bakeSiteUuid(cwd, mw.relFile);
   changed.push(mw.relFile);
-  log(mw.exists ? `refreshed ${mw.relFile} (Patchstack middleware)` : `scaffolded ${mw.relFile} (Patchstack middleware)`);
+  log(`scaffolded ${mw.relFile} (Patchstack middleware)`);
   return { ok: true, changed: [...new Set(changed)] };
 }
 

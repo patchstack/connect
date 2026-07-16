@@ -19,7 +19,7 @@ export class PatchstackRuleClient {
   constructor({ token, baseUrl, cacheTtl, etag } = {}) {
     this.#token = token ?? process.env.PATCHSTACK_WAF_TOKEN;
     this.#baseUrl = baseUrl ?? process.env.PATCHSTACK_WAF_API_URL ?? DEFAULT_BASE_URL;
-    this.#cacheTtl = cacheTtl ?? DEFAULT_CACHE_TTL;
+    this.#cacheTtl = Number.isFinite(cacheTtl) && cacheTtl > 0 ? cacheTtl : DEFAULT_CACHE_TTL;
     this.#etag = etag ?? null;
 
     if (!this.#token) {
@@ -68,11 +68,17 @@ export class PatchstackRuleClient {
 
       const data = await response.json();
 
+      // A 200 that isn't a genuine rule envelope must not be treated as "no rules". Report failure
+      // so the caller falls back to the cache / bundled rules rather than caching an empty bundle.
+      if (!data || !Array.isArray(data.firewall)) {
+        return { success: false, error: 'unexpected response shape (no firewall array)', firewall: [], whitelists: [], whitelist_keys: {} };
+      }
+
       const result = {
         success: true,
         notModified: false,
         etag: response.headers?.get?.('etag') ?? null,
-        firewall: Array.isArray(data.firewall) ? data.firewall : [],
+        firewall: data.firewall,
         whitelists: Array.isArray(data.whitelists) ? data.whitelists : [],
         whitelist_keys: data.whitelist_keys ?? {}
       };

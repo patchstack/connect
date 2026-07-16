@@ -8,6 +8,8 @@ import type { Adapter } from '../types.js';
 const SPEC: RegisterSpec = {
   appRe: /(?:const|let|var)\s+([A-Za-z_$][\w$]*)\s*=\s*(?:fastify|Fastify)\(/,
   guardTemplate: 'fastify-plugin.ts',
+  guardTemplateEsm: 'fastify-plugin.js',
+  guardTemplateCjs: 'fastify-plugin.cjs',
   importName: 'patchstackFastify',
   call: (v) => `${v}.register(patchstackFastify);`,
   label: 'Fastify app',
