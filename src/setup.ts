@@ -2,6 +2,8 @@ import { readFileSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 
 import type { PackageManager } from './guide.js';
+import { runProtect, runVerify } from './protect/install/index.js';
+import type { ProtectResult, VerifyReport } from './protect/install/types.js';
 
 const SCAN_COMMAND = 'patchstack-connect scan';
 const MARK_BUILD_COMMAND = 'patchstack-connect mark-build';
@@ -15,6 +17,23 @@ export interface WireBuildScriptsResult {
   changed: boolean;
   strategy: 'build-chain' | 'lifecycle-hooks' | 'skipped';
   detail: string;
+}
+
+export interface SetupProtectionResult {
+  install: ProtectResult;
+  verification: VerifyReport;
+}
+
+/**
+ * Install the runtime guard after setup has provisioned a site UUID, then inspect
+ * the resulting seam. Verification is deliberately separate from the installer's
+ * best-effort result: an adapter can scaffold files but still need a manual merge
+ * when an existing framework seam cannot safely be overwritten.
+ */
+export function setupProtection(cwd: string): SetupProtectionResult {
+  const install = runProtect(cwd);
+  const verification = runVerify(cwd);
+  return { install, verification };
 }
 
 /** Add `command` after an existing lifecycle hook without duplicating it. */

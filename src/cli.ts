@@ -30,7 +30,7 @@ import {
   renderGuideChecklist,
 } from './guide.js';
 import { runProtect, runVerify } from './protect/install/index.js';
-import { wireBuildScripts } from './setup.js';
+import { setupProtection, wireBuildScripts } from './setup.js';
 import { detectStack, type StackDescriptor } from './stack.js';
 import { PatchstackError } from './types.js';
 import { buildWidgetTag, ensureSourceWidget, ensureWidgetInHtml } from './widget.js';
@@ -47,8 +47,9 @@ Usage:
                                                      or src/app.html) — opt out with
                                                      "widget": false in .patchstackrc.json
   patchstack-connect setup  [options]                Finish the bounded project setup: run scan,
-                                                     manage the widget, and wire package.json build
-                                                     scripts. Never runs a build or protect
+                                                     manage the widget, install + verify runtime
+                                                     protection, and wire package.json build scripts.
+                                                     Never runs the project build
   patchstack-connect init   <site-uuid>              Optional: pre-seed .patchstackrc.json
                                                      with an existing site UUID
   patchstack-connect status [options]                Show current configuration
@@ -514,12 +515,25 @@ async function runSetup(args: ParsedArgs): Promise<number> {
   }
 
   console.log('');
-  console.log('  2. Wire scan and mark-build into package.json');
+  console.log('  2. Install and verify runtime protection');
+  const protection = setupProtection(process.cwd());
+  if (protection.verification.wired) {
+    console.log(`Runtime protection: wired (${protection.verification.stack}).`);
+  } else {
+    console.log(`Runtime protection: manual wiring remains (${protection.verification.stack}):`);
+    for (const check of protection.verification.checks) {
+      console.log(`  ${check.ok ? '✓' : '✗'} ${check.label}${!check.ok && check.hint ? ` — ${check.hint}` : ''}`);
+    }
+    console.log('Run `npx @patchstack/connect protect --check` after completing the failed checks.');
+  }
+
+  console.log('');
+  console.log('  3. Wire scan and mark-build into package.json');
   const wired = wireBuildScripts(process.cwd(), before.packageManager);
   console.log(`Build integration: ${wired.detail}`);
 
   console.log('');
-  console.log('  3. Verify setup status');
+  console.log('  4. Verify setup status');
   const after = await collectGuideState(process.cwd());
   const useColor = process.stdout.isTTY === true && process.env.NO_COLOR === undefined;
   console.log(renderGuideChecklist(after, useColor));

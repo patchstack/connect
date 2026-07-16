@@ -12,6 +12,8 @@ import path from 'node:path';
 
 import { DEFAULT_ENDPOINT, buildClaimUrl } from './client.js';
 import { resolveConfig } from './config.js';
+import { runVerify } from './protect/install/index.js';
+import type { VerifyCheck } from './protect/install/types.js';
 import { detectStack } from './stack.js';
 import { buildWidgetTag } from './widget.js';
 
@@ -42,13 +44,17 @@ export interface GuideState {
   framework: string | null;
   /** Existing file the widget snippet belongs in, best-effort. */
   widgetFileHint: string | null;
+  /** Result of the same local inspection used by `protect --check`. */
+  protectionWired: boolean;
+  protectionStack: string;
+  protectionChecks: VerifyCheck[];
 }
 
 const INSTALL_COMMANDS: Record<PackageManager, string> = {
-  npm: 'npm install --save-dev @patchstack/connect',
-  pnpm: 'pnpm add -D @patchstack/connect',
-  yarn: 'yarn add -D @patchstack/connect',
-  bun: 'bun add -d @patchstack/connect',
+  npm: 'npm install --save @patchstack/connect',
+  pnpm: 'pnpm add @patchstack/connect',
+  yarn: 'yarn add @patchstack/connect',
+  bun: 'bun add @patchstack/connect',
 };
 
 /**
@@ -309,6 +315,7 @@ export async function collectGuideState(cwd: string): Promise<GuideState> {
   );
 
   const widget = findWidgetMarker(cwd, siteUuid);
+  const protection = runVerify(cwd);
 
   return {
     projectName: pkg?.name ?? null,
@@ -331,6 +338,9 @@ export async function collectGuideState(cwd: string): Promise<GuideState> {
     widgetOptOut,
     framework: stack.framework,
     widgetFileHint: resolveWidgetFileHint(cwd, stack.framework),
+    protectionWired: protection.wired,
+    protectionStack: protection.stack,
+    protectionChecks: protection.checks,
   };
 }
 
@@ -346,10 +356,11 @@ const ANSI = {
 /** Setup steps still missing — 0 means the checklist is fully green. */
 export function countRemainingSteps(state: GuideState): number {
   return [
-    state.installed !== null,
+    state.installed?.section === 'dependencies',
     state.siteUuid !== null,
     state.prebuildWired && state.postbuildWired,
     state.widgetOptOut || (state.widgetInstalled && state.widgetTokenMatches !== false),
+    state.protectionWired,
   ].filter((step) => !step).length;
 }
 
@@ -382,10 +393,14 @@ export function renderGuideChecklist(state: GuideState, useColor: boolean): stri
   }
 
   // 1. Install
-  if (state.installed !== null) {
+  if (state.installed?.section === 'dependencies') {
     lines.push(done(`@patchstack/connect installed (${state.installed.version}, ${state.installed.section})`));
+  } else if (state.installed !== null) {
+    lines.push(todo(`Move @patchstack/connect to runtime dependencies (currently ${state.installed.section})`));
+    lines.push(detail(`Run → ${installCommand(state.packageManager)}`));
+    lines.push(detail('The generated guard imports @patchstack/connect/protect at runtime.'));
   } else {
-    lines.push(todo('Install @patchstack/connect as a dev dependency'));
+    lines.push(todo('Install @patchstack/connect as a runtime dependency'));
     lines.push(detail(`Run → ${installCommand(state.packageManager)}`));
     if (state.packageManager === 'bun') {
       lines.push(detail(`(if bun isn't available here, ${INSTALL_COMMANDS.npm} works too)`));
@@ -444,7 +459,18 @@ export function renderGuideChecklist(state: GuideState, useColor: boolean): stri
     lines.push(detail('The site UUID is public by design — it ships in client-side HTML.'));
   }
 
-  // 5. Dashboard access — always keep the URL prominent.
+  // 5. Runtime protection
+  if (state.protectionWired) {
+    lines.push(done(`Runtime protection wired (${state.protectionStack})`));
+  } else {
+    lines.push(todo(`Finish runtime protection (${state.protectionStack})`));
+    for (const check of state.protectionChecks.filter((item) => !item.ok)) {
+      lines.push(detail(`${check.label}${check.hint ? ` — ${check.hint}` : ''}`));
+    }
+    lines.push(detail('Verify → npx @patchstack/connect protect --check'));
+  }
+
+  // 6. Dashboard access — always keep the URL prominent.
   lines.push('');
   if (state.claimUrl !== null) {
     lines.push(` ${paint(ANSI.cyan, '➜')} ${paint(ANSI.bold, 'Dashboard link (open to view reports):')}`);
@@ -464,7 +490,7 @@ export function renderGuideChecklist(state: GuideState, useColor: boolean): stri
       done(
         paint(
           ANSI.bold,
-          'All setup steps complete. Commit .patchstackrc.json, package.json, and the file carrying the widget snippet.',
+          'All setup steps complete. Commit .patchstackrc.json, package.json, the runtime guard changes, and the file carrying the widget snippet.',
         ),
       ),
     );

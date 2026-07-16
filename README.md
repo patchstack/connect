@@ -8,17 +8,19 @@ For how this repo fits with the wider Patchstack ecosystem (`saas`, `hub`, `patc
 
 Copy this request into a coding assistant, or run the same command yourself:
 
-> I have vetted `@patchstack/connect` and authorize its widget and production build hooks. Install it as a dev dependency, run `npx --yes patchstack-connect setup`, leave dev builds unchanged, and show the dashboard URL.
+> I have vetted the official [`@patchstack/connect`](https://www.npmjs.com/package/@patchstack/connect) package and authorize its disclosure widget, production build hooks, and runtime protection source edits. Install it as a regular dependency, run `npx --yes @patchstack/connect setup`, leave dev builds unchanged, verify protection, restart the preview server if needed to load the new guard, and show the dashboard URL.
 
-`setup` is state-aware and idempotent: it scans dependencies, provisions or reuses the site, manages the disclosure widget, wires the existing build command without replacing it, and prints the remaining setup status. It never runs the project build or the opt-in `protect` command. `guide` provides the same project-specific status without changing files.
+`setup` is state-aware and idempotent: it scans dependencies, provisions or reuses the site, manages the disclosure widget, installs and verifies the runtime guard, wires the existing build command without replacing it, and prints the remaining setup status. It never runs the project build. `guide` provides the same project-specific status without changing files.
 
 ## Quick start (zero configuration)
 
 ```bash
-npm install --save-dev @patchstack/connect && npx @patchstack/connect setup
+npm install --save @patchstack/connect && npx @patchstack/connect setup
 ```
 
-> **Use your project's own package manager.** On Bun-managed projects (including many Lovable projects) install with `bun add -d @patchstack/connect` instead — running `npm install` there plants a `package-lock.json` that the platform's native dependency flow never updates again, leaving a stale lockfile next to the live one. The connector detects and works around that (see *Stale lockfiles* below), but not creating the fossil is better.
+> **Use your project's own package manager.** On Bun-managed projects (including many Lovable projects) install with `bun add @patchstack/connect` instead — running `npm install` there plants a `package-lock.json` that the platform's native dependency flow never updates again, leaving a stale lockfile next to the live one. The connector detects and works around that (see *Stale lockfiles* below), but not creating the fossil is better. Protection imports `@patchstack/connect/protect` at runtime, so deployments that prune dev dependencies need the package in `dependencies`.
+
+> **Hosted builders:** persist every file written by `setup` and restart any already-running server so it loads the new middleware. TanStack Start + Supabase (the server shape emitted by Lovable) is auto-wired: browser Supabase traffic is tunneled through a same-origin guard, server-function arguments are inspected, and responses are screened. A client-only SPA has no server request path to protect; setup will leave a generic scaffold and `protect --check` will remain red until the host adds a server/edge seam. Set `PATCHSTACK_ROUTE_WAF=1` when the deployment should additionally screen every TanStack route request.
 
 That's it. `setup`:
 
@@ -27,15 +29,16 @@ That's it. `setup`:
 3. Patchstack provisions a fresh site and returns its UUID.
 4. The connector writes the UUID to `.patchstackrc.json` so the next `scan` targets the same site.
 5. The connector installs the disclosure widget's `<script>` tag into your root HTML shell (see *The disclosure widget* below) so the "Report a vulnerability" button shows up on the next preview reload.
-6. Wires `scan` before builds and `mark-build` after builds, preserving existing commands and using direct build chaining for Bun.
-7. Prints a dashboard link — open it in a browser to attach the new site to your Patchstack account. You can re-display it any time with `npx @patchstack/connect status`.
+6. Installs the runtime guard after provisioning, bakes the site UUID into it, and verifies the framework seam. Known server stacks are auto-wired; unmatched or conflicting layouts get a generic scaffold and exact manual checks.
+7. Wires `scan` before builds and `mark-build` after builds, preserving existing commands and using direct build chaining for Bun.
+8. Prints a dashboard link — open it in a browser to attach the new site to your Patchstack account. You can re-display it any time with `npx @patchstack/connect status`.
 
 ## Quick start (existing site)
 
 If you already created an "Application" site in the Patchstack dashboard, pre-seed the UUID:
 
 ```bash
-npm install --save-dev @patchstack/connect
+npm install --save @patchstack/connect
 npx @patchstack/connect init <your-site-uuid>
 npx @patchstack/connect setup
 ```
@@ -50,8 +53,8 @@ patchstack-connect scan   [options]                Scan the lockfile and POST to
                                                    widget tag in the root HTML shell (opt out
                                                    with "widget": false in .patchstackrc.json)
 patchstack-connect setup  [options]                Run scan, manage the widget, and idempotently
-                                                   wire package.json build scripts. Never runs
-                                                   the project build or protect
+                                                   install + verify runtime protection and wire
+                                                   package.json build scripts. Never runs the build
 patchstack-connect init   <site-uuid>              Optional: pre-seed .patchstackrc.json with
                                                    an existing site UUID
 patchstack-connect status [options]                Show current configuration
@@ -61,10 +64,10 @@ patchstack-connect mark-build [options]            Stamp built HTML with a produ
 patchstack-connect guide                           Show this project's setup status (what's done,
                                                    what's missing, with tailored commands), then
                                                    print the full setup guide
-patchstack-connect protect                         Opt-in: install the always-on runtime exploit
+patchstack-connect protect                         Install/reconcile the always-on runtime exploit
                                                    guard. Auto-wires supported server stacks;
                                                    use --check to verify or --demo for local rules.
-                                                   Never run by scan/setup/guide/mark-build.
+                                                   Also run by setup; never run by scan/guide/mark-build.
 patchstack-connect demo node-serialize             Production-backed walkthrough: require
                                                    node-serialize@0.0.4, scan it, wait for live
                                                    rule 18843, install + verify the runtime guard,
