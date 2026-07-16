@@ -94,6 +94,9 @@ describe('createProtection live rule refresh (refreshMs)', () => {
       pulseRulesUrl: 'https://x.test/monitor/pulse',
       mode: 'block',
       refreshMs: 1000,
+      // Isolate the rule refresh from the manifest re-post: the latter does real fs I/O
+      // (lockfile scan) that fake timers don't drain. Its own coverage is in refresh-manifest.test.ts.
+      reportManifest: false,
     });
     const guard = createServerFnGuard({ protection });
 
