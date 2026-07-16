@@ -23,7 +23,12 @@ export interface Protection {
   node(options?: { maxBodyBytes?: number; screenResponses?: boolean }): (req: unknown, res: unknown, next: () => void) => void;
   /** Present when `egress: true` — restores the original global fetch. */
   uninstallEgress?: () => void;
-  /** Present when `refreshMs > 0` — stops the live rule-refresh interval. */
+  /** Present with a live source — re-fetch + hot-swap the rules once (used by the loop + push). */
+  refresh?: () => Promise<void>;
+  /** Present with a live source — a fetch handler that runs `refresh()` when the request carries
+   *  the configured refresh secret (a push/zero-day trigger). No secret set → the handler 404s. */
+  refreshHandler?: () => (request: Request) => Promise<Response>;
+  /** Present when `refreshMs > 0` — stops the live rule-refresh loop. */
   stopRefresh?: () => void;
 }
 
@@ -46,6 +51,12 @@ export interface CreateProtectionOptions {
    * meaningful with a live source (`siteUuid`/`token`).
    */
   refreshMs?: number;
+  /**
+   * Shared secret gating the push refresh endpoint (`refreshHandler()`): the platform/SaaS hits the
+   * endpoint with this secret to trigger an immediate refresh. Falls back to `PATCHSTACK_REFRESH_SECRET`.
+   * Unset → the endpoint 404s (never an open refresh trigger).
+   */
+  refreshSecret?: string;
   /**
    * During a refresh, also re-post the dependency manifest (the runtime counterpart to `scan`) so a
    * dependency added after boot — e.g. via `npm install <pkg>`, which fires no npm lifecycle hook —
