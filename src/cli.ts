@@ -48,7 +48,7 @@ Usage:
                                                      "widget": false in .patchstackrc.json
   patchstack-connect setup  [options]                Finish the bounded project setup: run scan,
                                                      manage the widget, install + verify runtime
-                                                     protection, and wire package.json build scripts.
+                                                     protection, and wire dependency/build scans.
                                                      Never runs the project build
   patchstack-connect init   <site-uuid>              Optional: pre-seed .patchstackrc.json
                                                      with an existing site UUID
@@ -528,7 +528,7 @@ async function runSetup(args: ParsedArgs): Promise<number> {
   }
 
   console.log('');
-  console.log('  3. Wire scan and mark-build into package.json');
+  console.log('  3. Wire dependency-install and production-build scans into package.json');
   const wired = wireBuildScripts(process.cwd(), before.packageManager);
   console.log(`Build integration: ${wired.detail}`);
 

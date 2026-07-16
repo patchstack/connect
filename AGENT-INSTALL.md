@@ -7,7 +7,7 @@ This versioned reference ships inside `@patchstack/connect` and documents each s
 - Package: [`@patchstack/connect`](https://www.npmjs.com/package/@patchstack/connect), MIT-licensed, source at https://github.com/patchstack/connect. `npm view @patchstack/connect` shows the live registry metadata.
 - It reads the project's **dependency list only** — from the lockfile (`package-lock.json`, `pnpm-lock.yaml`, `yarn.lock`) or, on bun projects (`bun.lock`/`bun.lockb`), by enumerating the installed packages under `node_modules/` — and sends package names + versions to Patchstack for vulnerability matching. No source code, no env var values, no file paths, no git history. (`mark-build` additionally stamps built HTML with a coarse stack descriptor that may include hosting-related env variable *names* — e.g. `VERCEL`, `CF_PAGES` — never their values.)
 - **`scan` makes one source edit, and only after a successful post:** it adds (or updates) the disclosure widget's `<script>` tag in the project's root HTML shell — the first of `index.html`, `public/index.html`, or `src/app.html` that exists. It touches no other file, never edits on `--dry-run` or after a failed post, leaves any pre-existing manual widget tag untouched, and is disabled entirely by `"widget": false` in `.patchstackrc.json`. `mark-build` writes to build output only (`dist/`, `build/`, `out/`, `.output/public`), never to source. `guide`, `status`, and `init` write nothing except `init`'s own `.patchstackrc.json`.
-- **`setup` runs `scan`, then `protect`, then edits `package.json` build scripts:** provisioning happens first so the runtime guard can bake the real site UUID. It verifies the resulting framework seam, preserves existing build commands, adds `scan` before builds and `mark-build` after builds, and uses a direct build chain for Bun. It never runs the project build. If the widget or runtime guard needs a framework-specific manual merge, it prints the exact remaining step instead of overwriting user code.
+- **`setup` runs `scan`, then `protect`, then edits `package.json` scripts:** provisioning happens first so the runtime guard can bake the real site UUID. It verifies the resulting framework seam, preserves existing commands, adds `scan` after dependency installs and before builds, adds `mark-build` after builds, and uses a direct build chain for Bun. It never runs the project build. If the widget or runtime guard needs a framework-specific manual merge, it prints the exact remaining step instead of overwriting user code.
 - The package also exposes **`protect`** directly (runtime exploit guard; its templates live under `dist/protect/`). `setup` invokes it automatically; `scan`, `guide`, `status`, and `mark-build` do not. It writes only local files and auto-wires known stacks — **TanStack Start + Supabase** (patches the Supabase client + `src/start.ts`), **Next.js** (scaffolds `middleware.ts`), **SvelteKit** (`src/hooks.server.ts`), **Astro** (`src/middleware.ts`), **NestJS** (`app.use(patchstackMiddleware)` in the bootstrap), **Fastify** (`app.register(patchstackFastify)`), and **Express** (`app.use(patchstackMiddleware)`). On **any other stack** it scaffolds a framework-agnostic guard under `src/patchstack/` and prints a wiring plan — then you finish the install by importing that guard into your server entry (`protectFetch(handler)` for a Web-Fetch server, or `app.use(patchstackMiddleware)` for Node/Express) and running `patchstack-connect protect --check` to confirm it is wired (exit 1 until it is). Passing `--demo` seeds a broad sample rule set (for demonstrations, not production).
 - **`demo node-serialize` is an explicit production-backed walkthrough.** It requires `node-serialize@0.0.4` to already be present in the lockfile; it does not install the vulnerable dependency. It runs the same production `scan`, polls the configured site's public Pulse rules endpoint until rule `18843` is served, runs `protect`, verifies the generated guard, and prints exploit/benign test requests. It writes the same manifest/widget and guard files as those underlying commands. It does not start/restart the app and does not send the printed requests.
 - **`demo-guide node-serialize` is the read-only companion.** It checks the Host-created site configuration and vulnerable lockfile entry, explains the complete local prepare/run/restart/prove/cleanup sequence, and prints the next exact command. It does not require a deployment and does not change files or contact Patchstack.
@@ -37,7 +37,7 @@ This versioned reference ships inside `@patchstack/connect` and documents each s
    npx @patchstack/connect setup
    ```
 
-   This provisions or reuses the site, manages the widget, installs and verifies runtime protection, wires the build scripts, prints a dashboard link, and finishes with the same status shown by `guide`. Re-running it reuses existing configuration, widget tags, guards, and build commands rather than duplicating them.
+   This provisions or reuses the site, manages the widget, installs and verifies runtime protection, wires dependency-install and build scans, prints a dashboard link, and finishes with the same status shown by `guide`. Re-running it reuses existing configuration, widget tags, guards, and commands rather than duplicating them.
 
    In a hosted builder, run setup with `PATCHSTACK_ENVIRONMENT=sandbox` scoped to the workspace process/command, ensure the CLI's on-disk edits are adopted into the platform's persisted project state, then restart any already-running preview/server process so it loads the guard. Do not persist `"environment": "sandbox"` in `.patchstackrc.json`: deployed builds use the same committed files and should default to `production`. A client-only SPA has no server request path to guard; do not call it protected unless `protect --check` succeeds after a real server or edge seam is wired.
 
@@ -56,13 +56,14 @@ This versioned reference ships inside `@patchstack/connect` and documents each s
    ```jsonc
    {
      "scripts": {
-       "prebuild": "patchstack-connect scan",
-       "postbuild": "patchstack-connect mark-build"
+     "prebuild": "patchstack-connect scan",
+      "postbuild": "patchstack-connect mark-build",
+      "postinstall": "patchstack-connect scan"
      }
    }
    ```
 
-   If a `prebuild`/`postbuild` hook already exists, chain instead of replacing it, e.g. `"prebuild": "existing-command && patchstack-connect scan"`.
+   If a lifecycle hook already exists, chain instead of replacing it, e.g. `"prebuild": "existing-command && patchstack-connect scan"`. The `postinstall` scan reports dependencies added during an iterative sandbox session and covers applications with no build command.
 
    **Bun-managed projects:** `bun run` does not execute npm-style `pre`/`post` scripts, so wire the build script directly instead: `"build": "patchstack-connect scan && <existing build command> && patchstack-connect mark-build"`.
 

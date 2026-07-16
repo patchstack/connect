@@ -98,6 +98,7 @@ describe('guide', () => {
         name: 'done-app',
         dependencies: { '@patchstack/connect': '^0.2.11' },
         scripts: {
+          postinstall: 'patchstack-connect scan',
           prebuild: 'lint && patchstack-connect scan',
           postbuild: 'patchstack-connect mark-build',
         },
@@ -191,7 +192,7 @@ describe('guide', () => {
 
   describe('renderGuideChecklist', () => {
     it('prints the package-manager-specific install command for missing installs', async () => {
-      writeJson('package.json', { name: 'bun-app' });
+      writeJson('package.json', { name: 'bun-app', scripts: { build: 'vite build' } });
       writeFileSync(path.join(cwd, 'bun.lock'), '');
 
       const output = renderGuideChecklist(await collectGuideState(cwd), false);
@@ -209,7 +210,7 @@ describe('guide', () => {
     });
 
     it('suggests prebuild/postbuild hooks on non-bun projects', async () => {
-      writeJson('package.json', { name: 'npm-app' });
+      writeJson('package.json', { name: 'npm-app', scripts: { build: 'vite build' } });
 
       const output = renderGuideChecklist(await collectGuideState(cwd), false);
 
@@ -260,6 +261,7 @@ describe('guide', () => {
         name: 'done-app',
         dependencies: { '@patchstack/connect': '0.2.11' },
         scripts: {
+          postinstall: 'patchstack-connect scan',
           prebuild: 'patchstack-connect scan',
           postbuild: 'patchstack-connect mark-build',
         },
@@ -297,6 +299,7 @@ describe('guide', () => {
         name: 'optout-app',
         dependencies: { '@patchstack/connect': '0.3.6' },
         scripts: {
+          postinstall: 'patchstack-connect scan',
           prebuild: 'patchstack-connect scan',
           postbuild: 'patchstack-connect mark-build',
         },

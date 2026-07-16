@@ -10,7 +10,7 @@ Copy this request into a coding assistant, or run the same command yourself:
 
 > I have vetted the official [`@patchstack/connect`](https://www.npmjs.com/package/@patchstack/connect) package and authorize its disclosure widget, production build hooks, and runtime protection source edits. Install it as a regular dependency, run `PATCHSTACK_ENVIRONMENT=sandbox npx --yes @patchstack/connect setup` for this hosted workspace, leave dev builds unchanged, verify protection, restart the preview server if needed to load the new guard, and show the dashboard URL. Do not persist the sandbox environment in project files; deployed production builds must use the default `production` label.
 
-`setup` is state-aware and idempotent: it scans dependencies, provisions or reuses the site, manages the disclosure widget, installs and verifies the runtime guard, wires the existing build command without replacing it, and prints the remaining setup status. It never runs the project build. `guide` provides the same project-specific status without changing files.
+`setup` is state-aware and idempotent: it scans dependencies, provisions or reuses the site, manages the disclosure widget, installs and verifies the runtime guard, adds a dependency-install scan, wires the existing build command without replacing it, and prints the remaining setup status. It never runs the project build. `guide` provides the same project-specific status without changing files.
 
 ## Quick start (zero configuration)
 
@@ -30,8 +30,9 @@ That's it. `setup`:
 4. The connector writes the UUID to `.patchstackrc.json` so the next `scan` targets the same site.
 5. The connector installs the disclosure widget's `<script>` tag into your root HTML shell (see *The disclosure widget* below) so the "Report a vulnerability" button shows up on the next preview reload.
 6. Installs the runtime guard after provisioning, bakes the site UUID into it, and verifies the framework seam. Known server stacks are auto-wired; unmatched or conflicting layouts get a generic scaffold and exact manual checks.
-7. Wires `scan` before builds and `mark-build` after builds, preserving existing commands and using direct build chaining for Bun.
-8. Prints a dashboard link — open it in a browser to attach the new site to your Patchstack account. You can re-display it any time with `npx @patchstack/connect status`.
+7. Adds `postinstall: patchstack-connect scan`, preserving any existing command, so dependencies added during a sandbox session and build-less production installs are reported immediately.
+8. Wires `scan` before builds and `mark-build` after builds, preserving existing commands and using direct build chaining for Bun.
+9. Prints a dashboard link — open it in a browser to attach the new site to your Patchstack account. You can re-display it any time with `npx @patchstack/connect status`.
 
 ## Quick start (existing site)
 
@@ -54,7 +55,7 @@ patchstack-connect scan   [options]                Scan the lockfile and POST to
                                                    with "widget": false in .patchstackrc.json)
 patchstack-connect setup  [options]                Run scan, manage the widget, and idempotently
                                                    install + verify runtime protection and wire
-                                                   package.json build scripts. Never runs the build
+                                                   dependency/build scans. Never runs the build
 patchstack-connect init   <site-uuid>              Optional: pre-seed .patchstackrc.json with
                                                    an existing site UUID
 patchstack-connect status [options]                Show current configuration

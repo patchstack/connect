@@ -33,6 +33,8 @@ export interface GuideState {
   claimUrl: string | null;
   /** Non-default API endpoint in effect (rc file, env, or flag), else null. */
   endpointOverride: string | null;
+  hasBuildScript: boolean;
+  installScanWired: boolean;
   prebuildWired: boolean;
   postbuildWired: boolean;
   widgetInstalled: boolean;
@@ -325,6 +327,8 @@ export async function collectGuideState(cwd: string): Promise<GuideState> {
     siteUuid,
     claimUrl,
     endpointOverride,
+    hasBuildScript: Boolean(pkg?.scripts?.build?.trim()),
+    installScanWired: (pkg?.scripts?.postinstall ?? '').includes('patchstack-connect scan'),
     // bun run doesn't execute npm-style pre/post scripts, so chaining inside
     // the build script itself also counts as wired (and is what we suggest on bun).
     prebuildWired:
@@ -358,7 +362,8 @@ export function countRemainingSteps(state: GuideState): number {
   return [
     state.installed?.section === 'dependencies',
     state.siteUuid !== null,
-    state.prebuildWired && state.postbuildWired,
+    state.installScanWired,
+    !state.hasBuildScript || (state.prebuildWired && state.postbuildWired),
     state.widgetOptOut || (state.widgetInstalled && state.widgetTokenMatches !== false),
     state.protectionWired,
   ].filter((step) => !step).length;
@@ -417,8 +422,18 @@ export function renderGuideChecklist(state: GuideState, useColor: boolean): stri
     lines.push(detail('and prints a dashboard link. The CLI prints the link but never opens it.'));
   }
 
-  // 3. Build hooks
-  if (state.prebuildWired && state.postbuildWired) {
+  // 3. Dependency-change scan
+  if (state.installScanWired) {
+    lines.push(done('Dependency-install scan wired (postinstall)'));
+  } else {
+    lines.push(todo('Scan again whenever dependencies are installed'));
+    lines.push(detail('Edit package.json → "postinstall": "patchstack-connect scan"'));
+  }
+
+  // 4. Build hooks
+  if (!state.hasBuildScript) {
+    lines.push(done('No build script to integrate (postinstall covers dependency changes)'));
+  } else if (state.prebuildWired && state.postbuildWired) {
     lines.push(done('Build hooks wired (scan before builds, mark-build after)'));
   } else if (state.packageManager === 'bun') {
     // bun run skips npm-style pre/post scripts, so chain inside the build script.
@@ -434,7 +449,7 @@ export function renderGuideChecklist(state: GuideState, useColor: boolean): stri
     }
   }
 
-  // 4. Disclosure widget
+  // 5. Disclosure widget
   const widgetOk = state.widgetInstalled && state.widgetTokenMatches !== false;
   if (state.widgetOptOut && !widgetOk) {
     lines.push(done('Disclosure widget disabled by config ("widget": false in .patchstackrc.json)'));
@@ -459,7 +474,7 @@ export function renderGuideChecklist(state: GuideState, useColor: boolean): stri
     lines.push(detail('The site UUID is public by design — it ships in client-side HTML.'));
   }
 
-  // 5. Runtime protection
+  // 6. Runtime protection
   if (state.protectionWired) {
     lines.push(done(`Runtime protection wired (${state.protectionStack})`));
   } else {
@@ -470,7 +485,7 @@ export function renderGuideChecklist(state: GuideState, useColor: boolean): stri
     lines.push(detail('Verify → npx @patchstack/connect protect --check'));
   }
 
-  // 6. Dashboard access — always keep the URL prominent.
+  // 7. Dashboard access — always keep the URL prominent.
   lines.push('');
   if (state.claimUrl !== null) {
     lines.push(` ${paint(ANSI.cyan, '➜')} ${paint(ANSI.bold, 'Dashboard link (open to view reports):')}`);

@@ -37,6 +37,7 @@ describe('wireBuildScripts', () => {
     expect(result).toMatchObject({ changed: true, strategy: 'lifecycle-hooks' });
     expect(readPackage().scripts).toMatchObject({
       build: 'vite build',
+      postinstall: 'patchstack-connect scan',
       prebuild: 'npm run lint && patchstack-connect scan',
       postbuild: 'echo complete && patchstack-connect mark-build',
     });
@@ -51,6 +52,7 @@ describe('wireBuildScripts', () => {
     expect(readPackage().scripts.build).toBe(
       'patchstack-connect scan && vite build && patchstack-connect mark-build',
     );
+    expect(readPackage().scripts.postinstall).toBe('patchstack-connect scan');
   });
 
   it('is idempotent', () => {
@@ -60,27 +62,29 @@ describe('wireBuildScripts', () => {
     const second = wireBuildScripts(cwd, 'pnpm');
 
     expect(second.changed).toBe(false);
+    expect(readPackage().scripts.postinstall).toBe('patchstack-connect scan');
     expect(readPackage().scripts.prebuild).toBe('patchstack-connect scan');
     expect(readPackage().scripts.postbuild).toBe('patchstack-connect mark-build');
   });
 
-  it('does not add inert hooks when no build script exists', () => {
-    writePackage({ scripts: { test: 'vitest' } });
-
-    const before = readFileSync(path.join(cwd, 'package.json'), 'utf8');
+  it('adds a dependency-install scan when no build script exists', () => {
+    writePackage({ scripts: { test: 'vitest', postinstall: 'prisma generate' } });
     const result = wireBuildScripts(cwd, 'npm');
 
-    expect(result).toMatchObject({ changed: false, strategy: 'skipped' });
-    expect(readFileSync(path.join(cwd, 'package.json'), 'utf8')).toBe(before);
+    expect(result).toMatchObject({ changed: true, strategy: 'postinstall-only' });
+    expect(readPackage().scripts.postinstall).toBe(
+      'prisma generate && patchstack-connect scan',
+    );
   });
 
-  it('creates a scripts object when necessary but still requires a build command', () => {
+  it('creates a scripts object for the dependency-install scan', () => {
     writePackage({ name: 'no-scripts' });
     mkdirSync(path.join(cwd, 'src'));
 
     const result = wireBuildScripts(cwd, 'yarn');
 
-    expect(result.strategy).toBe('skipped');
+    expect(result.strategy).toBe('postinstall-only');
+    expect(readPackage().scripts.postinstall).toBe('patchstack-connect scan');
   });
 });
 
