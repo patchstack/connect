@@ -41,7 +41,11 @@ async function getProtection() {
     } catch {
       /* ignore a malformed SUPABASE_URL — just don't add an allow entry */
     }
-    const common = { mode, egress: true, allowHosts };
+    // The sandbox dev server is long-lived and isn't restarted on change, so refresh the live
+    // rules periodically — a dependency flagged after boot is then enforced without a restart.
+    // Production relies on a redeploy (which re-fetches at boot), so refresh stays off there.
+    const refreshMs = process.env.PATCHSTACK_ENVIRONMENT === "sandbox" ? 15000 : 0;
+    const common = { mode, egress: true, allowHosts, refreshMs };
     _protection = await createProtection(
       siteUuid
         ? { ...common, siteUuid, rules: fallbackRules as never, cacheDir: ".patchstack" } // live per-site rules; bundled = offline fallback

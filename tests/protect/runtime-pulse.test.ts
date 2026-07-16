@@ -79,3 +79,56 @@ describe('createProtection with a siteUuid (live Pulse rules)', () => {
     vi.restoreAllMocks();
   });
 });
+
+describe('createProtection live rule refresh (refreshMs)', () => {
+  it('hot-swaps in a rule that appears after boot, without recreating the protection', async () => {
+    vi.useFakeTimers();
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(new Response(JSON.stringify({ firewall: [], whitelists: [], whitelist_keys: {} }), { status: 200 }))
+      .mockResolvedValue(new Response(JSON.stringify({ firewall: rules.firewall, whitelists: [], whitelist_keys: {} }), { status: 200 }));
+    vi.stubGlobal('fetch', fetchMock);
+
+    const protection = await createProtection({
+      siteUuid: 'site-1',
+      pulseRulesUrl: 'https://x.test/monitor/pulse',
+      mode: 'block',
+      refreshMs: 1000,
+    });
+    const guard = createServerFnGuard({ protection });
+
+    // Boot: the site has no rules yet → the exploit is allowed.
+    expect(await guard({ title: '<img src=x onerror="steal()">' })).toBeNull();
+    expect(protection.rules.request).toHaveLength(0);
+
+    // A refresh tick re-fetches and hot-swaps the (now non-empty) ruleset in place.
+    await vi.advanceTimersByTimeAsync(1100);
+
+    expect(protection.rules.request.length).toBeGreaterThan(0);
+    expect((await guard({ title: '<img src=x onerror="steal()">' }))?.rule).toBe('rm-npm-0001');
+
+    protection.stopRefresh?.();
+    vi.useRealTimers();
+    vi.restoreAllMocks();
+  });
+
+  it('does not schedule a refresh when refreshMs is unset', async () => {
+    vi.useFakeTimers();
+    const fetchMock = okFetch();
+    vi.stubGlobal('fetch', fetchMock);
+
+    const protection = await createProtection({ siteUuid: 'site-1', pulseRulesUrl: 'https://x.test/monitor/pulse', mode: 'block' });
+    expect(protection.stopRefresh).toBeUndefined();
+
+    await vi.advanceTimersByTimeAsync(60_000);
+    expect(fetchMock).toHaveBeenCalledTimes(1); // only the boot fetch — no interval re-fetches
+
+    vi.useRealTimers();
+    vi.restoreAllMocks();
+  });
+
+  it('does not schedule a refresh without a live source, even with refreshMs set', async () => {
+    const protection = await createProtection({ rules, mode: 'block', refreshMs: 1000 });
+    expect(protection.stopRefresh).toBeUndefined();
+  });
+});

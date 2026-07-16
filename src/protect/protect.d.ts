@@ -23,6 +23,8 @@ export interface Protection {
   node(options?: { maxBodyBytes?: number; screenResponses?: boolean }): (req: unknown, res: unknown, next: () => void) => void;
   /** Present when `egress: true` — restores the original global fetch. */
   uninstallEgress?: () => void;
+  /** Present when `refreshMs > 0` — stops the live rule-refresh interval. */
+  stopRefresh?: () => void;
 }
 
 export interface CreateProtectionOptions {
@@ -37,6 +39,13 @@ export interface CreateProtectionOptions {
   siteUuid?: string;
   /** Override the Pulse rules API base URL. */
   pulseRulesUrl?: string;
+  /**
+   * Re-fetch and hot-swap the live rules every N ms. For long-lived runtimes that aren't restarted
+   * on change (an AI builder's sandbox/preview) so a rule that becomes relevant after boot still
+   * applies. Default 0 (off) — a real deploy restarts the process, which re-fetches anyway. Only
+   * meaningful with a live source (`siteUuid`/`token`).
+   */
+  refreshMs?: number;
   /** Directory for the last-known-good rule cache (disk — the default cache backend). */
   cacheDir?: string;
   /**
