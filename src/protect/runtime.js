@@ -358,7 +358,11 @@ export async function createProtection(options = {}) {
 
   // Egress interception is opt-in (it wraps the global fetch, and node:http/https on Node).
   if (options.egress) {
-    protection.uninstallEgress = await installEgressGuard({ shouldBlock: egressShouldBlock, onBlock: options.onEgressBlock });
+    protection.uninstallEgress = await installEgressGuard({
+      shouldBlock: egressShouldBlock,
+      onBlock: options.onEgressBlock,
+      dnsScreen: options.screenDns !== false,
+    });
   }
 
   return protection;
