@@ -1,11 +1,16 @@
 // Adapter: Express (Node). Scaffolds a guard that matches the entry file's module format, then
-// registers parsed-body middleware after express.json() and before the application's routes.
+// registers the WAF middleware after the app's body parser and before its routes — the guard reads
+// the express-parsed req.body, so it must run once the body is populated.
 import { hasDependency } from '../util.js';
 import { findAppInstance } from '../find-app.js';
 import { wireRegister, verifyRegister, type RegisterSpec } from '../register.js';
 import type { Adapter } from '../types.js';
 
-const jsonParserRe = (appVar: string) => new RegExp(`^\\s*${appVar}\\.use\\(\\s*express\\.json\\(`, 'm');
+// A body parser that populates req.body, in any of the shapes AI builders emit: express.json() /
+// express.urlencoded(), body-parser's bodyParser.json() / .urlencoded(), an aliased parser
+// (any `x.json(` / `x.urlencoded(`), or a destructured `json(` / `urlencoded(`.
+const bodyParserRe = (appVar: string) =>
+  new RegExp(`^\\s*${appVar}\\.use\\(\\s*(?:[A-Za-z_$][\\w$]*\\.)?(?:json|urlencoded)\\(`, 'm');
 
 const SPEC: RegisterSpec = {
   appRe: /(?:const|let|var)\s+([A-Za-z_$][\w$]*)\s*=\s*express\(\)/,
@@ -14,10 +19,10 @@ const SPEC: RegisterSpec = {
   guardTemplateCjs: 'express-guard.cjs',
   importName: 'patchstackMiddleware',
   call: (v) => `${v}.use(patchstackMiddleware);`,
-  callAfter: jsonParserRe,
+  callAfter: bodyParserRe,
   requireCallAfter: true,
   label: 'Express app',
-  manualHint: 'add `app.use(patchstackMiddleware)` after your JSON body parser and before the routes',
+  manualHint: 'add `app.use(patchstackMiddleware)` after your body parser (express.json/urlencoded or body-parser) and before the routes',
 };
 
 export const expressAdapter: Adapter = {
