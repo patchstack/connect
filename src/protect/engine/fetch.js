@@ -150,7 +150,7 @@ function concatChunks(chunks, total) {
 // Minimal multipart/form-data parser: enough to expose field names + values (so `post.<field>`
 // and `raw` rules match uploads, e.g. a `__proto__` field name) and file metadata (filename via
 // `files.<field>`). We only need the textual structure, not the binary file contents.
-function parseMultipart(rawBody, boundary) {
+export function parseMultipart(rawBody, boundary) {
   const body = {};
   const files = {};
   for (const part of rawBody.split('--' + boundary)) {

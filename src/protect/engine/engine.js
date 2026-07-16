@@ -216,6 +216,7 @@ export function matchValue(type, value, matchVal, matchObj) {
       return strValue == matchVal;
 
     case 'equals_strict':
+      // Type-strict by design (`'1' !== 1`). A rule that wants loose matching should use `equals`.
       return strValue === matchVal;
 
     case 'contains':
@@ -259,12 +260,12 @@ export function matchValue(type, value, matchVal, matchObj) {
       return true;
 
     case 'in_array': {
-      const arr = Array.isArray(matchVal) ? matchVal : [matchVal];
+      const arr = (Array.isArray(matchVal) ? matchVal : [matchVal]).map((x) => String(x));
       return arr.includes(strValue);
     }
 
     case 'not_in_array': {
-      const arr = Array.isArray(matchVal) ? matchVal : [matchVal];
+      const arr = (Array.isArray(matchVal) ? matchVal : [matchVal]).map((x) => String(x));
       return !arr.includes(strValue);
     }
 
@@ -272,7 +273,8 @@ export function matchValue(type, value, matchVal, matchObj) {
       if (!Array.isArray(value) || !Array.isArray(matchVal)) {
         return false;
       }
-      return value.some(v => matchVal.includes(v));
+      const target = matchVal.map((x) => String(x));
+      return value.some((v) => target.includes(String(v)));
     }
 
     case 'hostname': {

@@ -11,6 +11,7 @@ import { tanstackSupabaseAdapter } from './adapters/tanstack-supabase.js';
 import { nextAdapter } from './adapters/next.js';
 import { sveltekitAdapter } from './adapters/sveltekit.js';
 import { astroAdapter } from './adapters/astro.js';
+import { nuxtAdapter } from './adapters/nuxt.js';
 import { nestjsAdapter } from './adapters/nestjs.js';
 import { fastifyAdapter } from './adapters/fastify.js';
 import { expressAdapter } from './adapters/express.js';
@@ -24,6 +25,7 @@ const ADAPTERS: Adapter[] = [
   nextAdapter,
   sveltekitAdapter,
   astroAdapter,
+  nuxtAdapter,
   nestjsAdapter,
   fastifyAdapter,
   expressAdapter,

@@ -48,6 +48,13 @@ declare module "@sveltejs/kit" {
     resolve: (event: unknown) => Promise<Response>;
   }) => Promise<Response> | Response;
 }
+declare module "h3" {
+  export const defineEventHandler: (h: (event: any) => unknown) => unknown;
+  export const getRequestURL: (event: any) => URL;
+  export const readRawBody: (event: any) => Promise<string | undefined>;
+  export const setResponseStatus: (event: any, code: number) => void;
+  export const setResponseHeader: (event: any, name: string, value: string) => void;
+}
 `,
 );
 
