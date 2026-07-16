@@ -65,29 +65,43 @@ export async function createProtection(options = {}) {
   const onDetect = options.onDetect ?? defaultOnDetect;
 
   const bundle = await resolveRules(options);
-  const incoming = bundle.firewall ?? [];
+  // Rule-derived runtime state. Held in `let` bindings the guard methods below close over, so a
+  // refresh (see the interval near the end) can hot-swap the engines by reassigning them — the
+  // egress interception and the protection object itself stay in place, no re-install.
+  let requestRules;
+  let responseRules;
+  let egressRules;
+  let screenCap; // max body we'll buffer/screen (rules can raise it)
+  let engine;
+  let responseRuleSet;
+  let egressEngine;
 
   // Split the delivered ruleset by phase (default "request"), merging phase defaults +
   // per-call overrides. Detection is fully rule-driven — nothing hardcoded.
-  const requestRules = byPhase(incoming, 'request');
-  const responseRules = [...(options.responseRules ?? DEFAULT_RESPONSE_RULES), ...byPhase(incoming, 'response')];
-  const screenCap = responseScreenCap(responseRules); // max body we'll buffer/screen (rules can raise it)
-  const egressRules = [...(options.egressRules ?? DEFAULT_EGRESS_RULES), ...byPhase(incoming, 'egress')];
+  const applyBundle = (delivered) => {
+    const incoming = delivered.firewall ?? [];
+    requestRules = byPhase(incoming, 'request');
+    responseRules = [...(options.responseRules ?? DEFAULT_RESPONSE_RULES), ...byPhase(incoming, 'response')];
+    screenCap = responseScreenCap(responseRules);
+    egressRules = [...(options.egressRules ?? DEFAULT_EGRESS_RULES), ...byPhase(incoming, 'egress')];
+    engine = new RuleEngine({
+      firewall: requestRules,
+      whitelists: delivered.whitelists,
+      whitelist_keys: delivered.whitelist_keys,
+      onError,
+    });
+    // One engine per response rule so we can find ALL matches (to redact each). `action:
+    // "redact"` masks the offending span(s); anything else withholds the whole response.
+    responseRuleSet = responseRules.map((rule) => ({
+      rule,
+      engine: new RuleEngine({ firewall: [rule], onError }),
+      redactors: rule.action === 'redact' || rule.action === 'encode' ? extractRedactors(rule) : null,
+    }));
+    egressEngine = new RuleEngine({ firewall: egressRules, onError });
+  };
 
-  const engine = new RuleEngine({
-    firewall: requestRules,
-    whitelists: bundle.whitelists,
-    whitelist_keys: bundle.whitelist_keys,
-    onError
-  });
-  // One engine per response rule so we can find ALL matches (to redact each). `action:
-  // "redact"` masks the offending span(s); anything else withholds the whole response.
-  const responseRuleSet = responseRules.map((rule) => ({
-    rule,
-    engine: new RuleEngine({ firewall: [rule], onError }),
-    redactors: rule.action === 'redact' || rule.action === 'encode' ? extractRedactors(rule) : null
-  }));
-  const egressEngine = new RuleEngine({ firewall: egressRules, onError });
+  applyBundle(bundle);
+
   const maskFn =
     typeof options.maskWith === 'function'
       ? options.maskWith
@@ -262,7 +276,9 @@ export async function createProtection(options = {}) {
 
   const protection = {
     mode,
-    rules: { request: requestRules, response: responseRules, egress: egressRules },
+    get rules() {
+      return { request: requestRules, response: responseRules, egress: egressRules };
+    },
 
     // Screen a fetch Response through the response-phase rules (redact/block). Used by
     // .fetch(), and by the Supabase guard on its forwarded upstream response.
@@ -388,6 +404,22 @@ export async function createProtection(options = {}) {
       dnsScreen: options.screenDns !== false,
       allowHosts: options.allowHosts,
     });
+  }
+
+  // Live rule refresh. The guard otherwise reads its rules once, at process start — so a rule that
+  // only becomes relevant after boot (e.g. a dependency added mid-session, then flagged by Pulse)
+  // never applies until the process restarts. Where the runtime is long-lived and isn't restarted
+  // on change — the sandbox/preview of an AI builder — the host sets `refreshMs` so the engines are
+  // periodically re-fetched and hot-swapped in place. Left off (0) by default: a real deploy
+  // restarts the process, which re-fetches anyway. Only meaningful with a live rule source.
+  if (options.refreshMs > 0 && (options.siteUuid || options.token)) {
+    const timer = setInterval(() => {
+      resolveRules(options)
+        .then((next) => applyBundle(next))
+        .catch((err) => onError?.(err));
+    }, options.refreshMs);
+    timer.unref?.(); // never keep the process alive for the refresh
+    protection.stopRefresh = () => clearInterval(timer);
   }
 
   return protection;
