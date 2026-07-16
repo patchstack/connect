@@ -46,6 +46,15 @@ export interface CreateProtectionOptions {
    * meaningful with a live source (`siteUuid`/`token`).
    */
   refreshMs?: number;
+  /**
+   * During a refresh, also re-post the dependency manifest (the runtime counterpart to `scan`) so a
+   * dependency added after boot — e.g. via `npm install <pkg>`, which fires no npm lifecycle hook —
+   * is reported and enforced without a restart. Defaults on when a `siteUuid` is set; set false to
+   * refresh rules only. Only meaningful with `refreshMs > 0` and a Pulse `siteUuid`.
+   */
+  reportManifest?: boolean;
+  /** Directory the manifest re-scan reads the lockfile from during a refresh. Default process.cwd(). */
+  cwd?: string;
   /** Directory for the last-known-good rule cache (disk — the default cache backend). */
   cacheDir?: string;
   /**

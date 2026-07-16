@@ -413,10 +413,31 @@ export async function createProtection(options = {}) {
   // periodically re-fetched and hot-swapped in place. Left off (0) by default: a real deploy
   // restarts the process, which re-fetches anyway. Only meaningful with a live rule source.
   if (options.refreshMs > 0 && (options.siteUuid || options.token)) {
+    // On the Pulse (siteUuid) path, re-post the dependency manifest before re-fetching rules. A
+    // targeted `npm install <pkg>` fires no npm lifecycle hook, so nothing else re-scans; reporting
+    // here lets the server detect a newly-added vulnerable dependency and the SAME tick's rule fetch
+    // pick up its rule — a restart-free catch. Loaded lazily so production guards (refresh off)
+    // never pull in the scan pipeline; a load/report failure never blocks the rule refresh.
+    const cwd = options.cwd ?? (typeof process !== 'undefined' ? process.cwd() : undefined);
+    let reportManifest = null;
+    if (options.siteUuid && options.reportManifest !== false && cwd) {
+      try {
+        ({ reportManifest } = await import('./refresh-manifest.js'));
+      } catch (err) {
+        onError?.(err); // scan pipeline unavailable (e.g. an edge runtime) — rules still refresh
+      }
+    }
     const timer = setInterval(() => {
-      resolveRules(options)
-        .then((next) => applyBundle(next))
-        .catch((err) => onError?.(err));
+      (async () => {
+        if (reportManifest) {
+          try {
+            await reportManifest(cwd);
+          } catch (err) {
+            onError?.(err); // a failed report must not stop the rule refresh
+          }
+        }
+        applyBundle(await resolveRules(options));
+      })().catch((err) => onError?.(err));
     }, options.refreshMs);
     timer.unref?.(); // never keep the process alive for the refresh
     protection.stopRefresh = () => clearInterval(timer);
