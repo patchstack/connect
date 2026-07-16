@@ -103,6 +103,31 @@ describe('Express adapter', () => {
     }
   });
 
+  const parserVariants: Array<{ label: string; imports: string; parser: string }> = [
+    { label: 'express.urlencoded()', imports: "import express from 'express';", parser: 'app.use(express.urlencoded({ extended: true }));' },
+    { label: 'body-parser', imports: "import express from 'express';\nimport bodyParser from 'body-parser';", parser: 'app.use(bodyParser.json());' },
+    { label: 'a destructured json()', imports: "import express, { json } from 'express';", parser: 'app.use(json());' },
+  ];
+  for (const { label, imports, parser } of parserVariants) {
+    it(`wires after ${label} (not just express.json)`, () => {
+      const dir = tmp('ps-express-parser-');
+      writeFileSync(path.join(dir, 'package.json'), JSON.stringify({ type: 'module', dependencies: { express: '^4.21.2' } }));
+      writeFileSync(
+        path.join(dir, 'server.js'),
+        `${imports}\nconst app = express();\n${parser}\napp.get('/', (req, res) => res.end());\n`,
+      );
+      try {
+        runProtect(dir);
+        const server = read(dir, 'server.js');
+        expect(server).toContain('app.use(patchstackMiddleware);');
+        expect(server.indexOf('app.use(patchstackMiddleware)')).toBeLessThan(server.indexOf("app.get('/'"));
+        expect(runVerify(dir).wired).toBe(true); // verify requires the guard to sit after the parser
+      } finally {
+        rmSync(dir, { recursive: true, force: true });
+      }
+    });
+  }
+
   it('scaffolds but does not claim full wiring when no JSON body parser is present', () => {
     const dir = tmp('ps-express-no-parser-');
     writeFileSync(
