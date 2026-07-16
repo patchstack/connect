@@ -1,6 +1,7 @@
 // Adapter: Express (Node). Scaffolds a guard that matches the entry file's module format, then
 // registers the WAF middleware after the app's body parser and before its routes — the guard reads
-// the express-parsed req.body, so it must run once the body is populated.
+// the express-parsed req.body, so it must run once the body is populated. Apps with no body parser
+// fall back to a self-buffering guard (express-node-guard) mounted right after app creation.
 import { hasDependency } from '../util.js';
 import { findAppInstance } from '../find-app.js';
 import { wireRegister, verifyRegister, type RegisterSpec } from '../register.js';
@@ -17,6 +18,11 @@ const SPEC: RegisterSpec = {
   guardTemplate: 'express-guard.ts',
   guardTemplateEsm: 'express-guard.js',
   guardTemplateCjs: 'express-guard.cjs',
+  // No body parser → no parsed req.body to read after, so mount a self-buffering guard right after
+  // app creation (before the routes) instead of skipping the app.
+  fallbackGuardTemplate: 'express-node-guard.ts',
+  fallbackGuardTemplateEsm: 'express-node-guard.js',
+  fallbackGuardTemplateCjs: 'express-node-guard.cjs',
   importName: 'patchstackMiddleware',
   call: (v) => `${v}.use(patchstackMiddleware);`,
   callAfter: bodyParserRe,

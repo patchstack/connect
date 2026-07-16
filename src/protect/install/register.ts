@@ -20,8 +20,15 @@ export interface RegisterSpec {
   call: (appVar: string) => string; // the registration statement, e.g. `${v}.use(patchstackMiddleware);`
   /** Prefer a registration anchor after app creation, such as Express's JSON body parser. */
   callAfter?: (appVar: string) => RegExp;
-  /** Scaffold but leave the app untouched when the preferred anchor is absent. */
+  /** Scaffold but leave the app untouched when the preferred anchor is absent — unless a fallback
+   *  guard is provided below. */
   requireCallAfter?: boolean;
+  /** Guard templates used when `callAfter` is required but its anchor is absent (e.g. an Express app
+   *  with no body parser). These MUST self-buffer the request body and mount right after app creation,
+   *  since there is no parsed `req.body` to read. When set, the app is wired instead of skipped. */
+  fallbackGuardTemplate?: string;
+  fallbackGuardTemplateEsm?: string;
+  fallbackGuardTemplateCjs?: string;
   label: string; // human label for logs / verify checks, e.g. 'Express app'
   manualHint: string; // guidance when no app-instance site is found
 }
@@ -35,19 +42,24 @@ interface GuardTarget {
   preserveExtension: boolean;
 }
 
-function guardTarget(cwd: string, entryRel: string, spec: RegisterSpec): GuardTarget {
+function guardTarget(cwd: string, entryRel: string, spec: RegisterSpec, useFallback = false): GuardTarget {
+  // The fallback guard set (self-buffering) is used when the preferred anchor is absent — see wireRegister.
+  const baseTemplate = useFallback && spec.fallbackGuardTemplate ? spec.fallbackGuardTemplate : spec.guardTemplate;
+  const esmTemplate = useFallback ? spec.fallbackGuardTemplateEsm : spec.guardTemplateEsm;
+  const cjsTemplate = useFallback ? spec.fallbackGuardTemplateCjs : spec.guardTemplateCjs;
+
   if (/\.cjs$/.test(entryRel) || (/\.js$/.test(entryRel) && packageType(cwd) !== 'module')) {
-    if (spec.guardTemplateCjs) {
+    if (cjsTemplate) {
       return {
-        template: spec.guardTemplateCjs,
+        template: cjsTemplate,
         file: 'guard.cjs',
         importLine: (name, target) => `const { ${name} } = require("${target}");`,
         preserveExtension: true,
       };
     }
-  } else if (/\.(?:js|mjs)$/.test(entryRel) && spec.guardTemplateEsm) {
+  } else if (/\.(?:js|mjs)$/.test(entryRel) && esmTemplate) {
     return {
-      template: spec.guardTemplateEsm,
+      template: esmTemplate,
       file: entryRel.endsWith('.mjs') ? 'guard.mjs' : 'guard.js',
       importLine: (name, target) => `import { ${name} } from "${target}";`,
       preserveExtension: true,
@@ -55,7 +67,7 @@ function guardTarget(cwd: string, entryRel: string, spec: RegisterSpec): GuardTa
   }
 
   return {
-    template: spec.guardTemplate,
+    template: baseTemplate,
     file: 'guard.ts',
     importLine: (name, target) => `import { ${name} } from "${target}";`,
     preserveExtension: false,
@@ -78,24 +90,29 @@ export function wireRegister(cwd: string, opts: WireOptions, spec: RegisterSpec)
     return { ok: true, changed };
   }
 
-  const target = guardTarget(cwd, entry.relPath, spec);
-  const { changed, dir } = scaffoldGeneric(cwd, opts, target.template, target.file);
-
   const p = join(cwd, entry.relPath);
   const s = read(p);
+  const sourceLines = s.split('\n');
+  const sourceAppIdx = sourceLines.findIndex((line) => spec.appRe.test(line));
+  const requiredAnchor = spec.callAfter?.(entry.appVar);
+  const anchorMissing =
+    !!requiredAnchor && !sourceLines.some((line, index) => index > sourceAppIdx && requiredAnchor.test(line));
+
+  // When the preferred anchor (e.g. Express's body parser) is required but absent, use the adapter's
+  // self-buffering fallback guard mounted right after app creation, if it provides one. Only when there
+  // is no fallback do we scaffold the default guard and leave the app for the user to wire by hand.
+  const useFallback = spec.requireCallAfter === true && anchorMissing && spec.fallbackGuardTemplate != null;
+  const giveUp = spec.requireCallAfter === true && anchorMissing && !useFallback;
+
+  const target = guardTarget(cwd, entry.relPath, spec, useFallback);
+  const { changed, dir } = scaffoldGeneric(cwd, opts, target.template, target.file);
+
   if (s.includes(spec.importName)) {
     log(`${entry.relPath} already wired`);
     return { ok: true, changed };
   }
 
-  const sourceLines = s.split('\n');
-  const sourceAppIdx = sourceLines.findIndex((line) => spec.appRe.test(line));
-  const requiredAnchor = spec.callAfter?.(entry.appVar);
-  if (
-    spec.requireCallAfter &&
-    requiredAnchor &&
-    !sourceLines.some((line, index) => index > sourceAppIdx && requiredAnchor.test(line))
-  ) {
+  if (giveUp) {
     log(`${entry.relPath} body-parser anchor not found — scaffolded guard; ${spec.manualHint}`);
     return { ok: true, changed };
   }
@@ -135,7 +152,9 @@ export function verifyRegister(cwd: string, spec: RegisterSpec): VerifyResult {
   const anchor = entry && spec.callAfter ? spec.callAfter(entry.appVar) : null;
   const anchorIndex = anchor ? entryLines.findIndex((line) => anchor.test(line)) : -1;
   const callIndex = entry ? entryLines.findIndex((line) => line.includes(spec.call(entry.appVar))) : -1;
-  const ordered = anchor ? anchorIndex !== -1 && callIndex > anchorIndex : callIndex !== -1;
+  // Anchor present → the guard must sit after it. Anchor absent (e.g. no body parser, so the
+  // self-buffering fallback guard was mounted right after app creation) → only its presence matters.
+  const ordered = anchor && anchorIndex !== -1 ? callIndex > anchorIndex : callIndex !== -1;
   const wired = entrySource.includes(spec.importName) && ordered;
   return {
     wired: scaffolded && wired,

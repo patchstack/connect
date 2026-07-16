@@ -128,19 +128,28 @@ describe('Express adapter', () => {
     });
   }
 
-  it('scaffolds but does not claim full wiring when no JSON body parser is present', () => {
+  it('wires a self-buffering guard after app creation when there is no body parser', () => {
     const dir = tmp('ps-express-no-parser-');
     writeFileSync(
       path.join(dir, 'package.json'),
       JSON.stringify({ type: 'module', dependencies: { express: '^4.21.2' } }),
     );
-    const original = "import express from 'express';\nconst app = express();\napp.post('/api/tasks', handler);\n";
-    writeFileSync(path.join(dir, 'server.js'), original);
+    writeFileSync(
+      path.join(dir, 'server.js'),
+      "import express from 'express';\nconst app = express();\napp.post('/api/tasks', handler);\n",
+    );
     try {
       runProtect(dir);
-      expect(read(dir, 'server.js')).toBe(original);
+      const server = read(dir, 'server.js');
+      // Wired: import + registration, mounted after app creation and before the route.
+      expect(server).toContain('import { patchstackMiddleware } from "./patchstack/guard.js";');
+      expect(server).toContain('app.use(patchstackMiddleware);');
+      expect(server.indexOf('const app = express()')).toBeLessThan(server.indexOf('app.use(patchstackMiddleware)'));
+      expect(server.indexOf('app.use(patchstackMiddleware)')).toBeLessThan(server.indexOf("app.post('/api/tasks'"));
+      // The no-parser fallback uses the self-buffering node() guard, not express().
+      expect(read(dir, 'patchstack/guard.js')).toContain('active.node()');
       expect(existsSync(path.join(dir, 'patchstack/guard.js'))).toBe(true);
-      expect(runVerify(dir).wired).toBe(false);
+      expect(runVerify(dir).wired).toBe(true);
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
