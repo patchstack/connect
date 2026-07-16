@@ -23,35 +23,11 @@ export async function installEgressGuard({ shouldBlock, onBlock, dnsScreen = tru
     return true;
   };
 
-  // 1. global fetch — synchronous, so it's active the instant this returns (no startup race).
-  const originalFetch = globalThis.fetch;
-  if (typeof originalFetch === 'function' && !originalFetch.__patchstackGuarded) {
-    const guarded = async (input, init) => {
-      const url = typeof input === 'string' ? input : (input && input.url) || String(input);
-      let host = null;
-      try {
-        host = new URL(url).hostname;
-      } catch {
-        host = null;
-      }
-      const method = (init && init.method) || (input && input.method) || 'GET';
-      if (block(url, host, method)) {
-        throw new Error(`Patchstack blocked an outbound request to a disallowed address: ${host ?? url}`);
-      }
-      return originalFetch(input, init);
-    };
-    guarded.__patchstackGuarded = true;
-    globalThis.fetch = guarded;
-    restores.push(() => {
-      if (globalThis.fetch === guarded) globalThis.fetch = originalFetch;
-    });
-  }
-
-  // DNS-rebinding screen for the Node http path: instead of trusting the hostname, resolve it
-  // ourselves, block if it maps to a disallowed address, and PIN the connection to that vetted
-  // resolution — so a name that passes the hostname check but resolves (or re-resolves) to an
-  // internal/metadata IP can't slip through (time-of-check vs time-of-use). Needs node:dns +
-  // node:net; absent on edge runtimes, where the hostname rules still apply.
+  // DNS resolution, shared by the fetch wrapper and the node http path. Instead of trusting the
+  // hostname, resolve it and check the resolved address(es). On the node path we also PIN the socket
+  // to the vetted IP (no time-of-check/use gap); on fetch we can't pin without a custom undici
+  // dispatcher, so we screen the resolution but a re-resolve at connect is a residual window.
+  // Needs node:dns + node:net; absent on edge runtimes, where the hostname rules still apply.
   let screen = null;
   if (dnsScreen) {
     try {
@@ -63,6 +39,49 @@ export async function installEgressGuard({ shouldBlock, onBlock, dnsScreen = tru
     } catch {
       screen = null; // no node:dns/net here — skip, hostname rules still apply
     }
+  }
+
+  // True when a hostname resolves to a disallowed address. Fail-open: any resolver error → false.
+  const resolvesToDisallowed = (url, host, method) =>
+    new Promise((resolve) => {
+      if (!screen || !host || screen.isIP(host) !== 0 || screen.isExempt(host)) return resolve(false);
+      try {
+        screen.lookup(host, { all: true }, (err, addresses) => {
+          if (err || !Array.isArray(addresses)) return resolve(false);
+          for (const a of addresses) {
+            const ip = a && typeof a === 'object' ? a.address : a;
+            if (ip && block(url, ip, method)) return resolve(true);
+          }
+          resolve(false);
+        });
+      } catch {
+        resolve(false);
+      }
+    });
+
+  // 1. global fetch — synchronous install, so it's active the instant this returns (no startup race).
+  const originalFetch = globalThis.fetch;
+  if (typeof originalFetch === 'function' && !originalFetch.__patchstackGuarded) {
+    const guarded = async (input, init) => {
+      const url = typeof input === 'string' ? input : (input && input.url) || String(input);
+      let host = null;
+      try {
+        host = new URL(url).hostname;
+      } catch {
+        host = null;
+      }
+      const method = (init && init.method) || (input && input.method) || 'GET';
+      // hostname / allowlist / literal-IP check, then a DNS-resolution check for real hostnames.
+      if (block(url, host, method) || (await resolvesToDisallowed(url, host, method))) {
+        throw new Error(`Patchstack blocked an outbound request to a disallowed address: ${host ?? url}`);
+      }
+      return originalFetch(input, init);
+    };
+    guarded.__patchstackGuarded = true;
+    globalThis.fetch = guarded;
+    restores.push(() => {
+      if (globalThis.fetch === guarded) globalThis.fetch = originalFetch;
+    });
   }
 
   // node:http / node:https — best-effort; absent on Workers/Deno-without-node (import throws).

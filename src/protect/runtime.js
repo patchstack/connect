@@ -438,12 +438,58 @@ async function readTextResponse(response, cap = DEFAULT_SCREEN_CAP) {
   if (!isText) return null;
   const len = Number(response.headers?.get?.('content-length') || 0);
   if (len && len > cap) return null;
+  let clone;
   try {
-    const text = await response.clone().text();
+    clone = response.clone();
+  } catch {
+    return null;
+  }
+
+  // Stream the read so a body WITHOUT a Content-Length can't buffer past the cap. Over the cap the
+  // response is left UNSCREENED (null) — but we keep draining the clone so the original stays intact.
+  const body = clone.body;
+  if (body && typeof body.getReader === 'function') {
+    const reader = body.getReader();
+    const chunks = [];
+    let size = 0;
+    let over = false;
+    try {
+      for (;;) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        if (!value) continue;
+        size += value.byteLength;
+        if (over) continue; // keep draining, stop buffering
+        if (size > cap) { over = true; continue; }
+        chunks.push(value);
+      }
+    } catch {
+      return null;
+    }
+    if (over) return null;
+    try {
+      return new TextDecoder().decode(concatBytes(chunks, size));
+    } catch {
+      return null;
+    }
+  }
+
+  try {
+    const text = await clone.text();
     return text.length > cap ? null : text;
   } catch {
     return null;
   }
+}
+
+function concatBytes(chunks, total) {
+  const out = new Uint8Array(total);
+  let offset = 0;
+  for (const c of chunks) {
+    out.set(c, offset);
+    offset += c.byteLength;
+  }
+  return out;
 }
 
 function headerObject(headers) {
@@ -553,9 +599,13 @@ function applyPathRedactors(text, pathRedactors, mask, cap, transform) {
   if (!pathRedactors.length || typeof text !== 'string' || text.length > cap) return text;
   const head = text.trimStart()[0];
   if (head !== '{' && head !== '[') return text; // not a JSON object/array
+  // Preserve out-of-safe-range integers across the parse→stringify round-trip: JSON.parse would
+  // round e.g. a 20-digit id. We quote such number tokens to a sentinel string before parsing and
+  // unquote them after stringifying, so untouched big ints survive losslessly.
+  const preserved = preserveBigInts(text);
   let obj;
   try {
-    obj = JSON.parse(text);
+    obj = JSON.parse(preserved);
   } catch {
     return text;
   }
@@ -574,7 +624,51 @@ function applyPathRedactors(text, pathRedactors, mask, cap, transform) {
       }
     });
   }
-  return changed ? JSON.stringify(obj) : text;
+  return changed ? restoreBigInts(JSON.stringify(obj)) : text;
+}
+
+const BIGINT_OPEN = '__PSBIGINT_9c2f__';
+const BIGINT_CLOSE = '__DNEGIB__';
+
+// Quote every out-of-safe-range integer *value* (a bare number token outside a string) into a
+// sentinel string, so JSON.parse keeps it verbatim. String-aware scan (respects \ escapes) so a
+// number inside a string value is never touched. Plain-ASCII sentinel → survives JSON.stringify.
+function preserveBigInts(text) {
+  let out = '';
+  let inStr = false;
+  for (let i = 0; i < text.length; ) {
+    const ch = text[i];
+    if (inStr) {
+      out += ch;
+      if (ch === '\\') { out += text[i + 1] ?? ''; i += 2; continue; }
+      if (ch === '"') inStr = false;
+      i++;
+      continue;
+    }
+    if (ch === '"') { inStr = true; out += ch; i++; continue; }
+    if (ch === '-' || (ch >= '0' && ch <= '9')) {
+      let j = ch === '-' ? i + 1 : i;
+      let digits = 0;
+      while (j < text.length && text[j] >= '0' && text[j] <= '9') { digits++; j++; }
+      const next = text[j];
+      const isIntToken = digits > 0 && next !== '.' && next !== 'e' && next !== 'E';
+      if (isIntToken && digits >= 16) {
+        out += `"${BIGINT_OPEN}${text.slice(i, j)}${BIGINT_CLOSE}"`;
+      } else {
+        out += text.slice(i, j || i + 1);
+      }
+      i = j > i ? j : i + 1;
+      continue;
+    }
+    out += ch;
+    i++;
+  }
+  return out;
+}
+
+function restoreBigInts(text) {
+  if (!text.includes(BIGINT_OPEN)) return text;
+  return text.replace(new RegExp(`"${BIGINT_OPEN}(-?\\d+)${BIGINT_CLOSE}"`, 'g'), '$1');
 }
 
 function rebuildResponse(response, body, redactedHeaders) {
