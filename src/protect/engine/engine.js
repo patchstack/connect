@@ -143,6 +143,61 @@ function isPrivateV4(a, b) {
   return false;
 }
 
+// Route/method scope for a rule's optional `when: { method, path }`. Fail-open: if the scope can't
+// be evaluated, the rule still applies (never silently suppress a rule).
+function ruleAppliesTo(when, resolver) {
+  try {
+    if (when.method) {
+      const methods = (Array.isArray(when.method) ? when.method : [when.method]).map((m) => String(m).toUpperCase());
+      const actual = String(resolver.resolve('server.REQUEST_METHOD')[0] ?? 'GET').toUpperCase();
+      if (!methods.includes(actual)) return false;
+    }
+    if (when.path) {
+      const uri = String(resolver.resolve('server.REQUEST_URI')[0] ?? '/');
+      if (!pathMatches(String(when.path), uri.split('?')[0])) return false;
+    }
+    return true;
+  } catch {
+    return true;
+  }
+}
+
+// `when.path`: an exact path, a glob with `*`, or an explicit `/regex/` (starts & ends with `/`).
+function pathMatches(pattern, path) {
+  if (pattern.length > 2 && pattern.startsWith('/') && pattern.endsWith('/')) {
+    const re = safeRegExp(pattern);
+    return re ? re.test(path) : false;
+  }
+  if (pattern.includes('*')) {
+    const re = safeRegExp('/^' + pattern.replace(/[.+?^${}()|[\]\\]/g, '\\$&').replace(/\*/g, '[^?]*') + '$/');
+    return re ? re.test(path) : false;
+  }
+  return path === pattern;
+}
+
+// CSRF primitive: does the request come from a different origin than its own Host? Lenient — a
+// missing Origin/Referer (a non-browser client) is NOT treated as cross-origin.
+function isCrossOrigin(resolver) {
+  try {
+    const host = String(resolver.resolve('server.HTTP_HOST')[0] ?? '').toLowerCase();
+    if (!host) return false;
+    const src = resolver.resolve('server.HTTP_ORIGIN')[0] ?? resolver.resolve('server.HTTP_REFERER')[0];
+    if (!src) return false;
+    const srcHost = hostFromUrl(String(src));
+    return srcHost !== null && srcHost !== host;
+  } catch {
+    return false;
+  }
+}
+
+function hostFromUrl(value) {
+  try {
+    return new URL(value).host.toLowerCase();
+  } catch {
+    return null;
+  }
+}
+
 // `matchObj` is the full match object; needed by types that read sibling fields
 // (array_key_value reads `key`/`match`). Optional so direct callers/tests can keep
 // using the (type, value, matchVal) signature.
@@ -316,6 +371,12 @@ export class RuleEngine {
 
     for (const rule of this.#rules) {
       try {
+        // Route/method scope: a rule may declare `when: { method, path }` to apply only on matching
+        // requests (so an auto-generated per-endpoint rule doesn't fire elsewhere).
+        if (rule.when && !ruleAppliesTo(rule.when, resolver)) {
+          continue;
+        }
+
         const conditions = rule.rule_v2;
 
         if (!Array.isArray(conditions) || conditions.length === 0) {
@@ -375,6 +436,12 @@ export class RuleEngine {
 
     if (parameter === 'rules' && Array.isArray(condition.rules)) {
       return this.#evaluateRule(condition.rules, resolver);
+    }
+
+    // `cross_origin` needs the request as a whole (Origin/Referer vs Host), not a single resolved
+    // parameter — it's the CSRF primitive: true (→ block) when the request comes from another origin.
+    if (match && match.type === 'cross_origin') {
+      return isCrossOrigin(resolver);
     }
 
     // `parameter` may be an array (e.g. ["get.action","post.action"]) — the rule_v2 format

@@ -85,7 +85,7 @@ export async function createProtection(options = {}) {
   const responseRuleSet = responseRules.map((rule) => ({
     rule,
     engine: new RuleEngine({ firewall: [rule], onError }),
-    redactors: rule.action === 'redact' ? extractRedactors(rule) : null
+    redactors: rule.action === 'redact' || rule.action === 'encode' ? extractRedactors(rule) : null
   }));
   const egressEngine = new RuleEngine({ firewall: egressRules, onError });
   const maskFn =
@@ -133,13 +133,16 @@ export async function createProtection(options = {}) {
     const headers = { ...(meta.headers || {}) };
     for (const { rule, redactors } of redactions) {
       const mask = maskFn(rule.category);
-      // jsonPath redactors mask a structural location in the JSON body; span redactors mask text
-      // spans in the body AND header values. Apply structural first (on clean JSON), then spans.
+      // action `encode` HTML-escapes the matched value in place (neutralize stored XSS at output);
+      // `redact` masks it. jsonPath redactors act on a structural JSON location, span redactors on
+      // text spans in the body AND header values. Apply structural first (on clean JSON), then spans.
+      const transform = rule.action === 'encode' ? htmlEscape : null;
       const pathRedactors = redactors.filter((r) => r.jsonPath);
       const spanRedactors = redactors.filter((r) => !r.jsonPath);
-      if (pathRedactors.length) body = applyPathRedactors(body, pathRedactors, mask, screenCap);
+      if (pathRedactors.length) body = applyPathRedactors(body, pathRedactors, mask, screenCap, transform);
       if (!spanRedactors.length) continue;
-      body = applyRedactors(body, spanRedactors, mask);
+      body = applyRedactors(body, spanRedactors, mask, transform);
+      if (transform) continue; // encoding is a body/output concern — headers aren't HTML
       for (const name of Object.keys(headers)) {
         const value = headers[name];
         if (typeof value === 'string') {
@@ -459,11 +462,18 @@ function extractRedactors(rule) {
   return out;
 }
 
-function applyRedactors(body, redactors, mask) {
+// HTML-entity escape, for the `encode` action (neutralize markup rather than mask it).
+function htmlEscape(str) {
+  return String(str).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]);
+}
+
+// `transform` (optional): map a matched span to its replacement (the `encode` action passes
+// htmlEscape). Without it, matches are replaced by the `mask` string (the `redact` action).
+function applyRedactors(body, redactors, mask, transform) {
   let out = body;
   for (const r of redactors) {
-    if (r.re) out = out.replace(r.re, mask);
-    else if (r.literal) out = out.split(r.literal).join(mask);
+    if (r.re) out = out.replace(r.re, transform ? (m) => transform(m) : mask);
+    else if (r.literal) out = out.split(r.literal).join(transform ? transform(r.literal) : mask);
   }
   return out;
 }
@@ -507,7 +517,7 @@ function responseScreenCap(rules) {
 // Apply jsonPath redactors structurally: parse the JSON body, mask each targeted leaf (fanning out
 // over arrays at every path segment), re-serialize. Fail-open — a non-JSON / oversized / unparseable
 // body is returned unchanged, and any per-leaf error is swallowed.
-function applyPathRedactors(text, pathRedactors, mask, cap) {
+function applyPathRedactors(text, pathRedactors, mask, cap, transform) {
   if (!pathRedactors.length || typeof text !== 'string' || text.length > cap) return text;
   const head = text.trimStart()[0];
   if (head !== '{' && head !== '[') return text; // not a JSON object/array
@@ -523,7 +533,8 @@ function applyPathRedactors(text, pathRedactors, mask, cap) {
     walkLeaves(obj, r.jsonPath, (loc) => {
       try {
         if (pred(loc.value)) {
-          loc.parent[loc.key] = mask;
+          // `encode`: escape the leaf's own value in place; `redact`: replace it with the mask.
+          loc.parent[loc.key] = transform ? transform(String(loc.value)) : mask;
           changed = true;
         }
       } catch {
