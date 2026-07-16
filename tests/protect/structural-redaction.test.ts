@@ -74,6 +74,32 @@ describe('structural response redaction (array_key_value → mask)', () => {
   });
 });
 
+describe('response size cap + per-rule override', () => {
+  // A body padded past the default 512 KiB screening cap.
+  const doc = () => ({ orders: [{ customers: [{ email: 'x@x.com', pad: 'a'.repeat(700 * 1024) }] }] });
+  const emailOf = async (r: Response) => (await body(r)).orders[0].customers[0].email;
+
+  it('does NOT mask a body over the default cap (fail-open → unscreened)', async () => {
+    const out = await screen(maskRule('orders.customers.email'), jsonResponse(doc()));
+    expect(await emailOf(out)).toBe('x@x.com'); // over cap → skipped, passes through unmasked
+  });
+
+  it('masks an over-cap body when the rule sets bypass_limit: true', async () => {
+    const rule = { ...maskRule('orders.customers.email'), bypass_limit: true };
+    expect(await emailOf(await screen(rule, jsonResponse(doc())))).toBe('[REDACTED]');
+  });
+
+  it('masks when max_bytes raises the ceiling above the body size', async () => {
+    const rule = { ...maskRule('orders.customers.email'), max_bytes: 2 * 1024 * 1024 };
+    expect(await emailOf(await screen(rule, jsonResponse(doc())))).toBe('[REDACTED]');
+  });
+
+  it('still skips when max_bytes is below the body size', async () => {
+    const rule = { ...maskRule('orders.customers.email'), max_bytes: 600 * 1024 }; // < ~700 KiB body
+    expect(await emailOf(await screen(rule, jsonResponse(doc())))).toBe('x@x.com');
+  });
+});
+
 describe('array_key_value matching now fans out over mid-path arrays', () => {
   it('blocks a request when a nested-array leaf matches (filter side)', async () => {
     const rule = {
