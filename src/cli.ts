@@ -3,7 +3,7 @@ import { readFileSync, writeFileSync } from 'node:fs';
 import { scanLockfile } from './parsers/index.js';
 import { buildWirePayload } from './normalize.js';
 import { computeManifestChecksum } from './checksum.js';
-import { DEFAULT_ENDPOINT, buildClaimUrl, postManifest } from './client.js';
+import { DEFAULT_ENDPOINT, buildClaimUrl, fetchSiteStatus, postManifest } from './client.js';
 import {
   assertDemoDependency,
   assertPersistedSiteUuid,
@@ -52,7 +52,9 @@ Usage:
                                                      Never runs the project build
   patchstack-connect init   <site-uuid>              Optional: pre-seed .patchstackrc.json
                                                      with an existing site UUID
-  patchstack-connect status [options]                Show current configuration
+  patchstack-connect status [options]                Show current configuration and whether the
+                                                     site still exists on Patchstack (active /
+                                                     removed)
   patchstack-connect mark-build [options]            Stamp built HTML with a production flag +
                                                      build fingerprint, and ensure the widget
                                                      tag in built pages (run as a postbuild step)
@@ -560,6 +562,27 @@ async function runStatus(args: ParsedArgs): Promise<number> {
   console.log(`Environment: ${config.environment}`);
   if (config.siteUuid !== null) {
     console.log(`Dashboard URL: ${buildClaimUrl(config.endpoint, config.siteUuid)}`);
+
+    switch (await fetchSiteStatus(config)) {
+      case 'active':
+        console.log('Site status:   active on Patchstack');
+        break;
+      case 'removed':
+        console.log('Site status:   removed from Patchstack');
+        console.log(
+          '  The site record no longer exists (deleted from the dashboard or via the',
+        );
+        console.log(
+          '  widget uninstall flow). The local integration files are still in this',
+        );
+        console.log(
+          '  project — see "Uninstalling" in AGENT-INSTALL.md to remove them.',
+        );
+        break;
+      case 'unknown':
+        console.log('Site status:   could not be verified (Patchstack unreachable)');
+        break;
+    }
   }
   return 0;
 }

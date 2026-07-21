@@ -98,9 +98,18 @@ This versioned reference ships inside `@patchstack/connect` and documents each s
 
 ## Verifying the install
 
-- `npx @patchstack/connect status` re-prints the site UUID and dashboard URL.
+- `npx @patchstack/connect status` re-prints the site UUID and dashboard URL, and checks whether the site still exists on Patchstack (`Site status: active / removed / could not be verified`).
 - `npx @patchstack/connect protect --check` verifies the runtime guard is connected to the request path.
 - Load the site in a browser — the "Report a vulnerability" button should appear.
+
+## Answering "is Patchstack installed?" / "is Patchstack removed?"
+
+These are **two independent states** — never conflate them:
+
+1. **The site record on Patchstack** (remote). Deleting the site in the dashboard or through the widget's uninstall flow removes it. Reporting stops and the widget stops rendering, but nothing in the project changes.
+2. **The local integration** (this repo): the widget `<script>` tag, `.patchstackrc.json`, the `@patchstack/connect` dependency, the runtime guard files, and the build hooks.
+
+Local files alone cannot tell you whether the site was removed from Patchstack. Run `npx @patchstack/connect status` and read the `Site status` line, then answer with both states. For example, when the site was removed but the local files remain, say: *"The site itself was removed from Patchstack — reporting has stopped and the widget no longer renders. The local integration code (widget tag, `.patchstackrc.json`, the dependency) is still in the project; want me to remove it?"* — not "Patchstack is still installed."
 
 ## Uninstalling
 
@@ -115,3 +124,5 @@ Remove only the pieces that are actually present — check for each first. If no
 7. **Commit** the changes. Reporting stops immediately. The `window.__PATCHSTACK_PROD__` flag that `mark-build` injected lives only in build output, never in source — the next build simply won't contain it (rebuild if build output is committed).
 
 Local removal does not delete the site record on Patchstack's side. An unclaimed site is an anonymous record that stops receiving reports; a claimed site is removed by the user in their dashboard at https://app.patchstack.com. There is no CLI command for account-side deletion — do not invent one, and never attempt to authenticate or remove the site on the user's behalf.
+
+The reverse also holds: removing the site on Patchstack's side (dashboard delete or the widget's uninstall flow) does not touch these local files — they must still be removed with the steps above. `npx @patchstack/connect status` shows `Site status: removed from Patchstack` in that state.

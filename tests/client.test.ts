@@ -1,5 +1,12 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { buildClaimUrl, buildEndpointUrl, buildRulesUrl, postManifest } from '../src/client.js';
+import {
+  buildClaimUrl,
+  buildEndpointUrl,
+  buildRulesUrl,
+  buildSettingsUrl,
+  fetchSiteStatus,
+  postManifest,
+} from '../src/client.js';
 import { PatchstackError } from '../src/types.js';
 
 describe('buildEndpointUrl', () => {
@@ -78,6 +85,85 @@ describe('buildClaimUrl', () => {
     expect(buildClaimUrl('http://localhost:8001/monitor/pulse/manifest', 'abc')).toBe(
       'http://localhost:8001/monitor/claim?site=abc',
     );
+  });
+});
+
+describe('buildSettingsUrl', () => {
+  it('uses the API endpoint origin plus /monitor/widget/settings/<uuid>', () => {
+    expect(
+      buildSettingsUrl('https://api.patchstack.com/monitor/pulse/manifest', 'abc-def'),
+    ).toBe('https://api.patchstack.com/monitor/widget/settings/abc-def');
+  });
+
+  it('url-encodes the uuid and preserves staging origins', () => {
+    expect(buildSettingsUrl('http://localhost:8001/monitor/pulse/manifest', 'a b')).toBe(
+      'http://localhost:8001/monitor/widget/settings/a%20b',
+    );
+  });
+});
+
+describe('fetchSiteStatus', () => {
+  const config = {
+    siteUuid: 'uuid',
+    endpoint: 'https://example.com/monitor/pulse/manifest',
+    timeoutMs: 30_000,
+    widget: true,
+    environment: 'production',
+  } as const;
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it('returns active on 200', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(
+      new Response(JSON.stringify({ settings: {} }), { status: 200 }),
+    );
+    vi.stubGlobal('fetch', fetchMock);
+
+    await expect(fetchSiteStatus(config)).resolves.toBe('active');
+  });
+
+  it('returns removed on 404', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockResolvedValue(
+        new Response(JSON.stringify({ error: 'Site not found.' }), { status: 404 }),
+      ),
+    );
+
+    await expect(fetchSiteStatus(config)).resolves.toBe('removed');
+  });
+
+  it('returns unknown on server errors and network failures', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response('', { status: 500 })));
+    await expect(fetchSiteStatus(config)).resolves.toBe('unknown');
+
+    vi.stubGlobal('fetch', vi.fn().mockRejectedValue(new Error('boom')));
+    await expect(fetchSiteStatus(config)).resolves.toBe('unknown');
+  });
+
+  it('returns unknown without a request when no siteUuid is configured', async () => {
+    const fetchMock = vi.fn();
+    vi.stubGlobal('fetch', fetchMock);
+
+    await expect(fetchSiteStatus({ ...config, siteUuid: null })).resolves.toBe('unknown');
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it('hits the settings URL with a cache-busting param and no-cache header', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(
+      new Response(JSON.stringify({ settings: {} }), { status: 200 }),
+    );
+    vi.stubGlobal('fetch', fetchMock);
+
+    await fetchSiteStatus(config);
+
+    const [calledUrl, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+    expect(calledUrl).toMatch(
+      /^https:\/\/example\.com\/monitor\/widget\/settings\/uuid\?t=\d+$/,
+    );
+    expect((init.headers as Record<string, string>)['Cache-Control']).toBe('no-cache');
   });
 });
 
