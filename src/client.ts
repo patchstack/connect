@@ -35,6 +35,54 @@ export function buildClaimUrl(endpoint: string, siteUuid: string): string {
   return `${origin}/monitor/claim?site=${encodeURIComponent(siteUuid)}`;
 }
 
+/**
+ * Build the public widget-settings URL for a site. Like the claim URL, it
+ * lives on the API endpoint's origin, at `/monitor/widget/settings/<uuid>`.
+ */
+export function buildSettingsUrl(endpoint: string, siteUuid: string): string {
+  const origin = new URL(endpoint).origin;
+  return `${origin}/monitor/widget/settings/${encodeURIComponent(siteUuid)}`;
+}
+
+/**
+ * Whether the site record still exists on Patchstack's side. Removing a site
+ * (dashboard delete or the widget's uninstall flow) only deletes the remote
+ * record — the local integration files stay in the project — so this is the
+ * signal that distinguishes "removed from Patchstack" from "still active".
+ */
+export type SiteStatus = 'active' | 'removed' | 'unknown';
+
+/**
+ * Check the remote site status via the public widget-settings endpoint:
+ * 200 means the site record exists, 404 means it was removed. Any other
+ * response or a network failure is 'unknown' — never throws. The endpoint's
+ * 200 responses are cacheable for an hour, so a cache-busting query param
+ * keeps intermediaries from reporting a just-removed site as active.
+ */
+export async function fetchSiteStatus(config: Config): Promise<SiteStatus> {
+  if (config.siteUuid === null) return 'unknown';
+
+  const url = new URL(buildSettingsUrl(config.endpoint, config.siteUuid));
+  url.searchParams.set('t', Date.now().toString());
+
+  try {
+    const response = await fetch(url.toString(), {
+      method: 'GET',
+      headers: {
+        Accept: 'application/json',
+        'Cache-Control': 'no-cache',
+        'User-Agent': '@patchstack/connect',
+      },
+      signal: AbortSignal.timeout(config.timeoutMs),
+    });
+    if (response.status === 404) return 'removed';
+    if (response.ok) return 'active';
+    return 'unknown';
+  } catch {
+    return 'unknown';
+  }
+}
+
 export async function postManifest(
   config: Config,
   payload: WirePayload,
