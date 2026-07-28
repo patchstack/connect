@@ -54,10 +54,12 @@ export async function resolveRules(options, store) {
 }
 
 export function normalizeBundle(b) {
+  const enforcement = b?.enforcement ?? b?.mode;
   return {
     firewall: Array.isArray(b.firewall) ? b.firewall : [],
     whitelists: Array.isArray(b.whitelists) ? b.whitelists : [],
     whitelist_keys: b.whitelist_keys ?? {},
+    ...(enforcement === 'block' || enforcement === 'dry-run' ? { enforcement } : {}),
   };
 }
 

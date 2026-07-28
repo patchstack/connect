@@ -64,4 +64,32 @@ describe('PulseRuleClient', () => {
   it('requires a siteUuid', () => {
     expect(() => new PulseRuleClient({})).toThrow();
   });
+
+  it('parses enforcement from the Pulse rules response', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => new Response(JSON.stringify({ ...RULES, enforcement: 'dry-run' }), { status: 200 })),
+    );
+    const res = await new PulseRuleClient({ siteUuid: 'x' }).getRules();
+    expect(res.success).toBe(true);
+    expect(res.enforcement).toBe('dry-run');
+  });
+
+  it('accepts mode as an alias for enforcement', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => new Response(JSON.stringify({ ...RULES, mode: 'block' }), { status: 200 })),
+    );
+    const res = await new PulseRuleClient({ siteUuid: 'x' }).getRules();
+    expect(res.enforcement).toBe('block');
+  });
+
+  it('ignores invalid enforcement values', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => new Response(JSON.stringify({ ...RULES, enforcement: 'maybe' }), { status: 200 })),
+    );
+    const res = await new PulseRuleClient({ siteUuid: 'x' }).getRules();
+    expect(res.enforcement).toBeUndefined();
+  });
 });

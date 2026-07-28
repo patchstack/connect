@@ -1,7 +1,7 @@
 import { existsSync, mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { createProtection, createServerFnGuard } from '../../src/protect/runtime.js';
 
 // A single-rule bundle mirroring the Pulse rules endpoint's { firewall, whitelists, whitelist_keys }.
@@ -77,6 +77,92 @@ describe('createProtection with a siteUuid (live Pulse rules)', () => {
     expect((await guard({ title: '<img src=x onerror="steal()">' }))?.rule).toBe('rm-npm-0001'); // blocked
     expect(await guard({ title: '<img src=x onerror="steal()">', bypass: 'yes' })).toBeNull(); // whitelisted
     vi.restoreAllMocks();
+  });
+});
+
+describe('createProtection Pulse enforcement field', () => {
+  const prevMode = process.env.PATCHSTACK_MODE;
+
+  afterEach(() => {
+    if (prevMode === undefined) delete process.env.PATCHSTACK_MODE;
+    else process.env.PATCHSTACK_MODE = prevMode;
+    vi.restoreAllMocks();
+  });
+
+  it('honors API enforcement=dry-run over options.mode=block (detect, do not block)', async () => {
+    delete process.env.PATCHSTACK_MODE;
+    const onDetect = vi.fn();
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () =>
+        new Response(JSON.stringify({ firewall: rules.firewall, whitelists: [], whitelist_keys: {}, enforcement: 'dry-run' }), {
+          status: 200,
+        }),
+      ),
+    );
+    const protection = await createProtection({
+      siteUuid: 'site-1',
+      pulseRulesUrl: 'https://x.test/monitor/pulse',
+      mode: 'block',
+      onDetect,
+    });
+    expect(protection.mode).toBe('dry-run');
+    expect(await createServerFnGuard({ protection })({ title: '<img src=x onerror="steal()">' })).toBeNull();
+    expect(onDetect).toHaveBeenCalled();
+  });
+
+  it('lets PATCHSTACK_MODE override API enforcement', async () => {
+    process.env.PATCHSTACK_MODE = 'block';
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () =>
+        new Response(JSON.stringify({ firewall: rules.firewall, whitelists: [], whitelist_keys: {}, enforcement: 'dry-run' }), {
+          status: 200,
+        }),
+      ),
+    );
+    const protection = await createProtection({
+      siteUuid: 'site-1',
+      pulseRulesUrl: 'https://x.test/monitor/pulse',
+      mode: 'dry-run',
+    });
+    expect(protection.mode).toBe('block');
+    expect((await createServerFnGuard({ protection })({ title: '<img src=x onerror="steal()">' }))?.rule).toBe('rm-npm-0001');
+  });
+
+  it('hot-swaps mode when a refresh flips enforcement to block', async () => {
+    delete process.env.PATCHSTACK_MODE;
+    vi.useFakeTimers();
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify({ firewall: rules.firewall, whitelists: [], whitelist_keys: {}, enforcement: 'dry-run' }), {
+          status: 200,
+        }),
+      )
+      .mockResolvedValue(
+        new Response(JSON.stringify({ firewall: rules.firewall, whitelists: [], whitelist_keys: {}, enforcement: 'block' }), {
+          status: 200,
+        }),
+      );
+    vi.stubGlobal('fetch', fetchMock);
+
+    const protection = await createProtection({
+      siteUuid: 'site-1',
+      pulseRulesUrl: 'https://x.test/monitor/pulse',
+      mode: 'block',
+      refreshMs: 1000,
+      reportManifest: false,
+    });
+    expect(protection.mode).toBe('dry-run');
+    expect(await createServerFnGuard({ protection })({ title: '<img src=x onerror="steal()">' })).toBeNull();
+
+    await vi.advanceTimersByTimeAsync(1100);
+    expect(protection.mode).toBe('block');
+    expect((await createServerFnGuard({ protection })({ title: '<img src=x onerror="steal()">' }))?.rule).toBe('rm-npm-0001');
+
+    protection.stopRefresh?.();
+    vi.useRealTimers();
   });
 });
 
