@@ -23,6 +23,9 @@ import { renderBlockPage } from './block-page.js';
 import { makeStore } from './rules/store.js';
 import { resolveRules } from './rules/source.js';
 import { startRefresh, makeRefreshHandler } from './rules/refresh.js';
+import { createFirewallLogReporter, resolveApiBase, telemetryEnabled } from './firewall-log.js';
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
 
 // Supabase-tunnel guard for AI-builder apps (Lovable / TanStack Start + Supabase).
 export { createSupabaseGuard, GUARD_PATH } from './supabase-guard.js';
@@ -64,7 +67,34 @@ export function createServerFnGuard({ protection }) {
 
 export async function createProtection(options = {}) {
   const onError = options.onError;
-  const onDetect = options.onDetect ?? defaultOnDetect;
+  const userOnDetect = options.onDetect ?? defaultOnDetect;
+
+  // Report enforced blocks via existing connector POST /api/logs/log (WP path).
+  // Needs api_key from provision / PATCHSTACK_API_KEY / .patchstackrc.json.
+  // Opt out: PATCHSTACK_TELEMETRY=off. Never embed api_key in the public widget.
+  const apiKey = resolveApiKey(options);
+  const firewallLog =
+    apiKey && telemetryEnabled() && options.reportFirewallLog !== false
+      ? createFirewallLogReporter({
+          apiKey,
+          apiBase: resolveApiBase(options.pulseRulesUrl ?? options.baseUrl),
+          sourceHost: options.sourceHost,
+          fetchImpl: options.fetchImpl,
+        })
+      : null;
+
+  const onDetect = (detection) => {
+    userOnDetect(detection);
+    if (firewallLog && detection?.mode === 'block') {
+      firewallLog.record({
+        rule: detection.rule,
+        method: detection.method,
+        path: detection.path,
+        ip: detection.ip,
+        userAgent: detection.userAgent,
+      });
+    }
+  };
 
   // One tiered store (memory → filesystem/pluggable) shared by the initial load and every refresh.
   const store = makeStore(options);
@@ -115,9 +145,19 @@ export async function createProtection(options = {}) {
       : () => (typeof options.maskWith === 'string' ? options.maskWith : '[REDACTED]');
 
   // Given a request/egress result, enforce (block mode) or just record (dry-run).
-  const decide = (phase, result, block, allow) => {
+  const decide = (phase, result, block, allow, ctx = {}) => {
     if (!result || !result.blocked) return allow();
-    onDetect({ phase, mode, category: result.rule?.category, rule: result.rule, message: result.message });
+    onDetect({
+      phase,
+      mode,
+      category: result.rule?.category,
+      rule: result.rule,
+      message: result.message,
+      method: ctx.method,
+      path: ctx.path,
+      ip: ctx.ip,
+      userAgent: ctx.userAgent,
+    });
     return mode === 'block' ? block() : allow();
   };
 
@@ -303,7 +343,7 @@ export async function createProtection(options = {}) {
           onError?.(err);
           return null; // fail open
         }
-        return decide('request', result, () => blockResponse(result, request), () => null);
+        return decide('request', result, () => blockResponse(result, request), () => null, fetchRequestMeta(request));
       };
     },
 
@@ -344,6 +384,7 @@ export async function createProtection(options = {}) {
             if (exprOptions.screenResponses) wrapNodeResponse(res);
             next();
           },
+          nodeRequestMeta(req),
         );
       };
     },
@@ -399,6 +440,7 @@ export async function createProtection(options = {}) {
               if (nodeOptions.screenResponses) wrapNodeResponse(res);
               next();
             },
+            nodeRequestMeta(req),
           );
         });
       };
@@ -462,7 +504,12 @@ export async function createProtection(options = {}) {
 
   if (options.refreshMs > 0 && live) {
     const loop = startRefresh(runRefreshTick, { refreshMs: options.refreshMs, onError });
-    protection.stopRefresh = loop.stop;
+    protection.stopRefresh = () => {
+      loop.stop();
+      firewallLog?.stop();
+    };
+  } else if (firewallLog) {
+    protection.stopRefresh = () => firewallLog.stop();
   }
 
   return protection;
@@ -479,6 +526,25 @@ function resolveMode(options, bundle) {
   if (options?.mode === 'block') return 'block';
   if (options?.mode === 'dry-run') return 'dry-run';
   return 'dry-run';
+}
+
+/** WP-format api_key for connector /api/logs/log. Never use the public site UUID. */
+function resolveApiKey(options) {
+  if (typeof options?.apiKey === 'string' && options.apiKey.length > 0) return options.apiKey;
+  if (typeof process !== 'undefined') {
+    const fromEnv = process.env?.PATCHSTACK_API_KEY;
+    if (typeof fromEnv === 'string' && fromEnv.length > 0) return fromEnv;
+  }
+  try {
+    if (typeof process === 'undefined' || typeof process.cwd !== 'function') return undefined;
+    const cwd = options?.cwd ?? process.cwd();
+    const raw = readFileSync(join(cwd, '.patchstackrc.json'), 'utf8');
+    const key = JSON.parse(raw)?.apiKey;
+    if (typeof key === 'string' && key.length > 0) return key;
+  } catch {
+    /* missing — reporting stays off */
+  }
+  return undefined;
 }
 
 // --- phase / response helpers -------------------------------------------
@@ -795,4 +861,35 @@ function blockResponse(result, request) {
 function defaultOnDetect({ phase, mode, category, rule, message }) {
   const tag = mode === 'block' ? 'BLOCK' : 'DETECT (dry-run)';
   console.warn(`[patchstack] ${tag} phase=${phase ?? 'request'} category=${category ?? '?'} rule=${rule?.id ?? '?'} ${message ?? ''}`.trim());
+}
+
+/** @param {Request} request */
+function fetchRequestMeta(request) {
+  if (!request) return {};
+  let path = null;
+  try {
+    path = new URL(request.url).pathname;
+  } catch {
+    path = typeof request.url === 'string' ? request.url : null;
+  }
+  return {
+    method: request.method ?? null,
+    path,
+    ip: request.headers?.get?.('x-forwarded-for') ?? null,
+    userAgent: request.headers?.get?.('user-agent') ?? null,
+  };
+}
+
+/** @param {import('http').IncomingMessage & { ip?: string, originalUrl?: string }} req */
+function nodeRequestMeta(req) {
+  if (!req) return {};
+  const headers = req.headers ?? {};
+  const ua = headers['user-agent'] ?? headers['User-Agent'];
+  const fwd = headers['x-forwarded-for'] ?? headers['X-Forwarded-For'];
+  return {
+    method: req.method ?? null,
+    path: req.originalUrl || req.url || null,
+    ip: req.ip ?? (typeof fwd === 'string' ? fwd : null),
+    userAgent: typeof ua === 'string' ? ua : Array.isArray(ua) ? ua[0] : null,
+  };
 }

@@ -73,7 +73,7 @@ This versioned reference ships inside `@patchstack/connect` and documents each s
    <script src="https://cdn.patchstack.com/patchstack-widget.js" data-site-uuid="<SITE_UUID>" defer></script>
    ```
 
-   Framework-specific placement patterns: https://cdn.patchstack.com/llm.html. The site UUID is public by design — it ships in client-side HTML and is not a secret. If the project must not carry the widget, persist `"widget": false` in `.patchstackrc.json`; otherwise the next scan re-adds it.
+   Framework-specific placement patterns: https://cdn.patchstack.com/llm.html. The site UUID is public by design — it ships in client-side HTML and is not a secret. The `apiKey` (also `PATCHSTACK_API_KEY`, WP format `{secret}-{oauth.id}`) is the opposite: server-only, used to authenticate block-log reporting through the existing connector `POST /api/logs/log` so "Threats blocked" fills in the dashboard. Never put `apiKey` in the widget tag, client bundles, or public env vars (`NEXT_PUBLIC_*`, etc.). Prefer `PATCHSTACK_API_KEY` in production; `.patchstackrc.json` is fine for local DX. Opt out of reporting with `PATCHSTACK_TELEMETRY=off`. If the project must not carry the widget, persist `"widget": false` in `.patchstackrc.json`; otherwise the next scan re-adds it.
 
 4. **Install and verify runtime protection:**
 
@@ -120,7 +120,7 @@ Remove only the pieces that are actually present — check for each first. If no
 3. **Remove runtime protection before uninstalling the package.** Delete the connector-managed guard/rules files and remove only their managed imports, middleware registrations, tunnel code, and `#region patchstack…` blocks from the framework/server files. Preserve unrelated middleware and application code. Run `rg "patchstack|x-ps-target"` (or the available equivalent) afterwards and inspect every remaining source hit.
 4. **Remove the hooks from `package.json` scripts.** If a hook was chained (e.g. `"postbuild": "existing-command && patchstack-connect mark-build"`), remove only the `patchstack-connect …` part and keep the rest; if removal leaves a script empty, delete the key.
 5. **Uninstall the package** with the manager matching the lockfile: `npm uninstall` / `pnpm remove` / `yarn remove` / `bun remove` `@patchstack/connect`. Don't hand-edit `node_modules` or the lockfile.
-6. **Delete `.patchstackrc.json`** and remove `PATCHSTACK_SITE_UUID` (and public-prefixed variants like `NEXT_PUBLIC_PATCHSTACK_SITE_UUID`) from env files and CI variables.
+6. **Delete `.patchstackrc.json`** and remove `PATCHSTACK_SITE_UUID`, `PATCHSTACK_API_KEY` (and public-prefixed variants like `NEXT_PUBLIC_PATCHSTACK_SITE_UUID`) from env files and CI variables.
 7. **Commit** the changes. Reporting stops immediately. The `window.__PATCHSTACK_PROD__` flag that `mark-build` injected lives only in build output, never in source — the next build simply won't contain it (rebuild if build output is committed).
 
 Local removal does not delete the site record on Patchstack's side. An unclaimed site is an anonymous record that stops receiving reports; a claimed site is removed by the user in their dashboard at https://app.patchstack.com. There is no CLI command for account-side deletion — do not invent one, and never attempt to authenticate or remove the site on the user's behalf.
