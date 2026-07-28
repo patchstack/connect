@@ -48,8 +48,23 @@ export interface CreateProtectionOptions {
   baseUrl?: string;
   /** Pulse site UUID — pull live per-site rules from the Pulse rules API (cached). */
   siteUuid?: string;
+  /**
+   * WP-format site API key (`{secret}-{oauth.id}`) for authenticated block logs
+   * via connector `POST /api/logs/log`. Falls back to `PATCHSTACK_API_KEY`, then
+   * `.patchstackrc.json` `apiKey`. Never put this in the public widget.
+   */
+  apiKey?: string;
   /** Override the Pulse rules API base URL. */
   pulseRulesUrl?: string;
+  /**
+   * When false, skip posting block events to connector `/api/logs/log`.
+   * Also disabled when `PATCHSTACK_TELEMETRY=off` or when no apiKey is available.
+   */
+  reportFirewallLog?: boolean;
+  /** Optional Source-Host header for connector hostname checks. */
+  sourceHost?: string;
+  /** Optional fetch override (tests). */
+  fetchImpl?: typeof fetch;
   /**
    * Re-fetch and hot-swap the live rules every N ms. For long-lived runtimes that aren't restarted
    * on change (an AI builder's sandbox/preview) so a rule that becomes relevant after boot still
@@ -104,8 +119,12 @@ export interface CreateProtectionOptions {
     phase?: Phase;
     mode: string;
     category?: string;
-    rule?: { id?: string; category?: string };
+    rule?: { id?: string | number; category?: string };
     message?: string;
+    method?: string | null;
+    path?: string | null;
+    ip?: string | null;
+    userAgent?: string | null;
   }) => void;
 }
 

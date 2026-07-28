@@ -1,13 +1,13 @@
 import { scanLockfile } from './parsers/index.js';
 import { buildWirePayload } from './normalize.js';
 import { postManifest } from './client.js';
-import { persistSiteUuid, resolveConfig } from './config.js';
+import { persistApiKey, persistSiteUuid, resolveConfig } from './config.js';
 import type { Config, Manifest, StoreManifestResponse } from './types.js';
 
 export { scanLockfile, detectLockfile } from './parsers/index.js';
 export { buildWirePayload, compareVersions } from './normalize.js';
 export { postManifest, buildClaimUrl, buildEndpointUrl, DEFAULT_ENDPOINT } from './client.js';
-export { persistSiteUuid, resolveConfig, writeConfigFile } from './config.js';
+export { persistApiKey, persistSiteUuid, resolveConfig, writeConfigFile } from './config.js';
 export {
   detectStack,
   collectHostingEnvKeys,
@@ -60,6 +60,9 @@ export async function scanAndReport(
   // one for us, persist it so subsequent runs target the same site.
   if (config.siteUuid === null && response.uuid !== undefined && response.uuid.length > 0) {
     await persistSiteUuid(cwd, response.uuid);
+  }
+  if (typeof response.api_key === 'string' && response.api_key.length > 0) {
+    await persistApiKey(cwd, response.api_key);
   }
 
   return {

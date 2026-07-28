@@ -9,6 +9,8 @@ export const DEFAULT_ENVIRONMENT: Environment = 'production';
 
 interface ConfigFile {
   siteUuid?: string;
+  /** WP-format `{secret}-{oauth.id}` for connector /api/logs/log. Server-only. */
+  apiKey?: string;
   endpoint?: string;
   timeoutMs?: number;
   environment?: string;
@@ -69,8 +71,11 @@ export async function resolveConfig(options: ResolveConfigOptions): Promise<Conf
     );
   }
 
+  const apiKeyRaw = fromEnv.apiKey ?? fromFile.apiKey ?? null;
+
   return {
     siteUuid: siteUuid === null || siteUuid.length === 0 ? null : siteUuid,
+    apiKey: apiKeyRaw === null || apiKeyRaw.length === 0 ? null : apiKeyRaw,
     endpoint,
     timeoutMs,
     environment,
@@ -87,11 +92,20 @@ export async function writeConfigFile(cwd: string, config: ConfigFile): Promise<
 
 /**
  * Merge a new siteUuid into the existing `.patchstackrc.json` (or create it).
- * Preserves any `endpoint` / `timeoutMs` the user already wrote.
+ * Preserves any `endpoint` / `timeoutMs` / `apiKey` the user already wrote.
  */
 export async function persistSiteUuid(cwd: string, siteUuid: string): Promise<string> {
   const existing = await readConfigFile(cwd);
   return writeConfigFile(cwd, { ...existing, siteUuid });
+}
+
+/**
+ * Persist the WP-format api_key issued at provision (for connector log auth).
+ * Never embed this value in the public disclosure widget.
+ */
+export async function persistApiKey(cwd: string, apiKey: string): Promise<string> {
+  const existing = await readConfigFile(cwd);
+  return writeConfigFile(cwd, { ...existing, apiKey });
 }
 
 async function readConfigFile(cwd: string): Promise<ConfigFile> {
@@ -137,6 +151,7 @@ function readEnv(): ConfigFile {
   const environmentRaw = process.env.PATCHSTACK_ENVIRONMENT;
   return {
     siteUuid: process.env.PATCHSTACK_SITE_UUID ?? undefined,
+    apiKey: process.env.PATCHSTACK_API_KEY ?? undefined,
     endpoint: process.env.PATCHSTACK_ENDPOINT ?? undefined,
     timeoutMs,
     environment:

@@ -33,6 +33,12 @@ export interface Config {
    * UUID it returns should be persisted via `persistSiteUuid()`.
    */
   siteUuid: string | null;
+  /**
+   * WP-format site API key (`{oauth.secret}-{oauth.id}`) for authenticated
+   * block-log reporting via connector `/api/logs/log`. Issued once as `api_key`
+   * on first provision. Prefer `PATCHSTACK_API_KEY` in production deploys.
+   */
+  apiKey: string | null;
   endpoint: string;
   timeoutMs: number;
   /** Environment to report the manifest under. Defaults to 'production'. */
@@ -48,6 +54,11 @@ export interface Config {
 export interface StoreManifestResponse {
   /** The UUID of the site the manifest was stored against. Always returned. */
   uuid?: string;
+  /**
+   * WP-format API key for connector log ingest. Present only when oauth
+   * credentials are created in this request (first provision / backfill).
+   */
+  api_key?: string;
   stored: boolean;
   manifest_id?: number;
   checksum?: string;
