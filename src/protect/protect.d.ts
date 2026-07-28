@@ -5,6 +5,8 @@ export interface RuleBundle {
   firewall: unknown[];
   whitelists: unknown[];
   whitelist_keys: Record<string, unknown>;
+  /** From the Pulse rules API when present (`block` = enforce, `dry-run` = detect only). */
+  enforcement?: "block" | "dry-run";
 }
 
 export type Phase = "request" | "response" | "egress";
@@ -33,7 +35,11 @@ export interface Protection {
 }
 
 export interface CreateProtectionOptions {
-  /** Default "dry-run". The scaffolded guard sets "block". */
+  /**
+   * Fallback when the Pulse rules API does not send `enforcement`.
+   * Overridden by `PATCHSTACK_MODE` when set, otherwise by API `enforcement`.
+   * Default "dry-run". Scaffolded guards pass "block" when env is unset.
+   */
   mode?: "block" | "dry-run";
   /** Explicit rule bundle (used as the token-less fallback). */
   rules?: unknown;

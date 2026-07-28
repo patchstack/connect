@@ -63,13 +63,15 @@ export function createServerFnGuard({ protection }) {
 }
 
 export async function createProtection(options = {}) {
-  const mode = options.mode === 'block' ? 'block' : 'dry-run';
   const onError = options.onError;
   const onDetect = options.onDetect ?? defaultOnDetect;
 
   // One tiered store (memory → filesystem/pluggable) shared by the initial load and every refresh.
   const store = makeStore(options);
   const bundle = await resolveRules(options, store);
+  // Mode is mutable so a Pulse refresh can flip dry-run ↔ block when SaaS enables production.
+  // Precedence: PATCHSTACK_MODE env (local override) > API enforcement > options.mode > dry-run.
+  let mode = resolveMode(options, bundle);
   // Rule-derived runtime state. Held in `let` bindings the guard methods below close over, so a
   // refresh (see the loop near the end) can hot-swap the engines by reassigning them — the
   // egress interception and the protection object itself stay in place, no re-install.
@@ -280,7 +282,9 @@ export async function createProtection(options = {}) {
   };
 
   const protection = {
-    mode,
+    get mode() {
+      return mode;
+    },
     get rules() {
       return { request: requestRules, response: responseRules, egress: egressRules };
     },
@@ -443,7 +447,9 @@ export async function createProtection(options = {}) {
         onError?.(err); // a failed report must not stop the rule refresh
       }
     }
-    applyBundle(await resolveRules(options, store));
+    const next = await resolveRules(options, store);
+    mode = resolveMode(options, next);
+    applyBundle(next);
   };
 
   if (live) {
@@ -460,6 +466,19 @@ export async function createProtection(options = {}) {
   }
 
   return protection;
+}
+
+/**
+ * Resolve runtime enforcement mode.
+ * Precedence: PATCHSTACK_MODE env > Pulse `enforcement` on the rules bundle > options.mode > dry-run.
+ */
+function resolveMode(options, bundle) {
+  const env = typeof process !== 'undefined' ? process.env?.PATCHSTACK_MODE : undefined;
+  if (env === 'block' || env === 'dry-run') return env;
+  if (bundle?.enforcement === 'block' || bundle?.enforcement === 'dry-run') return bundle.enforcement;
+  if (options?.mode === 'block') return 'block';
+  if (options?.mode === 'dry-run') return 'dry-run';
+  return 'dry-run';
 }
 
 // --- phase / response helpers -------------------------------------------

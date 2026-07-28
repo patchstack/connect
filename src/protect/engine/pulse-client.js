@@ -64,6 +64,7 @@ export class PulseRuleClient {
         firewall: data.firewall,
         whitelists: Array.isArray(data.whitelists) ? data.whitelists : [],
         whitelist_keys: data.whitelist_keys ?? {},
+        ...enforcementField(data),
       };
       this.#cache = result;
       this.#etag = result.etag;
@@ -88,4 +89,11 @@ export class PulseRuleClient {
     this.#cacheTime = null;
     this.#etag = null;
   }
+}
+
+/** @param {unknown} data @returns {{ enforcement?: 'block'|'dry-run' }} */
+function enforcementField(data) {
+  if (!data || typeof data !== 'object') return {};
+  const v = data.enforcement ?? data.mode;
+  return v === 'block' || v === 'dry-run' ? { enforcement: v } : {};
 }
