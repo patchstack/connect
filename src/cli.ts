@@ -3,7 +3,13 @@ import { readFileSync, writeFileSync } from 'node:fs';
 import { scanLockfile } from './parsers/index.js';
 import { buildWirePayload } from './normalize.js';
 import { computeManifestChecksum } from './checksum.js';
-import { DEFAULT_ENDPOINT, buildClaimUrl, fetchSiteStatus, postManifest } from './client.js';
+import {
+  DEFAULT_ENDPOINT,
+  buildClaimUrl,
+  fetchSiteStatus,
+  postManifest,
+  postPackageRemoved,
+} from './client.js';
 import {
   assertDemoDependency,
   assertPersistedSiteUuid,
@@ -55,6 +61,12 @@ Usage:
   patchstack-connect status [options]                Show current configuration and whether the
                                                      site still exists on Patchstack (active /
                                                      removed)
+  patchstack-connect uninstall [options]             Signal Patchstack that this package is being
+                                                     removed from the project. An unclaimed site
+                                                     record is deleted; a claimed site is flagged
+                                                     for its owner to remove in the dashboard.
+                                                     Does NOT touch local files — see the
+                                                     "Uninstalling" steps in AGENT-INSTALL.md
   patchstack-connect mark-build [options]            Stamp built HTML with a production flag +
                                                      build fingerprint, and ensure the widget
                                                      tag in built pages (run as a postbuild step)
@@ -80,7 +92,7 @@ Usage:
                                                      guide even when setup is complete
   patchstack-connect help                            Print this message
 
-Options (for scan, setup, and status):
+Options (for scan, setup, status, and uninstall):
   --site-uuid <uuid>      Override the configured site UUID
   --endpoint <url>        Override the API endpoint
   --dry-run               (scan only) Show the payload without posting
@@ -594,6 +606,46 @@ async function runStatus(args: ParsedArgs): Promise<number> {
   return 0;
 }
 
+async function runUninstall(args: ParsedArgs): Promise<number> {
+  const config = await resolveConfig({
+    cwd: process.cwd(),
+    cliSiteUuid: getStringFlag(args.flags, 'site-uuid'),
+    cliEndpoint: getStringFlag(args.flags, 'endpoint'),
+  });
+
+  if (config.siteUuid === null) {
+    console.log('No site UUID configured — there is no site record to signal about.');
+    console.log('Continue with the local removal steps in AGENT-INSTALL.md ("Uninstalling").');
+    return 0;
+  }
+
+  console.log(`Signalling Patchstack that @patchstack/connect is being removed (site ${config.siteUuid})…`);
+  const outcome = await postPackageRemoved(config);
+
+  switch (outcome.result) {
+    case 'deleted':
+      console.log('Site record removed from Patchstack (the site was unclaimed).');
+      break;
+    case 'flagged':
+      console.log('This site is claimed by a Patchstack account, so its record was kept and flagged.');
+      console.log('Its owner can remove it at https://app.patchstack.com to free the site slot.');
+      break;
+    case 'gone':
+      console.log('The site record no longer exists on Patchstack — nothing to signal.');
+      break;
+    case 'failed':
+      console.warn(`Could not signal Patchstack${outcome.message !== null ? ` (${outcome.message})` : ''}.`);
+      console.warn('The site record may remain — it can always be removed from the dashboard at https://app.patchstack.com.');
+      break;
+  }
+
+  console.log('');
+  console.log('This command only signals Patchstack. The local integration files must still be');
+  console.log('removed — follow the "Uninstalling" steps in AGENT-INSTALL.md.');
+  // Never fail the uninstall flow over the signal: local removal must proceed.
+  return 0;
+}
+
 /** One-line, human-readable summary of a detected stack for CLI output. */
 function describeStack(stack: StackDescriptor): string | null {
   const parts = [stack.builder, stack.framework, stack.ui, stack.runtime].filter(
@@ -705,6 +757,8 @@ async function main(): Promise<number> {
       return runScan(args);
     case 'status':
       return runStatus(args);
+    case 'uninstall':
+      return runUninstall(args);
     case 'mark-build':
       return runMarkBuild(args);
     case 'protect':

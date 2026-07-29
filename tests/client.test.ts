@@ -2,10 +2,12 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
   buildClaimUrl,
   buildEndpointUrl,
+  buildPackageRemovedUrl,
   buildRulesUrl,
   buildSettingsUrl,
   fetchSiteStatus,
   postManifest,
+  postPackageRemoved,
 } from '../src/client.js';
 import { PatchstackError } from '../src/types.js';
 
@@ -164,6 +166,106 @@ describe('fetchSiteStatus', () => {
       /^https:\/\/example\.com\/monitor\/widget\/settings\/uuid\?t=\d+$/,
     );
     expect((init.headers as Record<string, string>)['Cache-Control']).toBe('no-cache');
+  });
+});
+
+describe('buildPackageRemovedUrl', () => {
+  it('maps the production manifest endpoint to the per-site package-removed endpoint', () => {
+    expect(
+      buildPackageRemovedUrl(
+        'https://api.patchstack.com/monitor/pulse/manifest',
+        '550e8400-e29b-41d4-a716-446655440000',
+      ),
+    ).toBe(
+      'https://api.patchstack.com/monitor/pulse/package-removed/550e8400-e29b-41d4-a716-446655440000',
+    );
+  });
+
+  it('falls back to the canonical path for a non-manifest endpoint override', () => {
+    expect(buildPackageRemovedUrl('http://localhost:8000/custom/endpoint?x=1#test', 'site/id')).toBe(
+      'http://localhost:8000/monitor/pulse/package-removed/site%2Fid',
+    );
+  });
+});
+
+describe('postPackageRemoved', () => {
+  const config = {
+    siteUuid: 'uuid',
+    endpoint: 'https://example.com/monitor/pulse/manifest',
+    timeoutMs: 30_000,
+    widget: true,
+    environment: 'production',
+  } as const;
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it('returns deleted with the server message for an unclaimed site', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(
+      new Response(
+        JSON.stringify({ status: 'deleted', message: 'The site record was removed from Patchstack.' }),
+        { status: 200 },
+      ),
+    );
+    vi.stubGlobal('fetch', fetchMock);
+
+    await expect(postPackageRemoved(config)).resolves.toEqual({
+      result: 'deleted',
+      message: 'The site record was removed from Patchstack.',
+    });
+    const [calledUrl, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+    expect(calledUrl).toBe('https://example.com/monitor/pulse/package-removed/uuid');
+    expect(init.method).toBe('POST');
+  });
+
+  it('returns flagged for a claimed site', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockResolvedValue(
+        new Response(JSON.stringify({ status: 'flagged', message: 'Claimed.' }), { status: 200 }),
+      ),
+    );
+
+    await expect(postPackageRemoved(config)).resolves.toEqual({
+      result: 'flagged',
+      message: 'Claimed.',
+    });
+  });
+
+  it('returns gone on 404', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockResolvedValue(
+        new Response(JSON.stringify({ error: 'Site not found.' }), { status: 404 }),
+      ),
+    );
+
+    await expect(postPackageRemoved(config)).resolves.toEqual({ result: 'gone', message: null });
+  });
+
+  it('returns failed on server errors, bad bodies, and network failures — never throws', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response('', { status: 500 })));
+    await expect(postPackageRemoved(config)).resolves.toMatchObject({ result: 'failed' });
+
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockResolvedValue(new Response(JSON.stringify({ ok: true }), { status: 200 })),
+    );
+    await expect(postPackageRemoved(config)).resolves.toMatchObject({ result: 'failed' });
+
+    vi.stubGlobal('fetch', vi.fn().mockRejectedValue(new Error('boom')));
+    await expect(postPackageRemoved(config)).resolves.toMatchObject({ result: 'failed' });
+  });
+
+  it('returns failed without a request when no siteUuid is configured', async () => {
+    const fetchMock = vi.fn();
+    vi.stubGlobal('fetch', fetchMock);
+
+    await expect(postPackageRemoved({ ...config, siteUuid: null })).resolves.toMatchObject({
+      result: 'failed',
+    });
+    expect(fetchMock).not.toHaveBeenCalled();
   });
 });
 
