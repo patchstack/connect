@@ -44,6 +44,68 @@ export function buildSettingsUrl(endpoint: string, siteUuid: string): string {
   return `${origin}/monitor/widget/settings/${encodeURIComponent(siteUuid)}`;
 }
 
+/** Build the package-removed signal URL corresponding to a manifest endpoint override. */
+export function buildPackageRemovedUrl(manifestEndpoint: string, siteUuid: string): string {
+  const url = new URL(manifestEndpoint);
+  const path = url.pathname.replace(/\/$/, '');
+  url.pathname = path.endsWith('/manifest')
+    ? `${path.slice(0, -'/manifest'.length)}/package-removed/${encodeURIComponent(siteUuid)}`
+    : `/monitor/pulse/package-removed/${encodeURIComponent(siteUuid)}`;
+  url.search = '';
+  url.hash = '';
+  return url.toString();
+}
+
+/**
+ * Outcome of the package-removed signal. 'deleted' — the site was unclaimed
+ * and its record was removed; 'flagged' — the site is claimed, so it was only
+ * marked for its owner to confirm removal in the dashboard; 'gone' — the
+ * record no longer existed; 'failed' — Patchstack could not be reached or
+ * returned an unexpected response.
+ */
+export interface PackageRemovedOutcome {
+  result: 'deleted' | 'flagged' | 'gone' | 'failed';
+  message: string | null;
+}
+
+/**
+ * Tell Patchstack the @patchstack/connect package is being uninstalled from
+ * this project. The site UUID is the only credential, so the server deletes
+ * only unclaimed (anonymous) sites; claimed sites are merely flagged for
+ * their owner. Never throws — an unreachable server must not block the local
+ * uninstall.
+ */
+export async function postPackageRemoved(config: Config): Promise<PackageRemovedOutcome> {
+  if (config.siteUuid === null) {
+    return { result: 'failed', message: 'No site UUID configured.' };
+  }
+
+  const url = buildPackageRemovedUrl(config.endpoint, config.siteUuid);
+  try {
+    const response = await fetch(url, {
+      method: 'POST',
+      headers: {
+        Accept: 'application/json',
+        'User-Agent': '@patchstack/connect',
+      },
+      signal: AbortSignal.timeout(config.timeoutMs),
+    });
+    if (response.status === 404) {
+      return { result: 'gone', message: null };
+    }
+    if (!response.ok) {
+      return { result: 'failed', message: `Patchstack returned ${response.status}.` };
+    }
+    const body = (await response.json()) as { status?: string; message?: string };
+    if (body.status === 'deleted' || body.status === 'flagged') {
+      return { result: body.status, message: body.message ?? null };
+    }
+    return { result: 'failed', message: 'Patchstack returned an unexpected response.' };
+  } catch {
+    return { result: 'failed', message: `Could not reach Patchstack at ${url}.` };
+  }
+}
+
 /**
  * Whether the site record still exists on Patchstack's side. Removing a site
  * (dashboard delete or the widget's uninstall flow) only deletes the remote
