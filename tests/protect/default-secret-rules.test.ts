@@ -41,3 +41,21 @@ describe('default response rules — vendor API-key redaction', () => {
     expect(await out.text()).toBe(clean);
   });
 });
+
+describe('default response rules — performance / ReDoS safety', () => {
+  it('screens a large adversarial body in linear time (no catastrophic backtracking)', async () => {
+    const p: any = await createProtection({ mode: 'block' });
+    // ~280 KB (< the 512 KiB screen cap, so it IS screened) of near-miss inputs that stress the
+    // default regexes: repeated token prefixes, a long alnum run, and JWT- / stack-frame-ish noise.
+    const adversarial =
+      ('sk_' + 'live_').repeat(10000) +
+      'A'.repeat(100000) +
+      ('eyJ' + '_').repeat(10000) +
+      ('at x(y.js:1:').repeat(5000);
+    const start = performance.now();
+    const out = await p.screenResponse(textResp(adversarial));
+    await out.text();
+    const ms = performance.now() - start;
+    expect(ms).toBeLessThan(1000); // linear-time; a ReDoS pattern would blow far past this
+  });
+});
