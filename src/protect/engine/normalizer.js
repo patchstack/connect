@@ -129,12 +129,16 @@ export function removeSqlComments(value) {
         return value;
     }
 
+    // Collapse inline block comments to a space (the anti-obfuscation goal). We must NOT strip the
+    // line-comment forms (`--…`, `#…`) to end-of-line: on the WAF inspection path that DELETES
+    // attacker-controlled spans from the value the engine sees while the app still processes the
+    // original — e.g. `#<script>…` becomes empty and evades an XSS rule, though the browser still
+    // runs it. Keeping the content only ever ADDS matches (more of the value is inspected), never
+    // hides one. SQLi keyword detection is unaffected — the keywords remain visible.
     let result = value;
 
     result = result.replace(/\/\*[\s\S]*?\*\//g, ' ');
     result = result.replace(/\/\*![\s\S]*?\*\//g, ' ');
-    result = result.replace(/--[^\r\n]*/g, '');
-    result = result.replace(/#[^\r\n]*/g, '');
 
     return result;
 }

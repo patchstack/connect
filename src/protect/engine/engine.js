@@ -4,12 +4,30 @@ import { normalizeRequest } from './normalizer.js';
 // Catastrophic-backtracking shapes. Broad on purpose: a group whose inner content is quantified
 // (+, *, or {n,}) and is itself quantified — (a+)+, (\w+)+, (.*)*, ([a-z]+)*, (ab+)+ — or an
 // alternation under an outer quantifier — (a|a)*, (x|y)+. A rule matching one of these is skipped
-// (safer than hanging the event loop). Earlier patterns only caught literal-letter groups and
-// missed the far more common `\w`/`.`/char-class forms.
+// (safer than hanging the event loop). The `NEST` variants allow ONE level of nested parentheses in
+// the outer group so a quantified SUBGROUP is caught too (`((ab)+)+`, `((a|b)+)*`) — the earlier
+// `[^)]*` forms stopped at the first inner `)` and missed those. `.test()` scans every start offset,
+// so deeper nestings match at an inner window too.
+const GRP = '(?:[^()]|\\([^()]*\\))*'; // group body allowing one level of nested parens
 const REDOS_PATTERNS = [
   /\([^)]*[+*}][^)]*\)\s*[+*]/,
-  /\([^)]*\|[^)]*\)\s*[+*]/
+  /\([^)]*\|[^)]*\)\s*[+*]/,
+  new RegExp('\\(' + GRP + '[+*}]' + GRP + '\\)\\s*[+*]'), // nested quantified subgroup
+  new RegExp('\\(' + GRP + '\\|' + GRP + '\\)\\s*[+*]')    // nested alternation under a quantifier
 ];
+
+// Report once when a rule's regex is rejected (ReDoS-shaped or unparseable). Unlike an unknown match
+// type, a rejected regex used to fail silently — so a delivered rule protected nothing and nobody knew.
+const warnedRejectedPatterns = new Set();
+function warnRejectedPatternOnce(pattern) {
+  const key = String(pattern);
+  if (warnedRejectedPatterns.has(key)) return;
+  warnedRejectedPatterns.add(key);
+  console.warn(
+    `[patchstack] rule_v2 regex pattern rejected (unsafe or invalid) — condition treated as no-match. ` +
+      `The rule relying on it is NOT enforced: ${key}`
+  );
+}
 
 export function safeRegExp(pattern) {
   if (!pattern) {
@@ -93,6 +111,44 @@ function arrayKeyValue(value, matchObj) {
   return false;
 }
 
+// Match types that operate on the whole container (not per-leaf): `isset` (presence) and
+// `array_in_array` / `array_key_value` (structural). Everything else is a scalar matcher that must
+// fan out over the leaves of an object/array value.
+const WHOLE_VALUE_MATCH_TYPES = new Set(['isset', 'array_in_array', 'array_key_value']);
+
+// Iteratively collect every scalar (non-object) leaf of a structured value. Iterative + bounded
+// (depth and node caps) so a pathologically deep/large attacker payload STOPS at the bound rather
+// than throwing a RangeError that the per-rule catch would swallow into a fail-open bypass.
+function collectLeafValues(root, nodeCap = 20000, maxDepth = 1000) {
+  const out = [];
+  const stack = [[root, 0]];
+  let visited = 0;
+  while (stack.length) {
+    const [node, depth] = stack.pop();
+    if (node === null || node === undefined) continue;
+    if (typeof node !== 'object') {
+      out.push(node);
+      continue;
+    }
+    if (depth >= maxDepth || visited >= nodeCap) continue;
+    visited++;
+    if (Array.isArray(node)) {
+      for (let i = node.length - 1; i >= 0; i--) stack.push([node[i], depth + 1]);
+    } else {
+      for (const k of Object.keys(node)) stack.push([node[k], depth + 1]);
+    }
+  }
+  return out;
+}
+
+// Emit a warning at most once per distinct key (keeps a persistent misconfiguration from spamming).
+const warnedKeys = new Set();
+function warnOnce(key, message) {
+  if (warnedKeys.has(key)) return;
+  warnedKeys.add(key);
+  console.warn(message);
+}
+
 // Report an unknown/removed match type once, so a rule referencing it is not silently
 // unenforced (ADR: "unknown match type → skipped and logged, never silently passed").
 const warnedMatchTypes = new Set();
@@ -108,43 +164,114 @@ function warnUnsupportedMatchType(type) {
 }
 
 // Internal / private / loopback / link-local / cloud-metadata host check, used by the
-// `internal_host` match type for SSRF egress rules. Handles IPv4 (incl. IPv4-mapped IPv6),
-// IPv6 loopback/link-local/unique-local, and localhost / *.local / GCP metadata names.
+// `internal_host` match type for SSRF egress rules. It CANONICALIZES the host before classifying —
+// a textual/prefix check is bypassable by alternate encodings (decimal/hex/octal IPv4, expanded or
+// IPv4-mapped IPv6), which is a classic SSRF evasion. Handles localhost / *.local / GCP metadata
+// names, every IPv4 spelling inet_aton accepts, and IPv6 loopback/link-local/unique-local/mapped.
 function isInternalHost(hostname) {
   if (!hostname) return false;
-  const host = String(hostname).toLowerCase().replace(/^\[|\]$/g, '');
+  let host = String(hostname).toLowerCase().replace(/^\[|\]$/g, '');
+  host = host.replace(/%[^\]]*$/, ''); // strip an IPv6 zone id (fe80::1%eth0)
+  host = host.replace(/\.$/, ''); // strip a single trailing dot (127.0.0.1.)
 
   if (host === 'localhost' || host.endsWith('.localhost') || host.endsWith('.local')) return true;
   if (host === 'metadata.google.internal') return true;
-  if (host === '::1' || host === '::') return true;
-  if (host.startsWith('fe80:')) return true;
-  // IPv6 unique-local (fc00::/7) — only when it is actually IPv6 (contains a colon), so ordinary
-  // hostnames that merely start with fc/fd (e.g. fcm.googleapis.com, fd-cdn.example.net) are not
-  // misclassified as internal and blocked.
-  if (host.includes(':') && (host.startsWith('fc') || host.startsWith('fd'))) return true;
 
-  // Dotted IPv4 (incl. dotted IPv4-mapped `::ffff:127.0.0.1`, which ends in dotted form).
-  const v4 = host.match(/(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/);
-  if (v4 && isPrivateV4(Number(v4[1]), Number(v4[2]))) return true;
-
-  // Hex IPv4-mapped IPv6 (`::ffff:7f00:1` = 127.0.0.1) — Node's URL doesn't dotted-normalize this
-  // form, so classify it here too.
-  const mapped = host.match(/^::ffff:([0-9a-f]{1,4}):([0-9a-f]{1,4})$/);
-  if (mapped) {
-    const g1 = parseInt(mapped[1], 16);
-    const g2 = parseInt(mapped[2], 16);
-    if (isPrivateV4((g1 >> 8) & 0xff, g1 & 0xff)) return true;
+  // IPv6 (contains a colon): expand to 8 groups, then classify on the canonical form.
+  if (host.includes(':')) {
+    const g = expandIPv6(host);
+    if (!g) return false;
+    const allZeroHi = g[0] === 0 && g[1] === 0 && g[2] === 0 && g[3] === 0 && g[4] === 0;
+    if (allZeroHi && g[5] === 0 && g[6] === 0 && (g[7] === 0 || g[7] === 1)) return true; // ::, ::1 loopback
+    if ((g[0] & 0xffc0) === 0xfe80) return true; // link-local fe80::/10
+    if ((g[0] & 0xfe00) === 0xfc00) return true; // unique-local fc00::/7
+    if (allZeroHi && (g[5] === 0xffff || g[5] === 0)) {
+      // IPv4-mapped (::ffff:a.b.c.d) / IPv4-compatible (::a.b.c.d) — classify the embedded v4.
+      return isPrivateV4Int((((g[6] << 16) >>> 0) | g[7]) >>> 0);
+    }
+    return false;
   }
+
+  // IPv4 in any inet_aton spelling (dotted quad, shorthand, decimal, hex, octal).
+  const v4 = parseIPv4ToInt(host);
+  if (v4 !== null) return isPrivateV4Int(v4);
   return false;
 }
 
-// Private / loopback / link-local / this-host IPv4 test (first two octets are enough for our ranges).
-function isPrivateV4(a, b) {
+// Private / loopback / link-local / this-host / CGNAT test on a 32-bit IPv4 integer.
+function isPrivateV4Int(n) {
+  const a = (n >>> 24) & 0xff;
+  const b = (n >>> 16) & 0xff;
   if (a === 127 || a === 10 || a === 0) return true; // loopback / private / this-host
   if (a === 169 && b === 254) return true; // link-local incl. 169.254.169.254 metadata
   if (a === 172 && b >= 16 && b <= 31) return true; // 172.16.0.0/12
   if (a === 192 && b === 168) return true; // 192.168.0.0/16
+  if (a === 100 && b >= 64 && b <= 127) return true; // 100.64.0.0/10 CGNAT (Alibaba metadata 100.100.100.200)
   return false;
+}
+
+// inet_aton-style parse: 1–4 dot-separated parts, each decimal / 0x-hex / 0-octal; the final part
+// fills the remaining low bytes. Returns a uint32, or null if the host isn't a numeric IPv4 form
+// (so ordinary hostnames — which contain letters outside [0-9a-fx] or other chars — return null).
+function parseIPv4ToInt(host) {
+  if (!/^[0-9a-fx]+(\.[0-9a-fx]+)*$/i.test(host)) return null;
+  const parts = host.split('.');
+  if (parts.length > 4) return null;
+  const nums = [];
+  for (const p of parts) {
+    let n;
+    if (/^0x[0-9a-f]+$/i.test(p)) n = parseInt(p, 16);
+    else if (/^0[0-7]+$/.test(p)) n = parseInt(p, 8);
+    else if (/^[0-9]+$/.test(p)) n = parseInt(p, 10);
+    else return null; // e.g. a bare hex like "7f" (not inet_aton-valid without 0x)
+    if (!Number.isInteger(n) || n < 0) return null;
+    nums.push(n);
+  }
+  const last = nums.length - 1;
+  let value = 0;
+  for (let i = 0; i < last; i++) {
+    if (nums[i] > 0xff) return null;
+    value += nums[i] * 2 ** (8 * (3 - i));
+  }
+  const maxLast = 2 ** (8 * (5 - nums.length)) - 1; // the final part fills the remaining low bytes
+  if (nums[last] > maxLast) return null;
+  value += nums[last];
+  if (value < 0 || value > 0xffffffff) return null;
+  return value >>> 0;
+}
+
+// Expand an IPv6 string (any `::` compression, optional embedded IPv4 tail) to 8 numeric groups,
+// or null if it isn't valid IPv6. Lets the classifier compare the canonical form, not a string prefix.
+function expandIPv6(host) {
+  if (!host.includes(':')) return null;
+  let s = host;
+  // Embedded IPv4 tail (::ffff:127.0.0.1) → convert the dotted part to two hex groups.
+  const lastColon = s.lastIndexOf(':');
+  const tail = s.slice(lastColon + 1);
+  if (tail.includes('.')) {
+    const v4 = parseIPv4ToInt(tail);
+    if (v4 === null) return null;
+    s = s.slice(0, lastColon + 1) + ((v4 >>> 16) & 0xffff).toString(16) + ':' + (v4 & 0xffff).toString(16);
+  }
+  const halves = s.split('::');
+  if (halves.length > 2) return null;
+  const head = halves[0] ? halves[0].split(':') : [];
+  const back = halves.length === 2 ? (halves[1] ? halves[1].split(':') : []) : null;
+  let groups;
+  if (back === null) {
+    groups = head;
+  } else {
+    const fill = 8 - head.length - back.length;
+    if (fill < 0) return null;
+    groups = [...head, ...Array(fill).fill('0'), ...back];
+  }
+  if (groups.length !== 8) return null;
+  const out = [];
+  for (const g of groups) {
+    if (!/^[0-9a-f]{1,4}$/i.test(g)) return null;
+    out.push(parseInt(g, 16));
+  }
+  return out;
 }
 
 // Route/method scope for a rule's optional `when: { method, path }`. Fail-open: if the scope can't
@@ -179,16 +306,29 @@ function pathMatches(pattern, path) {
   return path === pattern;
 }
 
-// CSRF primitive: does the request come from a different origin than its own Host? Lenient — a
-// missing Origin/Referer (a non-browser client) is NOT treated as cross-origin.
+// Drop a default port so `app.com:443` and `app.com` compare equal (a real proxy shape), without
+// dropping a non-default port (so genuine cross-port stays distinguishable).
+function normalizeDefaultPort(host) {
+  return String(host).toLowerCase().replace(/:(?:80|443)$/, '');
+}
+
+// CSRF primitive: does the request come from a different origin than its own Host? Lenient only when
+// the Origin AND Referer are TRULY ABSENT (a non-browser client). A present-but-opaque `Origin: null`
+// / empty / unparseable value is NOT same-origin — it's the sandboxed-iframe / opaque-origin signal a
+// CSRF attacker supplies, so it is treated as cross-origin.
 function isCrossOrigin(resolver) {
   try {
-    const host = String(resolver.resolve('server.HTTP_HOST')[0] ?? '').toLowerCase();
+    const host = normalizeDefaultPort(String(resolver.resolve('server.HTTP_HOST')[0] ?? ''));
     if (!host) return false;
-    const src = resolver.resolve('server.HTTP_ORIGIN')[0] ?? resolver.resolve('server.HTTP_REFERER')[0];
-    if (!src) return false;
-    const srcHost = hostFromUrl(String(src));
-    return srcHost !== null && srcHost !== host;
+    const originRaw = resolver.resolve('server.HTTP_ORIGIN')[0];
+    const hasOrigin = originRaw !== undefined && originRaw !== null;
+    const src = hasOrigin ? originRaw : resolver.resolve('server.HTTP_REFERER')[0];
+    if (src === undefined || src === null) return false; // both absent → lenient
+    const s = String(src).trim();
+    if (hasOrigin && (s === '' || s.toLowerCase() === 'null')) return true; // present but opaque → cross-origin
+    const srcHost = hostFromUrl(s);
+    if (srcHost === null) return hasOrigin; // present-but-unparseable Origin → treat as cross-origin
+    return normalizeDefaultPort(srcHost) !== host;
   } catch {
     return false;
   }
@@ -212,11 +352,21 @@ function isOffOriginRedirect(resolver) {
     if (status < 300 || status >= 400) return false;
     const location = resolver.resolve('response.header.location')[0];
     if (!location) return false;
-    const target = hostFromUrl(String(location)); // null for a relative (same-origin) Location
-    if (target === null) return false;
     const host = String(resolver.resolve('server.HTTP_HOST')[0] ?? '').toLowerCase();
     if (!host) return false;
-    return target !== host;
+    // Resolve the Location the way a browser would before comparing hosts: strip TAB/CR/LF and
+    // normalize backslashes to forward slashes (browsers do), then resolve against the request origin
+    // as a base. A relative `/path` resolves to our own host (not flagged); a protocol-relative
+    // `//evil.com` or backslash `/\evil.com` resolves off-origin (flagged) — the canonical
+    // open-redirect payloads that a base-less `new URL()` used to treat as "relative & safe".
+    const loc = String(location).replace(/[\t\r\n]/g, '').replace(/\\/g, '/');
+    let target;
+    try {
+      target = new URL(loc, 'http://' + host).host.toLowerCase();
+    } catch {
+      return false; // unresolvable even with a base → not a redirect we can judge
+    }
+    return normalizeDefaultPort(target) !== normalizeDefaultPort(host);
   } catch {
     return false;
   }
@@ -234,6 +384,7 @@ function isReflectedCorsWithCredentials(resolver) {
     const acao = String(resolver.resolve('response.header.access-control-allow-origin')[0] ?? '');
     if (!acao) return false;
     if (acao === '*') return true; // wildcard + credentials
+    if (acao.toLowerCase() === 'null') return true; // `null` + credentials is readable from a sandboxed iframe (Origin: null)
     const origin = String(resolver.resolve('server.HTTP_ORIGIN')[0] ?? '');
     if (!origin) return false;
     return acao === origin; // ACAO echoes the caller's Origin → any origin is allowed
@@ -253,7 +404,18 @@ export function matchValue(type, value, matchVal, matchObj) {
     return false;
   }
 
-  const strValue = typeof value === 'string' ? value : String(value);
+  // Guard the coercion: String() on a pathologically deep array/object can throw RangeError
+  // (stack overflow). Catching it here keeps a hostile nested value from failing the rule open.
+  let strValue;
+  if (typeof value === 'string') {
+    strValue = value;
+  } else {
+    try {
+      strValue = String(value);
+    } catch {
+      strValue = '';
+    }
+  }
 
   switch (type) {
     case 'equals':
@@ -280,6 +442,7 @@ export function matchValue(type, value, matchVal, matchObj) {
     case 'regex': {
       const regex = safeRegExp(matchVal);
       if (!regex) {
+        warnRejectedPatternOnce(matchVal);
         return false;
       }
       return regex.test(strValue);
@@ -384,6 +547,19 @@ export class RuleEngine {
     this.#whitelists = whitelists;
     this.#whitelistKeys = whitelist_keys;
     this.#onError = onError;
+    // A whitelist with no `rule_id` suppresses EVERY rule when its (attacker-reachable) condition
+    // trips — almost never intended. And `whitelist_keys` is accepted but not implemented. Warn once
+    // for each so a misconfiguration that silently weakens the firewall is visible to the operator.
+    if (Array.isArray(whitelists) && whitelists.some((w) => w && Array.isArray(w.rule_v2) && !w.rule_id)) {
+      warnOnce(
+        'whitelist-no-rule-id',
+        '[patchstack] a whitelist has no `rule_id` — it suppresses ALL rules when it matches. ' +
+          'Scope each whitelist to a specific rule_id, and key it only on values an attacker cannot set.'
+      );
+    }
+    if (whitelist_keys && typeof whitelist_keys === 'object' && Object.keys(whitelist_keys).length > 0) {
+      warnOnce('whitelist-keys-unimplemented', '[patchstack] `whitelist_keys` is not implemented and has no effect.');
+    }
   }
 
   // A mitigation engine must never take down the app it protects: any error while
@@ -527,10 +703,16 @@ export class RuleEngine {
         continue;
       }
 
-      if (typeof value === 'object' && value !== null && !Array.isArray(value)) {
-        for (const v of Object.values(value)) {
-          if (matchValue(match.type, v, match.value, match)) {
-            return true;
+      // A structured (object / array-of-object) value must be inspected at every leaf: a payload
+      // nested deeper than a scalar rule expects would otherwise stringify to "[object Object]" and
+      // evade the match, while the app still reads the live value. Whole-value match types
+      // (isset / array_in_array) see the container; scalar matchers fan out over all leaves.
+      if (typeof value === 'object' && value !== null) {
+        if (WHOLE_VALUE_MATCH_TYPES.has(match.type)) {
+          if (matchValue(match.type, value, match.value, match)) return true;
+        } else {
+          for (const leaf of collectLeafValues(value)) {
+            if (matchValue(match.type, leaf, match.value, match)) return true;
           }
         }
         continue;

@@ -105,16 +105,20 @@ describe('Normalizer Module', () => {
             assert.strictEqual(result, '1 UNION SELECT');
         });
 
-        it('should remove -- style comments', () => {
+        // Line-comment (`--`, `#`) content is deliberately PRESERVED, not stripped: deleting to
+        // end-of-line on the WAF inspection path removes attacker-controlled spans from the value the
+        // engine sees while the app still processes the original (e.g. `#<script>…` would evade an XSS
+        // rule). Keeping the content only ever adds matches; SQLi keywords remain visible either way.
+        it('should NOT delete -- line-comment content (would hide payloads)', () => {
             const result = removeSqlComments("SELECT * FROM users--comment\nWHERE id=1");
             assert.ok(result.includes('SELECT * FROM users'));
-            assert.ok(!result.includes('comment'));
+            assert.ok(result.includes('comment')); // preserved, not deleted
         });
 
-        it('should remove # style comments (MySQL)', () => {
-            const result = removeSqlComments("SELECT * FROM users#comment\nWHERE id=1");
+        it('should NOT delete # line-comment content (would hide payloads)', () => {
+            const result = removeSqlComments("SELECT * FROM users#<script>\nWHERE id=1");
             assert.ok(result.includes('SELECT * FROM users'));
-            assert.ok(!result.includes('comment'));
+            assert.ok(result.includes('<script>')); // preserved so an XSS rule can still match it
         });
 
         it('should handle MySQL /*!...*/ comments', () => {

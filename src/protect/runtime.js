@@ -133,6 +133,11 @@ export async function createProtection(options = {}) {
       rule,
       engine: new RuleEngine({ firewall: [rule], onError }),
       redactors: rule.action === 'redact' || rule.action === 'encode' ? extractRedactors(rule) : null,
+      // A redact/encode condition that carries body-transforming mutations (base64_decode, urldecode,
+      // json_decode, …) detects on the DECODED body but the span redactors run on the RAW body — so
+      // they mask nothing and the secret is served while the log says "redacted". Flag it so screenText
+      // fails such a rule CLOSED (block) instead of serving a no-op redaction.
+      mutatedSpan: (rule.action === 'redact' || rule.action === 'encode') && hasSpanMutations(rule),
       // Optional cheap pre-filter: literal anchor(s) that MUST appear for the (expensive) regex to
       // have any chance of matching. Lets screenText skip the full scan on bodies with no candidate —
       // the common case — cutting CPU/latency and shrinking the regex/ReDoS surface. Case-insensitive.
@@ -170,20 +175,12 @@ export async function createProtection(options = {}) {
   // Response phase core: screen a text body → { verdict: 'pass'|'block'|'redact', body? }.
   // redact masks matched spans; block withholds; block wins over redact. Enforcement only in
   // block mode (dry-run records via onDetect but returns 'pass').
-  const isTextCT = (ct) => {
-    ct = (ct || '').toLowerCase();
-    // Exclude live streams: a Server-Sent-Events / token stream must pass through unbuffered.
-    // Screening buffers the whole body, so it would withhold every chunk until the stream ends —
-    // breaking incremental LLM streaming, which AI-built apps lean on heavily.
-    if (ct.includes('event-stream')) return false;
-    return ct === '' || /(json|text|xml|html|javascript|csv|yaml|x-www-form-urlencoded)/.test(ct);
-  };
   const screenText = (text, meta, reqCtx) => {
     let blockRule = null;
     const redactions = [];
     const headerMutations = [];
     let lowerText = null; // lazily lowercased body, only if a rule uses a prefilter
-    for (const { rule, engine: re, redactors, prefilter } of responseRuleSet) {
+    for (const { rule, engine: re, redactors, prefilter, mutatedSpan } of responseRuleSet) {
       // Cheap pre-filter: if none of the rule's literal anchors is in the body, its regex can't
       // match — skip the full scan (the common no-secret case) before touching the engine.
       if (prefilter) {
@@ -204,8 +201,15 @@ export async function createProtection(options = {}) {
       if (!result.blocked) continue;
       onDetect({ phase: 'response', mode, category: rule.category, rule, message: result.message });
       if (mode !== 'block') continue; // dry-run: observe only
-      if (redactors && redactors.length) redactions.push({ rule, redactors });
-      else if (isHeaderMutation(rule.action)) headerMutations.push(rule);
+      if (redactors && redactors.length) {
+        // Span redactors on a mutation-decoded rule can't map back to the raw body → fail closed.
+        const spanRedactors = redactors.filter((r) => !r.jsonPath);
+        if (mutatedSpan && spanRedactors.length) {
+          if (!blockRule) blockRule = rule;
+        } else {
+          redactions.push({ rule, redactors });
+        }
+      } else if (isHeaderMutation(rule.action)) headerMutations.push(rule);
       else if (!blockRule) blockRule = rule;
     }
     if (mode !== 'block' || (!blockRule && !redactions.length && !headerMutations.length)) return { verdict: 'pass' };
@@ -306,10 +310,16 @@ export async function createProtection(options = {}) {
       if (overflow) { if (chunk != null) origWrite(chunk, enc); return origEnd(cb); }
       collect(chunk, enc);
       if (overflow) return origEnd(cb); // collect just flushed head + final chunk on overflow
-      const text = Buffer.concat(chunks).toString('utf8');
+      const buffer = Buffer.concat(chunks);
       let ct = res.getHeader ? res.getHeader('content-type') : undefined;
       if (Array.isArray(ct)) ct = ct[0];
-      if (!isTextCT(ct)) { for (const c of chunks) origWrite(c); return origEnd(cb); }
+      const kind = screenableContentType(ct);
+      // Skip live streams / binary bodies (incl. an octet-stream that sniffs as binary) — untouched.
+      if (kind === 'skip' || (kind === 'sniff' && looksBinary(buffer))) {
+        for (const c of chunks) origWrite(c);
+        return origEnd(cb);
+      }
+      const text = buffer.toString('utf8');
       let r;
       try {
         r = screenText(text, { status: res.statusCode, headers: res.getHeaders ? res.getHeaders() : {} }, reqCtx);
@@ -595,14 +605,39 @@ function byPhase(rules, phase) {
   return (rules ?? []).filter((r) => (r.phase ?? 'request') === phase);
 }
 
+// Classify a content-type for response screening: 'text' = screen; 'sniff' = screen only if the
+// bytes aren't binary (octet-stream is often a misdeclared JSON export/config); 'skip' = pass
+// through unscreened (live streams, known binary families). SSE is matched on the EXACT base type,
+// not a loose substring — `application/json; profile="event-stream"` is not a stream.
+function baseContentType(ct) {
+  return String(ct || '').toLowerCase().split(';')[0].trim();
+}
+function screenableContentType(ct) {
+  const base = baseContentType(ct);
+  if (base === 'text/event-stream') return 'skip'; // live token/SSE stream — never buffer
+  if (base === '') return 'text';
+  if (/(json|text|xml|html|javascript|csv|yaml|x-www-form-urlencoded)/.test(base)) return 'text';
+  if (base === 'application/octet-stream') return 'sniff'; // maybe a text/JSON export mislabeled
+  return 'skip'; // image/video/audio/font/pdf/zip/wasm/… — don't buffer binary
+}
+// Cheap binary sniff over a byte prefix: a NUL byte, or many control chars, means "don't treat as text".
+function looksBinary(bytes) {
+  const n = Math.min(bytes.length, 512);
+  let ctrl = 0;
+  for (let i = 0; i < n; i++) {
+    const b = bytes[i];
+    if (b === 0) return true;
+    if (b < 9 || (b > 13 && b < 32)) ctrl++;
+  }
+  return n > 0 && ctrl / n > 0.1;
+}
+
 async function readTextResponse(response, cap = DEFAULT_SCREEN_CAP) {
   if (!response || typeof response.clone !== 'function') return null;
-  const ct = (response.headers?.get?.('content-type') || '').toLowerCase();
-  // Live stream (SSE / token stream): never buffer it — reading to completion would withhold the
-  // response until the stream ends, breaking incremental streaming. Pass it through unscreened.
-  if (ct.includes('event-stream')) return null;
-  const isText = ct === '' || /(json|text|xml|html|javascript|csv|yaml|x-www-form-urlencoded)/.test(ct);
-  if (!isText) return null;
+  const ct = response.headers?.get?.('content-type') || '';
+  const kind = screenableContentType(ct);
+  if (kind === 'skip') return null;
+  const sniff = kind === 'sniff';
   const len = Number(response.headers?.get?.('content-length') || 0);
   if (len && len > cap) return null;
   let clone;
@@ -620,11 +655,16 @@ async function readTextResponse(response, cap = DEFAULT_SCREEN_CAP) {
     const chunks = [];
     let size = 0;
     let over = false;
+    let sniffed = !sniff;
     try {
       for (;;) {
         const { done, value } = await reader.read();
         if (done) break;
         if (!value) continue;
+        if (!sniffed) {
+          sniffed = true;
+          if (looksBinary(value)) return null; // octet-stream that's actually binary — skip
+        }
         size += value.byteLength;
         if (over) continue; // keep draining, stop buffering
         if (size > cap) { over = true; continue; }
@@ -643,7 +683,9 @@ async function readTextResponse(response, cap = DEFAULT_SCREEN_CAP) {
 
   try {
     const text = await clone.text();
-    return text.length > cap ? null : text;
+    if (text.length > cap) return null;
+    if (sniff && looksBinary(new TextEncoder().encode(text.slice(0, 512)))) return null;
+    return text;
   } catch {
     return null;
   }
@@ -667,6 +709,24 @@ function headerObject(headers) {
   const setCookies = headers?.getSetCookie?.();
   if (setCookies && setCookies.length) out['set-cookie'] = setCookies;
   return out;
+}
+
+// True if any of the rule's conditions carries a body-transforming mutation on a SPAN match
+// (regex/contains/stripos) — those decode the body before matching, so a span redactor derived from
+// the literal/regex can't be located in the raw body. (array_key_value structural redaction decodes
+// the JSON itself, so json_decode there is fine and doesn't count.)
+function hasSpanMutations(rule) {
+  let found = false;
+  const walk = (conds) => {
+    for (const c of conds ?? []) {
+      if (found) return;
+      if (Array.isArray(c.rules)) walk(c.rules);
+      const isSpan = c.match && (c.match.type === 'regex' || c.match.type === 'contains' || c.match.type === 'stripos');
+      if (isSpan && Array.isArray(c.mutations) && c.mutations.length) found = true;
+    }
+  };
+  walk(rule.rule_v2);
+  return found;
 }
 
 // Derive redaction targets from a rule's own conditions: regex → mask every match;
@@ -707,7 +767,10 @@ function extractRedactors(rule) {
   return out;
 }
 
-// HTML-entity escape, for the `encode` action (neutralize markup rather than mask it).
+// HTML-entity escape, for the `encode` action (neutralize markup rather than mask it). NOTE: this is
+// sound only for HTML text / attribute-VALUE contexts. It does NOT neutralize a `javascript:` / `data:`
+// URI or an event-handler name (those carry no HTML metacharacters) — use `block` for a rule that
+// targets a URL/scheme context. See the rule-authoring guidance in the triage-vpatch-npm skill.
 function htmlEscape(str) {
   return String(str).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]);
 }

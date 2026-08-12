@@ -306,6 +306,12 @@ export class RequestResolver {
     if (body) {
       parts.push(typeof body === 'string' ? body : JSON.stringify(body));
     }
+    // Also fold in the verbatim body: a body the adapter couldn't structurally parse (an unusual
+    // content-type, a non-JSON payload) leaves `body` empty, but the raw text must still be matchable
+    // by an `all` rule — otherwise it's only visible via `raw`.
+    if (typeof this.#req._rawBody === 'string' && this.#req._rawBody) {
+      parts.push(this.#req._rawBody);
+    }
 
     const headers = this.#req.headers ?? {};
     const excludedHeaders = new Set([
