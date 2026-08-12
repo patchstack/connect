@@ -239,7 +239,11 @@ export async function createProtection(options = {}) {
   const reqContextFromFetch = (request) => {
     try {
       const u = new URL(request.url);
-      return { method: request.method, originalUrl: u.pathname + u.search, headers: headerObject(request.headers) };
+      const headers = headerObject(request.headers);
+      // A fetch Request doesn't expose the Host header (it's set at send time), so derive it from the
+      // URL — response rules that compare origins (open-redirect / CORS) need the request Host.
+      if (!headers.host) headers.host = u.host;
+      return { method: request.method, originalUrl: u.pathname + u.search, headers };
     } catch {
       return undefined;
     }
