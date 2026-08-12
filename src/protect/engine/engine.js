@@ -202,6 +202,26 @@ function hostFromUrl(value) {
   }
 }
 
+// Open-redirect primitive (response phase): a 3xx whose Location header points to a DIFFERENT origin
+// than the request's own Host. A relative Location (same-origin) never matches. Needs the request
+// Host, which the response phase threads in via reqCtx. Lenient: no Location, no request Host, or a
+// same-origin / relative target → not flagged (so it can't false-positive without the signal).
+function isOffOriginRedirect(resolver) {
+  try {
+    const status = Number(resolver.resolve('response.status')[0] ?? 0);
+    if (status < 300 || status >= 400) return false;
+    const location = resolver.resolve('response.header.location')[0];
+    if (!location) return false;
+    const target = hostFromUrl(String(location)); // null for a relative (same-origin) Location
+    if (target === null) return false;
+    const host = String(resolver.resolve('server.HTTP_HOST')[0] ?? '').toLowerCase();
+    if (!host) return false;
+    return target !== host;
+  } catch {
+    return false;
+  }
+}
+
 // `matchObj` is the full match object; needed by types that read sibling fields
 // (array_key_value reads `key`/`match`). Optional so direct callers/tests can keep
 // using the (type, value, matchVal) signature.
@@ -448,6 +468,12 @@ export class RuleEngine {
     // parameter — it's the CSRF primitive: true (→ block) when the request comes from another origin.
     if (match && match.type === 'cross_origin') {
       return isCrossOrigin(resolver);
+    }
+
+    // `off_origin` (response phase): true (→ block) when a 3xx redirects to a different origin than
+    // the request Host — the open-redirect primitive. Like cross_origin, it needs the whole resolver.
+    if (match && match.type === 'off_origin') {
+      return isOffOriginRedirect(resolver);
     }
 
     // `parameter` may be an array (e.g. ["get.action","post.action"]) — the rule_v2 format
