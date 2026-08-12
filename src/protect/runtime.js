@@ -172,6 +172,10 @@ export async function createProtection(options = {}) {
   // block mode (dry-run records via onDetect but returns 'pass').
   const isTextCT = (ct) => {
     ct = (ct || '').toLowerCase();
+    // Exclude live streams: a Server-Sent-Events / token stream must pass through unbuffered.
+    // Screening buffers the whole body, so it would withhold every chunk until the stream ends —
+    // breaking incremental LLM streaming, which AI-built apps lean on heavily.
+    if (ct.includes('event-stream')) return false;
     return ct === '' || /(json|text|xml|html|javascript|csv|yaml|x-www-form-urlencoded)/.test(ct);
   };
   const screenText = (text, meta, reqCtx) => {
@@ -585,6 +589,9 @@ function byPhase(rules, phase) {
 async function readTextResponse(response, cap = DEFAULT_SCREEN_CAP) {
   if (!response || typeof response.clone !== 'function') return null;
   const ct = (response.headers?.get?.('content-type') || '').toLowerCase();
+  // Live stream (SSE / token stream): never buffer it — reading to completion would withhold the
+  // response until the stream ends, breaking incremental streaming. Pass it through unscreened.
+  if (ct.includes('event-stream')) return null;
   const isText = ct === '' || /(json|text|xml|html|javascript|csv|yaml|x-www-form-urlencoded)/.test(ct);
   if (!isText) return null;
   const len = Number(response.headers?.get?.('content-length') || 0);
