@@ -7,7 +7,7 @@
 // are already populated) and the Web-Fetch adapter (Workers/edge). Mount it FIRST, before
 // any body-parser — it consumes the stream and exposes the parsed body as `req.body`.
 import { RuleEngine } from './engine.js';
-import { parseMultipart } from './fetch.js';
+import { parseBody } from './fetch.js';
 
 // Build the engine's request shape from a Node IncomingMessage + its raw body text.
 export function fromNodeRequest(req, rawBody = '') {
@@ -45,27 +45,11 @@ export function fromNodeRequest(req, rawBody = '') {
   let body = {};
   let files;
   if (rawBody) {
-    if (contentType.includes('application/json')) {
-      try {
-        body = JSON.parse(rawBody);
-      } catch {
-        body = {};
-      }
-    } else if (contentType.includes('application/x-www-form-urlencoded')) {
-      body = {};
-      for (const [k, v] of new URLSearchParams(rawBody)) {
-        body[k] = k in body ? [].concat(body[k], v) : v;
-      }
-    } else if (contentType.includes('multipart/form-data')) {
-      // Same parsing as the fetch adapter — expose field names/values via post.<field> and file
-      // metadata via files.<field>, so field-scoped rules match uploads on a raw-Node server too.
-      const boundary = /boundary=("?)([^";]+)\1/i.exec(contentType)?.[2];
-      if (boundary) {
-        const parsed = parseMultipart(rawBody, boundary);
-        body = parsed.body;
-        files = parsed.files;
-      }
-    }
+    // Same permissive content-type handling as the fetch adapter (+json / text/plain / no-CT bodies
+    // still populate post.<field>; multipart exposes field + file metadata) on a raw-Node server too.
+    const parsed = parseBody(rawBody, contentType);
+    body = parsed.body;
+    files = parsed.files;
   }
 
   const uri = url.pathname + url.search;

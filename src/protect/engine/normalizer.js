@@ -129,12 +129,16 @@ export function removeSqlComments(value) {
         return value;
     }
 
+    // Collapse inline block comments to a space (the anti-obfuscation goal). We must NOT strip the
+    // line-comment forms (`--…`, `#…`) to end-of-line: on the WAF inspection path that DELETES
+    // attacker-controlled spans from the value the engine sees while the app still processes the
+    // original — e.g. `#<script>…` becomes empty and evades an XSS rule, though the browser still
+    // runs it. Keeping the content only ever ADDS matches (more of the value is inspected), never
+    // hides one. SQLi keyword detection is unaffected — the keywords remain visible.
     let result = value;
 
     result = result.replace(/\/\*[\s\S]*?\*\//g, ' ');
     result = result.replace(/\/\*![\s\S]*?\*\//g, ' ');
-    result = result.replace(/--[^\r\n]*/g, '');
-    result = result.replace(/#[^\r\n]*/g, '');
 
     return result;
 }
@@ -216,20 +220,29 @@ export function normalizeRequest(req, options = {}) {
     };
 }
 
-export function normalizeObject(value, options = {}) {
+// Depth bound for the recursive walk: a pathologically deep object would otherwise overflow the
+// stack, and the engine's per-rule catch would swallow that into a fail-open. Beyond the bound the
+// sub-value is left un-normalized (still matched, just in its raw form) rather than crashing.
+const MAX_NORMALIZE_DEPTH = 200;
+
+export function normalizeObject(value, options = {}, depth = 0) {
     if (typeof value === 'string') {
         return normalize(value, options);
     }
 
+    if (depth >= MAX_NORMALIZE_DEPTH) {
+        return value;
+    }
+
     if (Array.isArray(value)) {
-        return value.map(item => normalizeObject(item, options));
+        return value.map(item => normalizeObject(item, options, depth + 1));
     }
 
     if (typeof value === 'object' && value !== null) {
         const result = {};
 
         for (const [key, val] of Object.entries(value)) {
-            result[key] = normalizeObject(val, options);
+            result[key] = normalizeObject(val, options, depth + 1);
         }
 
         return result;

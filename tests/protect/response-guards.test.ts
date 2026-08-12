@@ -121,14 +121,28 @@ describe('node() — response screening', () => {
     expect(res.body.includes('TOPSECRET')).toBe(false);
   });
 
-  it('passes a non-text response through unscanned', async () => {
+  it('passes a genuinely binary octet-stream through unscanned', async () => {
     const p = await createProtection({ mode: 'block' });
     const res = mockRes();
+    // A binary body (leading NUL) sniffs as binary → passed through untouched, not scanned/corrupted.
+    const bin = Buffer.concat([Buffer.from([0, 1, 2, 3]), Buffer.from(AWS)]);
     await run(p.node({ screenResponses: true }), mockReq(), res, (r: any) => {
       r.setHeader('content-type', 'application/octet-stream');
-      r.end(Buffer.from(AWS));
+      r.end(bin);
     });
-    expect(res.body.includes(AWS)).toBe(true);
+    expect(res.body.includes(AWS)).toBe(true); // untouched
+  });
+
+  it('screens a TEXTUAL octet-stream (misdeclared JSON/text export)', async () => {
+    const p = await createProtection({ mode: 'block' });
+    const res = mockRes();
+    // octet-stream carrying plain text with a secret — an export/config blob — is now screened.
+    await run(p.node({ screenResponses: true }), mockReq(), res, (r: any) => {
+      r.setHeader('content-type', 'application/octet-stream');
+      r.end(JSON.stringify({ awsKey: AWS }));
+    });
+    expect(res.body.includes(AWS)).toBe(false);
+    expect(res.body.includes('[REDACTED]')).toBe(true);
   });
 });
 

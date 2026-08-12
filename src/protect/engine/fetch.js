@@ -42,25 +42,9 @@ export async function fromFetchRequest(request, options = {}) {
   let body = {};
   let files;
   if (rawBody) {
-    if (contentType.includes('application/json')) {
-      try {
-        body = JSON.parse(rawBody);
-      } catch {
-        body = {};
-      }
-    } else if (contentType.includes('application/x-www-form-urlencoded')) {
-      body = {};
-      for (const [k, v] of new URLSearchParams(rawBody)) {
-        body[k] = k in body ? [].concat(body[k], v) : v;
-      }
-    } else if (contentType.includes('multipart/form-data')) {
-      const boundary = /boundary=("?)([^";]+)\1/i.exec(contentType)?.[2];
-      if (boundary) {
-        const parsed = parseMultipart(rawBody, boundary);
-        body = parsed.body;
-        files = parsed.files;
-      }
-    }
+    const parsed = parseBody(rawBody, contentType);
+    body = parsed.body;
+    files = parsed.files;
   }
 
   const uri = url.pathname + url.search;
@@ -90,9 +74,10 @@ export async function fromFetchRequest(request, options = {}) {
 // downstream handler keeps an intact body. (`max` is compared in bytes against Content-Length; the
 // prefix slice is by character, which can only over-scan a multibyte body — the safe direction.)
 async function readCappedText(request, max) {
-  const ceiling = Math.max(max, max * 4);
-  const declared = Number(request.headers?.get?.('content-length') || 0);
-  if (declared && declared > ceiling) return '';
+  // Do NOT skip scanning based on a declared Content-Length: an attacker can declare a huge length
+  // (or none) to dodge inspection while sending a small exploit body. Always stream-scan the prefix
+  // up to `max` (buffering is bounded to `max`; the rest is drained but not retained). Anything past
+  // the cap is unscanned — the documented prefix-scan tradeoff — but the body is never skipped whole.
   let clone;
   try {
     clone = request.clone();
@@ -150,6 +135,41 @@ function concatChunks(chunks, total) {
 // Minimal multipart/form-data parser: enough to expose field names + values (so `post.<field>`
 // and `raw` rules match uploads, e.g. a `__proto__` field name) and file metadata (filename via
 // `files.<field>`). We only need the textual structure, not the binary file contents.
+// Parse a request body into { body, files } for parameter-scoped rules. Content-type detection is
+// deliberately permissive: many AI-built apps `JSON.parse(await req.text())` regardless of the
+// declared type, so a JSON body arriving as `application/vnd.api+json`, `application/ld+json`,
+// `text/plain`, `application/csp-report`, or with NO content-type must still populate post.<field>
+// (otherwise a field-scoped rule silently resolves to nothing). Unrecognized/binary bodies stay `{}`
+// and are still matchable via `raw`.
+export function parseBody(rawBody, contentType) {
+  const ct = String(contentType || '').toLowerCase();
+  const isJson = ct.includes('application/json') || /\+json\b/.test(ct);
+  const isForm = ct.includes('application/x-www-form-urlencoded');
+  const isMultipart = ct.includes('multipart/form-data');
+  // "ambiguous" = a type an app commonly parses as JSON/form even though it isn't declared as such.
+  const isAmbiguous = ct === '' || ct.startsWith('text/plain') || ct.includes('csp-report') || ct.includes('/json');
+
+  if (isMultipart) {
+    const boundary = /boundary=("?)([^";]+)\1/i.exec(contentType)?.[2];
+    if (boundary) return parseMultipart(rawBody, boundary);
+    return { body: {}, files: undefined };
+  }
+  if (isForm) {
+    const body = {};
+    for (const [k, v] of new URLSearchParams(rawBody)) body[k] = k in body ? [].concat(body[k], v) : v;
+    return { body, files: undefined };
+  }
+  if (isJson || isAmbiguous) {
+    try {
+      const parsed = JSON.parse(rawBody);
+      if (parsed && typeof parsed === 'object') return { body: parsed, files: undefined };
+    } catch {
+      /* not JSON — leave body empty; `raw`/`all` still see the verbatim text */
+    }
+  }
+  return { body: {}, files: undefined };
+}
+
 export function parseMultipart(rawBody, boundary) {
   const body = {};
   const files = {};
