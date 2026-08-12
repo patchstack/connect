@@ -8,6 +8,7 @@
   },
   "scripts": {
     "demo": "node demo.mjs",
+    "demo:pulse": "node demo-pulse-chain.mjs",
     "gallery": "node gallery.mjs"
   }
 }
