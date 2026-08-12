@@ -33,6 +33,18 @@ export const DEFAULT_RESPONSE_RULES = [
     rule_v2: [{ parameter: 'response.body', match: { type: 'regex', value: '/\\bAIza[0-9A-Za-z_-]{35}\\b/' } }]
   },
   {
+    id: 'resp-vendor-api-key',
+    title: 'Vendor API key / token in response body',
+    phase: 'response',
+    category: 'secret-exposure',
+    action: 'redact',
+    // High-signal, prefix-anchored provider tokens that never legitimately appear in a response
+    // body: Stripe (sk_live_/rk_live_), GitHub (gh[opsu]_ / github_pat_), GitLab (glpat-),
+    // Slack (xox[baprs]-), Anthropic (sk-ant-), Google OAuth (ya29.), npm (npm_). Trailing
+    // (?![0-9A-Za-z]) instead of \\b since some tokens end in - / _ .
+    rule_v2: [{ parameter: 'response.body', match: { type: 'regex', value: '/\\b(?:sk_live_[0-9A-Za-z]{16,}|rk_live_[0-9A-Za-z]{16,}|gh[opsu]_[0-9A-Za-z]{36}|github_pat_[0-9A-Za-z_]{60,}|glpat-[0-9A-Za-z_-]{20,}|xox[baprs]-[0-9A-Za-z-]{10,}|sk-ant-[0-9A-Za-z_-]{20,}|ya29\\.[0-9A-Za-z_-]{20,}|npm_[0-9A-Za-z]{36})(?![0-9A-Za-z])/' } }]
+  },
+  {
     id: 'resp-jwt',
     title: 'JWT in response body',
     phase: 'response',
