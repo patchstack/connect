@@ -133,6 +133,12 @@ export async function createProtection(options = {}) {
       rule,
       engine: new RuleEngine({ firewall: [rule], onError }),
       redactors: rule.action === 'redact' || rule.action === 'encode' ? extractRedactors(rule) : null,
+      // Optional cheap pre-filter: literal anchor(s) that MUST appear for the (expensive) regex to
+      // have any chance of matching. Lets screenText skip the full scan on bodies with no candidate —
+      // the common case — cutting CPU/latency and shrinking the regex/ReDoS surface. Case-insensitive.
+      prefilter: Array.isArray(rule.prefilter) && rule.prefilter.length
+        ? rule.prefilter.map((s) => String(s).toLowerCase())
+        : null,
     }));
     egressEngine = new RuleEngine({ firewall: egressRules, onError });
   };
@@ -171,7 +177,14 @@ export async function createProtection(options = {}) {
   const screenText = (text, meta, reqCtx) => {
     let blockRule = null;
     const redactions = [];
-    for (const { rule, engine: re, redactors } of responseRuleSet) {
+    let lowerText = null; // lazily lowercased body, only if a rule uses a prefilter
+    for (const { rule, engine: re, redactors, prefilter } of responseRuleSet) {
+      // Cheap pre-filter: if none of the rule's literal anchors is in the body, its regex can't
+      // match — skip the full scan (the common no-secret case) before touching the engine.
+      if (prefilter) {
+        if (lowerText === null) lowerText = text.toLowerCase();
+        if (!prefilter.some((p) => lowerText.includes(p))) continue;
+      }
       let result;
       try {
         // Spread the originating request (method / originalUrl / headers) alongside the response,
