@@ -133,6 +133,12 @@ export async function createProtection(options = {}) {
       rule,
       engine: new RuleEngine({ firewall: [rule], onError }),
       redactors: rule.action === 'redact' || rule.action === 'encode' ? extractRedactors(rule) : null,
+      // Optional cheap pre-filter: literal anchor(s) that MUST appear for the (expensive) regex to
+      // have any chance of matching. Lets screenText skip the full scan on bodies with no candidate —
+      // the common case — cutting CPU/latency and shrinking the regex/ReDoS surface. Case-insensitive.
+      prefilter: Array.isArray(rule.prefilter) && rule.prefilter.length
+        ? rule.prefilter.map((s) => String(s).toLowerCase())
+        : null,
     }));
     egressEngine = new RuleEngine({ firewall: egressRules, onError });
   };
@@ -168,13 +174,24 @@ export async function createProtection(options = {}) {
     ct = (ct || '').toLowerCase();
     return ct === '' || /(json|text|xml|html|javascript|csv|yaml|x-www-form-urlencoded)/.test(ct);
   };
-  const screenText = (text, meta) => {
+  const screenText = (text, meta, reqCtx) => {
     let blockRule = null;
     const redactions = [];
-    for (const { rule, engine: re, redactors } of responseRuleSet) {
+    let lowerText = null; // lazily lowercased body, only if a rule uses a prefilter
+    for (const { rule, engine: re, redactors, prefilter } of responseRuleSet) {
+      // Cheap pre-filter: if none of the rule's literal anchors is in the body, its regex can't
+      // match — skip the full scan (the common no-secret case) before touching the engine.
+      if (prefilter) {
+        if (lowerText === null) lowerText = text.toLowerCase();
+        if (!prefilter.some((p) => lowerText.includes(p))) continue;
+      }
       let result;
       try {
-        result = re.evaluate({ _response: { ...meta, body: text } });
+        // Spread the originating request (method / originalUrl / headers) alongside the response,
+        // so a response rule's `when` route/method scope resolves against the REAL request and so
+        // request Host/Origin are visible to response rules — rather than the phantom empty request
+        // the response phase used to build (which made `when` on a response rule inert).
+        result = re.evaluate({ ...(reqCtx || {}), _response: { ...meta, body: text } });
       } catch (err) {
         onError?.(err);
         continue;
@@ -217,11 +234,23 @@ export async function createProtection(options = {}) {
     return { verdict: 'redact', body, headers };
   };
 
+  // Minimal request context for the response phase: what a response rule's `when` scope and any
+  // request-header reference (Host/Origin) need — method, path, and request headers. No body.
+  const reqContextFromFetch = (request) => {
+    try {
+      const u = new URL(request.url);
+      return { method: request.method, originalUrl: u.pathname + u.search, headers: headerObject(request.headers) };
+    } catch {
+      return undefined;
+    }
+  };
+  const reqContextFromNode = (req) => (req ? { method: req.method, originalUrl: req.url, headers: req.headers || {} } : undefined);
+
   // Screen a fetch Response (used by .fetch() and — via protection.screenResponse — the Supabase guard).
-  const screenResp = async (response) => {
+  const screenResp = async (response, reqCtx) => {
     const text = await readTextResponse(response, screenCap);
     if (text == null) return response;
-    const r = screenText(text, { status: response.status, headers: headerObject(response.headers) });
+    const r = screenText(text, { status: response.status, headers: headerObject(response.headers) }, reqCtx);
     if (r.verdict === 'block') return leakResponse();
     if (r.verdict === 'redact') return rebuildResponse(response, r.body, r.headers);
     return response;
@@ -230,7 +259,7 @@ export async function createProtection(options = {}) {
   // Wrap a Node ServerResponse so its (buffered, text) body is screened before it's sent.
   // Opt-in (buffering can delay a streamed response); over 512 KiB it stops buffering and
   // passes through unscanned.
-  const wrapNodeResponse = (res) => {
+  const wrapNodeResponse = (res, reqCtx) => {
     const origWrite = res.write.bind(res);
     const origEnd = res.end.bind(res);
     const chunks = [];
@@ -272,7 +301,7 @@ export async function createProtection(options = {}) {
       if (!isTextCT(ct)) { for (const c of chunks) origWrite(c); return origEnd(cb); }
       let r;
       try {
-        r = screenText(text, { status: res.statusCode, headers: res.getHeaders ? res.getHeaders() : {} });
+        r = screenText(text, { status: res.statusCode, headers: res.getHeaders ? res.getHeaders() : {} }, reqCtx);
       } catch (err) {
         onError?.(err);
         for (const c of chunks) origWrite(c);
@@ -331,7 +360,7 @@ export async function createProtection(options = {}) {
 
     // Screen a fetch Response through the response-phase rules (redact/block). Used by
     // .fetch(), and by the Supabase guard on its forwarded upstream response.
-    screenResponse: (response) => screenResp(response),
+    screenResponse: (response, request) => screenResp(response, request ? reqContextFromFetch(request) : undefined),
 
     // (request) => Response | null   (null = allow, caller proceeds). Request phase only.
     fetchGuard() {
@@ -354,7 +383,7 @@ export async function createProtection(options = {}) {
         const blocked = await guard(request);
         if (blocked) return blocked;
         const response = await handler(request, ...rest);
-        return screenResp(response);
+        return screenResp(response, reqContextFromFetch(request));
       };
     },
 
@@ -367,7 +396,7 @@ export async function createProtection(options = {}) {
           result = engine.evaluate(req);
         } catch (err) {
           onError?.(err);
-          if (exprOptions.screenResponses) wrapNodeResponse(res);
+          if (exprOptions.screenResponses) wrapNodeResponse(res, reqContextFromNode(req));
           return next();
         }
         decide(
@@ -381,7 +410,7 @@ export async function createProtection(options = {}) {
             }
           },
           () => {
-            if (exprOptions.screenResponses) wrapNodeResponse(res);
+            if (exprOptions.screenResponses) wrapNodeResponse(res, reqContextFromNode(req));
             next();
           },
           nodeRequestMeta(req),
@@ -437,7 +466,7 @@ export async function createProtection(options = {}) {
               // This guard consumed the request stream to screen it; re-expose the parsed
               // body so a downstream handler (without its own body-parser) can read it.
               if (req.body === undefined) req.body = shaped.body;
-              if (nodeOptions.screenResponses) wrapNodeResponse(res);
+              if (nodeOptions.screenResponses) wrapNodeResponse(res, reqContextFromNode(req));
               next();
             },
             nodeRequestMeta(req),
