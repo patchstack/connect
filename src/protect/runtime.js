@@ -673,7 +673,13 @@ function applyRedactors(body, redactors, mask, transform) {
   let out = body;
   for (const r of redactors) {
     if (r.re) out = out.replace(r.re, transform ? (m) => transform(m) : mask);
-    else if (r.literal) out = out.split(r.literal).join(transform ? transform(r.literal) : mask);
+    else if (r.literal) {
+      // Detection (matchValue for contains/stripos) is case-insensitive, so mask case-insensitively
+      // too — otherwise a `contains: "SECRET"` redactor detects `secret` but masks nothing, serving
+      // the leak while reporting a redaction. Escape the literal so it matches literally, not as regex.
+      const re = new RegExp(r.literal.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'gi');
+      out = out.replace(re, (m) => (transform ? transform(m) : mask));
+    }
   }
   return out;
 }

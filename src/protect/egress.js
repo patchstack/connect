@@ -62,20 +62,70 @@ export async function installEgressGuard({ shouldBlock, onBlock, dnsScreen = tru
   // 1. global fetch — synchronous install, so it's active the instant this returns (no startup race).
   const originalFetch = globalThis.fetch;
   if (typeof originalFetch === 'function' && !originalFetch.__patchstackGuarded) {
-    const guarded = async (input, init) => {
-      const url = typeof input === 'string' ? input : (input && input.url) || String(input);
+    const REDIRECT_STATUSES = new Set([301, 302, 303, 307, 308]);
+    const MAX_REDIRECTS = 20;
+
+    // Screen one outbound URL: hostname/allowlist/literal-IP check, then a DNS-resolution check for
+    // real hostnames. Throws if the destination is disallowed.
+    const screenUrl = async (u, method) => {
       let host = null;
       try {
-        host = new URL(url).hostname;
+        host = new URL(u).hostname;
       } catch {
         host = null;
       }
-      const method = (init && init.method) || (input && input.method) || 'GET';
-      // hostname / allowlist / literal-IP check, then a DNS-resolution check for real hostnames.
-      if (block(url, host, method) || (await resolvesToDisallowed(url, host, method))) {
-        throw new Error(`Patchstack blocked an outbound request to a disallowed address: ${host ?? url}`);
+      if (block(u, host, method) || (await resolvesToDisallowed(u, host, method))) {
+        throw new Error(`Patchstack blocked an outbound request to a disallowed address: ${host ?? u}`);
       }
-      return originalFetch(input, init);
+    };
+
+    const guarded = async (input, init) => {
+      let cur;
+      try {
+        cur = new Request(input, { ...(init || {}), redirect: 'manual' });
+      } catch {
+        return originalFetch(input, init); // odd input we can't normalize — fail open, don't break the caller
+      }
+      const callerRedirect = (init && init.redirect) || (input && input.redirect) || 'follow';
+
+      let url = cur.url;
+      let method = cur.method;
+      await screenUrl(url, method);
+
+      // Caller manages redirects itself (manual/error) → screen once, hand back the raw response.
+      if (callerRedirect !== 'follow') return originalFetch(input, init);
+
+      // Otherwise follow redirects ourselves so EVERY hop is screened. Native `follow` re-resolves
+      // internally and would let a 3xx to an internal address slip past the initial check — SSRF via
+      // an open redirect. Buffer the body once (a stream can't be re-read) so 307/308 can replay it.
+      const headers = new Headers(cur.headers);
+      const signal = cur.signal;
+      let body = method === 'GET' || method === 'HEAD' ? undefined : await cur.clone().arrayBuffer();
+
+      for (let hop = 0; ; hop++) {
+        const resp = await originalFetch(
+          hop === 0 ? cur : new Request(url, { method, headers, body, redirect: 'manual', signal }),
+        );
+        const location = REDIRECT_STATUSES.has(resp.status) ? resp.headers.get('location') : null;
+        if (!location) return resp;
+        if (hop >= MAX_REDIRECTS) throw new Error('Patchstack blocked an outbound request: too many redirects');
+
+        const next = new URL(location, url).href;
+        // Fetch redirect semantics: 303, and 301/302 on a POST, become a bodyless GET.
+        if (resp.status === 303 || ((resp.status === 301 || resp.status === 302) && method === 'POST')) {
+          method = 'GET';
+          body = undefined;
+          headers.delete('content-type');
+          headers.delete('content-length');
+        }
+        // Drop credentials on a cross-origin hop, mirroring the browser.
+        if (new URL(next).origin !== new URL(url).origin) {
+          headers.delete('authorization');
+          headers.delete('cookie');
+        }
+        await screenUrl(next, method);
+        url = next;
+      }
     };
     guarded.__patchstackGuarded = true;
     globalThis.fetch = guarded;

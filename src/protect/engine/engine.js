@@ -117,7 +117,11 @@ function isInternalHost(hostname) {
   if (host === 'localhost' || host.endsWith('.localhost') || host.endsWith('.local')) return true;
   if (host === 'metadata.google.internal') return true;
   if (host === '::1' || host === '::') return true;
-  if (host.startsWith('fe80:') || host.startsWith('fc') || host.startsWith('fd')) return true;
+  if (host.startsWith('fe80:')) return true;
+  // IPv6 unique-local (fc00::/7) — only when it is actually IPv6 (contains a colon), so ordinary
+  // hostnames that merely start with fc/fd (e.g. fcm.googleapis.com, fd-cdn.example.net) are not
+  // misclassified as internal and blocked.
+  if (host.includes(':') && (host.startsWith('fc') || host.startsWith('fd'))) return true;
 
   // Dotted IPv4 (incl. dotted IPv4-mapped `::ffff:127.0.0.1`, which ends in dotted form).
   const v4 = host.match(/(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/);
