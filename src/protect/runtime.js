@@ -181,6 +181,7 @@ export async function createProtection(options = {}) {
   const screenText = (text, meta, reqCtx) => {
     let blockRule = null;
     const redactions = [];
+    const headerMutations = [];
     let lowerText = null; // lazily lowercased body, only if a rule uses a prefilter
     for (const { rule, engine: re, redactors, prefilter } of responseRuleSet) {
       // Cheap pre-filter: if none of the rule's literal anchors is in the body, its regex can't
@@ -204,9 +205,10 @@ export async function createProtection(options = {}) {
       onDetect({ phase: 'response', mode, category: rule.category, rule, message: result.message });
       if (mode !== 'block') continue; // dry-run: observe only
       if (redactors && redactors.length) redactions.push({ rule, redactors });
+      else if (isHeaderMutation(rule.action)) headerMutations.push(rule);
       else if (!blockRule) blockRule = rule;
     }
-    if (mode !== 'block' || (!blockRule && !redactions.length)) return { verdict: 'pass' };
+    if (mode !== 'block' || (!blockRule && !redactions.length && !headerMutations.length)) return { verdict: 'pass' };
     if (blockRule) return { verdict: 'block' };
     let body = text;
     // Redact the offending spans in the body AND in every (string) header value — so a secret
@@ -235,6 +237,7 @@ export async function createProtection(options = {}) {
         }
       }
     }
+    for (const rule of headerMutations) applyHeaderMutation(headers, rule);
     return { verdict: 'redact', body, headers };
   };
 
@@ -328,7 +331,9 @@ export async function createProtection(options = {}) {
             // content-length was just removed (the redacted body has a new length); never re-set a
             // stale one here or the response truncates/hangs.
             if (name.toLowerCase() === 'content-length') continue;
-            if (Array.isArray(value)) {
+            if (value === null || value === undefined) {
+              try { res.removeHeader && res.removeHeader(name); } catch { /* ignore */ } // header-mutation removal
+            } else if (Array.isArray(value)) {
               try { res.setHeader(name, value); } catch { /* ignore invalid header */ } // Set-Cookie array
             } else if (typeof value === 'string' && current[name] !== value) {
               try { res.setHeader(name, value); } catch { /* ignore invalid header */ }
@@ -839,12 +844,55 @@ function restoreBigInts(text) {
   return text.replace(new RegExp(`"${BIGINT_OPEN}(-?\\d+)${BIGINT_CLOSE}"`, 'g'), '$1');
 }
 
+// Response-hardening actions. Mutate the (lowercase-keyed) headers object in place; a `null` value
+// signals removal to rebuildResponse / the node path. `set-header` sets/overwrites (or `ensure`s only
+// when absent); `remove-header` strips; `harden-cookie` adds missing HttpOnly/Secure/SameSite flags.
+function isHeaderMutation(action) {
+  return action === 'set-header' || action === 'remove-header' || action === 'harden-cookie';
+}
+
+function applyHeaderMutation(headers, rule) {
+  if (rule.action === 'remove-header') {
+    for (const name of rule.remove_headers ?? []) headers[String(name).toLowerCase()] = null;
+    return;
+  }
+  if (rule.action === 'set-header') {
+    const ensure = rule.ensure === true; // set only when the header is absent (don't clobber)
+    for (const [name, value] of Object.entries(rule.set_headers ?? {})) {
+      const key = String(name).toLowerCase();
+      const present = headers[key] != null && headers[key] !== '';
+      if (ensure && present) continue;
+      headers[key] = String(value);
+    }
+    return;
+  }
+  if (rule.action === 'harden-cookie') {
+    const cookie = headers['set-cookie'];
+    const flags = rule.cookie_flags ?? {};
+    if (Array.isArray(cookie)) {
+      headers['set-cookie'] = cookie.map((c) => (typeof c === 'string' ? hardenCookie(c, flags) : c));
+    } else if (typeof cookie === 'string') {
+      headers['set-cookie'] = hardenCookie(cookie, flags);
+    }
+  }
+}
+
+function hardenCookie(cookie, { httpOnly = true, secure = true, sameSite = 'Lax' } = {}) {
+  let out = String(cookie);
+  if (httpOnly && !/;\s*httponly/i.test(out)) out += '; HttpOnly';
+  if (secure && !/;\s*secure/i.test(out)) out += '; Secure';
+  if (sameSite && !/;\s*samesite\s*=/i.test(out)) out += `; SameSite=${sameSite}`;
+  return out;
+}
+
 function rebuildResponse(response, body, redactedHeaders) {
   const headers = new Headers(response.headers);
   headers.delete('content-length'); // body length changed after redaction
   if (redactedHeaders) {
     for (const [name, value] of Object.entries(redactedHeaders)) {
-      if (typeof value === 'string') {
+      if (value === null || value === undefined) {
+        try { headers.delete(name); } catch { /* skip */ } // header-mutation removal
+      } else if (typeof value === 'string') {
         if (headers.get(name) !== value) {
           try { headers.set(name, value); } catch { /* invalid header name — skip */ }
         }
@@ -857,7 +905,9 @@ function rebuildResponse(response, body, redactedHeaders) {
       }
     }
   }
-  return new Response(body, { status: response.status, statusText: response.statusText, headers });
+  // Null-body statuses (204/205/304/101) must not carry a body, or the Response constructor throws.
+  const nullBody = response.status === 101 || response.status === 204 || response.status === 205 || response.status === 304;
+  return new Response(nullBody ? null : body, { status: response.status, statusText: response.statusText, headers });
 }
 
 function leakResponse() {
