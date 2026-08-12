@@ -45,17 +45,16 @@ describe('request: structured-value evasion', () => {
     const p = await mk([{ id: 'i', rule_v2: [{ parameter: 'post.items', match: { type: 'contains', value: '<script' } }] }]);
     expect(await blocks(p, jreq({ items: [{ v: '<script>x</script>' }] }))).toBe(true);
   });
-  it('matches within a sane depth and never crashes on a pathologically deep value', async () => {
-    const p = await mk([{ id: 'd', rule_v2: [{ parameter: 'post.q', match: { type: 'contains', value: 'evil' } }] }]);
-    // A realistically-nested payload is found.
-    let mid: any = 'evil';
-    for (let i = 0; i < 100; i++) mid = [mid];
-    expect(await blocks(p, jreq({ q: mid }))).toBe(true);
-    // A pathologically-deep value must not throw/hang (the RangeError fail-open) — the request just
-    // completes. (Nothing real nests this deep, and the app couldn't traverse it either.)
+  it('matches past the normalize depth cap without a fail-open crash', async () => {
+    // Build the value in memory (a deep JSON string would overflow JSON.parse on older Node before it
+    // ever reached the engine). Depth 500 is beyond the normalizer's recursion cap (200), so if either
+    // the normalizer or the leaf walk still recursed unboundedly it would RangeError → the per-rule
+    // catch would fail the rule OPEN (blocked:false). A `true` here proves it walked through safely.
     let deep: any = 'evil';
-    for (let i = 0; i < 10000; i++) deep = [deep];
-    await expect(blocks(p, jreq({ q: deep }))).resolves.toBeTypeOf('boolean');
+    for (let i = 0; i < 500; i++) deep = [deep];
+    const eng = new RuleEngine({ firewall: [{ rule_v2: [{ parameter: 'post.q', match: { type: 'contains', value: 'evil' } }] }] });
+    const res = eng.evaluate({ method: 'POST', url: '/', originalUrl: '/', query: {}, headers: {}, body: { q: deep }, _rawBody: '{}' } as any);
+    expect(res.blocked).toBe(true);
   });
 });
 

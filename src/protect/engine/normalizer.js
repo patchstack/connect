@@ -220,20 +220,29 @@ export function normalizeRequest(req, options = {}) {
     };
 }
 
-export function normalizeObject(value, options = {}) {
+// Depth bound for the recursive walk: a pathologically deep object would otherwise overflow the
+// stack, and the engine's per-rule catch would swallow that into a fail-open. Beyond the bound the
+// sub-value is left un-normalized (still matched, just in its raw form) rather than crashing.
+const MAX_NORMALIZE_DEPTH = 200;
+
+export function normalizeObject(value, options = {}, depth = 0) {
     if (typeof value === 'string') {
         return normalize(value, options);
     }
 
+    if (depth >= MAX_NORMALIZE_DEPTH) {
+        return value;
+    }
+
     if (Array.isArray(value)) {
-        return value.map(item => normalizeObject(item, options));
+        return value.map(item => normalizeObject(item, options, depth + 1));
     }
 
     if (typeof value === 'object' && value !== null) {
         const result = {};
 
         for (const [key, val] of Object.entries(value)) {
-            result[key] = normalizeObject(val, options);
+            result[key] = normalizeObject(val, options, depth + 1);
         }
 
         return result;
