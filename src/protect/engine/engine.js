@@ -222,6 +222,26 @@ function isOffOriginRedirect(resolver) {
   }
 }
 
+// CORS-reflection primitive (response phase): the response allows credentials AND lets any origin
+// read it — either `Access-Control-Allow-Origin: *`, or it reflects the caller's own Origin (so
+// every origin is allowed) — rather than a fixed allowlisted origin. That combination lets any
+// malicious site read the authenticated response. Needs the request Origin (threaded via reqCtx).
+// Lenient: credentials not allowed, no ACAO, or a fixed (non-reflected, non-*) ACAO → not flagged.
+function isReflectedCorsWithCredentials(resolver) {
+  try {
+    const acac = String(resolver.resolve('response.header.access-control-allow-credentials')[0] ?? '').toLowerCase();
+    if (acac !== 'true') return false; // only dangerous when credentials are allowed
+    const acao = String(resolver.resolve('response.header.access-control-allow-origin')[0] ?? '');
+    if (!acao) return false;
+    if (acao === '*') return true; // wildcard + credentials
+    const origin = String(resolver.resolve('server.HTTP_ORIGIN')[0] ?? '');
+    if (!origin) return false;
+    return acao === origin; // ACAO echoes the caller's Origin → any origin is allowed
+  } catch {
+    return false;
+  }
+}
+
 // `matchObj` is the full match object; needed by types that read sibling fields
 // (array_key_value reads `key`/`match`). Optional so direct callers/tests can keep
 // using the (type, value, matchVal) signature.
@@ -474,6 +494,13 @@ export class RuleEngine {
     // the request Host — the open-redirect primitive. Like cross_origin, it needs the whole resolver.
     if (match && match.type === 'off_origin') {
       return isOffOriginRedirect(resolver);
+    }
+
+    // `cors_reflected` (response phase): true (→ block) when the response allows credentials and
+    // reflects the caller's Origin (or uses `*`) — the CORS-misconfiguration primitive. Needs the
+    // whole resolver (request Origin vs response ACAO/ACAC).
+    if (match && match.type === 'cors_reflected') {
+      return isReflectedCorsWithCredentials(resolver);
     }
 
     // `parameter` may be an array (e.g. ["get.action","post.action"]) — the rule_v2 format
