@@ -1,8 +1,8 @@
 import { describe, expect, it } from 'vitest';
 import { createProtection } from '../../src/protect/runtime.js';
 
-// Egress hardening follow-ups: IPv6 host handling on the node:http path, WebSocket screening,
-// and the allowHosts allowlist overriding an internal-host block.
+// Egress hardening follow-ups: IPv6 host handling on the node:http path, the deliberate
+// non-screening of WebSocket egress, and the allowHosts allowlist overriding an internal-host block.
 
 async function withEgress(opts: any, fn: (p: any) => Promise<void>) {
   const origFetch = globalThis.fetch;
@@ -40,21 +40,19 @@ describe('egress — node:http IPv6 hosts', () => {
   });
 });
 
-describe('egress — WebSocket screening', () => {
-  it('blocks a ws:// connection to an internal host and restores the global on uninstall', async () => {
+describe('egress — WebSocket is intentionally not screened', () => {
+  // The WebSocket constructor is synchronous, so only a textual hostname check is possible inline —
+  // which can't match the DNS-resolution guarantee the fetch / node:http paths give. Rather than ship
+  // a partial hostname-only guard that over-promises the control, WebSocket egress is left unwrapped.
+  // This test pins that decision so a half-guard can't be reintroduced silently.
+  it('does not wrap the global WebSocket', async () => {
     if (typeof globalThis.WebSocket !== 'function') return; // runtime without global WebSocket
+    const original = globalThis.WebSocket;
     await withEgress({ allowHosts: [] }, async () => {
-      let blocked = false;
-      try {
-        // eslint-disable-next-line no-new
-        new WebSocket('ws://169.254.169.254/');
-      } catch (e) {
-        blocked = /Patchstack blocked/.test(String(e));
-      }
-      expect(blocked).toBe(true);
+      expect(globalThis.WebSocket).toBe(original); // unchanged while the guard is active
+      expect((globalThis.WebSocket as any).__patchstackGuarded).toBeUndefined();
     });
-    // After uninstall the guard marker is gone (global restored).
-    expect((globalThis.WebSocket as any)?.__patchstackGuarded).toBeUndefined();
+    expect(globalThis.WebSocket).toBe(original);
   });
 });
 

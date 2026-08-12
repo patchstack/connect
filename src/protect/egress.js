@@ -145,31 +145,12 @@ export async function installEgressGuard({ shouldBlock, onBlock, dnsScreen = tru
     }
   }
 
-  // 3. global WebSocket — ws:// / wss:// egress that never touches fetch or node:http.
-  const OriginalWS = globalThis.WebSocket;
-  if (typeof OriginalWS === 'function' && !OriginalWS.__patchstackGuarded) {
-    const GuardedWS = new Proxy(OriginalWS, {
-      construct(target, args, newTarget) {
-        const url = String(args?.[0] ?? '');
-        let host = null;
-        try {
-          host = new URL(url).hostname;
-        } catch {
-          host = null;
-        }
-        if (block(url, host, 'WEBSOCKET')) {
-          throw new Error(`Patchstack blocked an outbound WebSocket to a disallowed address: ${host ?? url}`);
-        }
-        return Reflect.construct(target, args, newTarget);
-      },
-    });
-    OriginalWS.__patchstackGuarded = true; // marker on the original guards against double-wrap
-    globalThis.WebSocket = GuardedWS;
-    restores.push(() => {
-      if (globalThis.WebSocket === GuardedWS) globalThis.WebSocket = OriginalWS;
-      delete OriginalWS.__patchstackGuarded;
-    });
-  }
+  // WebSocket egress is intentionally NOT screened. The WebSocket constructor is synchronous, so
+  // the only check possible inline is a textual hostname match — which can't offer the
+  // DNS-resolution guarantee the fetch and node:http/https paths give (a name that resolves to an
+  // internal address would pass). A connection-pinning dispatcher could close that, but the
+  // server-side, attacker-controlled-WebSocket sink is rare, and a partial hostname-only check
+  // over-promises the control. Outbound SSRF screening covers fetch + node:http/https.
 
   return () => {
     for (const restore of restores) {
