@@ -1,7 +1,8 @@
 import { readFileSync, readdirSync, realpathSync, statSync } from 'node:fs';
 import { builtinModules } from 'node:module';
+import { createHash } from 'node:crypto';
 import { join, relative, isAbsolute, dirname, resolve as resolvePath } from 'node:path';
-import type { SiteInputMap, Endpoint, InputField, Sink, Flow, TsModule } from './types.js';
+import type { SiteInputMap, Endpoint, InputField, InputSource, Sink, Flow, TsModule } from './types.js';
 
 // Framework-AGNOSTIC input-flow extractor. It doesn't gate on a specific stack — it walks any JS/TS
 // source and applies recognizer tables for (1) entry points, (2) inputs, (3) sinks, so it generalizes
@@ -223,6 +224,8 @@ export async function extractInputMap(cwd: string, ts: TsModule, options: Extrac
       const text = readFileSync(file, 'utf8');
       if (!hasEntrySignal(text)) continue;
       parsed++;
+      // Coordinates are only valid for the exact file content they were derived from.
+      const fingerprint = createHash('sha256').update(text).digest('hex').slice(0, 16);
       const sf = ts.createSourceFile(file, text, ts.ScriptTarget.Latest, true, guessScriptKind(ts, file));
       const bindings = buildModuleBindings(sf, ts);
       const localSinks = collectLocalSinks(sf, ts, bindings);
@@ -241,9 +244,12 @@ export async function extractInputMap(cwd: string, ts: TsModule, options: Extrac
             if (derived.dynamic) ep.routeDynamic = true;
           }
         }
-        endpoints.push({ ...ep, file: relFile });
+        endpoints.push({ ...ep, file: relFile, fingerprint });
       }
-    } catch {
+    } catch (e) {
+      // The fail-open below is right for production but hides bugs during development: a crash in the
+      // extractor looks identical to an unparseable file. PS_MAP_DEBUG surfaces it.
+      if (typeof process !== 'undefined' && process.env?.PS_MAP_DEBUG) console.error('[patchstack] map error', file, e);
       // Fail-open: one unreadable/unparseable file must never kill the whole map.
       failed.push(relative(cwd, file));
     }
@@ -269,7 +275,7 @@ export async function extractInputMap(cwd: string, ts: TsModule, options: Extrac
   if (endpoints.length === 0) notes.push('No recognized server-side entry points found under the analyzed roots.');
 
   return {
-    version: 1,
+    version: 2,
     framework: detectFramework(cwd),
     endpoints,
     coverage: {
@@ -439,6 +445,51 @@ export function routeFromFilePath(relFile: string): { route?: string; dynamic?: 
   return { route: route.length > 1 ? route.replace(/\/+$/, '') : '/', dynamic };
 }
 
+/**
+ * Map an input to the EXACT rule-engine parameter that addresses it, or null with a reason. Verified
+ * against the resolver in engine/request.js — a coordinate that the resolver cannot resolve would compile
+ * into a rule that silently never matches, which is worse than emitting nothing:
+ *   - body / json / form / multipart / server-fn args → `post.<dotted path>` (createServerFnGuard feeds
+ *     server-function arguments through as the JSON body, so `post.<field>` resolves them)
+ *   - query        → `get.<name>`
+ *   - header       → `server.HTTP_<UPPER_SNAKE>`   (resolver lowercases and maps `_` → `-`)
+ *   - cookie       → `cookie.<name>`
+ *   - file         → `files.<field>`                (`.content` / `.type` / `.filename` are separate)
+ *   - route-param  → NONE. The resolver exposes get/post/request/cookie/server/files — NOT `req.params`.
+ *   - array path   → NONE. `#getNestedValue` walks own properties, so `tags[].label` needs an
+ *                    `array_key_value` rule, not a dotted parameter.
+ */
+export function runtimeCoordinate(source: InputSource | undefined, path: string): { runtimeParameter: string | null; runtimeParameterReason?: string } {
+  if (/\[\d*\]/.test(path)) {
+    return { runtimeParameter: null, runtimeParameterReason: 'array traversal: needs an array_key_value rule, not a dotted parameter' };
+  }
+  switch (source) {
+    case 'json-body':
+    case 'form-body':
+    case 'multipart':
+    case 'body':
+    case 'server-fn-data':
+      return { runtimeParameter: `post.${path}` };
+    case 'query':
+      return { runtimeParameter: `get.${path}` };
+    case 'cookie':
+      return { runtimeParameter: `cookie.${path}` };
+    case 'file':
+      return { runtimeParameter: `files.${path}` };
+    case 'header':
+      return { runtimeParameter: `server.HTTP_${path.toUpperCase().replace(/-/g, '_')}` };
+    case 'route-param':
+      return { runtimeParameter: null, runtimeParameterReason: 'route parameters are not exposed by the runtime resolver' };
+    default:
+      return { runtimeParameter: null, runtimeParameterReason: 'input source could not be determined' };
+  }
+}
+
+/** Attach `source` + the runtime coordinate to every extracted input. */
+function withCoordinates(fields: InputField[], source: InputSource): InputField[] {
+  return fields.map((f) => ({ ...f, source: f.source ?? source, ...runtimeCoordinate(f.source ?? source, f.name) }));
+}
+
 // --- entry-point recognizers -----------------------------------------------
 function extractFromFile(sf: any, ts: TsModule, localSinks: Map<string, Sink[]>, bindings: Bindings, ctx: { file: string; graph: ModuleGraph }): Omit<Endpoint, 'file'>[] {
   const out: Omit<Endpoint, 'file'>[] = [];
@@ -452,7 +503,7 @@ function extractFromFile(sf: any, ts: TsModule, localSinks: Map<string, Sink[]>,
           const chain = unwindChain(decl.initializer, ts);
           if (chain.baseName === 'createServerFn' && ts.isIdentifier(decl.name)) {
             const validatorCall = chain.calls['inputValidator'] ?? chain.calls['validator'];
-            const inputs = inputsFromValidator(validatorCall, ts, bindings);
+            const inputs = withCoordinates(inputsFromValidator(validatorCall, ts, bindings), 'server-fn-data');
             const handlerFn = chain.calls['handler']?.arguments?.[0];
             const sinks = sinksFrom(handlerFn, ts, localSinks, bindings, ctx);
             const handlerBody = handlerFn && isFnLike(handlerFn, ts) ? handlerFn.body : undefined;
@@ -460,7 +511,7 @@ function extractFromFile(sf: any, ts: TsModule, localSinks: Map<string, Sink[]>,
               name: decl.name.text,
               entryKind: 'server-fn',
               method: methodFromObjectArg(chain.baseCall, ts),
-              line: lineOf(decl),
+              ...spanOf(decl),
               inputs,
               sinks,
               flows: linkFlows(handlerBody, handlerFn?.parameters, inputs, sinks, ts),
@@ -474,9 +525,9 @@ function extractFromFile(sf: any, ts: TsModule, localSinks: Map<string, Sink[]>,
         // (2b) `export const POST = (req) => …` route handler, or a `'use server'` action arrow.
         if (ts.isIdentifier(decl.name) && decl.initializer && isFnLike(decl.initializer, ts)) {
           if (HTTP_METHODS.has(decl.name.text)) {
-            out.push(handlerEntry(decl.name.text, decl.name.text, decl.initializer.parameters, decl.initializer.body, ts, localSinks, bindings, ctx, { line: lineOf(decl) }));
+            out.push(handlerEntry(decl.name.text, decl.name.text, decl.initializer.parameters, decl.initializer.body, ts, localSinks, bindings, ctx, spanOf(decl)));
           } else if (isServerActionsFile) {
-            out.push(handlerEntry(decl.name.text, 'server-action', decl.initializer.parameters, decl.initializer.body, ts, localSinks, bindings, ctx, { line: lineOf(decl) }));
+            out.push(handlerEntry(decl.name.text, 'server-action', decl.initializer.parameters, decl.initializer.body, ts, localSinks, bindings, ctx, spanOf(decl)));
           }
         }
       }
@@ -485,9 +536,9 @@ function extractFromFile(sf: any, ts: TsModule, localSinks: Map<string, Sink[]>,
     // (2a) Route handlers / server actions declared as functions.
     if (ts.isFunctionDeclaration(node) && node.name && hasExport(node, ts)) {
       if (HTTP_METHODS.has(node.name.text)) {
-        out.push(handlerEntry(node.name.text, node.name.text, node.parameters, node.body, ts, localSinks, bindings, ctx, { line: lineOf(node) }));
+        out.push(handlerEntry(node.name.text, node.name.text, node.parameters, node.body, ts, localSinks, bindings, ctx, spanOf(node)));
       } else if (isServerActionsFile || hasUseServerDirective(node, ts)) {
-        out.push(handlerEntry(node.name.text, 'server-action', node.parameters, node.body, ts, localSinks, bindings, ctx, { line: lineOf(node) }));
+        out.push(handlerEntry(node.name.text, 'server-action', node.parameters, node.body, ts, localSinks, bindings, ctx, spanOf(node)));
       }
     }
 
@@ -503,7 +554,7 @@ function extractFromFile(sf: any, ts: TsModule, localSinks: Map<string, Sink[]>,
       if (denoServe || bareServe) {
         const handler = node.arguments.find((a: any) => isFnLike(a, ts));
         if (handler) {
-          out.push(handlerEntry(functionNameFromPath(ctx.file) ?? 'serve', 'edge-function', handler.parameters, handler.body, ts, localSinks, bindings, ctx, { line: lineOf(node) }));
+          out.push(handlerEntry(functionNameFromPath(ctx.file) ?? 'serve', 'edge-function', handler.parameters, handler.body, ts, localSinks, bindings, ctx, spanOf(node)));
         }
       }
     }
@@ -522,7 +573,7 @@ function extractFromFile(sf: any, ts: TsModule, localSinks: Map<string, Sink[]>,
             // `use`/`all` register handlers but are not HTTP methods — leave method undefined.
             method: HTTP_METHODS.has(mname.toUpperCase()) ? mname.toUpperCase() : undefined,
             route,
-            line: lineOf(node),
+            ...spanOf(node),
           }));
         }
       }
@@ -533,7 +584,7 @@ function extractFromFile(sf: any, ts: TsModule, localSinks: Map<string, Sink[]>,
           const reg = routeObject(arg, ts);
           if (reg.url && reg.handler) {
             for (const m of reg.methods.length ? reg.methods : [undefined]) {
-              out.push(handlerEntry(reg.url, 'route-registration', reg.handler.parameters, reg.handler.body, ts, localSinks, bindings, ctx, { method: m, route: reg.url, line: lineOf(node) }));
+              out.push(handlerEntry(reg.url, 'route-registration', reg.handler.parameters, reg.handler.body, ts, localSinks, bindings, ctx, { method: m, route: reg.url, ...spanOf(node) }));
             }
           }
         }
@@ -602,7 +653,7 @@ function handlerEntry(
   localSinks: Map<string, Sink[]>,
   bindings: Bindings,
   ctx: { file: string; graph: ModuleGraph },
-  extra: { method?: string; route?: string; line?: number } = {},
+  extra: { method?: string; route?: string; line?: number; start?: number; end?: number } = {},
 ): Omit<Endpoint, 'file'> {
   const entryKind = kindLabel === 'route-registration' || kindLabel === 'server-action' || kindLabel === 'edge-function'
     ? kindLabel
@@ -615,6 +666,8 @@ function handlerEntry(
     method: extra.method ?? (HTTP_METHODS.has(name) ? name : undefined),
     route: extra.route,
     line: extra.line,
+    start: extra.start,
+    end: extra.end,
     inputs,
     sinks,
     flows: linkFlows(body, params, inputs, sinks, ts),
@@ -661,10 +714,14 @@ function inputsFromValidator(validatorCall: any, ts: TsModule, bindings: Binding
 // From a raw handler: validator schema fields it parses, plus the request fields it actually reads
 // (member accesses, destructuring, `await request.json()` bodies).
 function inputsFromHandler(params: any, body: any, ts: TsModule, bindings: Bindings): InputField[] {
-  const fields = zodObjectFields(body, ts, bindings);
+  // A validated schema inside a handler describes the request body.
+  const fields = withCoordinates(zodObjectFields(body, ts, bindings), 'json-body');
   const names = new Set(fields.map((f) => f.name));
-  for (const n of requestMemberAccesses(params, body, ts)) {
-    if (!names.has(n)) { names.add(n); fields.push({ name: n }); }
+  for (const { name, source } of requestMemberAccesses(params, body, ts)) {
+    if (!names.has(name)) {
+      names.add(name);
+      fields.push({ name, source, ...runtimeCoordinate(source, name) });
+    }
   }
   return fields;
 }
@@ -744,9 +801,9 @@ const REQ_SOURCES = ['body', 'query', 'params'];
 //   const { x } = req.body                          (destructuring)
 //   ({ body }) => body.x / const { x } = body       (destructured handler param)
 //   const b = await request.json(); b.x / const { x } = await request.json()   (fetch-style Request)
-function requestMemberAccesses(params: any, body: any, ts: TsModule): string[] {
+function requestMemberAccesses(params: any, body: any, ts: TsModule): Array<{ name: string; source: InputSource }> {
   if (!body) return [];
-  const out = new Set<string>();
+  const out = new Map<string, InputSource>();
   const p0 = params?.[0];
   const reqName = p0 && ts.isIdentifier(p0.name) ? p0.name.text : undefined;
   // Identifiers that ARE a request-input object (destructured `({ body })` param, `await req.json()`).
@@ -773,23 +830,46 @@ function requestMemberAccesses(params: any, body: any, ts: TsModule): string[] {
   };
   const visit = (n: any) => {
     // <source>.<field>
-    if (ts.isPropertyAccessExpression(n) && isReqSourceExpr(n.expression)) out.add(n.name.text);
+    if (ts.isPropertyAccessExpression(n) && isReqSourceExpr(n.expression)) {
+      out.set(n.name.text, sourceOfExpr(n.expression));
+    }
     if (ts.isVariableDeclaration(n) && n.initializer) {
       const init = unwrap(n.initializer);
       // const b = await request.json() → b is a request-input object from here on.
       if (ts.isIdentifier(n.name) && isBodyReadCall(n.initializer)) sourceNames.add(n.name.text);
       // const { a, b } = <source> | await request.json()
       if (ts.isObjectBindingPattern(n.name) && (isReqSourceExpr(init) || isBodyReadCall(n.initializer))) {
+        const src = isBodyReadCall(n.initializer) ? bodyReadSource(n.initializer) : sourceOfExpr(init);
         for (const el of n.name.elements) {
           const key = bindingKey(el, ts);
-          if (key) out.add(key);
+          if (key) out.set(key, src);
         }
       }
     }
     ts.forEachChild(n, visit);
   };
   visit(body);
-  return [...out];
+  return [...out].map(([name, source]) => ({ name, source }));
+
+  // `req.body.x` / `req.query.x` / `req.params.x` — the namespace decides the runtime coordinate, and
+  // route params notably have NONE, so this distinction is load-bearing rather than cosmetic.
+  function sourceOfExpr(e: any): InputSource {
+    if (ts.isPropertyAccessExpression(e)) {
+      if (e.name.text === 'query') return 'query';
+      if (e.name.text === 'params') return 'route-param';
+      if (e.name.text === 'body') return 'body';
+    }
+    if (ts.isIdentifier(e)) {
+      const key = [...sourceNames].includes(e.text) ? e.text : undefined;
+      if (key === 'query') return 'query';
+      if (key === 'params') return 'route-param';
+    }
+    return 'body';
+  }
+  function bodyReadSource(init: any): InputSource {
+    const t = init?.getText?.() ?? '';
+    return /formData\s*\(/.test(t) ? 'form-body' : 'json-body';
+  }
 }
 
 function bindingKey(el: any, ts: TsModule): string | undefined {
@@ -1151,7 +1231,26 @@ function linkFlows(
       // Exact path, or the input is an ANCESTOR of what was read (`billing` covers `billing.email`).
       // A mere shared leaf name is NOT evidence: `billing.email` and `shipping.email` are different.
       const precise = [...reads].some((r) => r === inputPath || r.startsWith(inputPath + '.'));
-      flows.push({ input: input.name, sink, confidence: precise ? 'precise' : 'heuristic', line: sink.line });
+      // Deliberately SEPARATE from confidence: `precise` means "the source reaches the sink", which is
+      // not authorization to block traffic. Every remaining obstacle is listed, so this doubles as the
+      // queue for improving the extractor/adapters rather than silently losing the opportunity.
+      const reasons: string[] = [];
+      if (!precise) reasons.push('flow evidence is heuristic, not precise');
+      if (!input.runtimeParameter) reasons.push(input.runtimeParameterReason ?? 'input has no runtime parameter');
+      if (sink.file !== undefined) reasons.push('sink is in an imported module: no local call-site evidence');
+      if (sink.start === undefined) reasons.push('sink call could not be located in the source');
+      // The sink ARGUMENT ROLE (command vs argument, URL vs body, path vs contents, raw SQL vs values)
+      // decides which mitigation class is even applicable, and it is not modelled yet — so nothing is
+      // rule-generatable today. This is the gate the candidate compiler opens.
+      reasons.push('sink argument role is not modelled yet');
+      flows.push({
+        input: input.name,
+        sink,
+        confidence: precise ? 'precise' : 'heuristic',
+        line: sink.line,
+        ruleGeneratable: false,
+        ruleGeneratableReasons: reasons,
+      });
     }
   }
   return flows;
@@ -1243,6 +1342,12 @@ function pathFromTainted(node: any, ts: TsModule, rootPath: Map<string, string>)
   if (!cur || !ts.isIdentifier(cur)) return undefined;
   const base = rootPath.get(cur.text);
   if (base === undefined) return undefined;
+  // Drop a leading NAMESPACE segment (`req.body.webhookUrl` → `webhookUrl`). Input names — and the
+  // runtime coordinates derived from them — are relative to their namespace (`post.webhookUrl`), so
+  // leaving `body.` in the read path would fail to match the very inputs it came from. Without this,
+  // the highest-value flows (`req.body.webhookUrl` → fetch, `req.body.command` → exec) never reach
+  // `precise`.
+  if (base === '' && segs.length > 1 && REQ_SOURCES.includes(segs[0]!)) segs.shift();
   return normalizePath([base, ...segs].filter(Boolean).join('.'));
 }
 

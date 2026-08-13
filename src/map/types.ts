@@ -5,6 +5,12 @@
 // Honesty is a first-class field: static analysis is best-effort, so `coverage` records what the
 // adapter could and couldn't see. Never present the map as "complete".
 
+/** Where an input is read from — determines which runtime parameter namespace can address it. */
+export type InputSource =
+  | 'json-body' | 'form-body' | 'multipart' | 'body'
+  | 'query' | 'route-param' | 'header' | 'cookie' | 'file'
+  | 'server-fn-data' | 'unknown';
+
 export interface InputField {
   /**
    * Parameter / body-field name — the coordinate a rule pins to. Nested validator fields are
@@ -21,6 +27,18 @@ export interface InputField {
   format?: string;
   /** Declared regex constraint (the regex literal's source text), when present. */
   pattern?: string;
+  /** Where the value is read from. */
+  source?: InputSource;
+  /**
+   * The EXACT rule-engine parameter that addresses this input (`post.shipping.email`, `get.q`,
+   * `server.HTTP_X_API_KEY`, `cookie.session`, `files.avatar`), or **null** when this input has no exact
+   * runtime representation — in which case `runtimeParameterReason` says why. A consumer must never
+   * synthesise a coordinate itself: an unaddressable input compiled into a rule produces a rule that
+   * silently never matches (e.g. an Express route param is NOT in `get.*`, and an array path needs an
+   * `array_key_value` rule rather than a dotted parameter).
+   */
+  runtimeParameter?: string | null;
+  runtimeParameterReason?: string;
 }
 
 export interface Sink {
@@ -73,6 +91,14 @@ export interface Endpoint {
   file: string;
   /** 1-based line of the entry-point declaration in `file`. */
   line?: number;
+  /** UTF-16 offsets of the entry-point declaration in `file`. */
+  start?: number;
+  end?: number;
+  /**
+   * Short content fingerprint (sha256 prefix) of `file` at analysis time. A server must treat this
+   * endpoint's spans/coordinates as STALE if the file no longer matches — deploys move code.
+   */
+  fingerprint?: string;
   /** Inventory: inputs the handler reads. Presence here does NOT mean an input reaches a sink. */
   inputs: InputField[];
   /** Inventory: sinks reachable in the handler. Presence here does NOT mean an input flows into it. */
@@ -99,6 +125,13 @@ export interface Endpoint {
  * Consumers that pin a rule to a parameter should prefer `precise` flows and fall back to broad rules.
  */
 export interface Flow {
+  /**
+   * Whether a Patchstack rule can SAFELY be compiled from this flow — deliberately separate from
+   * `confidence`. `precise` means "the source reaches the sink"; it is NOT authorization to block
+   * traffic. `ruleGeneratableReasons` lists what is missing, which doubles as the improvement queue.
+   */
+  ruleGeneratable?: boolean;
+  ruleGeneratableReasons?: string[];
   /** Input field name (dotted path), matching an entry in `Endpoint.inputs`. */
   input: string;
   /** The sink reached. */
@@ -124,7 +157,13 @@ export interface Coverage {
 }
 
 export interface SiteInputMap {
-  version: 1;
+  /**
+   * Schema version of this document. 2 added: input `source` + `runtimeParameter`, sink/endpoint source
+   * spans, per-file `fingerprint`, and `ruleGeneratable` on flows. Spans are **UTF-16 code-unit offsets**
+   * (JavaScript string indices), not byte offsets; pair them with `fingerprint` so a server can reject
+   * stale coordinates after a deploy.
+   */
+  version: 2;
   /** e.g. "tanstack-start". */
   framework: string;
   endpoints: Endpoint[];

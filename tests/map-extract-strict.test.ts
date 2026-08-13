@@ -207,11 +207,11 @@ describe('validator schemas: gating, nesting, formats', () => {
   it('extracts nested fields as dotted paths with constraints', () => {
     const e = ep((x) => x.name === 'saveProfile');
     const byName = Object.fromEntries(e.inputs.map((i) => [i.name, i]));
-    expect(byName['email']).toEqual({ name: 'email', type: 'string', format: 'email' });
+    expect(byName['email']).toMatchObject({ name: 'email', type: 'string', format: 'email' });
     expect(byName['slug']).toMatchObject({ type: 'string', pattern: '/^[a-z0-9-]+$/' });
-    expect(byName['offset']).toEqual({ name: 'offset', type: 'number', min: -10, max: 50 });
+    expect(byName['offset']).toMatchObject({ name: 'offset', type: 'number', min: -10, max: 50 });
     expect(byName['address']).toMatchObject({ type: 'object' });
-    expect(byName['address.city']).toEqual({ name: 'address.city', type: 'string', min: 1 });
+    expect(byName['address.city']).toMatchObject({ name: 'address.city', type: 'string', min: 1 });
     expect(byName['tags']).toMatchObject({ type: 'array' });
     expect(byName['tags[].label']).toMatchObject({ type: 'string' });
     expect(e.inputsResolved).toBeUndefined();
