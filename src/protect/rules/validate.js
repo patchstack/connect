@@ -30,7 +30,7 @@ const ACTIONS = new Set(['block', 'redact', 'encode', 'set-header', 'remove-head
  * @param {object} bundle
  * @returns {{ bundle: object, rejected: Array<{id: string, reason: string}> }}
  */
-export function validateBundle(bundle) {
+export function validateBundle(bundle, opts = {}) {
   const rejected = [];
   const inFirewall = Array.isArray(bundle?.firewall) ? bundle.firewall : [];
   const inWhitelists = Array.isArray(bundle?.whitelists) ? bundle.whitelists : [];
@@ -53,6 +53,12 @@ export function validateBundle(bundle) {
       continue;
     }
     // A whitelist SUPPRESSES rules, so a malformed one is a protection risk, not a detection risk.
+    // One with no `rule_id` applies to EVERY rule — a single tripped condition disables the whole
+    // firewall for that request — so it must be opted into explicitly.
+    if (!opts.allowGlobalWhitelists && wl && Array.isArray(wl.rule_v2) && !wl.rule_id) {
+      rejected.push({ id: idOf(wl), reason: 'whitelist has no rule_id (would suppress every rule); set allowGlobalWhitelists to permit' });
+      continue;
+    }
     const reason = conditionsProblem(wl?.rule_v2);
     if (reason) rejected.push({ id: idOf(wl), reason: `whitelist: ${reason}` });
     else whitelists.push(wl);

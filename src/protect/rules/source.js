@@ -6,6 +6,35 @@ import { PatchstackRuleClient } from '../engine/index.js';
 import { PulseRuleClient } from '../engine/pulse-client.js';
 import { validateBundle } from './validate.js';
 
+// A LIVE update is accepted ATOMICALLY. Dropping individual invalid rules is fine for a bundle we
+// already trust (a cache entry, a bundled fallback), but for a fresh remote response it would let a
+// broken update REPLACE known-good policy with partial or empty policy — turning "we validated it" into
+// a loss of protection, and caching that loss. So: if any rule/whitelist fails validation, reject the
+// whole update, keep last-known-good, report it, and do NOT write the cache. Opt in to the old
+// behaviour with `acceptPartialBundle: true` (metrics still report every drop).
+function liveUpdateRejections(res, options) {
+  if (options.acceptPartialBundle) return [];
+  const { rejected } = validateBundle(
+    { firewall: Array.isArray(res.firewall) ? res.firewall : [], whitelists: Array.isArray(res.whitelists) ? res.whitelists : [] },
+    { allowGlobalWhitelists: options.allowGlobalWhitelists },
+  );
+  return rejected;
+}
+
+function reportRejections(rejected, options, label) {
+  const report = options.onRuleRejected;
+  for (const r of rejected) {
+    if (typeof report === 'function') {
+      try { report({ ...r, accepted: false }); } catch { /* reporting must never break rule loading */ }
+    }
+  }
+  const sample = rejected.slice(0, 3).map((r) => `${r.id} (${r.reason})`).join('; ');
+  options.onError?.(new Error(
+    `${label}: rejected the entire update because ${rejected.length} rule(s) failed validation — ` +
+    `keeping the previous ruleset and NOT caching this response: ${sample}${rejected.length > 3 ? ', …' : ''}`,
+  ));
+}
+
 export async function resolveRules(options, store, ctx = {}) {
   // The INITIAL load is on the app's startup path, so the runtime gives it a short budget (see
   // bootTimeoutMs) and falls back to cache/bundled rather than delaying boot; refreshes get the full
@@ -17,6 +46,13 @@ export async function resolveRules(options, store, ctx = {}) {
     const res = await client.getRules();
     if (res.success && res.notModified && prior?.bundle) return normalizeBundle(prior.bundle, options);
     if (res.success && !res.notModified) {
+      const rejected = liveUpdateRejections(res, options);
+      if (rejected.length > 0) {
+        reportRejections(rejected, options, 'rule update rejected');
+        if (prior?.bundle) return normalizeBundle(prior.bundle, options);
+        if (options.rules) return normalizeBundle(options.rules, options);
+        return emptyBundle();
+      }
       const bundle = normalizeBundle(res, options);
       await store.write({ bundle, etag: res.etag ?? null });
       return bundle;
@@ -39,6 +75,13 @@ export async function resolveRules(options, store, ctx = {}) {
     const res = await client.getRules();
     if (res.success && res.notModified && prior?.bundle) return normalizeBundle(prior.bundle, options);
     if (res.success && !res.notModified) {
+      const rejected = liveUpdateRejections(res, options);
+      if (rejected.length > 0) {
+        reportRejections(rejected, options, 'rule update rejected');
+        if (prior?.bundle) return normalizeBundle(prior.bundle, options);
+        if (options.rules) return normalizeBundle(options.rules, options);
+        return emptyBundle();
+      }
       const bundle = normalizeBundle(res, options);
       await store.write({ bundle, etag: res.etag ?? null });
       return bundle;
@@ -64,10 +107,13 @@ export async function resolveRules(options, store, ctx = {}) {
 // (`onRuleRejected`) rather than silently kept — an unenforceable rule must never look enforced.
 export function normalizeBundle(b, options = {}) {
   const enforcement = b?.enforcement ?? b?.mode;
-  const { bundle: checked, rejected } = validateBundle({
-    firewall: Array.isArray(b.firewall) ? b.firewall : [],
-    whitelists: Array.isArray(b.whitelists) ? b.whitelists : [],
-  });
+  const { bundle: checked, rejected } = validateBundle(
+    {
+      firewall: Array.isArray(b.firewall) ? b.firewall : [],
+      whitelists: Array.isArray(b.whitelists) ? b.whitelists : [],
+    },
+    { allowGlobalWhitelists: options.allowGlobalWhitelists },
+  );
   if (rejected.length > 0) {
     const report = options.onRuleRejected;
     if (typeof report === 'function') {
