@@ -162,6 +162,8 @@ export async function createProtection(options = {}) {
   // parse failure, a DNS resolver failure. Each of those is a real hole in enforcement, and until now
   // it was SILENT — "always-on" read as "always inspected". Every such bypass is now counted and
   // reported to `onSkip`, so a host can alert on it and `protection.coverage()` can be surfaced.
+  // `onSkip` is a TRUSTED SERVER callback: `detail` carries operational context (sizes, statuses,
+  // outbound hostnames) for logging/alerting. Do not forward it to a client response.
   const skipCounts = Object.create(null);
   const onSkip = typeof options.onSkip === 'function' ? options.onSkip : null;
   const recordSkip = (phase, reason, detail) => {
