@@ -69,6 +69,15 @@ patchstack-connect protect                         Install/reconcile the always-
                                                    guard. Auto-wires supported server stacks;
                                                    use --check to verify or --demo for local rules.
                                                    Also run by setup; never run by scan/guide/mark-build.
+patchstack-connect map    [--dir p] [--out f]      Print a JSON map of this project's attack
+                                                   surface: server entry points, the inputs each
+                                                   reads, the sinks they can reach (database, file
+                                                   system, process, outbound HTTP) and the npm
+                                                   package behind each sink. READS YOUR SOURCE
+                                                   FILES locally and parses them with the
+                                                   project's own TypeScript; writes nothing except
+                                                   --out, and posts nothing. Never run by
+                                                   scan/setup/guide/protect — run it yourself.
 patchstack-connect demo node-serialize             Production-backed walkthrough: require
                                                    node-serialize@0.0.4, scan it, wait for live
                                                    rule 18843, install + verify the runtime guard,
@@ -189,7 +198,7 @@ Lower-level pieces are also exported: `scanLockfile`, `buildWirePayload`, `postM
 }
 ```
 
-That's the entire payload. No source code, no environment variable values, no file paths — just the package names and versions from your lockfile. Duplicate names with different versions are preserved so transitive vulnerabilities aren't missed. (`mark-build` separately stamps built HTML with a stack descriptor that may include hosting-related env variable *names* — e.g. `VERCEL` — never their values.)
+That's the entire payload. No source code, no environment variable values, no file paths — just the package names and versions from your lockfile. (The `map` command reads source files locally to report your attack surface, but transmits nothing.) Duplicate names with different versions are preserved so transitive vulnerabilities aren't missed. (`mark-build` separately stamps built HTML with a stack descriptor that may include hosting-related env variable *names* — e.g. `VERCEL` — never their values.)
 
 ## Supported lockfiles
 
