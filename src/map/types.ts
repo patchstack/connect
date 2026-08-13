@@ -39,8 +39,13 @@ export interface Sink {
   table?: string;
   /** The operation at the sink (db: insert | select | …; fs/exec/http: the called function). */
   op?: string;
-  /** 1-based line of the sink call in the endpoint's file — the auditable coordinate. */
+  /** 1-based line of the sink call, in `file` when present, otherwise in the endpoint's own file. */
   line?: number;
+  /**
+   * Repo-relative file of the sink call, set ONLY when the sink was reached through an imported module
+   * — i.e. it does not live in the endpoint's file. Without this, `line` would point at the wrong file.
+   */
+  file?: string;
 }
 
 export interface Endpoint {

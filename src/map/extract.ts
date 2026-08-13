@@ -1,6 +1,6 @@
 import { readFileSync, readdirSync, realpathSync, statSync } from 'node:fs';
 import { builtinModules } from 'node:module';
-import { join, relative, isAbsolute } from 'node:path';
+import { join, relative, isAbsolute, dirname, resolve as resolvePath } from 'node:path';
 import type { SiteInputMap, Endpoint, InputField, Sink, Flow, TsModule } from './types.js';
 
 // Framework-AGNOSTIC input-flow extractor. It doesn't gate on a specific stack — it walks any JS/TS
@@ -48,12 +48,15 @@ const BUILTINS = new Set(builtinModules);
 // as local — an accepted miss.)
 interface Bindings {
   resolve(name: string): string | undefined;
+  /** For `import { saveOrder as write }`, maps the local name back to the EXPORTED name. */
+  exportNameOf(name: string): string | undefined;
   imports: Set<string>;
   locals: Set<string>;
 }
 function buildModuleBindings(sf: any, ts: TsModule): Bindings {
   const nameToModule = new Map<string, string>(); // local name → module specifier
   const declared = new Set<string>(); // every name declared in this file
+  const exportNames = new Map<string, string>(); // local alias → exported name
   const imports = new Set<string>();
 
   const record = (local: string, mod: string) => { nameToModule.set(local, mod); imports.add(mod); };
@@ -74,7 +77,11 @@ function buildModuleBindings(sf: any, ts: TsModule): Bindings {
       const nb = clause?.namedBindings;
       if (nb) {
         if (ts.isNamespaceImport(nb)) record(nb.name.text, mod);
-        else if (ts.isNamedImports(nb)) for (const el of nb.elements) record(el.name.text, mod);
+        else if (ts.isNamedImports(nb)) for (const el of nb.elements) {
+          record(el.name.text, mod);
+          // `import { saveOrder as write }` — looking up `write` in the target module would miss.
+          if (el.propertyName && ts.isIdentifier(el.propertyName)) exportNames.set(el.name.text, el.propertyName.text);
+        }
       }
     }
     if (ts.isFunctionDeclaration(node) && node.name) declared.add(node.name.text);
@@ -129,7 +136,7 @@ function buildModuleBindings(sf: any, ts: TsModule): Bindings {
     if (!changed) break;
   }
   const locals = new Set([...declared].filter((n) => !nameToModule.has(n)));
-  return { resolve: (name: string) => nameToModule.get(name), imports, locals };
+  return { resolve: (name: string) => nameToModule.get(name), exportNameOf: (name: string) => exportNames.get(name), imports, locals };
 }
 
 // Root identifier of what a function body returns (`return createClient(…)` → "createClient"), for
@@ -198,6 +205,7 @@ export async function extractInputMap(cwd: string, ts: TsModule, options: Extrac
   let boundary = cwd;
   try { boundary = realpathSync(cwd); } catch { /* use cwd as-is */ }
 
+  const graph = createModuleGraph(ts, { cwd, boundary, followOutside: options.followSymlinks }); // shared cache
   const stats: WalkStats = { discovered: 0 };
   const files = collectSources(cwd, boundary, { followOutside: options.followSymlinks }, [], new Set(), stats);
   let parsed = 0;
@@ -210,10 +218,14 @@ export async function extractInputMap(cwd: string, ts: TsModule, options: Extrac
       const sf = ts.createSourceFile(file, text, ts.ScriptTarget.Latest, true, guessScriptKind(ts, file));
       const bindings = buildModuleBindings(sf, ts);
       const localSinks = collectLocalSinks(sf, ts, bindings);
-      for (const ep of extractFromFile(sf, ts, localSinks, bindings)) {
+      for (const ep of extractFromFile(sf, ts, localSinks, bindings, { file, graph })) {
         const relFile = relative(cwd, file);
         // A FILE-BASED route handler carries its URL path in its location, not in the code, so derive
         // it here — without this a rule can only be param-pinned, never route-scoped (`when.path`).
+        if (ep.route === undefined && ep.entryKind === 'edge-function') {
+          const fn = functionNameFromPath(relFile);
+          if (fn) ep.route = '/' + fn; // how the platform invokes it (…/functions/v1/<name>)
+        }
         if (ep.route === undefined && (ep.entryKind === 'route-handler' || ep.entryKind === 'server-action')) {
           const derived = routeFromFilePath(relFile);
           if (derived.route) {
@@ -231,7 +243,7 @@ export async function extractInputMap(cwd: string, ts: TsModule, options: Extrac
 
   notes.push('Static analysis is best-effort — this is the DETECTED surface, not a proof of completeness.');
   notes.push('`inputs` and `sinks` are INVENTORIES (both present in the handler). Only `flows` asserts that an input reaches a sink — prefer flows with confidence "precise" when pinning a rule to a parameter.');
-  notes.push('Sinks are followed one level into same-file helpers; cross-file / dynamic indirection is not traced. Sinks inside declared-but-uncalled local functions are excluded.');
+  notes.push('Sinks are followed into same-file helpers and ONE hop into an imported relative module (a dependency\u2019s internals are not followed); deeper or dynamic indirection is not traced. Sinks inside declared-but-uncalled local functions are excluded.');
   notes.push('A sink `package` is resolved from the file’s imports (precise) or inferred from a known provider import; an unresolved package means the backing dependency could not be traced.');
   if (!options.followSymlinks) notes.push('Symlinks leaving the project directory were not followed (use --follow-symlinks to include them).');
   if (failed.length > 0) {
@@ -270,7 +282,8 @@ function hasEntrySignal(text: string): boolean {
     text.includes('createServerFn') ||
     /\bexport\s+(async\s+)?(function|const)\s+(GET|POST|PUT|PATCH|DELETE|HEAD|OPTIONS)\b/.test(text) ||
     ROUTE_CALL_RE.test(text) ||
-    text.includes("'use server'") || text.includes('"use server"')
+    text.includes("'use server'") || text.includes('"use server"') ||
+    text.includes('Deno.serve') || /\bserve\s*\(/.test(text)
   );
 }
 
@@ -285,6 +298,13 @@ function detectFramework(cwd: string): string {
     if (d['fastify']) return 'fastify';
     if (d['express']) return 'express';
     if (d['hono']) return 'hono';
+  } catch { /* ignore */ }
+  // A Deno/edge functions project may have no package.json at all.
+  try {
+    if (statSync(join(cwd, 'supabase', 'functions')).isDirectory()) return 'supabase-functions';
+  } catch { /* not a supabase project */ }
+  try {
+    if (statSync(join(cwd, 'functions')).isDirectory()) return 'deno-functions';
   } catch { /* ignore */ }
   return 'unknown';
 }
@@ -362,6 +382,19 @@ function isInside(candidate: string, boundary: string): boolean {
 //                       pages/api/[id].ts               -> /api/:id            (dynamic)
 //   SvelteKit           src/routes/api/items/+server.ts -> /api/items
 //   Nuxt                server/api/items.post.ts        -> /api/items
+// The deployed name of a platform function, from its conventional location:
+//   supabase/functions/<name>/index.ts  (Supabase Edge Functions)
+//   functions/<name>/index.ts | functions/<name>.ts  (Base44 / generic Deno function dirs)
+export function functionNameFromPath(relFile: string): string | undefined {
+  const parts = relFile.split(/[\\/]/).filter(Boolean);
+  const i = parts.lastIndexOf('functions');
+  if (i === -1 || i === parts.length - 1) return undefined;
+  const next = parts[i + 1];
+  if (!next) return undefined;
+  const base = next.replace(/\.(ts|tsx|mts|cts|js|jsx|mjs|cjs)$/, '');
+  return base === 'index' ? undefined : base;
+}
+
 export function routeFromFilePath(relFile: string): { route?: string; dynamic?: boolean } {
   const parts = relFile.split(/[\\/]/).filter(Boolean);
   if (parts.length === 0) return {};
@@ -399,7 +432,7 @@ export function routeFromFilePath(relFile: string): { route?: string; dynamic?: 
 }
 
 // --- entry-point recognizers -----------------------------------------------
-function extractFromFile(sf: any, ts: TsModule, localSinks: Map<string, Sink[]>, bindings: Bindings): Omit<Endpoint, 'file'>[] {
+function extractFromFile(sf: any, ts: TsModule, localSinks: Map<string, Sink[]>, bindings: Bindings, ctx: { file: string; graph: ModuleGraph }): Omit<Endpoint, 'file'>[] {
   const out: Omit<Endpoint, 'file'>[] = [];
   const isServerActionsFile = fileHasUseServer(sf, ts);
 
@@ -413,7 +446,7 @@ function extractFromFile(sf: any, ts: TsModule, localSinks: Map<string, Sink[]>,
             const validatorCall = chain.calls['inputValidator'] ?? chain.calls['validator'];
             const inputs = inputsFromValidator(validatorCall, ts, bindings);
             const handlerFn = chain.calls['handler']?.arguments?.[0];
-            const sinks = sinksFrom(handlerFn, ts, localSinks, bindings);
+            const sinks = sinksFrom(handlerFn, ts, localSinks, bindings, ctx);
             const handlerBody = handlerFn && isFnLike(handlerFn, ts) ? handlerFn.body : undefined;
             const ep: Omit<Endpoint, 'file'> = {
               name: decl.name.text,
@@ -433,9 +466,9 @@ function extractFromFile(sf: any, ts: TsModule, localSinks: Map<string, Sink[]>,
         // (2b) `export const POST = (req) => …` route handler, or a `'use server'` action arrow.
         if (ts.isIdentifier(decl.name) && decl.initializer && isFnLike(decl.initializer, ts)) {
           if (HTTP_METHODS.has(decl.name.text)) {
-            out.push(handlerEntry(decl.name.text, decl.name.text, decl.initializer.parameters, decl.initializer.body, ts, localSinks, bindings, { line: lineOf(decl) }));
+            out.push(handlerEntry(decl.name.text, decl.name.text, decl.initializer.parameters, decl.initializer.body, ts, localSinks, bindings, ctx, { line: lineOf(decl) }));
           } else if (isServerActionsFile) {
-            out.push(handlerEntry(decl.name.text, 'server-action', decl.initializer.parameters, decl.initializer.body, ts, localSinks, bindings, { line: lineOf(decl) }));
+            out.push(handlerEntry(decl.name.text, 'server-action', decl.initializer.parameters, decl.initializer.body, ts, localSinks, bindings, ctx, { line: lineOf(decl) }));
           }
         }
       }
@@ -444,9 +477,26 @@ function extractFromFile(sf: any, ts: TsModule, localSinks: Map<string, Sink[]>,
     // (2a) Route handlers / server actions declared as functions.
     if (ts.isFunctionDeclaration(node) && node.name && hasExport(node, ts)) {
       if (HTTP_METHODS.has(node.name.text)) {
-        out.push(handlerEntry(node.name.text, node.name.text, node.parameters, node.body, ts, localSinks, bindings, { line: lineOf(node) }));
+        out.push(handlerEntry(node.name.text, node.name.text, node.parameters, node.body, ts, localSinks, bindings, ctx, { line: lineOf(node) }));
       } else if (isServerActionsFile || hasUseServerDirective(node, ts)) {
-        out.push(handlerEntry(node.name.text, 'server-action', node.parameters, node.body, ts, localSinks, bindings, { line: lineOf(node) }));
+        out.push(handlerEntry(node.name.text, 'server-action', node.parameters, node.body, ts, localSinks, bindings, ctx, { line: lineOf(node) }));
+      }
+    }
+
+    // (2c) Deno / WinterCG function entry: `Deno.serve(handler)` or `serve(handler)` — Supabase Edge
+    // Functions, Base44 backend functions, Deno workers. These platforms have no router and no route
+    // file: one handler per module, invoked by the function's NAME, so the endpoint's identity comes
+    // from the file location. Without this recognizer such a project maps to nothing at all.
+    if (ts.isCallExpression(node)) {
+      const c = node.expression;
+      const denoServe = ts.isPropertyAccessExpression(c) && c.name.text === 'serve' &&
+        ts.isIdentifier(c.expression) && c.expression.text === 'Deno';
+      const bareServe = ts.isIdentifier(c) && c.text === 'serve';
+      if (denoServe || bareServe) {
+        const handler = node.arguments.find((a: any) => isFnLike(a, ts));
+        if (handler) {
+          out.push(handlerEntry(functionNameFromPath(ctx.file) ?? 'serve', 'edge-function', handler.parameters, handler.body, ts, localSinks, bindings, ctx, { line: lineOf(node) }));
+        }
       }
     }
 
@@ -460,7 +510,7 @@ function extractFromFile(sf: any, ts: TsModule, localSinks: Map<string, Sink[]>,
         const route = first && ts.isStringLiteralLike(first) ? first.text : routeFromChain(node.expression.expression, ts);
         const handler = args[args.length - 1];
         if (route !== undefined && handler && isFnLike(handler, ts)) {
-          out.push(handlerEntry(route, 'route-registration', handler.parameters, handler.body, ts, localSinks, bindings, {
+          out.push(handlerEntry(route, 'route-registration', handler.parameters, handler.body, ts, localSinks, bindings, ctx, {
             // `use`/`all` register handlers but are not HTTP methods — leave method undefined.
             method: HTTP_METHODS.has(mname.toUpperCase()) ? mname.toUpperCase() : undefined,
             route,
@@ -475,7 +525,7 @@ function extractFromFile(sf: any, ts: TsModule, localSinks: Map<string, Sink[]>,
           const reg = routeObject(arg, ts);
           if (reg.url && reg.handler) {
             for (const m of reg.methods.length ? reg.methods : [undefined]) {
-              out.push(handlerEntry(reg.url, 'route-registration', reg.handler.parameters, reg.handler.body, ts, localSinks, bindings, { method: m, route: reg.url, line: lineOf(node) }));
+              out.push(handlerEntry(reg.url, 'route-registration', reg.handler.parameters, reg.handler.body, ts, localSinks, bindings, ctx, { method: m, route: reg.url, line: lineOf(node) }));
             }
           }
         }
@@ -543,11 +593,14 @@ function handlerEntry(
   ts: TsModule,
   localSinks: Map<string, Sink[]>,
   bindings: Bindings,
+  ctx: { file: string; graph: ModuleGraph },
   extra: { method?: string; route?: string; line?: number } = {},
 ): Omit<Endpoint, 'file'> {
-  const entryKind = kindLabel === 'route-registration' ? 'route-registration' : kindLabel === 'server-action' ? 'server-action' : 'route-handler';
+  const entryKind = kindLabel === 'route-registration' || kindLabel === 'server-action' || kindLabel === 'edge-function'
+    ? kindLabel
+    : 'route-handler';
   const inputs = inputsFromHandler(params, body, ts, bindings);
-  const sinks = sinksFrom({ body, parameters: params, isSyntheticBody: true }, ts, localSinks, bindings);
+  const sinks = sinksFrom({ body, parameters: params, isSyntheticBody: true }, ts, localSinks, bindings, ctx);
   return {
     name,
     entryKind,
@@ -755,13 +808,123 @@ function collectLocalSinks(sf: any, ts: TsModule, bindings: Bindings): Map<strin
   return map;
 }
 
-function sinksFrom(arrowOrNode: any, ts: TsModule, localSinks: Map<string, Sink[]>, bindings: Bindings): Sink[] {
+// --- cross-file (imported) helper tracing -----------------------------------
+// AI-generated apps routinely put the data access in a sibling module (`import { saveOrder } from
+// './db'`), so a handler's real sink lives one file away. Without following that, the endpoint looks
+// sink-free and no rule can be correlated to it. We follow ONE cross-file hop (plus same-file helpers
+// inside the target), which covers the common shape while keeping the walk bounded and cheap.
+const RESOLVE_EXTS = ['.ts', '.tsx', '.mts', '.cts', '.js', '.jsx', '.mjs', '.cjs'];
+
+export interface ModuleGraph {
+  /** Sinks of `exportName` in the module `specifier` resolves to, relative to `fromFile`. */
+  importedSinks(fromFile: string, specifier: string, exportName: string): Sink[];
+}
+
+function createModuleGraph(ts: TsModule, opts: { cwd: string; boundary: string; followOutside?: boolean }): ModuleGraph {
+  // file → { fnSinks, calleesOf } | null (unreadable/unparseable)
+  const cache = new Map<string, { fnSinks: Map<string, Sink[]>; calleesOf: Map<string, string[]> } | null>();
+
+  const load = (file: string) => {
+    if (cache.has(file)) return cache.get(file) ?? null;
+    let entry: { fnSinks: Map<string, Sink[]>; calleesOf: Map<string, string[]> } | null = null;
+    try {
+      const text = readFileSync(file, 'utf8');
+      const sf = ts.createSourceFile(file, text, ts.ScriptTarget.Latest, true, guessScriptKind(ts, file));
+      const bindings = buildModuleBindings(sf, ts);
+      entry = { fnSinks: collectLocalSinks(sf, ts, bindings), calleesOf: collectCallees(sf, ts) };
+    } catch {
+      entry = null; // fail-open: an unreadable dependency must not break the map
+    }
+    cache.set(file, entry);
+    return entry;
+  };
+
+  return {
+    importedSinks(fromFile, specifier, exportName) {
+      const target = resolveRelativeModule(fromFile, specifier);
+      if (!target) return [];
+      // Stay inside the project: `../../other-repo/db` (or a symlink) would otherwise pull an unrelated
+      // codebase into this app's attack surface. The primary walker enforces this; so must the resolver.
+      if (!opts.followOutside) {
+        let real = target;
+        try { real = realpathSync(target); } catch { /* use as-is */ }
+        if (!isInside(real, opts.boundary)) return [];
+      }
+      const mod = load(target);
+      if (!mod) return [];
+      const collected = [...(mod.fnSinks.get(exportName) ?? [])];
+      // One same-file hop inside the target: `export function saveOrder(){ return doInsert() }`.
+      for (const callee of mod.calleesOf.get(exportName) ?? []) {
+        for (const s of mod.fnSinks.get(callee) ?? []) collected.push(s);
+      }
+      // `line` refers to the HELPER's file, not the endpoint's — carry the file so the coordinate is
+      // interpretable (and so flow linking never claims `precise` for a sink it cannot see locally).
+      const rel = relative(opts.cwd, target);
+      return collected.map((s) => ({ ...s, file: rel }));
+    },
+  };
+}
+
+// Resolve a RELATIVE specifier to a real file (extension + /index, and the TS-ESM `./db.js` → db.ts
+// convention). Bare package specifiers are intentionally NOT followed — that's node_modules, and a
+// dependency's internals are not this app's attack surface.
+function resolveRelativeModule(fromFile: string, spec: string): string | undefined {
+  if (!spec.startsWith('.')) return undefined;
+  const dir = dirname(fromFile);
+  const base = resolvePath(dir, spec);
+  const candidates: string[] = [];
+  const jsLike = /\.(js|jsx|mjs|cjs)$/.exec(base);
+  if (jsLike) {
+    const stem = base.slice(0, -jsLike[0].length);
+    for (const e of RESOLVE_EXTS) candidates.push(stem + e); // ./db.js may mean db.ts
+  }
+  candidates.push(base);
+  for (const e of RESOLVE_EXTS) candidates.push(base + e);
+  for (const e of RESOLVE_EXTS) candidates.push(join(base, 'index' + e));
+  for (const c of candidates) {
+    try {
+      if (statSync(c).isFile()) return c;
+    } catch {
+      /* next */
+    }
+  }
+  return undefined;
+}
+
+// name → the local function names it calls (for one same-file hop inside an imported module).
+function collectCallees(sf: any, ts: TsModule): Map<string, string[]> {
+  const map = new Map<string, string[]>();
+  const visit = (node: any) => {
+    let name: string | undefined;
+    let body: any;
+    if (ts.isFunctionDeclaration(node) && node.name && node.body) { name = node.name.text; body = node.body; }
+    else if (ts.isVariableDeclaration(node) && ts.isIdentifier(node.name) && node.initializer && isFnLike(node.initializer, ts)) {
+      name = node.name.text; body = node.initializer.body;
+    }
+    if (name && body) map.set(name, localCalls(body, ts));
+    ts.forEachChild(node, visit);
+  };
+  visit(sf);
+  return map;
+}
+
+function sinksFrom(arrowOrNode: any, ts: TsModule, localSinks: Map<string, Sink[]>, bindings: Bindings, ctx?: { file: string; graph: ModuleGraph }): Sink[] {
   if (!arrowOrNode) return [];
   const body = arrowOrNode.isSyntheticBody ? arrowOrNode.body
     : isFnLike(arrowOrNode, ts) ? arrowOrNode.body : arrowOrNode;
   if (!body) return [];
   const sinks = directSinks(body, ts, bindings);
-  for (const called of localCalls(body, ts)) for (const s of localSinks.get(called) ?? []) sinks.push(s);
+  for (const called of localCalls(body, ts)) {
+    // Same-file helper.
+    for (const s of localSinks.get(called) ?? []) sinks.push(s);
+    // Imported helper: the name resolves to a RELATIVE module → follow one hop into it.
+    if (ctx) {
+      const spec = bindings.resolve(called);
+      if (spec && spec.startsWith('.')) {
+        for (const s of ctx.graph.importedSinks(ctx.file, spec, bindings.exportNameOf(called) ?? called)) sinks.push(s);
+      }
+    }
+  }
   return dedupeSinks(sinks);
 }
 
@@ -880,24 +1043,50 @@ function linkFlows(
   ts: TsModule,
 ): Flow[] {
   if (!bodyNode || sinks.length === 0 || inputs.length === 0) return [];
+
+  // Roots that carry untrusted data: the handler's params, and locals aliased from them / from a
+  // request-body read. `leafOfLocal` maps a DESTRUCTURED local back to the field it came from, so
+  // `const { title: t } = await req.json()` links a read of `t` to the input `title`.
   const taintedRoots = new Set<string>();
+  const leafOfLocal = new Map<string, string>();
   for (const p of params ?? []) {
     if (!p?.name) continue;
     if (ts.isIdentifier(p.name)) taintedRoots.add(p.name.text);
     else if (ts.isObjectBindingPattern(p.name)) {
-      for (const el of p.name.elements) if (ts.isBindingElement(el) && ts.isIdentifier(el.name)) taintedRoots.add(el.name.text);
+      for (const el of p.name.elements) {
+        if (!ts.isBindingElement(el) || !ts.isIdentifier(el.name)) continue;
+        taintedRoots.add(el.name.text);
+        const key = bindingKey(el, ts);
+        if (key) leafOfLocal.set(el.name.text, key);
+      }
     }
   }
-  // Local aliases of tainted data: `const body = await request.json()`, `const { title } = data`.
+  const isRequestRead = (init: any): boolean => {
+    let cur = init;
+    while (cur && (ts.isAwaitExpression(cur) || ts.isParenthesizedExpression(cur) || ts.isAsExpression(cur) || ts.isNonNullExpression(cur))) cur = cur.expression;
+    if (cur && ts.isCallExpression(cur) && ts.isPropertyAccessExpression(cur.expression)) {
+      const m = cur.expression.name.text;
+      if (['json', 'formData', 'text'].includes(m)) {
+        const root = rootIdentifier(cur.expression.expression, ts);
+        return root ? taintedRoots.has(root) : false;
+      }
+    }
+    if (cur && ts.isPropertyAccessExpression(cur) && REQ_SOURCES.includes(cur.name.text)) {
+      const root = rootIdentifier(cur.expression, ts);
+      return root ? taintedRoots.has(root) : false;
+    }
+    const root = cur ? rootIdentifier(cur, ts) : undefined;
+    return root ? taintedRoots.has(root) : false;
+  };
   const aliasVisit = (n: any) => {
-    if (ts.isVariableDeclaration(n) && n.initializer) {
-      const root = rootIdentifier(n.initializer, ts);
-      const fromTainted = root ? taintedRoots.has(root) : false;
-      const isRequestRead = /\b(json|formData|text|body|query|params)\b/.test(n.initializer.getText?.() ?? '');
-      if (fromTainted || isRequestRead) {
-        if (ts.isIdentifier(n.name)) taintedRoots.add(n.name.text);
-        else if (ts.isObjectBindingPattern(n.name)) {
-          for (const el of n.name.elements) if (ts.isBindingElement(el) && ts.isIdentifier(el.name)) taintedRoots.add(el.name.text);
+    if (ts.isVariableDeclaration(n) && n.initializer && isRequestRead(n.initializer)) {
+      if (ts.isIdentifier(n.name)) taintedRoots.add(n.name.text);
+      else if (ts.isObjectBindingPattern(n.name)) {
+        for (const el of n.name.elements) {
+          if (!ts.isBindingElement(el) || !ts.isIdentifier(el.name)) continue;
+          taintedRoots.add(el.name.text);
+          const key = bindingKey(el, ts);
+          if (key) leafOfLocal.set(el.name.text, key);
         }
       }
     }
@@ -905,7 +1094,7 @@ function linkFlows(
   };
   aliasVisit(bodyNode);
 
-  // Index sink call sites by line so a sink (which carries `line`) can be matched to its AST node.
+  // Index sink call sites by line so a sink (which carries `line`) can be matched back to its AST node.
   const callsByLine = new Map<number, any[]>();
   const callVisit = (n: any) => {
     if (ts.isCallExpression(n)) {
@@ -922,28 +1111,81 @@ function linkFlows(
 
   const flows: Flow[] = [];
   for (const sink of sinks) {
-    const candidates = sink.line !== undefined ? (callsByLine.get(sink.line) ?? []) : [];
-    // Text of every argument at this sink's call site(s) — where a tainted value would appear.
-    let argText = '';
+    // A sink from an imported module has no call site in THIS function — never claim precise for it.
+    const candidates = sink.file === undefined && sink.line !== undefined ? (callsByLine.get(sink.line) ?? []) : [];
+    const reads = new Set<string>();
     for (const c of candidates) {
-      for (const a of c.arguments ?? []) {
-        try { argText += ' ' + a.getText(); } catch { /* ignore */ }
-      }
+      // Collect from the enclosing statement so a chained builder counts as one operation:
+      // `db.from(t).update({…}).eq('id', data.id)` — both `…` and `data.id` feed the same update.
+      for (const leaf of taintedReadLeaves(enclosingStatement(c, ts) ?? c, ts, taintedRoots, leafOfLocal)) reads.add(leaf);
     }
     for (const input of inputs) {
       const leaf = input.name.split('.').pop()!.replace(/\[\]$/, '');
-      // `data.title` / `{ title }` / `req.body.title` — the leaf name appearing in the sink's args,
-      // qualified by a tainted root when it's a member path.
-      const mentionsLeaf = argText.length > 0 && new RegExp(`\\b${escapeRe(leaf)}\\b`).test(argText);
-      const mentionsTaintedRoot = [...taintedRoots].some((r) => new RegExp(`\\b${escapeRe(r)}\\b`).test(argText));
-      if (mentionsLeaf && (mentionsTaintedRoot || taintedRoots.has(leaf))) {
-        flows.push({ input: input.name, sink, confidence: 'precise', line: sink.line });
-      } else {
-        flows.push({ input: input.name, sink, confidence: 'heuristic', line: sink.line });
-      }
+      const precise = reads.has(leaf);
+      flows.push({ input: input.name, sink, confidence: precise ? 'precise' : 'heuristic', line: sink.line });
     }
   }
   return flows;
+}
+
+/** Nearest enclosing statement, so a whole fluent chain is considered one operation. */
+function enclosingStatement(node: any, ts: TsModule): any {
+  let cur = node;
+  while (cur && !ts.isStatement(cur)) cur = cur.parent;
+  return cur;
+}
+
+/**
+ * Leaf names of values that are genuinely READ from a tainted source inside `node`. This is the
+ * evidence behind a `precise` flow, so it is deliberately strict about what counts as a read:
+ *   - `data.title` / `req.body.title`  → yields `title` (a member read off a tainted root)
+ *   - `{ title }` (shorthand)          → yields `title` (a read of the tainted local)
+ *   - `fn(title)`                      → yields `title`
+ * and explicitly NOT:
+ *   - `{ title: "system" }`            → `title` here is a property KEY, not a read of anything
+ *   - `x.title` where `x` is untainted  → not tainted data
+ * (Text matching previously conflated these, so a key plus an unrelated tainted mention elsewhere in
+ * the same argument list produced a false `precise`.)
+ */
+function taintedReadLeaves(node: any, ts: TsModule, taintedRoots: Set<string>, leafOfLocal: Map<string, string>): Set<string> {
+  const out = new Set<string>();
+  const visit = (n: any) => {
+    if (!n) return;
+    // A member read rooted in tainted data: take the accessed property as the leaf.
+    if (ts.isPropertyAccessExpression(n)) {
+      const root = rootIdentifier(n.expression, ts);
+      if (root && taintedRoots.has(root)) {
+        out.add(n.name.text);
+        return; // don't descend: the inner identifiers are the path, not separate reads
+      }
+    }
+    if (ts.isElementAccessExpression(n)) {
+      const root = rootIdentifier(n.expression, ts);
+      if (root && taintedRoots.has(root)) {
+        const arg = n.argumentExpression;
+        if (arg && ts.isStringLiteralLike(arg)) out.add(arg.text);
+        return;
+      }
+    }
+    if (ts.isIdentifier(n) && taintedRoots.has(n.text) && isValueRead(n, ts)) {
+      out.add(leafOfLocal.get(n.text) ?? n.text);
+    }
+    ts.forEachChild(n, visit);
+  };
+  visit(node);
+  return out;
+}
+
+/** Is this identifier occurrence a VALUE read (rather than a property key, a member name, a binding)? */
+function isValueRead(id: any, ts: TsModule): boolean {
+  const p = id.parent;
+  if (!p) return true;
+  if (ts.isPropertyAssignment(p) && p.name === id) return false; // { title: … } — a key
+  if (ts.isPropertyAccessExpression(p) && p.name === id) return false; // x.title — the member name
+  if (ts.isBindingElement(p) && p.propertyName === id) return false; // { title: t } — the source key
+  if ((ts.isVariableDeclaration(p) || ts.isParameter(p) || ts.isBindingElement(p)) && p.name === id) return false;
+  if (ts.isPropertySignature(p) || ts.isMethodSignature(p)) return false;
+  return true; // includes ShorthandPropertyAssignment `{ title }`, which IS a read
 }
 
 function escapeRe(s: string): string {
