@@ -2,7 +2,7 @@ import { readFileSync, readdirSync, realpathSync, statSync } from 'node:fs';
 import { builtinModules } from 'node:module';
 import { createHash } from 'node:crypto';
 import { join, relative, isAbsolute, dirname, resolve as resolvePath } from 'node:path';
-import type { SiteInputMap, Endpoint, InputField, InputSource, Sink, Flow, TsModule } from './types.js';
+import type { SiteInputMap, Endpoint, InputField, InputSource, Sink, Flow, ArgumentRole, CandidateFamily, TsModule } from './types.js';
 
 // Framework-AGNOSTIC input-flow extractor. It doesn't gate on a specific stack — it walks any JS/TS
 // source and applies recognizer tables for (1) entry points, (2) inputs, (3) sinks, so it generalizes
@@ -1215,14 +1215,23 @@ function linkFlows(
     const node = sink.file === undefined && sink.start !== undefined && sink.end !== undefined
       ? callBySpan.get(`${sink.start}:${sink.end}`)
       : undefined;
-    const reads = new Set<string>();
+    // path → the argument ROLES it was read into. Per-argument attribution is what makes a candidate
+    // possible: the same value in `url` vs `body`, or `path` vs `content`, implies different mitigations.
+    const reads = new Map<string, Set<ArgumentRole>>();
     if (node) {
       // ONLY this sink call's own arguments, plus other calls in the SAME fluent chain
       // (`.update({…}).eq('id', data.id)` is one operation). Never the enclosing statement: a sibling
       // expression such as `Promise.all([audit(data.title), db.insert({…})])` must not lend evidence.
       for (const call of fluentChainCalls(node, ts)) {
-        for (const arg of call.arguments ?? []) {
-          for (const path of taintedReadPaths(arg, ts, rootPath)) reads.add(path);
+        const method = calleeName(call, ts);
+        const args = call.arguments ?? [];
+        for (let i = 0; i < args.length; i++) {
+          const role = argumentRoleOf(sink.kind, method, i);
+          for (const path of taintedReadPaths(args[i], ts, rootPath)) {
+            const set = reads.get(path) ?? new Set<ArgumentRole>();
+            set.add(role);
+            reads.set(path, set);
+          }
         }
       }
     }
@@ -1230,7 +1239,15 @@ function linkFlows(
       const inputPath = normalizePath(input.name);
       // Exact path, or the input is an ANCESTOR of what was read (`billing` covers `billing.email`).
       // A mere shared leaf name is NOT evidence: `billing.email` and `shipping.email` are different.
-      const precise = [...reads].some((r) => r === inputPath || r.startsWith(inputPath + '.'));
+      const matched = [...reads.entries()].filter(([r]) => r === inputPath || r.startsWith(inputPath + '.'));
+      const precise = matched.length > 0;
+      const roles = new Set<ArgumentRole>(matched.flatMap(([, rs]) => [...rs]));
+      // Prefer a role that maps to a mitigation class over a generic one (a value can reach two args).
+      const family = [...roles].map((r) => CANDIDATE_FAMILIES[sink.kind]?.[r]).find(Boolean);
+      const argumentRole = family
+        ? [...roles].find((r) => CANDIDATE_FAMILIES[sink.kind]?.[r])
+        : [...roles].find((r) => r !== 'unknown') ?? (precise ? 'unknown' : undefined);
+
       // Deliberately SEPARATE from confidence: `precise` means "the source reaches the sink", which is
       // not authorization to block traffic. Every remaining obstacle is listed, so this doubles as the
       // queue for improving the extractor/adapters rather than silently losing the opportunity.
@@ -1239,16 +1256,20 @@ function linkFlows(
       if (!input.runtimeParameter) reasons.push(input.runtimeParameterReason ?? 'input has no runtime parameter');
       if (sink.file !== undefined) reasons.push('sink is in an imported module: no local call-site evidence');
       if (sink.start === undefined) reasons.push('sink call could not be located in the source');
-      // The sink ARGUMENT ROLE (command vs argument, URL vs body, path vs contents, raw SQL vs values)
-      // decides which mitigation class is even applicable, and it is not modelled yet — so nothing is
-      // rule-generatable today. This is the gate the candidate compiler opens.
-      reasons.push('sink argument role is not modelled yet');
+      if (precise && argumentRole === 'unknown') reasons.push(`sink argument role is not modelled for ${sink.kind}.${sink.op ?? '?'}`);
+      if (precise && argumentRole && argumentRole !== 'unknown' && !family) {
+        // e.g. a request value in a parameterized db `values` object: real reachability, but not a
+        // pattern a generic blocking rule can express.
+        reasons.push(`argument role "${argumentRole}" on a ${sink.kind} sink is not a blockable pattern on its own`);
+      }
       flows.push({
         input: input.name,
         sink,
         confidence: precise ? 'precise' : 'heuristic',
         line: sink.line,
-        ruleGeneratable: false,
+        ...(argumentRole ? { argumentRole } : {}),
+        ...(family ? { candidateFamily: family } : {}),
+        ruleGeneratable: reasons.length === 0,
         ruleGeneratableReasons: reasons,
       });
     }
@@ -1259,6 +1280,68 @@ function linkFlows(
 /** Join two path segments, tolerating an empty base. */
 function join2(base: string, seg: string): string {
   return base ? `${base}.${seg}` : seg;
+}
+
+// --- adapter summaries: which argument means what ---------------------------
+// Small, testable per-library summaries, keyed by sink kind so an overloaded name (`get`) can't be read
+// as the wrong thing. This is the cheap foundation the review recommended BEFORE a whole-program
+// dataflow engine: without argument roles, "the input reaches this sink" cannot be turned into a rule,
+// because the mitigation class depends on WHICH argument received the value.
+const ARGUMENT_ROLES: Record<string, Record<string, ArgumentRole[]>> = {
+  exec: {
+    exec: ['command'], execSync: ['command'],
+    execFile: ['file', 'args'], execFileSync: ['file', 'args'],
+    spawn: ['command', 'args'], spawnSync: ['command', 'args'], fork: ['file', 'args'],
+  },
+  http: {
+    fetch: ['url', 'init'], request: ['url', 'options'],
+    get: ['url', 'options'], head: ['url', 'options'], delete: ['url', 'options'],
+    post: ['url', 'body'], put: ['url', 'body'], patch: ['url', 'body'],
+  },
+  fs: {
+    readFile: ['path'], readFileSync: ['path'], open: ['path'],
+    writeFile: ['path', 'content'], writeFileSync: ['path', 'content'],
+    appendFile: ['path', 'content'],
+    unlink: ['path'], rm: ['path'], rmSync: ['path'], mkdir: ['path'], readdir: ['path'], stat: ['path'],
+    createReadStream: ['path'], createWriteStream: ['path'],
+  },
+  db: {
+    query: ['sql', 'values'], execute: ['sql', 'values'],
+    insert: ['values'], update: ['values'], upsert: ['values'], select: ['columns'],
+    // Filters: the value half is still request data reaching the query, but as a bound parameter.
+    eq: ['column', 'value'], neq: ['column', 'value'], gt: ['column', 'value'], gte: ['column', 'value'],
+    lt: ['column', 'value'], lte: ['column', 'value'], like: ['column', 'value'], ilike: ['column', 'value'],
+    match: ['values'], filter: ['column', 'value'],
+  },
+  eval: { eval: ['code'], Function: ['code'] },
+};
+
+/**
+ * The (sink kind, argument role) pairs where a request value arriving is inherently dangerous AND a rule
+ * can express the mitigation. Deliberately narrow — notably `db`+`values` is absent: a request value in
+ * a parameterized insert is genuine reachability signal but not a blockable pattern by itself.
+ */
+const CANDIDATE_FAMILIES: Record<string, Partial<Record<ArgumentRole, CandidateFamily>>> = {
+  http: { url: 'ssrf' },
+  exec: { command: 'command-injection', file: 'command-injection', args: 'command-injection' },
+  fs: { path: 'path-traversal' },
+  db: { sql: 'sql-injection' },
+  eval: { code: 'code-injection' },
+};
+
+/** Method name a call invokes (`db.from(t).insert(x)` → "insert", `exec(x)` → "exec"). */
+function calleeName(call: any, ts: TsModule): string | undefined {
+  const c = call?.expression;
+  if (!c) return undefined;
+  if (ts.isPropertyAccessExpression(c)) return c.name.text;
+  if (ts.isIdentifier(c)) return c.text;
+  return undefined;
+}
+
+/** Role of argument `index` for this call, given the sink kind it was recognized as. */
+function argumentRoleOf(sinkKind: string, method: string | undefined, index: number): ArgumentRole {
+  const table = method ? ARGUMENT_ROLES[sinkKind]?.[method] : undefined;
+  return table?.[index] ?? 'unknown';
 }
 
 /**

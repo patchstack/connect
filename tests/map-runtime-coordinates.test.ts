@@ -80,10 +80,20 @@ describe('coordinates on a real project', () => {
   it('reports ruleGeneratable separately from confidence, with reasons', async () => {
     const { map } = await buildInputMap(dir);
     const ep = map!.endpoints[0]!;
-    for (const f of ep.flows) {
-      // Nothing is rule-generatable yet: argument roles are unmodelled (the Track-2 gate).
-      expect(f.ruleGeneratable).toBe(false);
-      expect(f.ruleGeneratableReasons).toContain('sink argument role is not modelled yet');
+    // Since argument roles landed, a flow into a MITIGATABLE argument is generatable — `req.body.path`
+    // reaches the fs `path` argument (traversal). Everything else must still be refused, with reasons.
+    const pathFlow = ep.flows.find((f) => f.input === 'path' && f.confidence === 'precise')!;
+    expect(pathFlow.argumentRole).toBe('path');
+    expect(pathFlow.candidateFamily).toBe('path-traversal');
+    expect(pathFlow.ruleGeneratable).toBe(true);
+    // `req.query.data` lands in the fs CONTENT argument: proven, but not a blockable pattern.
+    const dataFlow = ep.flows.find((f) => f.input === 'data' && f.confidence === 'precise');
+    if (dataFlow) {
+      expect(dataFlow.candidateFamily).toBeUndefined();
+      expect(dataFlow.ruleGeneratable).toBe(false);
+    }
+    for (const f of ep.flows.filter((x) => x.ruleGeneratable === false)) {
+      expect(f.ruleGeneratableReasons!.length).toBeGreaterThan(0);
     }
     // A precise flow still must not be read as authorization to block.
     const routeParamFlow = ep.flows.find((f) => f.input === 'tenant');
