@@ -2,7 +2,7 @@ import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { buildInputMap } from '../src/map/index.js';
+import { buildInputMap } from '../../src/map/index.js';
 
 // The agnostic extractor across three stacks in one fixture app: a TanStack server fn (zod inputs +
 // supabase sink, incl. a helper-indirected select), an Express route (req.body access + fs/exec

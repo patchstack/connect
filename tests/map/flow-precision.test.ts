@@ -2,7 +2,7 @@ import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { mkdtempSync, mkdirSync, writeFileSync, rmSync, symlinkSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, dirname } from 'node:path';
-import { buildInputMap } from '../src/map/index.js';
+import { buildInputMap } from '../../src/map/index.js';
 
 // `precise` is a claim a consumer may PIN A RULE ON, so it must be evidence-backed: the input has to be
 // genuinely READ into the sink. A property key that merely shares the input's name, with an unrelated

@@ -124,7 +124,31 @@ export interface Endpoint {
  *                   "may reach", never as proven.
  * Consumers that pin a rule to a parameter should prefer `precise` flows and fall back to broad rules.
  */
+/**
+ * Which argument of the sink call the tainted value landed in. This decides which mitigation class is
+ * even applicable, so a candidate compiler cannot work without it: `command` vs `args` for exec,
+ * `url` vs `body` for http, `path` vs `content` for the filesystem, `sql` vs `values` for a database.
+ */
+export type ArgumentRole =
+  | 'command' | 'file' | 'args'
+  | 'url' | 'init' | 'body' | 'options'
+  | 'path' | 'content'
+  | 'sql' | 'values' | 'columns' | 'column' | 'value'
+  | 'code' | 'unknown';
+
+/**
+ * The mitigation class a flow could support. Deliberately narrow: only patterns where a request value
+ * reaching that argument is inherently dangerous and a rule can express it. A request value flowing into
+ * generic database *values* is real reachability signal but NOT a blockable pattern on its own, so it
+ * gets no family.
+ */
+export type CandidateFamily = 'ssrf' | 'command-injection' | 'path-traversal' | 'sql-injection' | 'code-injection';
+
 export interface Flow {
+  /** Which argument of the sink call received the value (see ArgumentRole). */
+  argumentRole?: ArgumentRole;
+  /** The mitigation class this flow could support, when the (sink kind, argument role) pair maps to one. */
+  candidateFamily?: CandidateFamily;
   /**
    * Whether a Patchstack rule can SAFELY be compiled from this flow — deliberately separate from
    * `confidence`. `precise` means "the source reaches the sink"; it is NOT authorization to block

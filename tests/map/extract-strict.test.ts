@@ -2,8 +2,8 @@ import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { mkdtempSync, mkdirSync, writeFileSync, symlinkSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { buildInputMap } from '../src/map/index.js';
-import type { SiteInputMap, Endpoint } from '../src/map/types.js';
+import { buildInputMap } from '../../src/map/index.js';
+import type { SiteInputMap, Endpoint } from '../../src/map/types.js';
 
 // Regression suite for the strict-review hardening: destructured / request.json() inputs, pre-filter ↔
 // recognizer parity, chained + object route registration, bindings-gated sinks (local objects are not
