@@ -50,8 +50,13 @@ export interface Endpoint {
   entryKind: string;
   /** HTTP method when known. */
   method?: string;
-  /** URL path when known (route registrations / file-based routes). */
+  /** URL path when known (route registrations / derived from a file-based route's location). */
   route?: string;
+  /**
+   * true when `route` contains dynamic segments (`/api/items/:id`) — it is a PATTERN, not a literal
+   * path, so a rule scoping to it needs a glob/regex `when.path`, not an equality match.
+   */
+  routeDynamic?: boolean;
   /** Repo-relative source file. */
   file: string;
   /** 1-based line of the entry-point declaration in `file`. */

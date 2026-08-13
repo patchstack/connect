@@ -211,7 +211,17 @@ export async function extractInputMap(cwd: string, ts: TsModule, options: Extrac
       const bindings = buildModuleBindings(sf, ts);
       const localSinks = collectLocalSinks(sf, ts, bindings);
       for (const ep of extractFromFile(sf, ts, localSinks, bindings)) {
-        endpoints.push({ ...ep, file: relative(cwd, file) });
+        const relFile = relative(cwd, file);
+        // A FILE-BASED route handler carries its URL path in its location, not in the code, so derive
+        // it here — without this a rule can only be param-pinned, never route-scoped (`when.path`).
+        if (ep.route === undefined && (ep.entryKind === 'route-handler' || ep.entryKind === 'server-action')) {
+          const derived = routeFromFilePath(relFile);
+          if (derived.route) {
+            ep.route = derived.route;
+            if (derived.dynamic) ep.routeDynamic = true;
+          }
+        }
+        endpoints.push({ ...ep, file: relFile });
       }
     } catch {
       // Fail-open: one unreadable/unparseable file must never kill the whole map.
@@ -339,6 +349,53 @@ function isInside(candidate: string, boundary: string): boolean {
   if (candidate === boundary) return true;
   const rel = relative(boundary, candidate);
   return rel !== '' && !rel.startsWith('..') && !isAbsolute(rel);
+}
+
+// Derive the URL path of a FILE-BASED route handler from its location, across the conventions AI
+// builders actually emit. Dynamic segments become `:name` and set `dynamic` so a consumer knows the
+// route is a PATTERN (the engine's `when.path` takes a glob or /regex/, not an Express param), rather
+// than mistaking `/api/:id` for a literal path.
+//   Next App Router     app/api/items/route.ts          -> /api/items
+//                       app/api/items/[id]/route.ts     -> /api/items/:id      (dynamic)
+//                       app/(marketing)/api/x/route.ts  -> /api/x              (route group stripped)
+//   Next Pages Router   pages/api/items/index.ts        -> /api/items
+//                       pages/api/[id].ts               -> /api/:id            (dynamic)
+//   SvelteKit           src/routes/api/items/+server.ts -> /api/items
+//   Nuxt                server/api/items.post.ts        -> /api/items
+export function routeFromFilePath(relFile: string): { route?: string; dynamic?: boolean } {
+  const parts = relFile.split(/[\\/]/).filter(Boolean);
+  if (parts.length === 0) return {};
+  const base = (parts[parts.length - 1] ?? '').replace(/\.(ts|tsx|mts|cts|js|jsx|mjs|cjs)$/, '');
+  const dirs = parts.slice(0, -1);
+  const at = (name: string) => dirs.lastIndexOf(name);
+
+  let segs: string[] | null = null;
+  if (base === 'route' && at('app') !== -1) {
+    segs = dirs.slice(at('app') + 1); // Next App Router
+  } else if (base === '+server' && at('routes') !== -1) {
+    segs = dirs.slice(at('routes') + 1); // SvelteKit
+  } else if (at('pages') !== -1) {
+    segs = [...dirs.slice(at('pages') + 1), ...(base === 'index' ? [] : [base])]; // Next Pages Router
+  } else if (at('server') !== -1) {
+    // Nuxt server routes; a `.post`/`.get` suffix encodes the method, not a path segment.
+    segs = [...dirs.slice(at('server') + 1), ...(base === 'index' ? [] : [base.replace(/\.(get|post|put|patch|delete|head|options)$/i, '')])];
+  }
+  if (!segs) return {};
+
+  // Next route groups `(marketing)` and parallel/private segments don't appear in the URL.
+  segs = segs.filter((s) => !(s.startsWith('(') && s.endsWith(')')) && !s.startsWith('@') && !s.startsWith('_'));
+
+  let dynamic = false;
+  const mapped = segs.map((s) => {
+    const m = /^\[+(\.{0,3})(.+?)\]+$/.exec(s); // [id], [...slug], [[...slug]]
+    if (m) {
+      dynamic = true;
+      return ':' + m[2];
+    }
+    return s;
+  });
+  const route = '/' + mapped.join('/');
+  return { route: route.length > 1 ? route.replace(/\/+$/, '') : '/', dynamic };
 }
 
 // --- entry-point recognizers -----------------------------------------------

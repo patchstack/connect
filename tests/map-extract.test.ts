@@ -81,6 +81,17 @@ beforeAll(() => {
     }
   `);
 
+  // A Next App Router file-based route (dynamic segment) — its URL path lives in the LOCATION.
+  mkdirSync(join(dir, 'app', 'api', 'orders', '[id]'), { recursive: true });
+  writeFileSync(join(dir, 'app', 'api', 'orders', '[id]', 'route.ts'), `
+    import { createClient } from "@supabase/supabase-js";
+    const supabase = createClient(process.env.URL, process.env.KEY);
+    export async function PATCH(request) {
+      const body = await request.json();
+      return supabase.from("orders").update({ note: body.note }).eq("id", body.id);
+    }
+  `);
+
   // A local factory returning an imported client — the client must still resolve to its package.
   writeFileSync(join(dir, 'src', 'factory.ts'), `
     import { createClient } from "@supabase/supabase-js";
@@ -181,6 +192,17 @@ describe('agnostic input-flow extractor', () => {
     const put = map!.endpoints.find((e) => e.name === 'PUT' && e.file.endsWith('fp.ts'))!;
     expect(put.sinks.some((s) => s.kind === 'exec')).toBe(false); // neverCalled() must not count
     expect(put.sinks.some((s) => s.kind === 'fs' && s.op === 'readFileSync')).toBe(true); // used() does
+  });
+
+  it('derives the URL path of a file-based route handler (so rules can be route-scoped)', async () => {
+    const { map } = await buildInputMap(dir);
+    const patch = map!.endpoints.find((e) => e.name === 'PATCH')!;
+    // Full coordinates for pinning: route + method + inputs — the route came from the file location.
+    expect(patch.route).toBe('/api/orders/:id');
+    expect(patch.routeDynamic).toBe(true); // a PATTERN, so when.path needs a glob/regex
+    expect(patch.method).toBe('PATCH');
+    expect(patch.inputs.map((i) => i.name).sort()).toEqual(['id', 'note']);
+    expect(patch.flows.some((f) => f.confidence === 'precise' && f.sink.op === 'update')).toBe(true);
   });
 
   it('resolves a client built by a local factory back to its package', async () => {
