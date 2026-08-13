@@ -232,7 +232,10 @@ function linkFlows(
           ? `dynamic computed key reaches this sink (${l.detail}): the field cannot be named by a parameter`
           : `spread reaches this sink (${l.detail}): the specific field is not identifiable`);
       }
-      if (proven && argumentRole && argumentRole !== 'unknown' && !family) {
+      // `!sink.apiUnconfirmed`: when the family was withheld because the PACKAGE does not establish this
+      // API, the role is not what's wrong — role "sql" is normally blockable, and saying otherwise sends a
+      // reviewer to look at the wrong thing. The package reason above already explains the refusal.
+      if (proven && argumentRole && argumentRole !== 'unknown' && !family && !sink.apiUnconfirmed) {
         // e.g. a request value in a parameterized db `values` object: real reachability, but not a
         // pattern a generic blocking rule can express.
         reasons.push(`argument role "${argumentRole}" on a ${sink.kind} sink is not a blockable pattern on its own`);

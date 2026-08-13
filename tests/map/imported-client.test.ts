@@ -184,6 +184,10 @@ describe('a traced package must also establish the API', () => {
     expect(flow.ruleGeneratable).toBe(false);
     expect(flow.candidateFamily).toBeUndefined(); // and it must not advertise a class it cannot support
     expect(flow.ruleGeneratableReasons!.join(' ')).toMatch(/does not establish a db API/);
+    // …and ONLY that. Withholding the family must not make the role look like the problem: role "sql" is
+    // normally blockable, so that reason would send a reviewer to look at the wrong thing.
+    expect(flow.ruleGeneratableReasons).toHaveLength(1);
+    expect(flow.ruleGeneratableReasons!.join(' ')).not.toMatch(/not a blockable pattern/);
   });
 
   it('claims a provider only when the RECEIVER was traced, not just the package', async () => {
