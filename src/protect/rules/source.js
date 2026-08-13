@@ -5,10 +5,14 @@
 import { PatchstackRuleClient } from '../engine/index.js';
 import { PulseRuleClient } from '../engine/pulse-client.js';
 
-export async function resolveRules(options, store) {
+export async function resolveRules(options, store, ctx = {}) {
+  // The INITIAL load is on the app's startup path, so the runtime gives it a short budget (see
+  // bootTimeoutMs) and falls back to cache/bundled rather than delaying boot; refreshes get the full
+  // budget. A timeout here is not a protection gap by itself — last-known-good still applies.
+  const timeoutMs = ctx.timeoutMs;
   if (options.siteUuid) {
     const prior = await store.read(); // { bundle, etag } | null
-    const client = new PulseRuleClient({ siteUuid: options.siteUuid, baseUrl: options.pulseRulesUrl, etag: prior?.etag });
+    const client = new PulseRuleClient({ siteUuid: options.siteUuid, baseUrl: options.pulseRulesUrl, etag: prior?.etag, timeoutMs });
     const res = await client.getRules();
     if (res.success && res.notModified && prior?.bundle) return normalizeBundle(prior.bundle);
     if (res.success && !res.notModified) {
@@ -30,7 +34,7 @@ export async function resolveRules(options, store) {
 
   if (options.token) {
     const prior = await store.read();
-    const client = new PatchstackRuleClient({ token: options.token, baseUrl: options.baseUrl, etag: prior?.etag });
+    const client = new PatchstackRuleClient({ token: options.token, baseUrl: options.baseUrl, etag: prior?.etag, timeoutMs });
     const res = await client.getRules();
     if (res.success && res.notModified && prior?.bundle) return normalizeBundle(prior.bundle);
     if (res.success && !res.notModified) {

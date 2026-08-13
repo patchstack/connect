@@ -15,8 +15,11 @@ export class PatchstackRuleClient {
   #cacheTime = null;
   #ttlEffective = 0;
   #etag;
+  #timeoutMs;
 
-  constructor({ token, baseUrl, cacheTtl, etag } = {}) {
+  constructor({ token, baseUrl, cacheTtl, etag, timeoutMs } = {}) {
+    // Bounded so app STARTUP can't hang on a slow API (see the boot budget in rules/source.js).
+    this.#timeoutMs = Number(timeoutMs) > 0 ? Number(timeoutMs) : 30_000;
     this.#token = token ?? process.env.PATCHSTACK_WAF_TOKEN;
     this.#baseUrl = baseUrl ?? process.env.PATCHSTACK_WAF_API_URL ?? DEFAULT_BASE_URL;
     this.#cacheTtl = Number.isFinite(cacheTtl) && cacheTtl > 0 ? cacheTtl : DEFAULT_CACHE_TTL;
@@ -48,7 +51,7 @@ export class PatchstackRuleClient {
         method: 'POST',
         headers,
         body: JSON.stringify({}),
-        signal: AbortSignal.timeout(30_000)
+        signal: AbortSignal.timeout(this.#timeoutMs)
       });
 
       if (response.status === 304) {

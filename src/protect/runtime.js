@@ -3,9 +3,14 @@
 // One entry point that composes the node-waf engine + adapters with:
 //   - a rule source: an explicit bundle, or fetched from the Patchstack API (token),
 //     with a disk cache so the engine keeps working on last-known-good if the API is down
-//   - execution modes: 'dry-run' (detect + log, never block — the safe onramp) and
-//     'block' (enforce). Default is 'dry-run'.
-//   - fail-open everywhere: a rule/engine error never blocks (or crashes) a request.
+//   - execution modes: 'dry-run' (detect + log, never block — the safe onramp) and 'block' (enforce).
+//     This API's default is 'dry-run'. NOTE the scaffolded guard (`patchstack-connect protect`)
+//     deliberately passes mode: 'block' and only drops to dry-run when PATCHSTACK_MODE=dry-run — so an
+//     installed guard ENFORCES by default even though this constructor's default doesn't. Precedence:
+//     PATCHSTACK_MODE env > API `enforcement` > options.mode > dry-run.
+//   - fail-open everywhere: a rule/engine error never blocks (or crashes) a request. Where the guard
+//     fails open *without* inspecting (body caps, live streams, binary bodies, resolver failures) it
+//     is counted and reported — see `protection.coverage()` / the `onSkip` option.
 //
 // Runtime guards: .express(), .node(), .fetch(handler) / .fetchGuard() — same policy,
 // every runtime an AI builder deploys to.
@@ -96,7 +101,11 @@ export async function createProtection(options = {}) {
 
   // One tiered store (memory → filesystem/pluggable) shared by the initial load and every refresh.
   const store = makeStore(options);
-  const bundle = await resolveRules(options, store);
+  // Startup must not hang on the network: hosted platforms (Replit et al.) fail a deploy whose health
+  // check is slow, and the guard can always boot from last-known-good / the bundled fallback. Refreshes
+  // keep the full budget. Override with { bootTimeoutMs }.
+  const bootTimeoutMs = Number(options.bootTimeoutMs) > 0 ? Number(options.bootTimeoutMs) : 5_000;
+  const bundle = await resolveRules(options, store, { timeoutMs: bootTimeoutMs });
   // Mode is mutable so a Pulse refresh can flip dry-run ↔ block when SaaS enables production.
   // Precedence: PATCHSTACK_MODE env (local override) > API enforcement > options.mode > dry-run.
   let mode = resolveMode(options, bundle);
@@ -147,6 +156,25 @@ export async function createProtection(options = {}) {
   };
 
   applyBundle(bundle);
+
+  // Fail-open COVERAGE. The guard deliberately passes traffic through rather than risk breaking the
+  // app: an oversized request body, a response past the screening cap, a live stream, a binary body, a
+  // parse failure, a DNS resolver failure. Each of those is a real hole in enforcement, and until now
+  // it was SILENT — "always-on" read as "always inspected". Every such bypass is now counted and
+  // reported to `onSkip`, so a host can alert on it and `protection.coverage()` can be surfaced.
+  const skipCounts = Object.create(null);
+  const onSkip = typeof options.onSkip === 'function' ? options.onSkip : null;
+  const recordSkip = (phase, reason, detail) => {
+    const key = `${phase}:${reason}`;
+    skipCounts[key] = (skipCounts[key] ?? 0) + 1;
+    if (onSkip) {
+      try {
+        onSkip({ phase, reason, detail, count: skipCounts[key] });
+      } catch {
+        /* a reporting callback must never affect request handling */
+      }
+    }
+  };
 
   const maskFn =
     typeof options.maskWith === 'function'
@@ -261,8 +289,14 @@ export async function createProtection(options = {}) {
 
   // Screen a fetch Response (used by .fetch() and — via protection.screenResponse — the Supabase guard).
   const screenResp = async (response, reqCtx) => {
-    const text = await readTextResponse(response, screenCap);
-    if (text == null) return response;
+    const read = await readTextResponse(response, screenCap);
+    if (read.skip) {
+      // Nothing was screened — a leak/PII rule cannot have applied. Record it (a live stream and a
+      // binary body are by design; a body-cap or read failure is a coverage hole worth alerting on).
+      if (read.skip !== 'not-a-response') recordSkip('response', read.skip, { status: response?.status });
+      return response;
+    }
+    const text = read.text;
     const r = screenText(text, { status: response.status, headers: headerObject(response.headers) }, reqCtx);
     if (r.verdict === 'block') return leakResponse();
     if (r.verdict === 'redact') return rebuildResponse(response, r.body, r.headers);
@@ -291,6 +325,7 @@ export async function createProtection(options = {}) {
         chunks.length = 0;
         origWrite(buf);
         overflow = true;
+        recordSkip('response', 'body-cap', { bytes: size });
         return;
       }
       chunks.push(buf);
@@ -314,6 +349,7 @@ export async function createProtection(options = {}) {
       const kind = screenableContentType(ct);
       // Skip live streams / binary bodies (incl. an octet-stream that sniffs as binary) — untouched.
       if (kind === 'skip' || (kind === 'sniff' && looksBinary(buffer))) {
+        recordSkip('response', kind === 'skip' ? (baseContentType(ct) === 'text/event-stream' ? 'live-stream' : 'non-text-content-type') : 'binary-body');
         for (const c of chunks) origWrite(c);
         return origEnd(cb);
       }
@@ -377,6 +413,16 @@ export async function createProtection(options = {}) {
     },
     get rules() {
       return { request: requestRules, response: responseRules, egress: egressRules };
+    },
+
+    /**
+     * Enforcement coverage: how often the guard FAILED OPEN rather than inspecting, keyed
+     * `<phase>:<reason>` (e.g. `response:body-cap`, `request:body-cap`, `response:live-stream`,
+     * `egress:resolver-failed`). "Always-on" is not "always inspected" — surface this (or pass
+     * `onSkip`) so an unscreened path is visible and alertable rather than silent.
+     */
+    coverage() {
+      return { skipped: { ...skipCounts } };
     },
 
     // Screen a fetch Response through the response-phase rules (redact/block). Used by
@@ -460,6 +506,7 @@ export async function createProtection(options = {}) {
           next();
         });
         req.on('end', () => {
+          if (overflow) recordSkip('request', 'body-cap', { bytes: size, limit: maxBytes });
           const rawBody = overflow ? '' : Buffer.concat(chunks).toString('utf8');
           let shaped;
           let result;
@@ -502,6 +549,9 @@ export async function createProtection(options = {}) {
     protection.uninstallEgress = await installEgressGuard({
       shouldBlock: egressShouldBlock,
       onBlock: options.onEgressBlock,
+      // Route egress coverage gaps (a DNS resolver failure / no resolver on this runtime) into the
+      // same skip accounting as the request/response phases.
+      onSkip: ({ reason, detail }) => recordSkip('egress', reason, detail),
       dnsScreen: options.screenDns !== false,
       allowHosts: options.allowHosts,
     });
@@ -539,7 +589,7 @@ export async function createProtection(options = {}) {
         onError?.(err); // a failed report must not stop the rule refresh
       }
     }
-    const next = await resolveRules(options, store);
+    const next = await resolveRules(options, store, { timeoutMs: options.refreshTimeoutMs });
     mode = resolveMode(options, next);
     applyBundle(next);
   };
@@ -636,23 +686,26 @@ function looksBinary(bytes) {
   return n > 0 && ctrl / n > 0.1;
 }
 
+// Returns { text } when the body was fully buffered for screening, or { skip: <reason> } when it was
+// NOT screened — the reason is surfaced to `onSkip`/coverage so a fail-open bypass is observable
+// instead of silent (an unscreened response is a real hole in enforcement).
 async function readTextResponse(response, cap = DEFAULT_SCREEN_CAP) {
-  if (!response || typeof response.clone !== 'function') return null;
+  if (!response || typeof response.clone !== 'function') return { skip: 'not-a-response' };
   const ct = response.headers?.get?.('content-type') || '';
   const kind = screenableContentType(ct);
-  if (kind === 'skip') return null;
+  if (kind === 'skip') return { skip: baseContentType(ct) === 'text/event-stream' ? 'live-stream' : 'non-text-content-type' };
   const sniff = kind === 'sniff';
   const len = Number(response.headers?.get?.('content-length') || 0);
-  if (len && len > cap) return null;
+  if (len && len > cap) return { skip: 'body-cap' };
   let clone;
   try {
     clone = response.clone();
   } catch {
-    return null;
+    return { skip: 'clone-failed' };
   }
 
   // Stream the read so a body WITHOUT a Content-Length can't buffer past the cap. Over the cap the
-  // response is left UNSCREENED (null) — but we keep draining the clone so the original stays intact.
+  // response is left UNSCREENED — but we keep draining the clone so the original stays intact.
   const body = clone.body;
   if (body && typeof body.getReader === 'function') {
     const reader = body.getReader();
@@ -667,7 +720,7 @@ async function readTextResponse(response, cap = DEFAULT_SCREEN_CAP) {
         if (!value) continue;
         if (!sniffed) {
           sniffed = true;
-          if (looksBinary(value)) return null; // octet-stream that's actually binary — skip
+          if (looksBinary(value)) return { skip: 'binary-body' };
         }
         size += value.byteLength;
         if (over) continue; // keep draining, stop buffering
@@ -675,23 +728,23 @@ async function readTextResponse(response, cap = DEFAULT_SCREEN_CAP) {
         chunks.push(value);
       }
     } catch {
-      return null;
+      return { skip: 'read-failed' };
     }
-    if (over) return null;
+    if (over) return { skip: 'body-cap' };
     try {
-      return new TextDecoder().decode(concatBytes(chunks, size));
+      return { text: new TextDecoder().decode(concatBytes(chunks, size)) };
     } catch {
-      return null;
+      return { skip: 'decode-failed' };
     }
   }
 
   try {
     const text = await clone.text();
-    if (text.length > cap) return null;
-    if (sniff && looksBinary(new TextEncoder().encode(text.slice(0, 512)))) return null;
-    return text;
+    if (text.length > cap) return { skip: 'body-cap' };
+    if (sniff && looksBinary(new TextEncoder().encode(text.slice(0, 512)))) return { skip: 'binary-body' };
+    return { text };
   } catch {
-    return null;
+    return { skip: 'read-failed' };
   }
 }
 

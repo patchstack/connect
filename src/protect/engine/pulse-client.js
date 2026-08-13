@@ -15,6 +15,7 @@ const JITTER_FRACTION = 0.1;
 // the client simply behaves as before (a full fetch every refresh).
 export class PulseRuleClient {
   #siteUuid;
+  #timeoutMs;
   #baseUrl;
   #cacheTtl;
   #cache = null;
@@ -22,7 +23,10 @@ export class PulseRuleClient {
   #ttlEffective = 0;
   #etag;
 
-  constructor({ siteUuid, baseUrl, cacheTtl, etag } = {}) {
+  constructor({ siteUuid, baseUrl, cacheTtl, etag, timeoutMs } = {}) {
+    // Bounded so app STARTUP can't hang on a slow API: hosted platforms fail a deploy whose health
+    // check is slow, and we always have a cache/bundled fallback to boot from.
+    this.#timeoutMs = Number(timeoutMs) > 0 ? Number(timeoutMs) : 30_000;
     this.#siteUuid = siteUuid ?? process.env.PATCHSTACK_SITE_UUID;
     this.#baseUrl = baseUrl ?? process.env.PATCHSTACK_PULSE_RULES_URL ?? DEFAULT_BASE_URL;
     this.#cacheTtl = Number.isFinite(cacheTtl) && cacheTtl > 0 ? cacheTtl : DEFAULT_CACHE_TTL;
@@ -41,7 +45,7 @@ export class PulseRuleClient {
     try {
       const headers = { Accept: 'application/json' };
       if (this.#etag) headers['If-None-Match'] = this.#etag;
-      const response = await fetch(url, { method: 'GET', headers, signal: AbortSignal.timeout(30_000) });
+      const response = await fetch(url, { method: 'GET', headers, signal: AbortSignal.timeout(this.#timeoutMs) });
 
       if (response.status === 304) {
         this.#touch(now); // revalidated — reset the clock (fresh jitter)
