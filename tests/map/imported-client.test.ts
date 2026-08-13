@@ -121,3 +121,83 @@ describe('the project boundary still holds', () => {
     rmSync(outside, { recursive: true, force: true });
   });
 });
+
+// Package provenance is NOT API provenance. `.query()` is a generic method name: an `@apollo/client`
+// instance resolves to a genuine dependency while having nothing to do with SQL, and admitting that as a
+// database sink compiled a precise SQL-injection candidate for a GraphQL call — a rule that would block
+// legitimate traffic and mitigate nothing. This predates the imported-client hop (a same-file
+// `new ApolloClient()` hit it too); the hop only made it easier to reach.
+describe('a traced package must also establish the API', () => {
+  let d: string;
+  beforeAll(() => {
+    d = mkdtempSync(join(tmpdir(), 'ps-api-'));
+    mkdirSync(join(d, 'src', 'lib'), { recursive: true });
+    writeFileSync(join(d, 'package.json'), JSON.stringify({
+      dependencies: { express: '4', '@apollo/client': '3', pg: '8', 'drizzle-orm': '0.30' },
+    }));
+    writeFileSync(join(d, 'src', 'lib', 'gql.ts'), `
+      import { ApolloClient } from "@apollo/client";
+      export const client = new ApolloClient({ uri: "https://api.example.com" });
+    `);
+    writeFileSync(join(d, 'src', 'lib', 'pool.ts'), `
+      import { Pool } from "pg";
+      export const pool = new Pool();
+    `);
+    writeFileSync(join(d, 'src', 'lib', 'orm.ts'), `
+      import { drizzle } from "drizzle-orm/node-postgres";
+      export const orm = drizzle({});
+    `);
+    writeFileSync(join(d, 'src', 'server.ts'), `
+      import express from "express";
+      import { ApolloClient } from "@apollo/client";
+      import { client } from "./lib/gql";
+      import { pool } from "./lib/pool";
+      import { orm } from "./lib/orm";
+      const app = express();
+      const inline = new ApolloClient({ uri: "https://api.example.com" });
+      app.post("/gql-imported", async (req, res) => { await client.query(req.body.sql); res.end(); });
+      app.post("/gql-inline", async (req, res) => { await inline.query(req.body.sql); res.end(); });
+      app.post("/pg", async (req, res) => { await pool.query(req.body.sql); res.end(); });
+      app.post("/orm", async (req, res) => { await orm.execute(req.body.sql); res.end(); });
+    `);
+  });
+  afterAll(() => rmSync(d, { recursive: true, force: true }));
+
+  const route = async (r: string) => {
+    const { map } = await buildInputMap(d);
+    return map!.endpoints.find((e) => e.route === r)!;
+  };
+
+  it.each(['/gql-imported', '/gql-inline'])('refuses a rule for a non-DB client at %s', async (r) => {
+    const e = await route(r);
+    const sink = e.sinks.find((s) => s.kind === 'db')!;
+    expect(sink.package).toBe('@apollo/client');
+    expect(sink.attribution).toBe('import');   // the package IS established…
+    expect(sink.apiUnconfirmed).toBe(true);    // …but it does not establish a DB API
+    expect(sink.provider).toBeUndefined();     // so it does not get to call itself SQL either
+    const flow = e.flows.find((f) => f.sink.kind === 'db')!;
+    expect(flow.confidence).toBe('exact-local'); // the data really does reach it
+    expect(flow.ruleGeneratable).toBe(false);
+    expect(flow.candidateFamily).toBeUndefined(); // and it must not advertise a class it cannot support
+    expect(flow.ruleGeneratableReasons!.join(' ')).toMatch(/does not establish a db API/);
+  });
+
+  it('keeps the sink in the inventory — a .query() on an unknown client is worth a human look', async () => {
+    const e = await route('/gql-imported');
+    expect(e.sinks).toHaveLength(1);
+  });
+
+  it.each([
+    ['/pg', 'pg'],
+    ['/orm', 'drizzle-orm'],
+  ])('still generates for a real driver at %s', async (r, pkg) => {
+    const e = await route(r);
+    const sink = e.sinks.find((s) => s.kind === 'db')!;
+    expect(sink.package).toBe(pkg);            // subpath imports resolve to the package
+    expect(sink.apiUnconfirmed).toBeUndefined();
+    expect(sink.provider).toBe('sql');
+    const flow = e.flows.find((f) => f.sink.kind === 'db')!;
+    expect(flow.ruleGeneratable).toBe(true);
+    expect(flow.candidateFamily).toBe('sql-injection');
+  });
+});

@@ -20,6 +20,21 @@ const HTTP_MEMBER_METHODS = new Set(['get', 'post', 'put', 'patch', 'delete', 'h
 // When a sink's base can't be traced precisely, infer its package from the file's imports of a known
 // provider for that sink kind (a file almost always uses one db/http client).
 const DB_PACKAGES = ['@supabase/supabase-js', '@prisma/client', 'drizzle-orm', 'knex', 'kysely', 'pg', 'mysql2', 'mysql', 'sequelize', 'typeorm', 'mongoose', 'better-sqlite3'];
+// Drivers that are not in the inference list above but do establish a database API when a receiver
+// resolves to them. Extend deliberately: this list is what separates "a package we can trace" from
+// "a package that proves a DB API", and admitting the wrong one produces a false SQL-injection rule.
+const MORE_DB_PACKAGES = ['postgres', 'mssql', 'tedious', 'oracledb', 'sqlite3', 'mongodb', 'ioredis',
+  '@planetscale/database', '@neondatabase/serverless', '@libsql/client', '@vercel/postgres', 'slonik', 'sql.js'];
+/**
+ * Does `pkg` establish a DATABASE api? Package provenance is not API provenance: `.query()` is a generic
+ * method name, and an `@apollo/client` (or any HTTP-ish client) instance resolves to a real package while
+ * having nothing to do with SQL. Without this gate, `client.query(req.body.sql)` compiled a precise
+ * SQL-injection candidate for a GraphQL call — a rule that blocks legitimate traffic and mitigates nothing.
+ * Subpath imports count (`drizzle-orm/node-postgres`).
+ */
+const isDbPackage = (pkg: string) =>
+  DB_PACKAGES.includes(pkg) || MORE_DB_PACKAGES.includes(pkg) ||
+  [...DB_PACKAGES, ...MORE_DB_PACKAGES].some((p) => pkg.startsWith(p + '/'));
 const HTTP_PACKAGES = ['axios', 'got', 'node-fetch', 'undici', 'superagent', 'ky'];
 const isHttpPackage = (pkg: string) => HTTP_PACKAGES.includes(pkg) || pkg === 'node:http' || pkg === 'node:https';
 // A filesystem/process API is not only a node: builtin — these wrappers expose the same sinks, and
@@ -145,6 +160,13 @@ function directSinks(node: any, ts: TsModule, bindings: Bindings, ctx?: SinkCont
   // untraceable receiver is neither (undefined) and must not drive an auto-generated rule.
   const attributionOf = (b: { pkg?: string }, pkg: string | undefined): Sink['attribution'] =>
     b.pkg ? 'import' : pkg ? 'inferred' : undefined;
+  /**
+   * Claim `provider: 'sql'` only when the package actually establishes a database API. A traced package
+   * that is not a DB provider stays in the INVENTORY (a `.query()` on it is worth a human's attention)
+   * but is marked so no rule can be compiled from it — and it does not get to call itself SQL.
+   */
+  const dbApi = (pkg: string | undefined): { provider?: string; apiUnconfirmed?: true } =>
+    pkg && !isDbPackage(pkg) ? { apiUnconfirmed: true } : { provider: 'sql' };
   const infer = (kind: 'db' | 'http'): string | undefined => {
     const table = kind === 'db' ? DB_PACKAGES : HTTP_PACKAGES;
     for (const p of table) if (bindings.imports.has(p)) return p;
@@ -168,7 +190,7 @@ function directSinks(node: any, ts: TsModule, bindings: Bindings, ctx?: SinkCont
         const parent = n.parent;
         if (!b.local && !b.relative && parent && ts.isPropertyAccessExpression(parent) && DB_OPS.has(parent.name.text)) {
           const pkg = b.pkg ?? infer('db');
-          push({ kind: 'db', provider: 'sql', package: pkg, table, op: parent.name.text, attribution: attributionOf(b, pkg), ...spanOf(opCallOf(parent, ts)) });
+          push({ kind: 'db', ...dbApi(pkg), package: pkg, table, op: parent.name.text, attribution: attributionOf(b, pkg), ...spanOf(opCallOf(parent, ts)) });
         }
       }
       if (ts.isPropertyAccessExpression(callee)) {
@@ -191,7 +213,7 @@ function directSinks(node: any, ts: TsModule, bindings: Bindings, ctx?: SinkCont
           // receiver stays in the inventory with NO attribution — visible to a human, never auto-ruled.
           if (method === 'query' || method === 'execute') {
             const pkg = b.pkg ?? infer('db');
-            push({ kind: 'db', provider: 'sql', package: pkg, op: method, attribution: attributionOf(b, pkg), ...spanOf(n) });
+            push({ kind: 'db', ...dbApi(pkg), package: pkg, op: method, attribution: attributionOf(b, pkg), ...spanOf(n) });
           }
           // fs / exec via a namespace: `fs.writeFile(` / `child_process.exec(`. The receiver must
           // actually resolve to a filesystem/process package — the method name alone proves nothing.

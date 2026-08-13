@@ -157,6 +157,28 @@ const ADVERSARIAL: Case[] = [
     expectRefused: [['id', /no proven local read/]],
   },
   {
+    name: 'adversarial: a traced package that does not establish the API',
+    kind: 'adversarial',
+    pkg: { dependencies: { express: '4', '@apollo/client': '3' } },
+    files: {
+      // `.query()` is a generic method name. An ApolloClient instance resolves to a REAL dependency, so
+      // attribution alone admits it — and a GraphQL call became a precise SQL-injection candidate. Package
+      // provenance is not API provenance.
+      'src/lib/gql.ts': `
+        import { ApolloClient } from "@apollo/client";
+        export const client = new ApolloClient({ uri: "https://api.example.com" });
+      `,
+      'src/server.ts': `
+        import express from "express";
+        import { client } from "./lib/gql";
+        const app = express();
+        app.post("/graphql", async (req, res) => { await client.query(req.body.sql); res.end(); });
+      `,
+    },
+    expectCandidates: [],
+    expectRefused: [['sql', /does not establish a db API/]],
+  },
+  {
     name: 'adversarial: sibling expressions must not contaminate each other',
     kind: 'adversarial',
     pkg: { dependencies: { express: '4' } },
@@ -423,9 +445,9 @@ describe('golden corpus', () => {
   it('keeps a standing adversarial category (lookalikes are how every false candidate got in)', () => {
     // Guards against the category quietly emptying out; the classes listed are the ones that have
     // actually produced false candidates, so losing one should fail loudly.
-    expect(ADVERSARIAL.length).toBeGreaterThanOrEqual(6);
+    expect(ADVERSARIAL.length).toBeGreaterThanOrEqual(7);
     const names = ADVERSARIAL.map((c) => c.name).join(' | ');
-    for (const cls of ['collide with dangerous API names', 'untraceable receivers', 'shadowing dangerous globals', 'two request namespaces', 'sibling expressions', 'different namespaces']) {
+    for (const cls of ['collide with dangerous API names', 'untraceable receivers', 'shadowing dangerous globals', 'two request namespaces', 'sibling expressions', 'different namespaces', 'does not establish the API']) {
       expect(names, `missing adversarial class: ${cls}`).toContain(cls);
     }
   });

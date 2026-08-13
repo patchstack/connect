@@ -97,6 +97,13 @@ export interface Sink {
    */
   attribution?: 'import' | 'global' | 'inferred';
   /**
+   * Set when the receiver resolved to a real package that does **not** establish this kind of API —
+   * package provenance is not API provenance. `client.query(x)` on an `@apollo/client` instance traces to
+   * a genuine dependency while having nothing to do with SQL. Such a sink is reported for review and can
+   * never compile a rule: a candidate here would block legitimate traffic and mitigate nothing.
+   */
+  apiUnconfirmed?: true;
+  /**
    * Character span of the sink's operation call in `file` (or the endpoint's file). This is the sink's
    * IDENTITY: flow analysis binds evidence to this exact call, never to a line or an enclosing
    * statement (two sinks can share a line, and a statement can hold unrelated expressions).
