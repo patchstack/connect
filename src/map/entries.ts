@@ -4,13 +4,13 @@ import type { Bindings } from './bindings.js';
 import { functionNameFromPath, ROUTE_REGISTER, routeFromChain, routeObject } from './routes.js';
 import { withCoordinates } from './coordinates.js';
 import { inputsFromHandler, inputsFromValidator } from './inputs.js';
-import { sinksFrom, type ModuleGraph } from './sinks.js';
+import { sinksFrom, type SinkContext } from './sinks.js';
 import { linkedFlows } from './flows.js';
 
 const HTTP_METHODS = new Set(['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'HEAD', 'OPTIONS']);
 
 // --- entry-point recognizers -----------------------------------------------
-export function extractFromFile(sf: any, ts: TsModule, localSinks: Map<string, Sink[]>, bindings: Bindings, ctx: { file: string; graph: ModuleGraph }): Omit<Endpoint, 'file'>[] {
+export function extractFromFile(sf: any, ts: TsModule, localSinks: Map<string, Sink[]>, bindings: Bindings, ctx: SinkContext): Omit<Endpoint, 'file'>[] {
   const out: Omit<Endpoint, 'file'>[] = [];
   const isServerActionsFile = fileHasUseServer(sf, ts);
 
@@ -134,7 +134,7 @@ function handlerEntry(
   ts: TsModule,
   localSinks: Map<string, Sink[]>,
   bindings: Bindings,
-  ctx: { file: string; graph: ModuleGraph },
+  ctx: SinkContext,
   extra: { method?: string; route?: string; line?: number; start?: number; end?: number } = {},
 ): Omit<Endpoint, 'file'> {
   const entryKind = kindLabel === 'route-registration' || kindLabel === 'server-action' || kindLabel === 'edge-function'
