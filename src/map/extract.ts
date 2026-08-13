@@ -48,12 +48,15 @@ const BUILTINS = new Set(builtinModules);
 // as local — an accepted miss.)
 interface Bindings {
   resolve(name: string): string | undefined;
+  /** For `import { saveOrder as write }`, maps the local name back to the EXPORTED name. */
+  exportNameOf(name: string): string | undefined;
   imports: Set<string>;
   locals: Set<string>;
 }
 function buildModuleBindings(sf: any, ts: TsModule): Bindings {
   const nameToModule = new Map<string, string>(); // local name → module specifier
   const declared = new Set<string>(); // every name declared in this file
+  const exportNames = new Map<string, string>(); // local alias → exported name
   const imports = new Set<string>();
 
   const record = (local: string, mod: string) => { nameToModule.set(local, mod); imports.add(mod); };
@@ -74,7 +77,11 @@ function buildModuleBindings(sf: any, ts: TsModule): Bindings {
       const nb = clause?.namedBindings;
       if (nb) {
         if (ts.isNamespaceImport(nb)) record(nb.name.text, mod);
-        else if (ts.isNamedImports(nb)) for (const el of nb.elements) record(el.name.text, mod);
+        else if (ts.isNamedImports(nb)) for (const el of nb.elements) {
+          record(el.name.text, mod);
+          // `import { saveOrder as write }` — looking up `write` in the target module would miss.
+          if (el.propertyName && ts.isIdentifier(el.propertyName)) exportNames.set(el.name.text, el.propertyName.text);
+        }
       }
     }
     if (ts.isFunctionDeclaration(node) && node.name) declared.add(node.name.text);
@@ -129,7 +136,7 @@ function buildModuleBindings(sf: any, ts: TsModule): Bindings {
     if (!changed) break;
   }
   const locals = new Set([...declared].filter((n) => !nameToModule.has(n)));
-  return { resolve: (name: string) => nameToModule.get(name), imports, locals };
+  return { resolve: (name: string) => nameToModule.get(name), exportNameOf: (name: string) => exportNames.get(name), imports, locals };
 }
 
 // Root identifier of what a function body returns (`return createClient(…)` → "createClient"), for
@@ -198,7 +205,7 @@ export async function extractInputMap(cwd: string, ts: TsModule, options: Extrac
   let boundary = cwd;
   try { boundary = realpathSync(cwd); } catch { /* use cwd as-is */ }
 
-  const graph = createModuleGraph(ts); // shared cache across files
+  const graph = createModuleGraph(ts, { cwd, boundary, followOutside: options.followSymlinks }); // shared cache
   const stats: WalkStats = { discovered: 0 };
   const files = collectSources(cwd, boundary, { followOutside: options.followSymlinks }, [], new Set(), stats);
   let parsed = 0;
@@ -813,7 +820,7 @@ export interface ModuleGraph {
   importedSinks(fromFile: string, specifier: string, exportName: string): Sink[];
 }
 
-function createModuleGraph(ts: TsModule): ModuleGraph {
+function createModuleGraph(ts: TsModule, opts: { cwd: string; boundary: string; followOutside?: boolean }): ModuleGraph {
   // file → { fnSinks, calleesOf } | null (unreadable/unparseable)
   const cache = new Map<string, { fnSinks: Map<string, Sink[]>; calleesOf: Map<string, string[]> } | null>();
 
@@ -836,14 +843,24 @@ function createModuleGraph(ts: TsModule): ModuleGraph {
     importedSinks(fromFile, specifier, exportName) {
       const target = resolveRelativeModule(fromFile, specifier);
       if (!target) return [];
+      // Stay inside the project: `../../other-repo/db` (or a symlink) would otherwise pull an unrelated
+      // codebase into this app's attack surface. The primary walker enforces this; so must the resolver.
+      if (!opts.followOutside) {
+        let real = target;
+        try { real = realpathSync(target); } catch { /* use as-is */ }
+        if (!isInside(real, opts.boundary)) return [];
+      }
       const mod = load(target);
       if (!mod) return [];
-      const out = [...(mod.fnSinks.get(exportName) ?? [])];
+      const collected = [...(mod.fnSinks.get(exportName) ?? [])];
       // One same-file hop inside the target: `export function saveOrder(){ return doInsert() }`.
       for (const callee of mod.calleesOf.get(exportName) ?? []) {
-        for (const s of mod.fnSinks.get(callee) ?? []) out.push(s);
+        for (const s of mod.fnSinks.get(callee) ?? []) collected.push(s);
       }
-      return out;
+      // `line` refers to the HELPER's file, not the endpoint's — carry the file so the coordinate is
+      // interpretable (and so flow linking never claims `precise` for a sink it cannot see locally).
+      const rel = relative(opts.cwd, target);
+      return collected.map((s) => ({ ...s, file: rel }));
     },
   };
 }
@@ -904,7 +921,7 @@ function sinksFrom(arrowOrNode: any, ts: TsModule, localSinks: Map<string, Sink[
     if (ctx) {
       const spec = bindings.resolve(called);
       if (spec && spec.startsWith('.')) {
-        for (const s of ctx.graph.importedSinks(ctx.file, spec, called)) sinks.push(s);
+        for (const s of ctx.graph.importedSinks(ctx.file, spec, bindings.exportNameOf(called) ?? called)) sinks.push(s);
       }
     }
   }
@@ -1026,24 +1043,50 @@ function linkFlows(
   ts: TsModule,
 ): Flow[] {
   if (!bodyNode || sinks.length === 0 || inputs.length === 0) return [];
+
+  // Roots that carry untrusted data: the handler's params, and locals aliased from them / from a
+  // request-body read. `leafOfLocal` maps a DESTRUCTURED local back to the field it came from, so
+  // `const { title: t } = await req.json()` links a read of `t` to the input `title`.
   const taintedRoots = new Set<string>();
+  const leafOfLocal = new Map<string, string>();
   for (const p of params ?? []) {
     if (!p?.name) continue;
     if (ts.isIdentifier(p.name)) taintedRoots.add(p.name.text);
     else if (ts.isObjectBindingPattern(p.name)) {
-      for (const el of p.name.elements) if (ts.isBindingElement(el) && ts.isIdentifier(el.name)) taintedRoots.add(el.name.text);
+      for (const el of p.name.elements) {
+        if (!ts.isBindingElement(el) || !ts.isIdentifier(el.name)) continue;
+        taintedRoots.add(el.name.text);
+        const key = bindingKey(el, ts);
+        if (key) leafOfLocal.set(el.name.text, key);
+      }
     }
   }
-  // Local aliases of tainted data: `const body = await request.json()`, `const { title } = data`.
+  const isRequestRead = (init: any): boolean => {
+    let cur = init;
+    while (cur && (ts.isAwaitExpression(cur) || ts.isParenthesizedExpression(cur) || ts.isAsExpression(cur) || ts.isNonNullExpression(cur))) cur = cur.expression;
+    if (cur && ts.isCallExpression(cur) && ts.isPropertyAccessExpression(cur.expression)) {
+      const m = cur.expression.name.text;
+      if (['json', 'formData', 'text'].includes(m)) {
+        const root = rootIdentifier(cur.expression.expression, ts);
+        return root ? taintedRoots.has(root) : false;
+      }
+    }
+    if (cur && ts.isPropertyAccessExpression(cur) && REQ_SOURCES.includes(cur.name.text)) {
+      const root = rootIdentifier(cur.expression, ts);
+      return root ? taintedRoots.has(root) : false;
+    }
+    const root = cur ? rootIdentifier(cur, ts) : undefined;
+    return root ? taintedRoots.has(root) : false;
+  };
   const aliasVisit = (n: any) => {
-    if (ts.isVariableDeclaration(n) && n.initializer) {
-      const root = rootIdentifier(n.initializer, ts);
-      const fromTainted = root ? taintedRoots.has(root) : false;
-      const isRequestRead = /\b(json|formData|text|body|query|params)\b/.test(n.initializer.getText?.() ?? '');
-      if (fromTainted || isRequestRead) {
-        if (ts.isIdentifier(n.name)) taintedRoots.add(n.name.text);
-        else if (ts.isObjectBindingPattern(n.name)) {
-          for (const el of n.name.elements) if (ts.isBindingElement(el) && ts.isIdentifier(el.name)) taintedRoots.add(el.name.text);
+    if (ts.isVariableDeclaration(n) && n.initializer && isRequestRead(n.initializer)) {
+      if (ts.isIdentifier(n.name)) taintedRoots.add(n.name.text);
+      else if (ts.isObjectBindingPattern(n.name)) {
+        for (const el of n.name.elements) {
+          if (!ts.isBindingElement(el) || !ts.isIdentifier(el.name)) continue;
+          taintedRoots.add(el.name.text);
+          const key = bindingKey(el, ts);
+          if (key) leafOfLocal.set(el.name.text, key);
         }
       }
     }
@@ -1051,7 +1094,7 @@ function linkFlows(
   };
   aliasVisit(bodyNode);
 
-  // Index sink call sites by line so a sink (which carries `line`) can be matched to its AST node.
+  // Index sink call sites by line so a sink (which carries `line`) can be matched back to its AST node.
   const callsByLine = new Map<number, any[]>();
   const callVisit = (n: any) => {
     if (ts.isCallExpression(n)) {
@@ -1068,28 +1111,81 @@ function linkFlows(
 
   const flows: Flow[] = [];
   for (const sink of sinks) {
-    const candidates = sink.line !== undefined ? (callsByLine.get(sink.line) ?? []) : [];
-    // Text of every argument at this sink's call site(s) — where a tainted value would appear.
-    let argText = '';
+    // A sink from an imported module has no call site in THIS function — never claim precise for it.
+    const candidates = sink.file === undefined && sink.line !== undefined ? (callsByLine.get(sink.line) ?? []) : [];
+    const reads = new Set<string>();
     for (const c of candidates) {
-      for (const a of c.arguments ?? []) {
-        try { argText += ' ' + a.getText(); } catch { /* ignore */ }
-      }
+      // Collect from the enclosing statement so a chained builder counts as one operation:
+      // `db.from(t).update({…}).eq('id', data.id)` — both `…` and `data.id` feed the same update.
+      for (const leaf of taintedReadLeaves(enclosingStatement(c, ts) ?? c, ts, taintedRoots, leafOfLocal)) reads.add(leaf);
     }
     for (const input of inputs) {
       const leaf = input.name.split('.').pop()!.replace(/\[\]$/, '');
-      // `data.title` / `{ title }` / `req.body.title` — the leaf name appearing in the sink's args,
-      // qualified by a tainted root when it's a member path.
-      const mentionsLeaf = argText.length > 0 && new RegExp(`\\b${escapeRe(leaf)}\\b`).test(argText);
-      const mentionsTaintedRoot = [...taintedRoots].some((r) => new RegExp(`\\b${escapeRe(r)}\\b`).test(argText));
-      if (mentionsLeaf && (mentionsTaintedRoot || taintedRoots.has(leaf))) {
-        flows.push({ input: input.name, sink, confidence: 'precise', line: sink.line });
-      } else {
-        flows.push({ input: input.name, sink, confidence: 'heuristic', line: sink.line });
-      }
+      const precise = reads.has(leaf);
+      flows.push({ input: input.name, sink, confidence: precise ? 'precise' : 'heuristic', line: sink.line });
     }
   }
   return flows;
+}
+
+/** Nearest enclosing statement, so a whole fluent chain is considered one operation. */
+function enclosingStatement(node: any, ts: TsModule): any {
+  let cur = node;
+  while (cur && !ts.isStatement(cur)) cur = cur.parent;
+  return cur;
+}
+
+/**
+ * Leaf names of values that are genuinely READ from a tainted source inside `node`. This is the
+ * evidence behind a `precise` flow, so it is deliberately strict about what counts as a read:
+ *   - `data.title` / `req.body.title`  → yields `title` (a member read off a tainted root)
+ *   - `{ title }` (shorthand)          → yields `title` (a read of the tainted local)
+ *   - `fn(title)`                      → yields `title`
+ * and explicitly NOT:
+ *   - `{ title: "system" }`            → `title` here is a property KEY, not a read of anything
+ *   - `x.title` where `x` is untainted  → not tainted data
+ * (Text matching previously conflated these, so a key plus an unrelated tainted mention elsewhere in
+ * the same argument list produced a false `precise`.)
+ */
+function taintedReadLeaves(node: any, ts: TsModule, taintedRoots: Set<string>, leafOfLocal: Map<string, string>): Set<string> {
+  const out = new Set<string>();
+  const visit = (n: any) => {
+    if (!n) return;
+    // A member read rooted in tainted data: take the accessed property as the leaf.
+    if (ts.isPropertyAccessExpression(n)) {
+      const root = rootIdentifier(n.expression, ts);
+      if (root && taintedRoots.has(root)) {
+        out.add(n.name.text);
+        return; // don't descend: the inner identifiers are the path, not separate reads
+      }
+    }
+    if (ts.isElementAccessExpression(n)) {
+      const root = rootIdentifier(n.expression, ts);
+      if (root && taintedRoots.has(root)) {
+        const arg = n.argumentExpression;
+        if (arg && ts.isStringLiteralLike(arg)) out.add(arg.text);
+        return;
+      }
+    }
+    if (ts.isIdentifier(n) && taintedRoots.has(n.text) && isValueRead(n, ts)) {
+      out.add(leafOfLocal.get(n.text) ?? n.text);
+    }
+    ts.forEachChild(n, visit);
+  };
+  visit(node);
+  return out;
+}
+
+/** Is this identifier occurrence a VALUE read (rather than a property key, a member name, a binding)? */
+function isValueRead(id: any, ts: TsModule): boolean {
+  const p = id.parent;
+  if (!p) return true;
+  if (ts.isPropertyAssignment(p) && p.name === id) return false; // { title: … } — a key
+  if (ts.isPropertyAccessExpression(p) && p.name === id) return false; // x.title — the member name
+  if (ts.isBindingElement(p) && p.propertyName === id) return false; // { title: t } — the source key
+  if ((ts.isVariableDeclaration(p) || ts.isParameter(p) || ts.isBindingElement(p)) && p.name === id) return false;
+  if (ts.isPropertySignature(p) || ts.isMethodSignature(p)) return false;
+  return true; // includes ShorthandPropertyAssignment `{ title }`, which IS a read
 }
 
 function escapeRe(s: string): string {
