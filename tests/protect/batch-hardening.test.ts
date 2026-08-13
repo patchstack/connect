@@ -86,7 +86,8 @@ describe('item 3 — multipart on the node adapter + comparator coercion', () =>
       `--${b}\r\nContent-Disposition: form-data; name="avatar"; filename="x.png"\r\n\r\nBINARY\r\n--${b}--\r\n`;
     const shaped: any = fromNodeRequest({ method: 'POST', url: '/x', headers: { 'content-type': `multipart/form-data; boundary=${b}` } } as any, body);
     expect(shaped.body.comment).toBe('<script>alert(1)</script>');
-    expect(shaped.files.avatar).toBe('x.png');
+    // File parts are captured as { filename, type, content } for content inspection.
+    expect(shaped.files.avatar).toMatchObject({ filename: 'x.png', content: 'BINARY' });
   });
 
   it('in_array / array_in_array coerce numeric rule values to match string request values', () => {

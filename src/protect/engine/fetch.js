@@ -185,7 +185,12 @@ export function parseMultipart(rawBody, boundary) {
     const content = part.slice(sep.index + sep[0].length).replace(/\r?\n$/, '');
     const filename = /filename="([^"]*)"/i.exec(disposition)?.[1];
     if (filename !== undefined) {
-      files[name] = name in files ? [].concat(files[name], filename) : filename;
+      // Capture the part's declared content-type and CONTENT (not just the filename), so rules can
+      // inspect an upload's bytes (files.<name>.content) and detect a declared-vs-actual type
+      // mismatch (files.<name>.mismatch). The content rides inside the already-capped rawBody.
+      const partType = /content-type:\s*([^\r\n;]+)/i.exec(rawHeaders)?.[1]?.trim() || '';
+      const file = { filename, type: partType, content };
+      files[name] = name in files ? [].concat(files[name], file) : file;
     } else {
       body[name] = name in body ? [].concat(body[name], content) : content;
     }
