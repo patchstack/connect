@@ -1107,18 +1107,36 @@ function directSinks(node: any, ts: TsModule, bindings: Bindings): Sink[] {
           }
         }
       }
-      // bare calls: fetch( / exec( / readFile( / eval( — unless the name is a plain local function.
+      // Bare calls: `fetch(…)` / `exec(…)` / `readFile(…)` / `eval(…)`. A dangerous NAME is not a
+      // dangerous API: `import { fetch } from './util'` and a callback parameter named `fetch` both look
+      // identical here, and treating either as an HTTP request produced a FALSE SSRF candidate. So the
+      // call must be justified — either it resolves to a module that plausibly provides that API, or it
+      // is a genuine unresolved global (only `fetch`/`eval`/`Function` ever are).
       if (ts.isIdentifier(callee) && !bindings.locals.has(callee.text)) {
         const name = callee.text;
-        const pkg = npmPackageOf(bindings.resolve(name));
-        // `fetch` is a global — never attribute it to an unrelated imported http client.
-        if (HTTP_CALLS.test(name)) push({ kind: 'http', provider: name, package: pkg ?? (name === 'fetch' ? undefined : infer('http')), op: 'request', ...spanOf(n) });
-        if (FS_CALLS.test(name)) push({ kind: 'fs', package: pkg, op: name, ...spanOf(n) });
-        if (EXEC_CALLS.test(name)) push({ kind: 'exec', package: pkg, op: name, ...spanOf(n) });
-        if (name === 'eval') push({ kind: 'eval', op: 'eval', ...spanOf(n) });
+        const spec = bindings.resolve(name);
+        const pkg = npmPackageOf(spec);
+        const shadowed = isShadowedByEnclosingBinding(n, name, ts);
+        // A relative import resolves to no package: it's app code, not the API it shares a name with.
+        const fromModule = spec !== undefined;
+        const trueGlobal = !fromModule && !shadowed;
+
+        if (HTTP_CALLS.test(name)) {
+          if (pkg && isHttpPackage(pkg)) push({ kind: 'http', provider: name, package: pkg, op: 'request', ...spanOf(n) });
+          else if (name === 'fetch' && trueGlobal) push({ kind: 'http', provider: 'fetch', op: 'request', ...spanOf(n) });
+        }
+        // `readFile`/`exec` are never globals: without a matching module binding this is app code.
+        if (FS_CALLS.test(name) && pkg && /^node:fs(\/promises)?$/.test(pkg)) {
+          push({ kind: 'fs', package: pkg, op: name, ...spanOf(n) });
+        }
+        if (EXEC_CALLS.test(name) && pkg === 'node:child_process') {
+          push({ kind: 'exec', package: pkg, op: name, ...spanOf(n) });
+        }
+        if (name === 'eval' && trueGlobal) push({ kind: 'eval', op: 'eval', ...spanOf(n) });
       }
     }
-    if (ts.isNewExpression(n) && ts.isIdentifier(n.expression) && n.expression.text === 'Function') {
+    if (ts.isNewExpression(n) && ts.isIdentifier(n.expression) && n.expression.text === 'Function'
+        && !bindings.locals.has('Function') && !isShadowedByEnclosingBinding(n, 'Function', ts)) {
       push({ kind: 'eval', op: 'new Function', ...spanOf(n) });
     }
     ts.forEachChild(n, visit);
@@ -1232,7 +1250,9 @@ function linkFlows(
   // is ambiguous — the end distinguishes them.
   const callBySpan = new Map<string, any>();
   const callVisit = (n: any) => {
-    if (ts.isCallExpression(n)) {
+    // NewExpression too, or `new Function(...)` — inventoried as an eval sink — could never be located,
+    // leaving its flows permanently heuristic and its argument-role entry unreachable.
+    if (ts.isCallExpression(n) || ts.isNewExpression(n)) {
       try { callBySpan.set(`${n.getStart()}:${n.getEnd()}`, n); } catch { /* synthetic */ }
     }
     ts.forEachChild(n, callVisit);
@@ -1259,7 +1279,7 @@ function linkFlows(
         const args = call.arguments ?? [];
         for (const a of args) for (const l of sinkArgumentLimitations(a, ts, rootPath)) sinkLimits.push(l);
         for (let i = 0; i < args.length; i++) {
-          const role = argumentRoleOf(sink.kind, method, i);
+          const role = argumentRoleOf(sink.kind, method, i, args.length);
           for (const path of taintedReadPaths(args[i], ts, rootPath)) {
             const set = reads.get(path) ?? new Set<ArgumentRole>();
             set.add(role);
@@ -1380,17 +1400,45 @@ const CANDIDATE_FAMILIES: Record<string, Partial<Record<ArgumentRole, CandidateF
   eval: { code: 'code-injection' },
 };
 
+/**
+ * Is `name` bound by an enclosing function parameter (or catch clause) at this call site? If so the call
+ * is NOT the global of that name — a callback parameter called `fetch` is the single most likely way to
+ * fake an SSRF candidate. Scoped to parameters/catch bindings: cheap, and it covers the shadowing shapes
+ * that occur in practice. Erring here loses a candidate rather than inventing one.
+ */
+function isShadowedByEnclosingBinding(node: any, name: string, ts: TsModule): boolean {
+  for (let cur = node?.parent; cur; cur = cur.parent) {
+    if (ts.isCatchClause(cur) && cur.variableDeclaration && ts.isIdentifier(cur.variableDeclaration.name)
+        && cur.variableDeclaration.name.text === name) return true;
+    const params = (cur as any).parameters;
+    if (!params) continue;
+    for (const p of params) {
+      if (!p?.name) continue;
+      if (ts.isIdentifier(p.name) && p.name.text === name) return true;
+      if (ts.isObjectBindingPattern(p.name) || ts.isArrayBindingPattern(p.name)) {
+        for (const el of p.name.elements) {
+          if (ts.isBindingElement(el) && ts.isIdentifier(el.name) && el.name.text === name) return true;
+        }
+      }
+    }
+  }
+  return false;
+}
+
 /** Method name a call invokes (`db.from(t).insert(x)` → "insert", `exec(x)` → "exec"). */
 function calleeName(call: any, ts: TsModule): string | undefined {
   const c = call?.expression;
   if (!c) return undefined;
   if (ts.isPropertyAccessExpression(c)) return c.name.text;
-  if (ts.isIdentifier(c)) return c.text;
+  if (ts.isIdentifier(c)) return c.text; // also covers `new Function(...)`
   return undefined;
 }
 
 /** Role of argument `index` for this call, given the sink kind it was recognized as. */
-function argumentRoleOf(sinkKind: string, method: string | undefined, index: number): ArgumentRole {
+function argumentRoleOf(sinkKind: string, method: string | undefined, index: number, total = 0): ArgumentRole {
+  // `new Function(a, b, "return a+b")` — every argument but the LAST declares a parameter name; only the
+  // last one is executable code. An index-based table cannot express that.
+  if (sinkKind === 'eval' && method === 'Function') return index === total - 1 ? 'code' : 'args';
   const table = method ? ARGUMENT_ROLES[sinkKind]?.[method] : undefined;
   return table?.[index] ?? 'unknown';
 }
@@ -1425,7 +1473,7 @@ function fluentChainCalls(call: any, ts: TsModule): any[] {
   const out: any[] = [];
   const collect = (n: any) => {
     if (!n) return;
-    if (ts.isCallExpression(n)) out.push(n);
+    if (ts.isCallExpression(n) || ts.isNewExpression(n)) out.push(n);
     if (ts.isCallExpression(n) || ts.isPropertyAccessExpression(n) || ts.isAwaitExpression(n) || ts.isParenthesizedExpression(n) || ts.isNonNullExpression(n)) {
       collect(n.expression);
     }
