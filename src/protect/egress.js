@@ -12,7 +12,7 @@
  *           lookup?: Function }} opts
  * @returns {Promise<() => void>} uninstall (restores every patched surface)
  */
-export async function installEgressGuard({ shouldBlock, onBlock, dnsScreen = true, lookup, allowHosts } = {}) {
+export async function installEgressGuard({ shouldBlock, onBlock, onSkip, dnsScreen = true, lookup, allowHosts } = {}) {
   const restores = [];
   if (typeof shouldBlock !== 'function') return () => {};
   const exempt = new Set((allowHosts ?? []).map((h) => String(h).toLowerCase()));
@@ -41,13 +41,23 @@ export async function installEgressGuard({ shouldBlock, onBlock, dnsScreen = tru
     }
   }
 
+  // A resolver failure means the destination was NOT screened by IP — the hostname check alone let it
+  // through. That's a real (if rare) coverage hole, so report it via onSkip instead of failing open
+  // silently. Still fail-open: a broken resolver must not take the app's outbound traffic down.
+  const skip = (reason, detail) => { try { onSkip?.({ phase: 'egress', reason, detail }); } catch { /* never affect traffic */ } };
+
   // True when a hostname resolves to a disallowed address. Fail-open: any resolver error → false.
   const resolvesToDisallowed = (url, host, method) =>
     new Promise((resolve) => {
-      if (!screen || !host || screen.isIP(host) !== 0 || screen.isExempt(host)) return resolve(false);
+      if (!screen) {
+        // No node:dns/net here (edge runtime) or screening disabled — hostname rules only.
+        if (host && dnsScreen) skip('resolver-unavailable', { host });
+        return resolve(false);
+      }
+      if (!host || screen.isIP(host) !== 0 || screen.isExempt(host)) return resolve(false);
       try {
         screen.lookup(host, { all: true }, (err, addresses) => {
-          if (err || !Array.isArray(addresses)) return resolve(false);
+          if (err || !Array.isArray(addresses)) { skip('resolver-failed', { host }); return resolve(false); }
           for (const a of addresses) {
             const ip = a && typeof a === 'object' ? a.address : a;
             if (ip && block(url, ip, method)) return resolve(true);
@@ -55,6 +65,7 @@ export async function installEgressGuard({ shouldBlock, onBlock, dnsScreen = tru
           resolve(false);
         });
       } catch {
+        skip('resolver-failed', { host });
         resolve(false);
       }
     });
