@@ -113,7 +113,11 @@ describe('agnostic input-flow extractor', () => {
 
     // TanStack server fn: zod input + direct + helper-indirected sinks, each tagged with the package.
     expect(byName.createTask).toMatchObject({ entryKind: 'server-fn', method: 'POST' });
-    expect(byName.createTask.inputs).toEqual([{ name: 'title', type: 'string', min: 1, max: 200 }]);
+    expect(byName.createTask.inputs).toEqual([
+      // Includes the runtime coordinate: a server fn's validated args are delivered as the JSON body,
+      // so the engine addresses them with `post.<path>`.
+      expect.objectContaining({ name: 'title', type: 'string', min: 1, max: 200, source: 'server-fn-data', runtimeParameter: 'post.title' }),
+    ]);
     expect(byName.createTask.sinks).toEqual(
       expect.arrayContaining([
         expect.objectContaining({ kind: 'db', provider: 'sql', package: '@supabase/supabase-js', table: 'tasks', op: 'insert' }),
