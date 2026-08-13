@@ -104,3 +104,36 @@ describe('telemetry API origin', () => {
     expect(warn).toHaveBeenCalled();
   });
 });
+
+describe('rule endpoint origin', () => {
+  // Rules are POLICY the engine executes on every request, so an attacker-controlled endpoint could
+  // remove protection wholesale (empty bundle) or serve an expensive ruleset — a stronger threat than
+  // the telemetry key. A non-default override must be https (localhost allowed for dev/tests).
+  it('refuses a plaintext remote rule endpoint and falls back to the default', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const seen: string[] = [];
+    vi.stubGlobal('fetch', vi.fn(async (u: any) => {
+      seen.push(String(u));
+      return new Response(JSON.stringify({ firewall: [], whitelists: [], whitelist_keys: {} }), { status: 200 });
+    }));
+    const { PulseRuleClient } = await import('../../src/protect/engine/pulse-client.js');
+    await new PulseRuleClient({ siteUuid: 's1', baseUrl: 'http://evil.example.com/pulse' }).getRules();
+    expect(seen[0]).toContain('https://api.patchstack.com'); // default, not the injected origin
+    expect(warn).toHaveBeenCalled();
+    vi.restoreAllMocks();
+  });
+
+  it('still accepts https and localhost rule endpoints', async () => {
+    const seen: string[] = [];
+    vi.stubGlobal('fetch', vi.fn(async (u: any) => {
+      seen.push(String(u));
+      return new Response(JSON.stringify({ firewall: [], whitelists: [], whitelist_keys: {} }), { status: 200 });
+    }));
+    const { PulseRuleClient } = await import('../../src/protect/engine/pulse-client.js');
+    await new PulseRuleClient({ siteUuid: 's1', baseUrl: 'https://x.test/monitor/pulse' }).getRules();
+    await new PulseRuleClient({ siteUuid: 's2', baseUrl: 'http://127.0.0.1:8080' }).getRules();
+    expect(seen[0]).toContain('https://x.test');
+    expect(seen[1]).toContain('http://127.0.0.1:8080');
+    vi.restoreAllMocks();
+  });
+});

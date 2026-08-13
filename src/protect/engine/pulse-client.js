@@ -1,3 +1,5 @@
+import { safeBaseUrl } from '../safe-origin.js';
+
 const DEFAULT_BASE_URL = 'https://api.patchstack.com/monitor/pulse';
 const DEFAULT_CACHE_TTL = 300_000;
 // Randomly shorten the effective TTL by up to this fraction so many long-lived clients don't all
@@ -24,7 +26,8 @@ export class PulseRuleClient {
 
   constructor({ siteUuid, baseUrl, cacheTtl, etag } = {}) {
     this.#siteUuid = siteUuid ?? process.env.PATCHSTACK_SITE_UUID;
-    this.#baseUrl = baseUrl ?? process.env.PATCHSTACK_PULSE_RULES_URL ?? DEFAULT_BASE_URL;
+    // Rules are executed policy — refuse a plaintext remote override (see safe-origin.js).
+    this.#baseUrl = safeBaseUrl(baseUrl ?? process.env.PATCHSTACK_PULSE_RULES_URL, DEFAULT_BASE_URL, 'rule endpoint');
     this.#cacheTtl = Number.isFinite(cacheTtl) && cacheTtl > 0 ? cacheTtl : DEFAULT_CACHE_TTL;
     this.#etag = etag ?? null;
     if (!this.#siteUuid) {

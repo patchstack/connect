@@ -1,3 +1,4 @@
+import { isSafeOrigin } from './safe-origin.js';
 // Fire-and-forget reporter: Connect runtime → existing connector POST /api/logs/log
 // (same path WordPress uses). Auth: WP-style api_key (`{secret}-{oauth.id}`) →
 // POST /oauth/token (client_credentials) → Bearer JWT on /api/logs/log.
@@ -27,17 +28,6 @@ export function parseApiKey(apiKey) {
  * Derive api.patchstack.com origin from a Pulse manifest/rules URL override.
  * @param {string | undefined} pulseOrManifestUrl
  */
-// https, or an explicit local origin for development. Anything else is refused as an api-key target.
-function isSafeApiOrigin(value) {
-  try {
-    const u = new URL(value);
-    if (u.protocol === 'https:') return true;
-    return u.protocol === 'http:' && (u.hostname === 'localhost' || u.hostname === '127.0.0.1' || u.hostname === '::1');
-  } catch {
-    return false;
-  }
-}
-
 export function resolveApiBase(pulseOrManifestUrl) {
   const fromEnv = typeof process !== 'undefined' ? process.env?.PATCHSTACK_API_BASE : undefined;
   if (typeof fromEnv === 'string' && fromEnv.length > 0) {
@@ -45,7 +35,7 @@ export function resolveApiBase(pulseOrManifestUrl) {
     // would be a credential-exfiltration path. Require HTTPS (localhost excepted for local testing);
     // anything else falls back to the default origin rather than shipping the key off-platform.
     const candidate = fromEnv.replace(/\/$/, '');
-    if (isSafeApiOrigin(candidate)) return candidate;
+    if (isSafeOrigin(candidate)) return candidate;
     // eslint-disable-next-line no-console
     console.warn(
       '[patchstack] ignoring PATCHSTACK_API_BASE: block-log reporting requires an https origin ' +
