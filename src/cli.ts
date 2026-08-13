@@ -36,6 +36,7 @@ import {
   renderGuideChecklist,
 } from './guide.js';
 import { runProtect, runVerify } from './protect/install/index.js';
+import { buildInputMap } from './map/index.js';
 import { setupProtection, wireBuildScripts } from './setup.js';
 import { detectStack, type StackDescriptor } from './stack.js';
 import { PatchstackError } from './types.js';
@@ -56,6 +57,10 @@ Usage:
                                                      manage the widget, install + verify runtime
                                                      protection, and wire dependency/build scans.
                                                      Never runs the project build
+  patchstack-connect map    [--dir <p>] [--out <f>]  Map the app's input surface (entry points →
+                                                     inputs → sinks) for reachability + precise
+                                                     rule pinning. Prints JSON (--out to write a
+                                                     file). Uses the app's own TypeScript
   patchstack-connect init   <site-uuid>              Optional: pre-seed .patchstackrc.json
                                                      with an existing site UUID
   patchstack-connect status [options]                Show current configuration and whether the
@@ -128,7 +133,7 @@ Examples:
   npx @patchstack/connect demo-guide node-serialize
 `;
 
-const VALUE_FLAGS = new Set(['site-uuid', 'endpoint', 'dir', 'url']);
+const VALUE_FLAGS = new Set(['site-uuid', 'endpoint', 'dir', 'url', 'out']);
 
 interface ParsedArgs {
   command: string | null;
@@ -190,6 +195,31 @@ async function runInit(args: ParsedArgs): Promise<number> {
   console.log(`Wrote ${target}`);
   console.log('');
   console.log('Next: run `npx @patchstack/connect scan` to send your first manifest.');
+  return 0;
+}
+
+async function runMap(args: ParsedArgs): Promise<number> {
+  const cwd = getStringFlag(args.flags, 'dir') ?? process.cwd();
+  const { map, error } = await buildInputMap(cwd);
+  if (!map) {
+    console.error(`patchstack: ${error}`);
+    return 1;
+  }
+  // Human summary → stderr; the JSON → stdout (so it can be piped / written).
+  const inputs = map.endpoints.reduce((n, e) => n + e.inputs.length, 0);
+  const sinks = map.endpoints.reduce((n, e) => n + e.sinks.length, 0);
+  console.error(
+    `patchstack: mapped ${map.endpoints.length} entry point(s), ${inputs} input(s), ${sinks} sink(s) ` +
+      `[${map.framework}]. This is the DETECTED surface — static analysis is best-effort.`,
+  );
+  const json = JSON.stringify(map, null, 2);
+  const out = getStringFlag(args.flags, 'out');
+  if (out) {
+    writeFileSync(out, json);
+    console.error(`patchstack: wrote ${out}`);
+  } else {
+    console.log(json);
+  }
   return 0;
 }
 
@@ -771,6 +801,8 @@ async function main(): Promise<number> {
       return runGuide(args);
     case 'setup':
       return runSetup(args);
+    case 'map':
+      return runMap(args);
     default:
       console.error(`Unknown command: ${args.command}\n`);
       console.error(HELP);

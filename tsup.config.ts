@@ -16,6 +16,10 @@ export default defineConfig([
     sourcemap: true,
     target: 'node18',
     banner: { js: '#!/usr/bin/env node' },
+    // `map` parses the target app's source with a TypeScript compiler resolved at RUNTIME (the app's
+    // own `typescript`, or the environment's). Never bundle the compiler into the CLI — it's a heavy
+    // devDependency and the runtime guard never needs it.
+    external: ['typescript'],
   },
   {
     // Vendored runtime protection engine (node-waf + createProtection + Supabase guard),
