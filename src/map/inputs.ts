@@ -122,14 +122,20 @@ function requestMemberAccesses(
   const out = new Map<string, InputSource>();
   const p0 = params?.[0];
   const reqName = p0 && ts.isIdentifier(p0.name) ? p0.name.text : undefined;
-  // Identifiers that ARE a request-input object (destructured `({ body })` param, `await req.json()`).
-  const sourceNames = new Set<string>();
+  // Identifiers that ARE a request-input object (destructured `({ body })` param, `await req.json()`),
+  // mapped to the NAMESPACE each one came from. It has to be a map, not a set of names: with
+  // `({ query: q })` the local is `q`, and matching the local against the literal 'query'/'params'
+  // discards the namespace — which silently mis-addresses the input (`post.doc` for a query-string
+  // field, and worse, a coordinate for a route param, which the resolver cannot address at all).
+  const sourceNames = new Map<string, InputSource>();
   const payloadNames = new Set<string>();
   if (opts.payloadParam && p0 && ts.isIdentifier(p0.name)) payloadNames.add(p0.name.text);
   if (p0 && !reqName && ts.isObjectBindingPattern(p0.name)) {
     for (const el of p0.name.elements) {
       const key = bindingKey(el, ts);
-      if (key && REQ_SOURCES.includes(key) && ts.isIdentifier(el.name)) sourceNames.add(el.name.text);
+      if (key && REQ_SOURCES.includes(key) && ts.isIdentifier(el.name)) {
+        sourceNames.set(el.name.text, namespaceSource(key));
+      }
     }
   }
   const unwrap = (e: any): any => {
@@ -156,7 +162,7 @@ function requestMemberAccesses(
     if (ts.isVariableDeclaration(n) && n.initializer) {
       const init = unwrap(n.initializer);
       // const b = await request.json() → b is a request-input object from here on.
-      if (ts.isIdentifier(n.name) && isBodyReadCall(n.initializer)) sourceNames.add(n.name.text);
+      if (ts.isIdentifier(n.name) && isBodyReadCall(n.initializer)) sourceNames.set(n.name.text, bodyReadSource(n.initializer));
       // const { a, b } = <source> | await request.json()
       if (ts.isObjectBindingPattern(n.name) && (isReqSourceExpr(init) || isBodyReadCall(n.initializer))) {
         const src = isBodyReadCall(n.initializer) ? bodyReadSource(n.initializer) : sourceOfExpr(init);
@@ -180,11 +186,18 @@ function requestMemberAccesses(
       if (e.name.text === 'params') return 'route-param';
       if (e.name.text === 'body') return 'body';
     }
+    // The recorded namespace, so an ALIAS resolves correctly (`({ query: q }) => q.id` → query).
     if (ts.isIdentifier(e)) {
-      const key = [...sourceNames].includes(e.text) ? e.text : undefined;
-      if (key === 'query') return 'query';
-      if (key === 'params') return 'route-param';
+      const recorded = sourceNames.get(e.text);
+      if (recorded) return recorded;
     }
+    return 'body';
+  }
+
+  /** Map a request namespace key to the input source it implies. */
+  function namespaceSource(key: string): InputSource {
+    if (key === 'query') return 'query';
+    if (key === 'params') return 'route-param';
     return 'body';
   }
   function bodyReadSource(init: any): InputSource {
