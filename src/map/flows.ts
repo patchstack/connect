@@ -155,6 +155,9 @@ function linkFlows(
       if (!input.runtimeParameter) reasons.push(input.runtimeParameterReason ?? 'input has no runtime parameter');
       if (sink.file !== undefined) reasons.push('sink is in an imported module: no local call-site evidence');
       if (sink.start === undefined) reasons.push('sink call could not be located in the source');
+      if (sink.attribution === undefined) {
+        reasons.push(`sink receiver could not be traced to a dependency (${sink.kind}.${sink.op ?? '?'} on an unresolved receiver): a rule here would be a guess`);
+      }
       if (precise && argumentRole === 'unknown') reasons.push(`sink argument role is not modelled for ${sink.kind}.${sink.op ?? '?'}`);
       // A dynamic key or a spread in this sink's arguments means no coordinate can name the field that
       // actually reaches it — report the specific cause rather than a generic "heuristic".

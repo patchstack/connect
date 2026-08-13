@@ -163,6 +163,15 @@ function requestMemberAccesses(
       const init = unwrap(n.initializer);
       // const b = await request.json() → b is a request-input object from here on.
       if (ts.isIdentifier(n.name) && isBodyReadCall(n.initializer)) sourceNames.set(n.name.text, bodyReadSource(n.initializer));
+      // const { query: q } = req → the SAME namespace capture as a destructured handler param, just one
+      // statement later. Without this the fields read off `q` are invisible: no coordinate is emitted
+      // (so nothing is mis-addressed) but the surface goes unreported, which reads as "nothing here".
+      if (ts.isObjectBindingPattern(n.name) && ts.isIdentifier(init) && reqName && init.text === reqName) {
+        for (const el of n.name.elements) {
+          const key = bindingKey(el, ts);
+          if (key && REQ_SOURCES.includes(key) && ts.isIdentifier(el.name)) sourceNames.set(el.name.text, namespaceSource(key));
+        }
+      }
       // const { a, b } = <source> | await request.json()
       if (ts.isObjectBindingPattern(n.name) && (isReqSourceExpr(init) || isBodyReadCall(n.initializer))) {
         const src = isBodyReadCall(n.initializer) ? bodyReadSource(n.initializer) : sourceOfExpr(init);

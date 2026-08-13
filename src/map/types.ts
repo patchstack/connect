@@ -68,6 +68,15 @@ export interface Sink {
    */
   file?: string;
   /**
+   * How `package` was established — the difference between evidence and a guess. `import`: the
+   * receiver resolves to that dependency through this file's imports. `global`: a genuine runtime
+   * global (`fetch`, `eval`, `Function`). `inferred`: the receiver could not be resolved, so the
+   * package was taken from another import in the file. **Absent**: the receiver could not be
+   * attributed at all (e.g. `ctx.db.query(x)`) — the sink is reported for human review but must
+   * never drive an auto-generated rule, since any object can own a method by that name.
+   */
+  attribution?: 'import' | 'global' | 'inferred';
+  /**
    * Character span of the sink's operation call in `file` (or the endpoint's file). This is the sink's
    * IDENTITY: flow analysis binds evidence to this exact call, never to a line or an enclosing
    * statement (two sinks can share a line, and a statement can hold unrelated expressions).

@@ -50,8 +50,8 @@ export async function extractInputMap(cwd: string, ts: TsModule, options: Extrac
       const sf = ts.createSourceFile(file, text, ts.ScriptTarget.Latest, true, guessScriptKind(ts, file));
       const bindings = buildModuleBindings(sf, ts);
       const localSinks = collectLocalSinks(sf, ts, bindings);
-      for (const ep of extractFromFile(sf, ts, localSinks, bindings, { file, graph })) {
-        const relFile = relative(cwd, file);
+      const relFile = relative(cwd, file);
+      for (const ep of extractFromFile(sf, ts, localSinks, bindings, { file, owner: relFile, graph })) {
         // A FILE-BASED route handler carries its URL path in its location, not in the code, so derive
         // it here — without this a rule can only be param-pinned, never route-scoped (`when.path`).
         if (ep.route === undefined && ep.entryKind === 'edge-function') {

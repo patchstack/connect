@@ -22,10 +22,24 @@ const HTTP_MEMBER_METHODS = new Set(['get', 'post', 'put', 'patch', 'delete', 'h
 const DB_PACKAGES = ['@supabase/supabase-js', '@prisma/client', 'drizzle-orm', 'knex', 'kysely', 'pg', 'mysql2', 'mysql', 'sequelize', 'typeorm', 'mongoose', 'better-sqlite3'];
 const HTTP_PACKAGES = ['axios', 'got', 'node-fetch', 'undici', 'superagent', 'ky'];
 const isHttpPackage = (pkg: string) => HTTP_PACKAGES.includes(pkg) || pkg === 'node:http' || pkg === 'node:https';
+// A filesystem/process API is not only a node: builtin — these wrappers expose the same sinks, and
+// requiring a match keeps recognition tied to a RESOLVED import rather than to a method name.
+const FS_PACKAGES = ['fs-extra', 'graceful-fs', 'memfs'];
+const isFsPackage = (pkg: string) => /^node:fs(\/promises)?$/.test(pkg) || FS_PACKAGES.includes(pkg);
+const EXEC_PACKAGES = ['execa', 'cross-spawn', 'shelljs', 'zx'];
+const isExecPackage = (pkg: string) => pkg === 'node:child_process' || EXEC_PACKAGES.includes(pkg);
 
 export interface ModuleGraph {
   /** Sinks of `exportName` in the module `specifier` resolves to, relative to `fromFile`. */
   importedSinks(fromFile: string, specifier: string, exportName: string): Sink[];
+}
+
+export interface SinkContext {
+  /** Absolute path of the file being analyzed (for resolving relative imports). */
+  file: string;
+  /** The same file, REPO-RELATIVE — part of a sink's identity, so it must not vary by machine. */
+  owner: string;
+  graph: ModuleGraph;
 }
 
 // --- sinks (agnostic) -------------------------------------------------------
@@ -46,7 +60,7 @@ export function collectLocalSinks(sf: any, ts: TsModule, bindings: Bindings): Ma
   return map;
 }
 
-export function sinksFrom(arrowOrNode: any, ts: TsModule, localSinks: Map<string, Sink[]>, bindings: Bindings, ctx?: { file: string; graph: ModuleGraph }): Sink[] {
+export function sinksFrom(arrowOrNode: any, ts: TsModule, localSinks: Map<string, Sink[]>, bindings: Bindings, ctx?: SinkContext): Sink[] {
   if (!arrowOrNode) return [];
   const body = arrowOrNode.isSyntheticBody ? arrowOrNode.body
     : isFnLike(arrowOrNode, ts) ? arrowOrNode.body : arrowOrNode;
@@ -63,7 +77,32 @@ export function sinksFrom(arrowOrNode: any, ts: TsModule, localSinks: Map<string
       }
     }
   }
-  return dedupeSinks(sinks);
+  // `import * as helper from './util'; helper.save(x)` — the namespace twin of the imported-helper hop
+  // above. `directSinks` correctly refuses to call that receiver a dependency sink, so without this the
+  // helper's REAL sinks would vanish with it and the endpoint would look clean. Sinks found this way
+  // carry the helper's file, which already bars them from auto-generating a rule (no local call site).
+  if (ctx) {
+    for (const [root, member] of namespaceMemberCalls(body, ts)) {
+      const spec = bindings.resolve(root);
+      if (spec && spec.startsWith('.')) {
+        for (const s of ctx.graph.importedSinks(ctx.file, spec, member)) sinks.push(s);
+      }
+    }
+  }
+  return dedupeSinks(sinks, ctx?.owner ?? '');
+}
+
+/** `ns.member(...)` calls in a subtree, as [namespace root, member] pairs. */
+function namespaceMemberCalls(node: any, ts: TsModule): Array<[string, string]> {
+  const out: Array<[string, string]> = [];
+  const visit = (n: any) => {
+    if (ts.isCallExpression(n) && ts.isPropertyAccessExpression(n.expression) && ts.isIdentifier(n.expression.expression)) {
+      out.push([n.expression.expression.text, n.expression.name.text]);
+    }
+    ts.forEachChild(n, visit);
+  };
+  visit(node);
+  return out;
 }
 
 // Provider-agnostic sink recognizers over a subtree. Each sink is tagged with the npm package behind
@@ -72,13 +111,24 @@ export function sinksFrom(arrowOrNode: any, ts: TsModule, localSinks: Map<string
 // object/class/function is NOT a dependency sink and is dropped.
 function directSinks(node: any, ts: TsModule, bindings: Bindings): Sink[] {
   const sinks: Sink[] = [];
-  const baseOf = (base: any): { pkg?: string; local?: boolean; root?: string } => {
+  // `spec` is the raw module specifier the receiver came from, which `pkg` cannot express: a RELATIVE
+  // specifier yields no package, and that is a positive fact (the receiver is app code) rather than the
+  // absence of one (an untraceable receiver such as a handler param). The member-call recognizers below
+  // need that distinction — `import * as helper from './util'; helper.exec(x)` is not child_process.
+  const baseOf = (base: any): { pkg?: string; local?: boolean; root?: string; spec?: string; relative?: boolean } => {
     const root = base ? rootIdentifier(base, ts) : undefined;
     if (!root) return {};
-    const pkg = npmPackageOf(bindings.resolve(root));
-    if (pkg) return { pkg, root };
-    return { local: bindings.locals.has(root), root };
+    const spec = bindings.resolve(root);
+    const relative = spec !== undefined && (spec.startsWith('.') || spec.startsWith('/'));
+    const pkg = npmPackageOf(spec);
+    if (pkg) return { pkg, root, spec };
+    return { local: bindings.locals.has(root), root, spec, relative };
   };
+  // Whether `package` is evidence or a guess. A resolved import binding is evidence ('import'); a
+  // package inferred from the file's OTHER imports is a guess that is usually right ('inferred'); an
+  // untraceable receiver is neither (undefined) and must not drive an auto-generated rule.
+  const attributionOf = (b: { pkg?: string }, pkg: string | undefined): Sink['attribution'] =>
+    b.pkg ? 'import' : pkg ? 'inferred' : undefined;
   const infer = (kind: 'db' | 'http'): string | undefined => {
     const table = kind === 'db' ? DB_PACKAGES : HTTP_PACKAGES;
     for (const p of table) if (bindings.imports.has(p)) return p;
@@ -100,35 +150,48 @@ function directSinks(node: any, ts: TsModule, bindings: Bindings): Sink[] {
         const t = n.arguments[0];
         const table = t && ts.isStringLiteralLike(t) ? t.text : undefined;
         const parent = n.parent;
-        if (!b.local && parent && ts.isPropertyAccessExpression(parent) && DB_OPS.has(parent.name.text)) {
-          push({ kind: 'db', provider: 'sql', package: b.pkg ?? infer('db'), table, op: parent.name.text, ...spanOf(opCallOf(parent, ts)) });
+        if (!b.local && !b.relative && parent && ts.isPropertyAccessExpression(parent) && DB_OPS.has(parent.name.text)) {
+          const pkg = b.pkg ?? infer('db');
+          push({ kind: 'db', provider: 'sql', package: pkg, table, op: parent.name.text, attribution: attributionOf(b, pkg), ...spanOf(opCallOf(parent, ts)) });
         }
       }
       if (ts.isPropertyAccessExpression(callee)) {
         const method = callee.name.text;
         const b = baseOf(callee.expression);
-        if (!b.local) {
+        // `!b.relative` is the member-call twin of the bare-call justification below: a receiver that
+        // resolves to a RELATIVE module is app code, whatever its methods are named. Without it,
+        // `import * as helper from './util'; helper.exec(req.body.cmd)` was read as child_process and
+        // produced a precise, auto-generatable command-injection candidate for harmless local code.
+        // Such a receiver is not dropped outright — `sinksFrom` follows it into its module instead.
+        if (!b.local && !b.relative) {
           // db: prisma-style `prisma.<model>.<op>()` — the op names are generic (`delete`, `update`, …),
           // so require a real prisma signal: a resolved binding, the import, or a prisma-named receiver.
           if (PRISMA_OPS.has(method) && ts.isPropertyAccessExpression(callee.expression)) {
             const prismaLikely = b.pkg === '@prisma/client' ||
               (!b.pkg && (bindings.imports.has('@prisma/client') || /prisma/i.test(b.root ?? '')));
-            if (prismaLikely) push({ kind: 'db', provider: 'prisma', package: '@prisma/client', table: callee.expression.name.text, op: method, ...spanOf(n) });
+            if (prismaLikely) push({ kind: 'db', provider: 'prisma', package: '@prisma/client', table: callee.expression.name.text, op: method, attribution: b.pkg ? 'import' : 'inferred', ...spanOf(n) });
           }
-          // db: raw `.query(` / `.execute(`
+          // db: raw `.query(` / `.execute(`. Any object can have a `.query` method, so an untraceable
+          // receiver stays in the inventory with NO attribution — visible to a human, never auto-ruled.
           if (method === 'query' || method === 'execute') {
-            push({ kind: 'db', provider: 'sql', package: b.pkg ?? infer('db'), op: method, ...spanOf(n) });
+            const pkg = b.pkg ?? infer('db');
+            push({ kind: 'db', provider: 'sql', package: pkg, op: method, attribution: attributionOf(b, pkg), ...spanOf(n) });
           }
-          // fs / exec via a namespace: `fs.writeFile(` / `child_process.exec(`
-          if (FS_CALLS.test(method)) push({ kind: 'fs', package: b.pkg, op: method, ...spanOf(n) });
-          if (EXEC_CALLS.test(method)) push({ kind: 'exec', package: b.pkg, op: method, ...spanOf(n) });
+          // fs / exec via a namespace: `fs.writeFile(` / `child_process.exec(`. The receiver must
+          // actually resolve to a filesystem/process package — the method name alone proves nothing.
+          if (FS_CALLS.test(method) && b.pkg && isFsPackage(b.pkg)) {
+            push({ kind: 'fs', package: b.pkg, op: method, attribution: 'import', ...spanOf(n) });
+          }
+          if (EXEC_CALLS.test(method) && b.pkg && isExecPackage(b.pkg)) {
+            push({ kind: 'exec', package: b.pkg, op: method, attribution: 'import', ...spanOf(n) });
+          }
           // http: any client whose binding resolves to a known http package (`axios.get`, `ky.post`,
           // `http.request`), else the classic identifiers by name as a heuristic.
           if (HTTP_MEMBER_METHODS.has(method)) {
             if (b.pkg && isHttpPackage(b.pkg)) {
-              push({ kind: 'http', provider: b.root, package: b.pkg, op: method, ...spanOf(n) });
-            } else if (!b.pkg && ts.isIdentifier(callee.expression) && /^(axios|http|https|got|ky)$/.test(callee.expression.text)) {
-              push({ kind: 'http', provider: callee.expression.text, package: infer('http'), op: method, ...spanOf(n) });
+              push({ kind: 'http', provider: b.root, package: b.pkg, op: method, attribution: 'import', ...spanOf(n) });
+            } else if (!b.spec && ts.isIdentifier(callee.expression) && /^(axios|http|https|got|ky)$/.test(callee.expression.text)) {
+              push({ kind: 'http', provider: callee.expression.text, package: infer('http'), op: method, attribution: 'inferred', ...spanOf(n) });
             }
           }
         }
@@ -148,22 +211,22 @@ function directSinks(node: any, ts: TsModule, bindings: Bindings): Sink[] {
         const trueGlobal = !fromModule && !shadowed;
 
         if (HTTP_CALLS.test(name)) {
-          if (pkg && isHttpPackage(pkg)) push({ kind: 'http', provider: name, package: pkg, op: 'request', ...spanOf(n) });
-          else if (name === 'fetch' && trueGlobal) push({ kind: 'http', provider: 'fetch', op: 'request', ...spanOf(n) });
+          if (pkg && isHttpPackage(pkg)) push({ kind: 'http', provider: name, package: pkg, op: 'request', attribution: 'import', ...spanOf(n) });
+          else if (name === 'fetch' && trueGlobal) push({ kind: 'http', provider: 'fetch', op: 'request', attribution: 'global', ...spanOf(n) });
         }
         // `readFile`/`exec` are never globals: without a matching module binding this is app code.
-        if (FS_CALLS.test(name) && pkg && /^node:fs(\/promises)?$/.test(pkg)) {
-          push({ kind: 'fs', package: pkg, op: name, ...spanOf(n) });
+        if (FS_CALLS.test(name) && pkg && isFsPackage(pkg)) {
+          push({ kind: 'fs', package: pkg, op: name, attribution: 'import', ...spanOf(n) });
         }
-        if (EXEC_CALLS.test(name) && pkg === 'node:child_process') {
-          push({ kind: 'exec', package: pkg, op: name, ...spanOf(n) });
+        if (EXEC_CALLS.test(name) && pkg && isExecPackage(pkg)) {
+          push({ kind: 'exec', package: pkg, op: name, attribution: 'import', ...spanOf(n) });
         }
-        if (name === 'eval' && trueGlobal) push({ kind: 'eval', op: 'eval', ...spanOf(n) });
+        if (name === 'eval' && trueGlobal) push({ kind: 'eval', op: 'eval', attribution: 'global', ...spanOf(n) });
       }
     }
     if (ts.isNewExpression(n) && ts.isIdentifier(n.expression) && n.expression.text === 'Function'
         && !bindings.locals.has('Function') && !isShadowedByEnclosingBinding(n, 'Function', ts)) {
-      push({ kind: 'eval', op: 'new Function', ...spanOf(n) });
+      push({ kind: 'eval', op: 'new Function', attribution: 'global', ...spanOf(n) });
     }
     ts.forEachChild(n, visit);
   };
@@ -228,20 +291,23 @@ export function argumentRoleOf(sinkKind: string, method: string | undefined, ind
 }
 
 // Deterministic identity for a sink, so `Flow.sink` (an embedded copy) can be correlated back to the
-// inventory entry without deep-equality.
-function sinkId(s: Sink): string {
+// inventory entry without deep-equality. `owner` is the endpoint's own repo-relative file, which the
+// span alone does NOT imply: duplicated route boilerplate across two files puts the same call at the
+// same offsets, and hashing only the span made those sinks share an id while the schema promises
+// map-wide identity. A repo-relative path (never absolute) keeps the id stable across machines.
+function sinkId(s: Sink, owner: string): string {
   return createHash('sha256')
-    .update([s.kind, s.provider, s.package, s.table, s.op, s.file, s.start, s.end].join('|'))
+    .update([s.kind, s.provider, s.package, s.table, s.op, s.file ?? owner, s.start, s.end].join('|'))
     .digest('hex')
     .slice(0, 12);
 }
 
-function dedupeSinks(sinks: Sink[]): Sink[] {
+function dedupeSinks(sinks: Sink[], owner: string): Sink[] {
   const seen = new Set<string>();
   const out: Sink[] = [];
   for (const s of sinks) {
     const key = `${s.kind}:${s.provider}:${s.package}:${s.table}:${s.op}:${s.line}:${s.start}`;
-    if (!seen.has(key)) { seen.add(key); out.push({ ...s, id: sinkId(s) }); }
+    if (!seen.has(key)) { seen.add(key); out.push({ ...s, id: sinkId(s, owner) }); }
   }
   return out;
 }
