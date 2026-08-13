@@ -186,6 +186,14 @@ function npmPackageOf(spec: string | undefined): string | undefined {
   return spec.startsWith('@') ? parts.slice(0, 2).join('/') : parts[0];
 }
 
+// Source span of a node: the auditable coordinate, AND the sink's identity for flow analysis (a line is
+// not an identity — two sinks can share one, and an enclosing statement can hold unrelated expressions).
+function spanOf(node: any): { line?: number; start?: number; end?: number } {
+  const out: { line?: number; start?: number; end?: number } = { line: lineOf(node) };
+  try { out.start = node.getStart(); out.end = node.getEnd(); } catch { /* synthetic node */ }
+  return out;
+}
+
 // 1-based line of a node in its source file — the auditable coordinate rules and humans point at.
 function lineOf(node: any): number | undefined {
   const sf = typeof node?.getSourceFile === 'function' ? node.getSourceFile() : undefined;
@@ -963,7 +971,7 @@ function directSinks(node: any, ts: TsModule, bindings: Bindings): Sink[] {
         const table = t && ts.isStringLiteralLike(t) ? t.text : undefined;
         const parent = n.parent;
         if (!b.local && parent && ts.isPropertyAccessExpression(parent) && DB_OPS.has(parent.name.text)) {
-          push({ kind: 'db', provider: 'sql', package: b.pkg ?? infer('db'), table, op: parent.name.text, line: lineOf(parent) });
+          push({ kind: 'db', provider: 'sql', package: b.pkg ?? infer('db'), table, op: parent.name.text, ...spanOf(opCallOf(parent, ts)) });
         }
       }
       if (ts.isPropertyAccessExpression(callee)) {
@@ -975,22 +983,22 @@ function directSinks(node: any, ts: TsModule, bindings: Bindings): Sink[] {
           if (PRISMA_OPS.has(method) && ts.isPropertyAccessExpression(callee.expression)) {
             const prismaLikely = b.pkg === '@prisma/client' ||
               (!b.pkg && (bindings.imports.has('@prisma/client') || /prisma/i.test(b.root ?? '')));
-            if (prismaLikely) push({ kind: 'db', provider: 'prisma', package: '@prisma/client', table: callee.expression.name.text, op: method, line: lineOf(n) });
+            if (prismaLikely) push({ kind: 'db', provider: 'prisma', package: '@prisma/client', table: callee.expression.name.text, op: method, ...spanOf(n) });
           }
           // db: raw `.query(` / `.execute(`
           if (method === 'query' || method === 'execute') {
-            push({ kind: 'db', provider: 'sql', package: b.pkg ?? infer('db'), op: method, line: lineOf(n) });
+            push({ kind: 'db', provider: 'sql', package: b.pkg ?? infer('db'), op: method, ...spanOf(n) });
           }
           // fs / exec via a namespace: `fs.writeFile(` / `child_process.exec(`
-          if (FS_CALLS.test(method)) push({ kind: 'fs', package: b.pkg, op: method, line: lineOf(n) });
-          if (EXEC_CALLS.test(method)) push({ kind: 'exec', package: b.pkg, op: method, line: lineOf(n) });
+          if (FS_CALLS.test(method)) push({ kind: 'fs', package: b.pkg, op: method, ...spanOf(n) });
+          if (EXEC_CALLS.test(method)) push({ kind: 'exec', package: b.pkg, op: method, ...spanOf(n) });
           // http: any client whose binding resolves to a known http package (`axios.get`, `ky.post`,
           // `http.request`), else the classic identifiers by name as a heuristic.
           if (HTTP_MEMBER_METHODS.has(method)) {
             if (b.pkg && isHttpPackage(b.pkg)) {
-              push({ kind: 'http', provider: b.root, package: b.pkg, op: method, line: lineOf(n) });
+              push({ kind: 'http', provider: b.root, package: b.pkg, op: method, ...spanOf(n) });
             } else if (!b.pkg && ts.isIdentifier(callee.expression) && /^(axios|http|https|got|ky)$/.test(callee.expression.text)) {
-              push({ kind: 'http', provider: callee.expression.text, package: infer('http'), op: method, line: lineOf(n) });
+              push({ kind: 'http', provider: callee.expression.text, package: infer('http'), op: method, ...spanOf(n) });
             }
           }
         }
@@ -1000,14 +1008,14 @@ function directSinks(node: any, ts: TsModule, bindings: Bindings): Sink[] {
         const name = callee.text;
         const pkg = npmPackageOf(bindings.resolve(name));
         // `fetch` is a global — never attribute it to an unrelated imported http client.
-        if (HTTP_CALLS.test(name)) push({ kind: 'http', provider: name, package: pkg ?? (name === 'fetch' ? undefined : infer('http')), op: 'request', line: lineOf(n) });
-        if (FS_CALLS.test(name)) push({ kind: 'fs', package: pkg, op: name, line: lineOf(n) });
-        if (EXEC_CALLS.test(name)) push({ kind: 'exec', package: pkg, op: name, line: lineOf(n) });
-        if (name === 'eval') push({ kind: 'eval', op: 'eval', line: lineOf(n) });
+        if (HTTP_CALLS.test(name)) push({ kind: 'http', provider: name, package: pkg ?? (name === 'fetch' ? undefined : infer('http')), op: 'request', ...spanOf(n) });
+        if (FS_CALLS.test(name)) push({ kind: 'fs', package: pkg, op: name, ...spanOf(n) });
+        if (EXEC_CALLS.test(name)) push({ kind: 'exec', package: pkg, op: name, ...spanOf(n) });
+        if (name === 'eval') push({ kind: 'eval', op: 'eval', ...spanOf(n) });
       }
     }
     if (ts.isNewExpression(n) && ts.isIdentifier(n.expression) && n.expression.text === 'Function') {
-      push({ kind: 'eval', op: 'new Function', line: lineOf(n) });
+      push({ kind: 'eval', op: 'new Function', ...spanOf(n) });
     }
     ts.forEachChild(n, visit);
   };
@@ -1044,49 +1052,64 @@ function linkFlows(
 ): Flow[] {
   if (!bodyNode || sinks.length === 0 || inputs.length === 0) return [];
 
-  // Roots that carry untrusted data: the handler's params, and locals aliased from them / from a
-  // request-body read. `leafOfLocal` maps a DESTRUCTURED local back to the field it came from, so
-  // `const { title: t } = await req.json()` links a read of `t` to the input `title`.
-  const taintedRoots = new Set<string>();
-  const leafOfLocal = new Map<string, string>();
+  // Tainted roots and the PATH each one stands for. `req` → '' (its own members are the path);
+  // `const { billing } = await req.json()` → billing stands for 'billing', so a read of
+  // `billing.email` normalizes to 'billing.email' and can be compared with the input path.
+  // Bindings whose members ARE the input paths, so they contribute no segment: a request source
+  // (`{ body }`), and the validated-payload conventions of the server-fn frameworks (`{ data }` for
+  // TanStack). Getting this wrong shifts every path by one segment and silently kills all matching.
+  const CONTAINER_KEYS = new Set([...REQ_SOURCES, 'data', 'input', 'payload']);
+  const rootPath = new Map<string, string>();
+  const addRoot = (name: string, path: string) => { if (!rootPath.has(name)) rootPath.set(name, path); };
   for (const p of params ?? []) {
     if (!p?.name) continue;
-    if (ts.isIdentifier(p.name)) taintedRoots.add(p.name.text);
+    if (ts.isIdentifier(p.name)) addRoot(p.name.text, '');
     else if (ts.isObjectBindingPattern(p.name)) {
       for (const el of p.name.elements) {
         if (!ts.isBindingElement(el) || !ts.isIdentifier(el.name)) continue;
-        taintedRoots.add(el.name.text);
         const key = bindingKey(el, ts);
-        if (key) leafOfLocal.set(el.name.text, key);
+        // A destructured request source (`{ body }`) is a container: its members ARE the paths.
+        addRoot(el.name.text, key && CONTAINER_KEYS.has(key) ? '' : key ?? el.name.text);
       }
     }
   }
-  const isRequestRead = (init: any): boolean => {
+
+  // Does this initializer carry request data? Includes `Schema.parse(await req.json())`: VALIDATION IS
+  // NOT SANITIZATION — a validated value is still attacker-controlled, and treating it as clean would
+  // silently drop every flow in a validated handler (the common TanStack/Next shape).
+  const requestReadPath = (init: any): string | undefined => {
     let cur = init;
     while (cur && (ts.isAwaitExpression(cur) || ts.isParenthesizedExpression(cur) || ts.isAsExpression(cur) || ts.isNonNullExpression(cur))) cur = cur.expression;
-    if (cur && ts.isCallExpression(cur) && ts.isPropertyAccessExpression(cur.expression)) {
+    if (!cur) return undefined;
+    if (ts.isCallExpression(cur) && ts.isPropertyAccessExpression(cur.expression)) {
       const m = cur.expression.name.text;
       if (['json', 'formData', 'text'].includes(m)) {
         const root = rootIdentifier(cur.expression.expression, ts);
-        return root ? taintedRoots.has(root) : false;
+        return root && rootPath.has(root) ? '' : undefined;
+      }
+      if (['parse', 'safeParse', 'validate', 'cast'].includes(m)) {
+        for (const a of cur.arguments) {
+          const inner = requestReadPath(a);
+          if (inner !== undefined) return inner; // taint survives validation
+        }
+        return undefined;
       }
     }
-    if (cur && ts.isPropertyAccessExpression(cur) && REQ_SOURCES.includes(cur.name.text)) {
-      const root = rootIdentifier(cur.expression, ts);
-      return root ? taintedRoots.has(root) : false;
-    }
-    const root = cur ? rootIdentifier(cur, ts) : undefined;
-    return root ? taintedRoots.has(root) : false;
+    const p = pathFromTainted(cur, ts, rootPath);
+    return p;
   };
+
   const aliasVisit = (n: any) => {
-    if (ts.isVariableDeclaration(n) && n.initializer && isRequestRead(n.initializer)) {
-      if (ts.isIdentifier(n.name)) taintedRoots.add(n.name.text);
-      else if (ts.isObjectBindingPattern(n.name)) {
-        for (const el of n.name.elements) {
-          if (!ts.isBindingElement(el) || !ts.isIdentifier(el.name)) continue;
-          taintedRoots.add(el.name.text);
-          const key = bindingKey(el, ts);
-          if (key) leafOfLocal.set(el.name.text, key);
+    if (ts.isVariableDeclaration(n) && n.initializer) {
+      const base = requestReadPath(n.initializer);
+      if (base !== undefined) {
+        if (ts.isIdentifier(n.name)) addRoot(n.name.text, base);
+        else if (ts.isObjectBindingPattern(n.name)) {
+          for (const el of n.name.elements) {
+            if (!ts.isBindingElement(el) || !ts.isIdentifier(el.name)) continue;
+            const key = bindingKey(el, ts);
+            addRoot(el.name.text, join2(base, key ?? el.name.text));
+          }
         }
       }
     }
@@ -1094,16 +1117,13 @@ function linkFlows(
   };
   aliasVisit(bodyNode);
 
-  // Index sink call sites by line so a sink (which carries `line`) can be matched back to its AST node.
-  const callsByLine = new Map<number, any[]>();
+  // Index every call by its start offset so a sink's span identifies its EXACT call node.
+  // Keyed by start+end: in `db.from(t).insert(x)` BOTH calls start at `db`, so the start offset alone
+  // is ambiguous — the end distinguishes them.
+  const callBySpan = new Map<string, any>();
   const callVisit = (n: any) => {
     if (ts.isCallExpression(n)) {
-      const ln = lineOf(n);
-      if (ln !== undefined) {
-        const list = callsByLine.get(ln) ?? [];
-        list.push(n);
-        callsByLine.set(ln, list);
-      }
+      try { callBySpan.set(`${n.getStart()}:${n.getEnd()}`, n); } catch { /* synthetic */ }
     }
     ts.forEachChild(n, callVisit);
   };
@@ -1111,69 +1131,119 @@ function linkFlows(
 
   const flows: Flow[] = [];
   for (const sink of sinks) {
-    // A sink from an imported module has no call site in THIS function — never claim precise for it.
-    const candidates = sink.file === undefined && sink.line !== undefined ? (callsByLine.get(sink.line) ?? []) : [];
+    // A sink from an imported module has no call site here — never claim precise for it.
+    const node = sink.file === undefined && sink.start !== undefined && sink.end !== undefined
+      ? callBySpan.get(`${sink.start}:${sink.end}`)
+      : undefined;
     const reads = new Set<string>();
-    for (const c of candidates) {
-      // Collect from the enclosing statement so a chained builder counts as one operation:
-      // `db.from(t).update({…}).eq('id', data.id)` — both `…` and `data.id` feed the same update.
-      for (const leaf of taintedReadLeaves(enclosingStatement(c, ts) ?? c, ts, taintedRoots, leafOfLocal)) reads.add(leaf);
+    if (node) {
+      // ONLY this sink call's own arguments, plus other calls in the SAME fluent chain
+      // (`.update({…}).eq('id', data.id)` is one operation). Never the enclosing statement: a sibling
+      // expression such as `Promise.all([audit(data.title), db.insert({…})])` must not lend evidence.
+      for (const call of fluentChainCalls(node, ts)) {
+        for (const arg of call.arguments ?? []) {
+          for (const path of taintedReadPaths(arg, ts, rootPath)) reads.add(path);
+        }
+      }
     }
     for (const input of inputs) {
-      const leaf = input.name.split('.').pop()!.replace(/\[\]$/, '');
-      const precise = reads.has(leaf);
+      const inputPath = normalizePath(input.name);
+      // Exact path, or the input is an ANCESTOR of what was read (`billing` covers `billing.email`).
+      // A mere shared leaf name is NOT evidence: `billing.email` and `shipping.email` are different.
+      const precise = [...reads].some((r) => r === inputPath || r.startsWith(inputPath + '.'));
       flows.push({ input: input.name, sink, confidence: precise ? 'precise' : 'heuristic', line: sink.line });
     }
   }
   return flows;
 }
 
-/** Nearest enclosing statement, so a whole fluent chain is considered one operation. */
-function enclosingStatement(node: any, ts: TsModule): any {
-  let cur = node;
-  while (cur && !ts.isStatement(cur)) cur = cur.parent;
-  return cur;
+/** Join two path segments, tolerating an empty base. */
+function join2(base: string, seg: string): string {
+  return base ? `${base}.${seg}` : seg;
 }
 
 /**
- * Leaf names of values that are genuinely READ from a tainted source inside `node`. This is the
- * evidence behind a `precise` flow, so it is deliberately strict about what counts as a read:
- *   - `data.title` / `req.body.title`  → yields `title` (a member read off a tainted root)
- *   - `{ title }` (shorthand)          → yields `title` (a read of the tainted local)
- *   - `fn(title)`                      → yields `title`
- * and explicitly NOT:
- *   - `{ title: "system" }`            → `title` here is a property KEY, not a read of anything
- *   - `x.title` where `x` is untainted  → not tainted data
- * (Text matching previously conflated these, so a key plus an unrelated tainted mention elsewhere in
- * the same argument list produced a false `precise`.)
+ * Canonical form for comparing paths: index/array tokens are erased and empty segments collapsed, so
+ * `tags[0].label`, `tags[].label` and `tags.label` all compare equal, while DISTINCT paths such as
+ * `billing.email` and `shipping.email` stay distinct (the previous leaf-only comparison conflated them).
  */
-function taintedReadLeaves(node: any, ts: TsModule, taintedRoots: Set<string>, leafOfLocal: Map<string, string>): Set<string> {
+function normalizePath(path: string): string {
+  return path
+    .replace(/\[\d*\]/g, '')
+    .split('.')
+    .filter(Boolean)
+    .join('.');
+}
+
+/**
+ * Calls belonging to the same fluent chain as `call` — the same logical operation. Walking UP stops at
+ * anything that is not a continuation of the chain (an array literal, an argument position), which is
+ * what keeps a sibling expression in the same statement from lending evidence.
+ */
+function fluentChainCalls(call: any, ts: TsModule): any[] {
+  let root = call;
+  for (;;) {
+    const p = root.parent;
+    if (p && ts.isPropertyAccessExpression(p) && p.expression === root) { root = p; continue; }
+    if (p && ts.isCallExpression(p) && p.expression === root) { root = p; continue; }
+    if (p && (ts.isAwaitExpression(p) || ts.isParenthesizedExpression(p) || ts.isNonNullExpression(p)) && p.expression === root) { root = p; continue; }
+    break;
+  }
+  const out: any[] = [];
+  const collect = (n: any) => {
+    if (!n) return;
+    if (ts.isCallExpression(n)) out.push(n);
+    if (ts.isCallExpression(n) || ts.isPropertyAccessExpression(n) || ts.isAwaitExpression(n) || ts.isParenthesizedExpression(n) || ts.isNonNullExpression(n)) {
+      collect(n.expression);
+    }
+  };
+  collect(root);
+  return out;
+}
+
+/**
+ * The canonical PATHS of values genuinely read from a tainted source inside `node` — the evidence behind
+ * a `precise` flow. Full paths, not leaf names: `data.shipping.email` yields `shipping.email`, so it can
+ * never be mistaken for the distinct input `billing.email`. Array indices normalize to `[]`.
+ * Property KEYS, member names and binding names are not reads.
+ */
+function taintedReadPaths(node: any, ts: TsModule, rootPath: Map<string, string>): Set<string> {
   const out = new Set<string>();
   const visit = (n: any) => {
     if (!n) return;
-    // A member read rooted in tainted data: take the accessed property as the leaf.
-    if (ts.isPropertyAccessExpression(n)) {
-      const root = rootIdentifier(n.expression, ts);
-      if (root && taintedRoots.has(root)) {
-        out.add(n.name.text);
-        return; // don't descend: the inner identifiers are the path, not separate reads
-      }
+    if (ts.isPropertyAccessExpression(n) || ts.isElementAccessExpression(n)) {
+      const path = pathFromTainted(n, ts, rootPath);
+      if (path !== undefined) { out.add(path); return; } // the inner nodes are the path, not separate reads
     }
-    if (ts.isElementAccessExpression(n)) {
-      const root = rootIdentifier(n.expression, ts);
-      if (root && taintedRoots.has(root)) {
-        const arg = n.argumentExpression;
-        if (arg && ts.isStringLiteralLike(arg)) out.add(arg.text);
-        return;
-      }
-    }
-    if (ts.isIdentifier(n) && taintedRoots.has(n.text) && isValueRead(n, ts)) {
-      out.add(leafOfLocal.get(n.text) ?? n.text);
+    if (ts.isIdentifier(n) && rootPath.has(n.text) && isValueRead(n, ts)) {
+      const p = rootPath.get(n.text)!;
+      if (p) out.add(normalizePath(p));
     }
     ts.forEachChild(n, visit);
   };
   visit(node);
   return out;
+}
+
+/** Canonical path of a member/element access rooted in a tainted binding, or undefined if not tainted. */
+function pathFromTainted(node: any, ts: TsModule, rootPath: Map<string, string>): string | undefined {
+  const segs: string[] = [];
+  let cur = node;
+  for (;;) {
+    if (ts.isPropertyAccessExpression(cur)) { segs.unshift(cur.name.text); cur = cur.expression; continue; }
+    if (ts.isElementAccessExpression(cur)) {
+      const a = cur.argumentExpression;
+      segs.unshift(a && ts.isStringLiteralLike(a) ? a.text : '[]');
+      cur = cur.expression;
+      continue;
+    }
+    if (ts.isNonNullExpression(cur) || ts.isParenthesizedExpression(cur) || ts.isAwaitExpression(cur)) { cur = cur.expression; continue; }
+    break;
+  }
+  if (!cur || !ts.isIdentifier(cur)) return undefined;
+  const base = rootPath.get(cur.text);
+  if (base === undefined) return undefined;
+  return normalizePath([base, ...segs].filter(Boolean).join('.'));
 }
 
 /** Is this identifier occurrence a VALUE read (rather than a property key, a member name, a binding)? */
@@ -1188,8 +1258,15 @@ function isValueRead(id: any, ts: TsModule): boolean {
   return true; // includes ShorthandPropertyAssignment `{ title }`, which IS a read
 }
 
+
 function escapeRe(s: string): string {
   return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+// From a `.insert` property access, the CallExpression that invokes it — the sink's operation call.
+function opCallOf(propAccess: any, ts: TsModule): any {
+  const p = propAccess?.parent;
+  return p && ts.isCallExpression(p) && p.expression === propAccess ? p : propAccess;
 }
 
 function localCalls(node: any, ts: TsModule): string[] {

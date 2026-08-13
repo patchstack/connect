@@ -46,6 +46,13 @@ export interface Sink {
    * — i.e. it does not live in the endpoint's file. Without this, `line` would point at the wrong file.
    */
   file?: string;
+  /**
+   * Character span of the sink's operation call in `file` (or the endpoint's file). This is the sink's
+   * IDENTITY: flow analysis binds evidence to this exact call, never to a line or an enclosing
+   * statement (two sinks can share a line, and a statement can hold unrelated expressions).
+   */
+  start?: number;
+  end?: number;
 }
 
 export interface Endpoint {
