@@ -2,7 +2,7 @@ import { readFileSync, readdirSync, realpathSync, statSync } from 'node:fs';
 import { builtinModules } from 'node:module';
 import { createHash } from 'node:crypto';
 import { join, relative, isAbsolute, dirname, resolve as resolvePath } from 'node:path';
-import type { SiteInputMap, Endpoint, InputField, InputSource, Sink, Flow, ArgumentRole, CandidateFamily, TsModule } from './types.js';
+import type { SiteInputMap, Endpoint, InputField, InputSource, Sink, Flow, Limitation, ArgumentRole, CandidateFamily, TsModule } from './types.js';
 
 // Framework-AGNOSTIC input-flow extractor. It doesn't gate on a specific stack — it walks any JS/TS
 // source and applies recognizer tables for (1) entry points, (2) inputs, (3) sinks, so it generalizes
@@ -218,11 +218,12 @@ export async function extractInputMap(cwd: string, ts: TsModule, options: Extrac
   const stats: WalkStats = { discovered: 0 };
   const files = collectSources(cwd, boundary, { followOutside: options.followSymlinks }, [], new Set(), stats);
   let parsed = 0;
+  let preFiltered = 0;
 
   for (const file of files) {
     try {
       const text = readFileSync(file, 'utf8');
-      if (!hasEntrySignal(text)) continue;
+      if (!hasEntrySignal(text)) { preFiltered++; continue; }
       parsed++;
       // Coordinates are only valid for the exact file content they were derived from.
       const fingerprint = createHash('sha256').update(text).digest('hex').slice(0, 16);
@@ -282,6 +283,7 @@ export async function extractInputMap(cwd: string, ts: TsModule, options: Extrac
       adapter: 'agnostic-v1',
       filesDiscovered: stats.discovered,
       filesParsed: parsed,
+      filesPreFiltered: preFiltered,
       filesSkipped: failed.length,
       roots: ['.'],
       notes,
@@ -514,7 +516,7 @@ function extractFromFile(sf: any, ts: TsModule, localSinks: Map<string, Sink[]>,
               ...spanOf(decl),
               inputs,
               sinks,
-              flows: linkFlows(handlerBody, handlerFn?.parameters, inputs, sinks, ts),
+              ...linkedFlows(handlerBody, handlerFn?.parameters, inputs, sinks, ts),
             };
             // Honesty marker: a validator EXISTS but couldn't be read — inputs are unknown, not "none".
             if (validatorCall && inputs.length === 0) ep.inputsResolved = false;
@@ -675,7 +677,7 @@ function handlerEntry(
     end: extra.end,
     inputs,
     sinks,
-    flows: linkFlows(body, params, inputs, sinks, ts),
+    ...linkedFlows(body, params, inputs, sinks, ts),
   };
 }
 
@@ -1145,14 +1147,20 @@ function isUninvokedFunctionDeclaration(n: any, ts: TsModule): boolean {
 // Deliberately conservative: a match yields `precise`; no match yields `heuristic` (the input and sink
 // merely co-occur). It never claims a flow it didn't see, which is the point — a consumer pinning a
 // rule to a parameter should trust `precise` and treat `heuristic` as "may reach".
+// Spread onto an endpoint: `flows`, plus `limitations` only when there are any (keeps the common case clean).
+function linkedFlows(body: any, params: any, inputs: InputField[], sinks: Sink[], ts: TsModule): { flows: Flow[]; limitations?: Limitation[] } {
+  const { flows, limitations } = linkFlows(body, params, inputs, sinks, ts);
+  return limitations.length > 0 ? { flows, limitations } : { flows };
+}
+
 function linkFlows(
   bodyNode: any,
   params: any,
   inputs: InputField[],
   sinks: Sink[],
   ts: TsModule,
-): Flow[] {
-  if (!bodyNode || sinks.length === 0 || inputs.length === 0) return [];
+): { flows: Flow[]; limitations: Limitation[] } {
+  if (!bodyNode || sinks.length === 0 || inputs.length === 0) return { flows: [], limitations: [] };
 
   // Tainted roots and the PATH each one stands for. `req` → '' (its own members are the path);
   // `const { billing } = await req.json()` → billing stands for 'billing', so a read of
@@ -1232,6 +1240,7 @@ function linkFlows(
   callVisit(bodyNode);
 
   const flows: Flow[] = [];
+  const allLimits: Limitation[] = [];
   for (const sink of sinks) {
     // A sink from an imported module has no call site here — never claim precise for it.
     const node = sink.file === undefined && sink.start !== undefined && sink.end !== undefined
@@ -1240,6 +1249,7 @@ function linkFlows(
     // path → the argument ROLES it was read into. Per-argument attribution is what makes a candidate
     // possible: the same value in `url` vs `body`, or `path` vs `content`, implies different mitigations.
     const reads = new Map<string, Set<ArgumentRole>>();
+    const sinkLimits: Limitation[] = [];
     if (node) {
       // ONLY this sink call's own arguments, plus other calls in the SAME fluent chain
       // (`.update({…}).eq('id', data.id)` is one operation). Never the enclosing statement: a sibling
@@ -1247,6 +1257,7 @@ function linkFlows(
       for (const call of fluentChainCalls(node, ts)) {
         const method = calleeName(call, ts);
         const args = call.arguments ?? [];
+        for (const a of args) for (const l of sinkArgumentLimitations(a, ts, rootPath)) sinkLimits.push(l);
         for (let i = 0; i < args.length; i++) {
           const role = argumentRoleOf(sink.kind, method, i);
           for (const path of taintedReadPaths(args[i], ts, rootPath)) {
@@ -1279,6 +1290,13 @@ function linkFlows(
       if (sink.file !== undefined) reasons.push('sink is in an imported module: no local call-site evidence');
       if (sink.start === undefined) reasons.push('sink call could not be located in the source');
       if (precise && argumentRole === 'unknown') reasons.push(`sink argument role is not modelled for ${sink.kind}.${sink.op ?? '?'}`);
+      // A dynamic key or a spread in this sink's arguments means no coordinate can name the field that
+      // actually reaches it — report the specific cause rather than a generic "heuristic".
+      for (const l of sinkLimits) {
+        reasons.push(l.kind === 'dynamic-key'
+          ? `dynamic computed key reaches this sink (${l.detail}): the field cannot be named by a parameter`
+          : `spread reaches this sink (${l.detail}): the specific field is not identifiable`);
+      }
       if (precise && argumentRole && argumentRole !== 'unknown' && !family) {
         // e.g. a request value in a parameterized db `values` object: real reachability, but not a
         // pattern a generic blocking rule can express.
@@ -1295,8 +1313,19 @@ function linkFlows(
         ruleGeneratableReasons: reasons,
       });
     }
+    for (const l of sinkLimits) allLimits.push(l);
   }
-  return flows;
+  return { flows, limitations: dedupeLimitations(allLimits) };
+}
+
+function dedupeLimitations(list: Limitation[]): Limitation[] {
+  const seen = new Set<string>();
+  return list.filter((l) => {
+    const k = `${l.kind}:${l.detail}:${l.line}`;
+    if (seen.has(k)) return false;
+    seen.add(k);
+    return true;
+  });
 }
 
 /** Join two path segments, tolerating an empty base. */
@@ -1429,6 +1458,46 @@ function taintedReadPaths(node: any, ts: TsModule, rootPath: Map<string, string>
   return out;
 }
 
+/**
+ * Shapes that defeat parameter pinning, found in a sink call's arguments. Reporting these is the point:
+ * "we could not model this" is far more useful to an operator than an endpoint that silently shows no
+ * flow, and it is the queue for improving the extractor.
+ *   - `insert({ v: body[field] })` → the field is chosen at runtime; no coordinate can name it.
+ *   - `insert({ ...body })`        → the whole payload reaches the sink; which field is unidentifiable.
+ */
+function sinkArgumentLimitations(node: any, ts: TsModule, rootPath: Map<string, string>): Limitation[] {
+  const out: Limitation[] = [];
+  const seen = new Set<string>();
+  const add = (kind: Limitation['kind'], detail: string, n: any) => {
+    const key = `${kind}:${detail}`;
+    if (seen.has(key)) return;
+    seen.add(key);
+    out.push({ kind, detail, line: lineOf(n) });
+  };
+  const text = (n: any) => {
+    try { return String(n.getText()).replace(/\s+/g, ' ').slice(0, 120); } catch { return '<expression>'; }
+  };
+  const visit = (n: any) => {
+    if (!n) return;
+    // A computed member read off tainted data with a non-literal index.
+    if (ts.isElementAccessExpression(n)) {
+      const root = rootIdentifier(n.expression, ts);
+      const arg = n.argumentExpression;
+      if (root && rootPath.has(root) && arg && !ts.isStringLiteralLike(arg) && !ts.isNumericLiteral(arg)) {
+        add('dynamic-key', text(n), n);
+      }
+    }
+    // A spread of tainted data into the sink's argument.
+    if ((ts.isSpreadAssignment?.(n) || ts.isSpreadElement(n)) && n.expression) {
+      const root = rootIdentifier(n.expression, ts);
+      if (root && rootPath.has(root)) add('spread-into-sink', text(n.parent ?? n), n);
+    }
+    ts.forEachChild(n, visit);
+  };
+  visit(node);
+  return out;
+}
+
 /** Canonical path of a member/element access rooted in a tainted binding, or undefined if not tainted. */
 function pathFromTainted(node: any, ts: TsModule, rootPath: Map<string, string>): string | undefined {
   const segs: string[] = [];
@@ -1489,12 +1558,21 @@ function localCalls(node: any, ts: TsModule): string[] {
   return names;
 }
 
+// Deterministic identity for a sink, so `Flow.sink` (an embedded copy) can be correlated back to the
+// inventory entry without deep-equality.
+function sinkId(s: Sink): string {
+  return createHash('sha256')
+    .update([s.kind, s.provider, s.package, s.table, s.op, s.file, s.start, s.end].join('|'))
+    .digest('hex')
+    .slice(0, 12);
+}
+
 function dedupeSinks(sinks: Sink[]): Sink[] {
   const seen = new Set<string>();
   const out: Sink[] = [];
   for (const s of sinks) {
-    const key = `${s.kind}:${s.provider}:${s.package}:${s.table}:${s.op}:${s.line}`;
-    if (!seen.has(key)) { seen.add(key); out.push(s); }
+    const key = `${s.kind}:${s.provider}:${s.package}:${s.table}:${s.op}:${s.line}:${s.start}`;
+    if (!seen.has(key)) { seen.add(key); out.push({ ...s, id: sinkId(s) }); }
   }
   return out;
 }
