@@ -44,6 +44,7 @@
   ],
   "scripts": {
     "build": "tsup && node scripts/build-edge.mjs && node scripts/copy-protect-templates.mjs",
+    "verify:edge": "node scripts/verify-edge-platform.mjs",
     "dev": "tsup --watch",
     "test": "vitest run",
     "test:manifest": "bun scripts/test-manifest.ts",
