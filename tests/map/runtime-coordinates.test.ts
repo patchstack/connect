@@ -2,8 +2,8 @@ import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { buildInputMap } from '../src/map/index.js';
-import { runtimeCoordinate } from '../src/map/extract.js';
+import { buildInputMap } from '../../src/map/index.js';
+import { runtimeCoordinate } from '../../src/map/extract.js';
 
 // Track 1 — TRUSTED COORDINATES. A server compiling a map input into a rule must be handed the exact
 // engine parameter, or nothing at all: a coordinate the resolver cannot resolve compiles into a rule

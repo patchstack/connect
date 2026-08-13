@@ -658,7 +658,12 @@ function handlerEntry(
   const entryKind = kindLabel === 'route-registration' || kindLabel === 'server-action' || kindLabel === 'edge-function'
     ? kindLabel
     : 'route-handler';
-  const inputs = inputsFromHandler(params, body, ts, bindings);
+  // A server action receives its payload as the first argument; a route handler receives a Request.
+  const payloadStyle = kindLabel === 'server-action';
+  const inputs = inputsFromHandler(params, body, ts, bindings, {
+    payloadParam: payloadStyle,
+    validatorSource: payloadStyle ? 'server-fn-data' : 'json-body',
+  });
   const sinks = sinksFrom({ body, parameters: params, isSyntheticBody: true }, ts, localSinks, bindings, ctx);
   return {
     name,
@@ -713,11 +718,18 @@ function inputsFromValidator(validatorCall: any, ts: TsModule, bindings: Binding
 
 // From a raw handler: validator schema fields it parses, plus the request fields it actually reads
 // (member accesses, destructuring, `await request.json()` bodies).
-function inputsFromHandler(params: any, body: any, ts: TsModule, bindings: Bindings): InputField[] {
-  // A validated schema inside a handler describes the request body.
-  const fields = withCoordinates(zodObjectFields(body, ts, bindings), 'json-body');
+function inputsFromHandler(
+  params: any,
+  body: any,
+  ts: TsModule,
+  bindings: Bindings,
+  opts: { payloadParam?: boolean; validatorSource?: InputSource } = {},
+): InputField[] {
+  // A validated schema inside a handler describes the request body — except for a payload-style entry
+  // (a server action), where the schema describes the action's own argument.
+  const fields = withCoordinates(zodObjectFields(body, ts, bindings), opts.validatorSource ?? 'json-body');
   const names = new Set(fields.map((f) => f.name));
-  for (const { name, source } of requestMemberAccesses(params, body, ts)) {
+  for (const { name, source } of requestMemberAccesses(params, body, ts, opts)) {
     if (!names.has(name)) {
       names.add(name);
       fields.push({ name, source, ...runtimeCoordinate(source, name) });
@@ -801,13 +813,20 @@ const REQ_SOURCES = ['body', 'query', 'params'];
 //   const { x } = req.body                          (destructuring)
 //   ({ body }) => body.x / const { x } = body       (destructured handler param)
 //   const b = await request.json(); b.x / const { x } = await request.json()   (fetch-style Request)
-function requestMemberAccesses(params: any, body: any, ts: TsModule): Array<{ name: string; source: InputSource }> {
+function requestMemberAccesses(
+  params: any,
+  body: any,
+  ts: TsModule,
+  opts: { payloadParam?: boolean } = {},
+): Array<{ name: string; source: InputSource }> {
   if (!body) return [];
   const out = new Map<string, InputSource>();
   const p0 = params?.[0];
   const reqName = p0 && ts.isIdentifier(p0.name) ? p0.name.text : undefined;
   // Identifiers that ARE a request-input object (destructured `({ body })` param, `await req.json()`).
   const sourceNames = new Set<string>();
+  const payloadNames = new Set<string>();
+  if (opts.payloadParam && p0 && ts.isIdentifier(p0.name)) payloadNames.add(p0.name.text);
   if (p0 && !reqName && ts.isObjectBindingPattern(p0.name)) {
     for (const el of p0.name.elements) {
       const key = bindingKey(el, ts);
@@ -819,7 +838,9 @@ function requestMemberAccesses(params: any, body: any, ts: TsModule): Array<{ na
     while (cur && (ts.isAwaitExpression(cur) || ts.isAsExpression(cur) || ts.isParenthesizedExpression(cur) || ts.isNonNullExpression(cur))) cur = cur.expression;
     return cur;
   };
+  const isPayloadExpr = (e: any): boolean => ts.isIdentifier(e) && payloadNames.has(e.text);
   const isReqSourceExpr = (e: any): boolean =>
+    isPayloadExpr(e) ||
     (ts.isPropertyAccessExpression(e) && ts.isIdentifier(e.expression) && e.expression.text === reqName && REQ_SOURCES.includes(e.name.text)) ||
     (ts.isIdentifier(e) && sourceNames.has(e.text));
   const isBodyReadCall = (e: any): boolean => {
@@ -854,6 +875,7 @@ function requestMemberAccesses(params: any, body: any, ts: TsModule): Array<{ na
   // `req.body.x` / `req.query.x` / `req.params.x` — the namespace decides the runtime coordinate, and
   // route params notably have NONE, so this distinction is load-bearing rather than cosmetic.
   function sourceOfExpr(e: any): InputSource {
+    if (isPayloadExpr(e)) return 'server-fn-data';
     if (ts.isPropertyAccessExpression(e)) {
       if (e.name.text === 'query') return 'query';
       if (e.name.text === 'params') return 'route-param';

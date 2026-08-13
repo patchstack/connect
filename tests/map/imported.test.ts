@@ -2,7 +2,7 @@ import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { buildInputMap } from '../src/map/index.js';
+import { buildInputMap } from '../../src/map/index.js';
 
 // AI-generated apps put data access in a sibling module, so a handler's real sink is one file away.
 // Following one cross-file hop is what keeps those endpoints from looking sink-free.

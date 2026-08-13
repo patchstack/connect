@@ -2,7 +2,7 @@ import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { buildInputMap } from '../src/map/index.js';
+import { buildInputMap } from '../../src/map/index.js';
 
 // `precise` is the signal a rule-generator would pin a parameter on, so it must identify the RIGHT
 // parameter. Two ways it previously could not:

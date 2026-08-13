@@ -2,7 +2,7 @@ import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { buildInputMap } from '../src/map/index.js';
+import { buildInputMap } from '../../src/map/index.js';
 
 // Platform function runtimes (Supabase Edge Functions, Base44 backend functions, Deno workers) have no
 // route file and no framework router: one handler per module, invoked by the function's NAME. Without a

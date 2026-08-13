@@ -2,7 +2,7 @@ import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { buildInputMap } from '../src/map/index.js';
+import { buildInputMap } from '../../src/map/index.js';
 
 // Track 2, step 1 — adapter summaries. Which ARGUMENT received the value decides which mitigation class
 // applies, so a candidate compiler cannot exist without it: `url` vs `body`, `path` vs `content`,
