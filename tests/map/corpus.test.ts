@@ -125,6 +125,34 @@ const ADVERSARIAL: Case[] = [
     expectRefused: [['id', /more than one request namespace/]],
   },
   {
+    name: 'adversarial: a validator field and the sink read address different namespaces',
+    kind: 'adversarial',
+    pkg: { dependencies: { express: '4', zod: '3' } },
+    files: {
+      // The schema describes the BODY; the sink consumes the QUERY. Both are called `id`, and grouping
+      // inputs by name made the schema's `post.id` the only surviving entry — so the candidate pinned a
+      // parameter the payload never travels in. Namespace comparison (not source labels) is what catches
+      // this: a schema field and an Express `req.body` read are both `post.*` and must NOT be a conflict.
+      'src/server.ts': `
+        import express from "express";
+        import fs from "node:fs";
+        import { z } from "zod";
+        const app = express();
+        app.post("/mismatch", (req, res) => {
+          z.object({ id: z.string() }).parse(req.body);
+          res.end(fs.readFileSync(req.query.id));
+        });
+        app.post("/agree", (req, res) => {
+          z.object({ doc: z.string() }).parse(req.body);
+          res.end(fs.readFileSync(req.body.doc));
+        });
+      `,
+    },
+    // `/agree` must still compile: the point is to refuse conflicts, not to refuse validated bodies.
+    expectCandidates: ['path-traversal @ post.doc'],
+    expectRefused: [['id', /more than one request namespace/]],
+  },
+  {
     name: 'adversarial: sibling expressions must not contaminate each other',
     kind: 'adversarial',
     pkg: { dependencies: { express: '4' } },
@@ -350,9 +378,9 @@ describe('golden corpus', () => {
   it('keeps a standing adversarial category (lookalikes are how every false candidate got in)', () => {
     // Guards against the category quietly emptying out; the classes listed are the ones that have
     // actually produced false candidates, so losing one should fail loudly.
-    expect(ADVERSARIAL.length).toBeGreaterThanOrEqual(5);
+    expect(ADVERSARIAL.length).toBeGreaterThanOrEqual(6);
     const names = ADVERSARIAL.map((c) => c.name).join(' | ');
-    for (const cls of ['collide with dangerous API names', 'untraceable receivers', 'shadowing dangerous globals', 'two request namespaces', 'sibling expressions']) {
+    for (const cls of ['collide with dangerous API names', 'untraceable receivers', 'shadowing dangerous globals', 'two request namespaces', 'sibling expressions', 'different namespaces']) {
       expect(names, `missing adversarial class: ${cls}`).toContain(cls);
     }
   });
