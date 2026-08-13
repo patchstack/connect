@@ -3,6 +3,7 @@ import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { buildInputMap } from '../../src/map/index.js';
+import { isProvenFlow } from '../../src/map/coordinates.js';
 import { runtimeCoordinate } from '../../src/map/extract.js';
 
 // Track 1 — TRUSTED COORDINATES. A server compiling a map input into a rule must be handed the exact
@@ -60,13 +61,14 @@ describe('coordinates on a real project', () => {
 
   it('labels each input with its source and the coordinate that addresses it', async () => {
     const { map } = await buildInputMap(dir);
-    expect(map!.version).toBe(2);
+    expect(map!.version).toBe(3); // identity + confidence taxonomy are a breaking schema change
     const ep = map!.endpoints[0]!;
     const by = Object.fromEntries(ep.inputs.map((i) => [i.name, i]));
-    expect(by.path).toMatchObject({ source: 'body', runtimeParameter: 'post.path' });
-    expect(by.data).toMatchObject({ source: 'query', runtimeParameter: 'get.data' });
+    expect(by.path).toMatchObject({ source: 'body', runtimeParameter: 'post.path', id: 'post:path' });
+    expect(by.data).toMatchObject({ source: 'query', runtimeParameter: 'get.data', id: 'get:data' });
     // The safety case: a route param is reported, but WITHOUT a coordinate.
-    expect(by.tenant).toMatchObject({ source: 'route-param', runtimeParameter: null });
+    // A route param has an identity — so a flow can point at it — even with no coordinate.
+    expect(by.tenant).toMatchObject({ source: 'route-param', runtimeParameter: null, id: 'route-param:tenant' });
     expect(by.tenant.runtimeParameterReason).toBeTruthy();
   });
 
@@ -82,12 +84,12 @@ describe('coordinates on a real project', () => {
     const ep = map!.endpoints[0]!;
     // Since argument roles landed, a flow into a MITIGATABLE argument is generatable — `req.body.path`
     // reaches the fs `path` argument (traversal). Everything else must still be refused, with reasons.
-    const pathFlow = ep.flows.find((f) => f.input === 'path' && f.confidence === 'precise')!;
+    const pathFlow = ep.flows.find((f) => f.input === 'path' && isProvenFlow(f.confidence))!;
     expect(pathFlow.argumentRole).toBe('path');
     expect(pathFlow.candidateFamily).toBe('path-traversal');
     expect(pathFlow.ruleGeneratable).toBe(true);
     // `req.query.data` lands in the fs CONTENT argument: proven, but not a blockable pattern.
-    const dataFlow = ep.flows.find((f) => f.input === 'data' && f.confidence === 'precise');
+    const dataFlow = ep.flows.find((f) => f.input === 'data' && isProvenFlow(f.confidence));
     if (dataFlow) {
       expect(dataFlow.candidateFamily).toBeUndefined();
       expect(dataFlow.ruleGeneratable).toBe(false);
@@ -133,6 +135,6 @@ describe('high-signal candidate families reach precise', () => {
     const { map } = await buildInputMap(dir);
     const ep = map!.endpoints.find((e) => e.route === route)!;
     expect(ep.inputs.find((i) => i.name === input)?.runtimeParameter).toBe(coord);
-    expect(ep.flows.some((f) => f.input === input && f.sink.kind === kind && f.confidence === 'precise')).toBe(true);
+    expect(ep.flows.some((f) => f.input === input && f.sink.kind === kind && isProvenFlow(f.confidence))).toBe(true);
   });
 });

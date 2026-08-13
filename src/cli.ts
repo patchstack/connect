@@ -37,6 +37,7 @@ import {
 } from './guide.js';
 import { runProtect, runVerify } from './protect/install/index.js';
 import { buildInputMap } from './map/index.js';
+import { isProvenFlow } from './map/coordinates.js';
 import { setupProtection, wireBuildScripts } from './setup.js';
 import { detectStack, type StackDescriptor } from './stack.js';
 import { PatchstackError } from './types.js';
@@ -59,8 +60,8 @@ Usage:
                                                      Never runs the project build
   patchstack-connect map    [--dir <p>] [--out <f>]  Map the app's attack surface: entry points, the
                                                      inputs each reads, the sinks it can reach, and
-                                                     evidence-backed input→sink flows (each marked
-                                                     precise or heuristic). Best-effort static
+                                                     evidence-backed input→sink flows (each labelled
+                                                     with how the link was established). Best-effort static
                                                      analysis — reports the DETECTED surface, with
                                                      coverage counters. Prints JSON (--out writes a
                                                      file; --follow-symlinks leaves the project dir).
@@ -211,15 +212,15 @@ async function runMap(args: ParsedArgs): Promise<number> {
     console.error(`patchstack: ${error}`);
     return 1;
   }
-  // Human summary → stderr; the JSON → stdout (so it can be piped / written). Report PRECISE flows
-  // separately from the inventories: only a precise flow is evidence that an input reaches a sink.
+  // Human summary → stderr; the JSON → stdout (so it can be piped / written). Report PROVEN flows
+  // separately from the inventories: only a proven tier is evidence that an input reaches a sink.
   const inputs = map.endpoints.reduce((n, e) => n + e.inputs.length, 0);
   const sinks = map.endpoints.reduce((n, e) => n + e.sinks.length, 0);
-  const precise = map.endpoints.reduce((n, e) => n + e.flows.filter((f) => f.confidence === 'precise').length, 0);
+  const proven = map.endpoints.reduce((n, e) => n + e.flows.filter((f) => isProvenFlow(f.confidence)).length, 0);
   const c = map.coverage;
   console.error(
     `patchstack: ${map.endpoints.length} entry point(s), ${inputs} input(s), ${sinks} sink(s), ` +
-      `${precise} proven input→sink flow(s) [${map.framework}].`,
+      `${proven} proven input→sink flow(s) [${map.framework}].`,
   );
   console.error(
     // All three buckets, explicitly: "6/66 parsed" reads as "91% unanalysed" when the other 60 files

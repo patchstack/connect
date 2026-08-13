@@ -1,4 +1,4 @@
-import type { InputField, InputSource } from './types.js';
+import type { AddressSpace, FieldShape, InputField, InputSource } from './types.js';
 
 /**
  * Map an input to the EXACT rule-engine parameter that addresses it, or null with a reason. Verified
@@ -41,6 +41,42 @@ export function runtimeCoordinate(source: InputSource | undefined, path: string)
 }
 
 /**
+ * The request region an input lives in — its identity, independent of whether we can currently ADDRESS
+ * it. A route param has a space (`route-param`) but no coordinate; an array path has a space (`post`)
+ * but needs an `array_key_value` rule. Keep those two questions apart: conflating them made an
+ * unaddressable input indistinguishable from one in another region.
+ */
+export function addressSpaceOf(source: InputSource | undefined): AddressSpace {
+  switch (source) {
+    case 'json-body':
+    case 'form-body':
+    case 'multipart':
+    case 'body':
+    case 'server-fn-data':
+      return 'post';
+    case 'query': return 'get';
+    case 'cookie': return 'cookie';
+    case 'file': return 'files';
+    case 'header': return 'server';
+    case 'route-param': return 'route-param';
+    default: return 'unknown';
+  }
+}
+
+/**
+ * Is this flow backed by a read seen at the sink's own call site? True for the two `*-local` tiers.
+ * `imported` / `heuristic` / `unknown` all mean "we did not see the argument", for different reasons.
+ */
+export function isProvenFlow(confidence: string | undefined): boolean {
+  return confidence === 'exact-local' || confidence === 'transformed-local';
+}
+
+/** `<space>:<path>` — an input's identity within an endpoint. */
+export function inputIdOf(source: InputSource | undefined, path: string): string {
+  return `${addressSpaceOf(source)}:${path}`;
+}
+
+/**
  * The rule-engine NAMESPACE an input lands in (`post`, `get`, `cookie`, `files`, `server`), or null when
  * it has no address. Derived from `runtimeCoordinate` on purpose: comparing raw source labels would call
  * `json-body` and an Express `req.body` read different places when both resolve to `post.*`, and would
@@ -53,7 +89,10 @@ export function namespaceOf(source: InputSource | undefined, path: string): stri
   return dot === -1 ? runtimeParameter : runtimeParameter.slice(0, dot);
 }
 
-/** Attach `source` + the runtime coordinate to every extracted input. */
-export function withCoordinates(fields: InputField[], source: InputSource): InputField[] {
-  return fields.map((f) => ({ ...f, source: f.source ?? source, ...runtimeCoordinate(f.source ?? source, f.name) }));
+/** Place extracted fields in a request region: attach `source`, the runtime coordinate, and the id. */
+export function withCoordinates(fields: FieldShape[], source: InputSource): InputField[] {
+  return fields.map((f) => {
+    const src = f.source ?? source;
+    return { ...f, source: src, id: inputIdOf(src, f.name), ...runtimeCoordinate(src, f.name) };
+  });
 }

@@ -3,6 +3,7 @@ import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { buildInputMap } from '../../src/map/index.js';
+import { isProvenFlow } from '../../src/map/coordinates.js';
 
 // `precise` is the signal a rule-generator would pin a parameter on, so it must identify the RIGHT
 // parameter. Two ways it previously could not:
@@ -74,7 +75,7 @@ const flowsOf = async (file: string) => {
 describe('flow paths and sink ownership', () => {
   it('distinguishes nested paths that share a leaf name', async () => {
     const ep = await flowsOf('nested.ts');
-    const precise = ep.flows.filter((f) => f.confidence === 'precise').map((f) => f.input).sort();
+    const precise = ep.flows.filter((f) => isProvenFlow(f.confidence)).map((f) => f.input).sort();
     // shipping.email is read (and `shipping` is its ancestor, so it covers the flow).
     expect(precise).toEqual(['shipping', 'shipping.email']);
     // The collision case: billing.* must NOT be precise.
@@ -84,23 +85,23 @@ describe('flow paths and sink ownership', () => {
 
   it('does not let a sibling expression in the same statement lend evidence', async () => {
     const ep = await flowsOf('sibling.ts');
-    expect(ep.flows.filter((f) => f.confidence === 'precise')).toEqual([]);
+    expect(ep.flows.filter((f) => isProvenFlow(f.confidence))).toEqual([]);
   });
 
   it('treats a fluent chain as one operation', async () => {
     const ep = await flowsOf('chain.ts');
-    const precise = ep.flows.filter((f) => f.confidence === 'precise').map((f) => f.input).sort();
+    const precise = ep.flows.filter((f) => isProvenFlow(f.confidence)).map((f) => f.input).sort();
     expect(precise).toEqual(['id', 'note']); // the values object AND the .eq filter
   });
 
   it('normalizes array indices so tags[].label matches a read of tags[0].label', async () => {
     const ep = await flowsOf('arrays.ts');
-    expect(ep.flows.some((f) => f.input === 'tags[].label' && f.confidence === 'precise')).toBe(true);
+    expect(ep.flows.some((f) => f.input === 'tags[].label' && isProvenFlow(f.confidence))).toBe(true);
   });
 
   it('keeps taint through a validator (validation is not sanitization) and records sink spans', async () => {
     const ep = await flowsOf('nested.ts');
-    expect(ep.flows.some((f) => f.confidence === 'precise')).toBe(true); // would be none if validation cleaned
+    expect(ep.flows.some((f) => isProvenFlow(f.confidence))).toBe(true); // would be none if validation cleaned
     const sink = ep.sinks[0]!;
     expect(typeof sink.start).toBe('number');
     expect(typeof sink.end).toBe('number');

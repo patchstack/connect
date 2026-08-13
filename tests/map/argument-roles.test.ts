@@ -3,6 +3,7 @@ import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { buildInputMap } from '../../src/map/index.js';
+import { isProvenFlow } from '../../src/map/coordinates.js';
 
 // Track 2, step 1 — adapter summaries. Which ARGUMENT received the value decides which mitigation class
 // applies, so a candidate compiler cannot exist without it: `url` vs `body`, `path` vs `content`,
@@ -37,7 +38,7 @@ afterAll(() => rmSync(dir, { recursive: true, force: true }));
 const flow = async (route: string, input: string) => {
   const { map } = await buildInputMap(dir);
   const ep = map!.endpoints.find((e) => e.route === route)!;
-  return ep.flows.find((f) => f.input === input && f.confidence === 'precise')!;
+  return ep.flows.find((f) => f.input === input && isProvenFlow(f.confidence))!;
 };
 
 describe('argument roles', () => {
@@ -63,7 +64,12 @@ describe('argument roles', () => {
     ['/sqlparam', 'id', 'values', 'db'],
   ])('%s: %s lands in the %s argument of a %s sink → proven but NOT generatable', async (route, input, role, _kind) => {
     const f = await flow(route, input);
-    expect(f.confidence).toBe('precise');
+    // Proven either way, but the db rows are only `transformed-local`: `insert({ title: req.body.title })`
+    // hands the sink an OBJECT containing the value, not the value. The payload still travels in
+    // `post.title` — which is why a rule could be compiled at all — but what reaches the sink is not
+    // exactly what arrived, and that is precisely what the tier is there to tell a server.
+    expect(isProvenFlow(f.confidence)).toBe(true);
+    expect(f.confidence).toBe(role === 'values' ? 'transformed-local' : 'exact-local');
     expect(f.argumentRole).toBe(role);
     expect(f.candidateFamily).toBeUndefined();
     expect(f.ruleGeneratable).toBe(false);

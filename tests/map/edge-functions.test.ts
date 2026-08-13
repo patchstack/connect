@@ -3,6 +3,7 @@ import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { buildInputMap } from '../../src/map/index.js';
+import { isProvenFlow } from '../../src/map/coordinates.js';
 
 // Platform function runtimes (Supabase Edge Functions, Base44 backend functions, Deno workers) have no
 // route file and no framework router: one handler per module, invoked by the function's NAME. Without a
@@ -49,7 +50,7 @@ describe('platform function entry points', () => {
       expect.arrayContaining([expect.objectContaining({ kind: 'db', table: 'charges', op: 'insert' })]),
     );
     // The insert receives the request data → a proven flow, so a rule can pin the parameter.
-    expect(charge!.flows.some((f) => f.confidence === 'precise' && f.input === 'orderId')).toBe(true);
+    expect(charge!.flows.some((f) => isProvenFlow(f.confidence) && f.input === 'orderId')).toBe(true);
   });
 
   it('recognizes a bare serve() function and its outbound (SSRF-relevant) sink', async () => {
@@ -60,6 +61,6 @@ describe('platform function entry points', () => {
     expect(notify.inputs.map((i) => i.name)).toEqual(['hook']);
     expect(notify.sinks).toEqual(expect.arrayContaining([expect.objectContaining({ kind: 'http' })]));
     // hook -> fetch is the classic SSRF shape; it must be a PROVEN flow, not a co-occurrence.
-    expect(notify.flows.some((f) => f.input === 'hook' && f.sink.kind === 'http' && f.confidence === 'precise')).toBe(true);
+    expect(notify.flows.some((f) => f.input === 'hook' && f.sink.kind === 'http' && isProvenFlow(f.confidence))).toBe(true);
   });
 });

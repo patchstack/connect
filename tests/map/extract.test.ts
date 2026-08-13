@@ -3,6 +3,7 @@ import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { buildInputMap } from '../../src/map/index.js';
+import { isProvenFlow } from '../../src/map/coordinates.js';
 
 // The agnostic extractor across three stacks in one fixture app: a TanStack server fn (zod inputs +
 // supabase sink, incl. a helper-indirected select), an Express route (req.body access + fs/exec
@@ -168,13 +169,19 @@ describe('agnostic input-flow extractor', () => {
     expect(map!.coverage.filesParsed).toBeLessThanOrEqual(map!.coverage.filesDiscovered);
   });
 
-  it('links input → sink flows with evidence, and only claims "precise" when the data reaches it', async () => {
+  it('links input → sink flows with evidence, and only claims a proven tier when the data reaches it', async () => {
     const { map } = await buildInputMap(dir);
     const createTask = map!.endpoints.find((e) => e.name === 'createTask')!;
-    const precise = createTask.flows.filter((f) => f.confidence === 'precise');
+    const precise = createTask.flows.filter((f) => isProvenFlow(f.confidence));
     // `title` is passed into the insert → proven.
+    // `transformed-local`: the value is wrapped in the inserted row object rather than being the argument.
     expect(precise).toEqual([
-      expect.objectContaining({ input: 'title', confidence: 'precise', sink: expect.objectContaining({ op: 'insert' }) }),
+      expect.objectContaining({
+        input: 'title',
+        inputId: 'post:title',
+        confidence: 'transformed-local',
+        sink: expect.objectContaining({ op: 'insert' }),
+      }),
     ]);
     // The helper-reached select does NOT receive the input → heuristic, never precise.
     expect(createTask.flows.some((f) => f.sink.op === 'select' && f.confidence === 'heuristic')).toBe(true);
@@ -206,7 +213,7 @@ describe('agnostic input-flow extractor', () => {
     expect(patch.routeDynamic).toBe(true); // a PATTERN, so when.path needs a glob/regex
     expect(patch.method).toBe('PATCH');
     expect(patch.inputs.map((i) => i.name).sort()).toEqual(['id', 'note']);
-    expect(patch.flows.some((f) => f.confidence === 'precise' && f.sink.op === 'update')).toBe(true);
+    expect(patch.flows.some((f) => isProvenFlow(f.confidence) && f.sink.op === 'update')).toBe(true);
   });
 
   it('resolves a client built by a local factory back to its package', async () => {

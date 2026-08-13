@@ -1,16 +1,32 @@
-import type { ArgumentRole, Flow, InputField, Limitation, Sink, TsModule } from './types.js';
+import type { AddressSpace, ArgumentRole, Flow, InputField, Limitation, Sink, TsModule } from './types.js';
 import { bindingKey, calleeName, isValueRead, lineOf, rootIdentifier } from './ast.js';
 import { REQ_SOURCES } from './inputs.js';
+import { addressSpaceOf } from './coordinates.js';
 import { argumentRoleOf, CANDIDATE_FAMILIES } from './sinks.js';
+
+/** A tainted binding: the path prefix it stands for, and the request region it came from if known. */
+interface Root { path: string; space?: AddressSpace }
+
+/** The address space a request-namespace binding key implies (`query` → get, `params` → route-param). */
+function spaceOfKey(key: string | undefined): AddressSpace | undefined {
+  if (key === 'query') return 'get';
+  if (key === 'params') return 'route-param';
+  if (key === 'body') return 'post';
+  // `data` / `input` / `payload`: a server-function argument, which the guard feeds through as the body.
+  if (key === 'data' || key === 'input' || key === 'payload') return 'post';
+  return undefined;
+}
 
 // --- input → sink flow linking ---------------------------------------------
 // Evidence-backed data links: for each sink, does an INPUT identifier/path appear inside the sink
 // call's arguments? "Tainted" roots are the handler's own parameter names (`{ data }`, `req`) plus any
 // local alias of them (`const body = await request.json()`, `const { title } = data`).
 //
-// Deliberately conservative: a match yields `precise`; no match yields `heuristic` (the input and sink
-// merely co-occur). It never claims a flow it didn't see, which is the point — a consumer pinning a
-// rule to a parameter should trust `precise` and treat `heuristic` as "may reach".
+// Deliberately conservative: a match yields one of the two `*-local` tiers; no match yields `imported` /
+// `heuristic` / `unknown` depending on WHY nothing was seen. It never claims a flow it didn't see, which
+// is the point — a consumer pinning a rule should require a proven tier (see `isProvenFlow`) and treat
+// the rest as "may reach". Matching is per (address space, path): a read of `query.id` is not evidence
+// about the body field `id`.
 // Spread onto an endpoint: `flows`, plus `limitations` only when there are any (keeps the common case clean).
 export function linkedFlows(body: any, params: any, inputs: InputField[], sinks: Sink[], ts: TsModule): { flows: Flow[]; limitations?: Limitation[] } {
   const { flows, limitations } = linkFlows(body, params, inputs, sinks, ts);
@@ -33,8 +49,14 @@ function linkFlows(
   // (`{ body }`), and the validated-payload conventions of the server-fn frameworks (`{ data }` for
   // TanStack). Getting this wrong shifts every path by one segment and silently kills all matching.
   const CONTAINER_KEYS = new Set([...REQ_SOURCES, 'data', 'input', 'payload']);
-  const rootPath = new Map<string, string>();
-  const addRoot = (name: string, path: string) => { if (!rootPath.has(name)) rootPath.set(name, path); };
+  // Each tainted root also carries the ADDRESS SPACE it was bound from, when that is known. A bare `req`
+  // has none — its next segment decides (`req.query.x` vs `req.body.x`) — but `({ query: q })` fixes `q`
+  // in `get` for good. Without this the space was dropped along with the namespace segment, so a read of
+  // `query.id` was indistinguishable from a read of `body.id` and could match either input.
+  const rootPath = new Map<string, Root>();
+  const addRoot = (name: string, path: string, space?: AddressSpace) => {
+    if (!rootPath.has(name)) rootPath.set(name, { path, space });
+  };
   for (const p of params ?? []) {
     if (!p?.name) continue;
     if (ts.isIdentifier(p.name)) addRoot(p.name.text, '');
@@ -43,7 +65,8 @@ function linkFlows(
         if (!ts.isBindingElement(el) || !ts.isIdentifier(el.name)) continue;
         const key = bindingKey(el, ts);
         // A destructured request source (`{ body }`) is a container: its members ARE the paths.
-        addRoot(el.name.text, key && CONTAINER_KEYS.has(key) ? '' : key ?? el.name.text);
+        const container = key !== undefined && CONTAINER_KEYS.has(key);
+        addRoot(el.name.text, container ? '' : key ?? el.name.text, container ? spaceOfKey(key) : undefined);
       }
     }
   }
@@ -51,7 +74,7 @@ function linkFlows(
   // Does this initializer carry request data? Includes `Schema.parse(await req.json())`: VALIDATION IS
   // NOT SANITIZATION — a validated value is still attacker-controlled, and treating it as clean would
   // silently drop every flow in a validated handler (the common TanStack/Next shape).
-  const requestReadPath = (init: any): string | undefined => {
+  const requestReadPath = (init: any): Root | undefined => {
     let cur = init;
     while (cur && (ts.isAwaitExpression(cur) || ts.isParenthesizedExpression(cur) || ts.isAsExpression(cur) || ts.isNonNullExpression(cur))) cur = cur.expression;
     if (!cur) return undefined;
@@ -59,7 +82,8 @@ function linkFlows(
       const m = cur.expression.name.text;
       if (['json', 'formData', 'text'].includes(m)) {
         const root = rootIdentifier(cur.expression.expression, ts);
-        return root && rootPath.has(root) ? '' : undefined;
+        // A body read: whatever the field names turn out to be, they are addressed in `post`.
+        return root && rootPath.has(root) ? { path: '', space: 'post' } : undefined;
       }
       if (['parse', 'safeParse', 'validate', 'cast'].includes(m)) {
         for (const a of cur.arguments) {
@@ -77,12 +101,15 @@ function linkFlows(
     if (ts.isVariableDeclaration(n) && n.initializer) {
       const base = requestReadPath(n.initializer);
       if (base !== undefined) {
-        if (ts.isIdentifier(n.name)) addRoot(n.name.text, base);
+        if (ts.isIdentifier(n.name)) addRoot(n.name.text, base.path, base.space);
         else if (ts.isObjectBindingPattern(n.name)) {
           for (const el of n.name.elements) {
             if (!ts.isBindingElement(el) || !ts.isIdentifier(el.name)) continue;
             const key = bindingKey(el, ts);
-            addRoot(el.name.text, join2(base, key ?? el.name.text));
+            // `const { query: q } = req` — the binding KEY names the space when the base has none yet.
+            const space = base.space ?? (base.path === '' ? spaceOfKey(key) : undefined);
+            const container = base.path === '' && key !== undefined && CONTAINER_KEYS.has(key);
+            addRoot(el.name.text, container ? '' : join2(base.path, key ?? el.name.text), space);
           }
         }
       }
@@ -108,13 +135,14 @@ function linkFlows(
   const flows: Flow[] = [];
   const allLimits: Limitation[] = [];
   for (const sink of sinks) {
-    // A sink from an imported module has no call site here — never claim precise for it.
+    // A sink from an imported module has no call site here — its flows can only be `imported`.
     const node = sink.file === undefined && sink.start !== undefined && sink.end !== undefined
       ? callBySpan.get(`${sink.start}:${sink.end}`)
       : undefined;
     // path → the argument ROLES it was read into. Per-argument attribution is what makes a candidate
     // possible: the same value in `url` vs `body`, or `path` vs `content`, implies different mitigations.
-    const reads = new Map<string, Set<ArgumentRole>>();
+    // Keyed by `<space>:<path>` so a read of `query.id` cannot lend its evidence to the body field `id`.
+    const reads = new Map<string, { read: Root; roles: Set<ArgumentRole>; exact: boolean }>();
     const sinkLimits: Limitation[] = [];
     if (node) {
       // ONLY this sink call's own arguments, plus other calls in the SAME fluent chain
@@ -126,32 +154,55 @@ function linkFlows(
         for (const a of args) for (const l of sinkArgumentLimitations(a, ts, rootPath)) sinkLimits.push(l);
         for (let i = 0; i < args.length; i++) {
           const role = argumentRoleOf(sink.kind, method, i, args.length);
-          for (const path of taintedReadPaths(args[i], ts, rootPath)) {
-            const set = reads.get(path) ?? new Set<ArgumentRole>();
-            set.add(role);
-            reads.set(path, set);
+          // Is the ARGUMENT ITSELF the read (`readFileSync(req.body.p)`), or does the read sit inside a
+          // larger expression (`readFileSync('/tmp/' + req.body.p)`)? Both mean the value arrives in the
+          // same parameter, but only the first says what reaches the sink is exactly what arrived — the
+          // distinction a server needs before promoting a rule to blocking without a human.
+          const whole = pathFromTainted(args[i], ts, rootPath);
+          for (const read of taintedReadPaths(args[i], ts, rootPath)) {
+            const key = `${read.space ?? '*'}:${read.path}`;
+            const exact = whole !== undefined && whole.path === read.path && whole.space === read.space;
+            const entry = reads.get(key) ?? { read, roles: new Set<ArgumentRole>(), exact: false };
+            entry.roles.add(role);
+            entry.exact = entry.exact || exact;
+            reads.set(key, entry);
           }
         }
       }
     }
     for (const input of inputs) {
       const inputPath = normalizePath(input.name);
+      const inputSpace = addressSpaceOf(input.source);
       // Exact path, or the input is an ANCESTOR of what was read (`billing` covers `billing.email`).
       // A mere shared leaf name is NOT evidence: `billing.email` and `shipping.email` are different.
-      const matched = [...reads.entries()].filter(([r]) => r === inputPath || r.startsWith(inputPath + '.'));
-      const precise = matched.length > 0;
-      const roles = new Set<ArgumentRole>(matched.flatMap(([, rs]) => [...rs]));
+      // The SPACE must agree too, or the two `id`s of `query.id` / `body.id` trade evidence and a rule
+      // gets pinned to whichever the extractor happened to keep. A read whose space is unknown (a bare
+      // `req` handed to a helper, say) still matches on path alone — recall, at heuristic strength.
+      const matched = [...reads.values()].filter(({ read }) =>
+        (read.space === undefined || read.space === inputSpace)
+        && (read.path === inputPath || read.path.startsWith(inputPath + '.')));
+      const proven = matched.length > 0;
+      // Weakest-honest tier that fits the evidence.
+      const confidence: Flow['confidence'] = proven
+        ? (matched.some((m) => m.exact) ? 'exact-local' : 'transformed-local')
+        : sink.file !== undefined ? 'imported'
+        // No span at all (a synthetic node) means no evidence is even possible. A sink whose span exists
+        // but sits outside this handler — reached through a same-file helper — is ordinary co-occurrence:
+        // located, just not attributable to an argument here. Calling that "unknown" would overstate it.
+        : sink.start === undefined ? 'unknown'
+        : 'heuristic';
+      const roles = new Set<ArgumentRole>(matched.flatMap(({ roles: rs }) => [...rs]));
       // Prefer a role that maps to a mitigation class over a generic one (a value can reach two args).
       const family = [...roles].map((r) => CANDIDATE_FAMILIES[sink.kind]?.[r]).find(Boolean);
       const argumentRole = family
         ? [...roles].find((r) => CANDIDATE_FAMILIES[sink.kind]?.[r])
-        : [...roles].find((r) => r !== 'unknown') ?? (precise ? 'unknown' : undefined);
+        : [...roles].find((r) => r !== 'unknown') ?? (proven ? 'unknown' : undefined);
 
-      // Deliberately SEPARATE from confidence: `precise` means "the source reaches the sink", which is
+      // Deliberately SEPARATE from confidence: a proven tier means "the source reaches the sink", which is
       // not authorization to block traffic. Every remaining obstacle is listed, so this doubles as the
       // queue for improving the extractor/adapters rather than silently losing the opportunity.
       const reasons: string[] = [];
-      if (!precise) reasons.push('flow evidence is heuristic, not precise');
+      if (!proven) reasons.push(`flow evidence is "${confidence}": no proven local read of this input into the sink call`);
       if (!input.runtimeParameter) reasons.push(input.runtimeParameterReason ?? 'input has no runtime parameter');
       if (sink.file !== undefined) reasons.push('sink is in an imported module: no local call-site evidence');
       if (sink.start === undefined) reasons.push('sink call could not be located in the source');
@@ -165,7 +216,7 @@ function linkFlows(
           ? `sink package "${sink.package}" was inferred from the file's other imports, not from the receiver (${sink.kind}.${sink.op ?? '?'}): the receiver may be any app object`
           : `sink receiver could not be traced to a dependency (${sink.kind}.${sink.op ?? '?'} on an unresolved receiver): a rule here would be a guess`);
       }
-      if (precise && argumentRole === 'unknown') reasons.push(`sink argument role is not modelled for ${sink.kind}.${sink.op ?? '?'}`);
+      if (proven && argumentRole === 'unknown') reasons.push(`sink argument role is not modelled for ${sink.kind}.${sink.op ?? '?'}`);
       // A dynamic key or a spread in this sink's arguments means no coordinate can name the field that
       // actually reaches it — report the specific cause rather than a generic "heuristic".
       for (const l of sinkLimits) {
@@ -173,15 +224,16 @@ function linkFlows(
           ? `dynamic computed key reaches this sink (${l.detail}): the field cannot be named by a parameter`
           : `spread reaches this sink (${l.detail}): the specific field is not identifiable`);
       }
-      if (precise && argumentRole && argumentRole !== 'unknown' && !family) {
+      if (proven && argumentRole && argumentRole !== 'unknown' && !family) {
         // e.g. a request value in a parameterized db `values` object: real reachability, but not a
         // pattern a generic blocking rule can express.
         reasons.push(`argument role "${argumentRole}" on a ${sink.kind} sink is not a blockable pattern on its own`);
       }
       flows.push({
         input: input.name,
+        inputId: input.id,
         sink,
-        confidence: precise ? 'precise' : 'heuristic',
+        confidence,
         line: sink.line,
         ...(argumentRole ? { argumentRole } : {}),
         ...(family ? { candidateFamily: family } : {}),
@@ -250,21 +302,26 @@ function fluentChainCalls(call: any, ts: TsModule): any[] {
 
 /**
  * The canonical PATHS of values genuinely read from a tainted source inside `node` — the evidence behind
- * a `precise` flow. Full paths, not leaf names: `data.shipping.email` yields `shipping.email`, so it can
+ * a proven flow. Full paths, not leaf names: `data.shipping.email` yields `shipping.email`, so it can
  * never be mistaken for the distinct input `billing.email`. Array indices normalize to `[]`.
  * Property KEYS, member names and binding names are not reads.
  */
-function taintedReadPaths(node: any, ts: TsModule, rootPath: Map<string, string>): Set<string> {
-  const out = new Set<string>();
+function taintedReadPaths(node: any, ts: TsModule, rootPath: Map<string, Root>): Root[] {
+  const out: Root[] = [];
+  const seen = new Set<string>();
+  const add = (r: Root) => {
+    const key = `${r.space ?? '*'}:${r.path}`;
+    if (!seen.has(key)) { seen.add(key); out.push(r); }
+  };
   const visit = (n: any) => {
     if (!n) return;
     if (ts.isPropertyAccessExpression(n) || ts.isElementAccessExpression(n)) {
-      const path = pathFromTainted(n, ts, rootPath);
-      if (path !== undefined) { out.add(path); return; } // the inner nodes are the path, not separate reads
+      const read = pathFromTainted(n, ts, rootPath);
+      if (read !== undefined) { add(read); return; } // the inner nodes are the path, not separate reads
     }
     if (ts.isIdentifier(n) && rootPath.has(n.text) && isValueRead(n, ts)) {
-      const p = rootPath.get(n.text)!;
-      if (p) out.add(normalizePath(p));
+      const r = rootPath.get(n.text)!;
+      if (r.path) add({ path: normalizePath(r.path), space: r.space });
     }
     ts.forEachChild(n, visit);
   };
@@ -279,7 +336,7 @@ function taintedReadPaths(node: any, ts: TsModule, rootPath: Map<string, string>
  *   - `insert({ v: body[field] })` → the field is chosen at runtime; no coordinate can name it.
  *   - `insert({ ...body })`        → the whole payload reaches the sink; which field is unidentifiable.
  */
-function sinkArgumentLimitations(node: any, ts: TsModule, rootPath: Map<string, string>): Limitation[] {
+function sinkArgumentLimitations(node: any, ts: TsModule, rootPath: Map<string, Root>): Limitation[] {
   const out: Limitation[] = [];
   const seen = new Set<string>();
   const add = (kind: Limitation['kind'], detail: string, n: any) => {
@@ -313,7 +370,7 @@ function sinkArgumentLimitations(node: any, ts: TsModule, rootPath: Map<string, 
 }
 
 /** Canonical path of a member/element access rooted in a tainted binding, or undefined if not tainted. */
-function pathFromTainted(node: any, ts: TsModule, rootPath: Map<string, string>): string | undefined {
+function pathFromTainted(node: any, ts: TsModule, rootPath: Map<string, Root>): Root | undefined {
   const segs: string[] = [];
   let cur = node;
   for (;;) {
@@ -330,11 +387,17 @@ function pathFromTainted(node: any, ts: TsModule, rootPath: Map<string, string>)
   if (!cur || !ts.isIdentifier(cur)) return undefined;
   const base = rootPath.get(cur.text);
   if (base === undefined) return undefined;
+  let space = base.space;
   // Drop a leading NAMESPACE segment (`req.body.webhookUrl` → `webhookUrl`). Input names — and the
   // runtime coordinates derived from them — are relative to their namespace (`post.webhookUrl`), so
   // leaving `body.` in the read path would fail to match the very inputs it came from. Without this,
   // the highest-value flows (`req.body.webhookUrl` → fetch, `req.body.command` → exec) never reach
-  // `precise`.
-  if (base === '' && segs.length > 1 && REQ_SOURCES.includes(segs[0]!)) segs.shift();
-  return normalizePath([base, ...segs].filter(Boolean).join('.'));
+  // proven.
+  // The dropped segment is exactly what names the address space, so capture it before discarding it —
+  // losing it is what made `req.query.id` and `req.body.id` the same read.
+  if (base.path === '' && segs.length > 1 && REQ_SOURCES.includes(segs[0]!)) {
+    space = spaceOfKey(segs[0]!) ?? space;
+    segs.shift();
+  }
+  return { path: normalizePath([base.path, ...segs].filter(Boolean).join('.')), space };
 }

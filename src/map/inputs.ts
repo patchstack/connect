@@ -1,7 +1,7 @@
-import type { InputField, InputSource, TsModule } from './types.js';
+import type { FieldShape, InputField, InputSource, TsModule } from './types.js';
 import { bindingKey, rootIdentifier } from './ast.js';
 import { npmPackageOf, type Bindings } from './bindings.js';
-import { namespaceOf, runtimeCoordinate, withCoordinates } from './coordinates.js';
+import { addressSpaceOf, inputIdOf, runtimeCoordinate } from './coordinates.js';
 
 const ZOD_BASE = new Set(['string', 'number', 'boolean', 'array', 'object', 'enum', 'bigint', 'date', 'record']);
 // String-format refinements a validator can declare — kept on the field so a rule can pin the shape.
@@ -10,7 +10,7 @@ const STRING_FORMATS = new Set(['email', 'uuid', 'url', 'ip', 'ipv4', 'ipv6', 'c
 const VALIDATOR_PACKAGES = new Set(['zod', 'valibot', 'yup', 'joi', '@hapi/joi', 'superstruct']);
 
 // --- inputs -----------------------------------------------------------------
-export function inputsFromValidator(validatorCall: any, ts: TsModule, bindings: Bindings): InputField[] {
+export function inputsFromValidator(validatorCall: any, ts: TsModule, bindings: Bindings): FieldShape[] {
   if (!validatorCall) return [];
   return zodObjectFields(validatorCall, ts, bindings);
 }
@@ -30,43 +30,25 @@ export function inputsFromHandler(
   const schemaFields = zodObjectFields(body, ts, bindings);
   const reads = requestMemberAccesses(params, body, ts, opts);
 
-  // ONE collision pass over both origins. A schema field and a request read can share a name while
-  // addressing different places — `z.object({ id }).parse(req.body)` next to `fs.read(req.query.id)`
-  // used to yield the schema's `post.id` while the sink actually consumed `get.id`, so a rule inspected
-  // a parameter the payload never travels in. Grouping by name is what makes that invisible, so the
-  // grouping now carries every source, and the verdict compares effective NAMESPACES: `json-body` and
-  // an Express `req.body` read are both `post.*` (not a conflict), `post.id` vs `get.id` is.
-  const sourcesByName = new Map<string, InputSource[]>();
-  const add = (name: string, source: InputSource) => {
-    const list = sourcesByName.get(name) ?? [];
-    if (!list.includes(source)) list.push(source);
-    sourcesByName.set(name, list);
+  // Keyed by IDENTITY — `<space>:<path>` — not by field name. A handler that reads `query.id` and
+  // `params.id`, or validates a body field named `id` while the sink consumes `query.id`, has TWO inputs
+  // that merely share a name. Name-keying made one of them disappear, and since the survivor decided the
+  // coordinate, a rule could be pinned to a parameter the payload never travels in. Distinct identities
+  // remove that class outright: each input carries its own address, and a flow names which one it means.
+  // Same space + same path IS the same input, so a schema field and an `req.body` read of it merge
+  // (the schema entry wins, since it also carries the declared type/constraints).
+  const byId = new Map<string, InputField>();
+  const put = (name: string, source: InputSource, extra: Omit<FieldShape, 'name' | 'source'> = {}) => {
+    const id = inputIdOf(source, name);
+    if (byId.has(id)) return;
+    byId.set(id, { ...extra, id, name, source, ...runtimeCoordinate(source, name) });
   };
-  for (const f of schemaFields) add(f.name, f.source ?? schemaSource);
-  for (const r of reads) for (const s of r.sources) add(r.name, s);
-
-  const coordFor = (name: string, primary: InputSource) => {
-    const sources = sourcesByName.get(name) ?? [primary];
-    if (new Set(sources.map((s) => namespaceOf(s, name))).size > 1) {
-      return {
-        runtimeParameter: null,
-        runtimeParameterReason: `field is read from more than one request namespace (${sources.join(', ')}): no single parameter addresses it`,
-      };
-    }
-    return runtimeCoordinate(primary, name);
-  };
-
-  const fields: InputField[] = withCoordinates(schemaFields, schemaSource)
-    .map((f) => ({ ...f, ...coordFor(f.name, f.source ?? schemaSource) }));
-  const names = new Set(fields.map((f) => f.name));
-  for (const { name, sources } of reads) {
-    if (names.has(name)) continue;
-    const primary = sources[0]; // first-seen, so the reported source is deterministic
-    if (!primary) continue;
-    names.add(name);
-    fields.push({ name, source: primary, ...coordFor(name, primary) });
+  for (const f of schemaFields) {
+    const { name, source, ...shape } = f;
+    put(name, source ?? schemaSource, shape);
   }
-  return fields;
+  for (const { name, sources } of reads) for (const source of sources) put(name, source);
+  return [...byId.values()];
 }
 
 // Find the first validator `.object({...})` in a subtree — gated on the receiver tracing to a known
@@ -93,14 +75,14 @@ function findValidatorObject(node: any, ts: TsModule, bindings: Bindings): any {
 
 // Read a validator object's fields (name + type/constraints). Nested objects/arrays are flattened to
 // dotted paths — `address.city`, `tags[].label` — the same coordinates `array_key_value` rules use.
-function zodObjectFields(node: any, ts: TsModule, bindings: Bindings): InputField[] {
+function zodObjectFields(node: any, ts: TsModule, bindings: Bindings): FieldShape[] {
   if (!node) return [];
   const lit = findValidatorObject(node.body ?? node, ts, bindings);
   return lit ? fieldsOfObject(lit, ts, bindings, '') : [];
 }
 
-function fieldsOfObject(objectLiteral: any, ts: TsModule, bindings: Bindings, prefix: string): InputField[] {
-  const fields: InputField[] = [];
+function fieldsOfObject(objectLiteral: any, ts: TsModule, bindings: Bindings, prefix: string): FieldShape[] {
+  const fields: FieldShape[] = [];
   for (const p of objectLiteral.properties) {
     if (!ts.isPropertyAssignment(p) || !p.name) continue;
     const fname = (p.name as any).text;
@@ -120,8 +102,8 @@ function numericValue(arg: any, ts: TsModule): number | undefined {
   return undefined;
 }
 
-function zodShape(node: any, ts: TsModule): Omit<InputField, 'name'> {
-  const shape: Omit<InputField, 'name'> = {};
+function zodShape(node: any, ts: TsModule): Omit<FieldShape, 'name'> {
+  const shape: Omit<FieldShape, 'name'> = {};
   let cur = node;
   while (cur && ts.isCallExpression(cur) && ts.isPropertyAccessExpression(cur.expression)) {
     const method = cur.expression.name.text;

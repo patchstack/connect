@@ -176,7 +176,7 @@ describe('an inferred package does not license a rule', () => {
     expect(sink.package).toBe('@supabase/supabase-js');
     expect(sink.attribution).toBe('inferred');
     const flow = e.flows.find((f) => f.sink.kind === 'db')!;
-    expect(flow.confidence).toBe('precise');   // the data really does reach it
+    expect(flow.confidence).toBe('exact-local');   // the data really does reach it
     expect(flow.ruleGeneratable).toBe(false);  // and it still must not be auto-ruled
     expect(flow.ruleGeneratableReasons!.join(' ')).toMatch(/inferred from the file's other imports/);
   });
