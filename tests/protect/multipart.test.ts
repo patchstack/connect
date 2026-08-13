@@ -42,7 +42,8 @@ describe('multipart/form-data parsing', () => {
     );
     expect(shaped.body.title).toBe('<script>alert(1)</script>');
     expect(shaped.body['__proto__[polluted]']).toBe('yes');
-    expect(shaped.files.avatar).toBe('evil.svg');
+    // File parts are now captured as { filename, type, content } (content inspection), not a bare filename.
+    expect(shaped.files.avatar).toMatchObject({ filename: 'evil.svg', type: 'image/svg+xml', content: '<svg onload=alert(1)>' });
     expect(shaped._rawBody).toContain('__proto__');
   });
 

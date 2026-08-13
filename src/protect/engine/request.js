@@ -1,3 +1,12 @@
+// Resolvable DATA attributes of an uploaded file part (files.<name>.<attr>). The engine only exposes
+// the raw data — WHAT counts as a malicious upload (signatures, type-vs-content mismatch) is expressed
+// in rules (see the triage-vpatch-npm skill), not hardcoded here.
+const FILE_ATTRS = new Set(['content', 'filename', 'type']);
+
+// A captured file part is { filename, type, content }; tolerate the legacy bare-filename string.
+const fileFilename = (f) => (f && typeof f === 'object' ? f.filename : f);
+const fileAttribute = (f, attr) => (f && typeof f === 'object' ? f[attr] : attr === 'filename' ? f : undefined);
+
 // WinterCG-safe base64 decode: use Buffer on Node, fall back to atob/TextDecoder on
 // edge runtimes (Cloudflare Workers, Deno, Bun) where Buffer may be absent. Keeps the
 // engine hot path free of Node-only APIs (per the ADR engine-language decision).
@@ -253,16 +262,38 @@ export class RequestResolver {
 
   #resolveFiles(key) {
     const files = this.#req.files;
-    if (!files) {
+    if (!files || typeof files !== 'object') {
       return [];
     }
 
-    if (key.endsWith('*')) {
-      return this.#resolveWildcard(files, key);
+    // files.<name>.<attr> — content | filename | type. Fans out over multiple files uploaded under
+    // the same field name.
+    const dot = key.lastIndexOf('.');
+    if (dot !== -1 && FILE_ATTRS.has(key.slice(dot + 1)) && Object.prototype.hasOwnProperty.call(files, key.slice(0, dot))) {
+      const attr = key.slice(dot + 1);
+      const entry = files[key.slice(0, dot)];
+      const list = Array.isArray(entry) ? entry : [entry];
+      const out = [];
+      for (const f of list) {
+        const v = fileAttribute(f, attr);
+        if (v !== undefined && v !== '') out.push(v);
+      }
+      return out;
     }
 
-    const value = files[key];
-    return value !== undefined ? [value] : [];
+    // Bare files.<name> (or wildcard) → the filename(s), preserving the legacy behavior that
+    // filename-scoped rules rely on (the parser now stores a { filename, type, content } object).
+    const filenamesOf = (entry) => (Array.isArray(entry) ? entry.map(fileFilename) : [fileFilename(entry)]);
+    if (key.endsWith('*')) {
+      const prefix = key.slice(0, -1);
+      const out = [];
+      for (const [k, entry] of Object.entries(files)) {
+        if (k.startsWith(prefix)) out.push(...filenamesOf(entry));
+      }
+      return out.filter((v) => v !== undefined);
+    }
+    if (!Object.prototype.hasOwnProperty.call(files, key)) return [];
+    return filenamesOf(files[key]).filter((v) => v !== undefined);
   }
 
   #resolveRaw() {
