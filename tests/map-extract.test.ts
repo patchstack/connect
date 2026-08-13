@@ -56,6 +56,40 @@ beforeAll(() => {
       exec("report " + input.name);
     }
   `);
+
+  // ROOT-level entrypoint (not under src/) — common for server.ts / app.ts / worker entrypoints.
+  writeFileSync(join(dir, 'root-server.cjs'), `
+    const express = require("express");
+    const fs = require("node:fs");
+    const app = express();
+    app.post("/root/upload", (req, res) => {
+      fs.writeFileSync("/tmp/x", req.body.blob);
+      res.end();
+    });
+  `);
+
+  // A handler with a DECLARED-BUT-UNCALLED local helper that shells out: its exec must NOT be
+  // attributed to the endpoint, while the helper it DOES call must be.
+  writeFileSync(join(dir, 'src', 'fp.ts'), `
+    import { exec } from "node:child_process";
+    import fs from "node:fs";
+    export async function PUT(req) {
+      function neverCalled() { exec("rm -rf /"); }
+      const used = () => { fs.readFileSync("/etc/hosts"); };
+      used();
+      return new Response("ok");
+    }
+  `);
+
+  // A local factory returning an imported client — the client must still resolve to its package.
+  writeFileSync(join(dir, 'src', 'factory.ts'), `
+    import { createClient } from "@supabase/supabase-js";
+    function getClient() { return createClient(process.env.URL, process.env.KEY); }
+    export async function DELETE(req) {
+      const db = getClient();
+      return db.from("audit").delete().eq("id", req.query.id);
+    }
+  `);
 });
 afterAll(() => rmSync(dir, { recursive: true, force: true }));
 
@@ -106,9 +140,56 @@ describe('agnostic input-flow extractor', () => {
     ]);
   });
 
-  it('records honest coverage notes and a framework label', async () => {
+  it('records honest coverage notes, counters and a framework label', async () => {
     const { map } = await buildInputMap(dir);
     expect(map!.framework).toBe('tanstack-start');
-    expect(map!.coverage.notes.join(' ')).toMatch(/best-effort/i);
+    const notes = map!.coverage.notes.join(' ');
+    expect(notes).toMatch(/best-effort/i);
+    // Must state that inputs/sinks are inventories and only `flows` asserts reachability.
+    expect(notes).toMatch(/INVENTOR/i);
+    expect(notes).toMatch(/flows/i);
+    expect(map!.coverage.filesDiscovered).toBeGreaterThan(0);
+    expect(map!.coverage.filesParsed).toBeGreaterThan(0);
+    expect(map!.coverage.filesParsed).toBeLessThanOrEqual(map!.coverage.filesDiscovered);
+  });
+
+  it('links input → sink flows with evidence, and only claims "precise" when the data reaches it', async () => {
+    const { map } = await buildInputMap(dir);
+    const createTask = map!.endpoints.find((e) => e.name === 'createTask')!;
+    const precise = createTask.flows.filter((f) => f.confidence === 'precise');
+    // `title` is passed into the insert → proven.
+    expect(precise).toEqual([
+      expect.objectContaining({ input: 'title', confidence: 'precise', sink: expect.objectContaining({ op: 'insert' }) }),
+    ]);
+    // The helper-reached select does NOT receive the input → heuristic, never precise.
+    expect(createTask.flows.some((f) => f.sink.op === 'select' && f.confidence === 'heuristic')).toBe(true);
+    expect(precise.every((f) => typeof f.line === 'number')).toBe(true); // evidence location
+  });
+
+  it('scans root-level entrypoints and .cjs files, not just src/', async () => {
+    const { map } = await buildInputMap(dir);
+    const rootEp = map!.endpoints.find((e) => e.route === '/root/upload');
+    expect(rootEp).toBeDefined();
+    expect(rootEp!.file).toBe('root-server.cjs');
+    expect(rootEp!.sinks).toEqual(
+      expect.arrayContaining([expect.objectContaining({ kind: 'fs', package: 'node:fs', op: 'writeFileSync' })]),
+    );
+  });
+
+  it('does not attribute sinks from a declared-but-uncalled local helper', async () => {
+    const { map } = await buildInputMap(dir);
+    const put = map!.endpoints.find((e) => e.name === 'PUT' && e.file.endsWith('fp.ts'))!;
+    expect(put.sinks.some((s) => s.kind === 'exec')).toBe(false); // neverCalled() must not count
+    expect(put.sinks.some((s) => s.kind === 'fs' && s.op === 'readFileSync')).toBe(true); // used() does
+  });
+
+  it('resolves a client built by a local factory back to its package', async () => {
+    const { map } = await buildInputMap(dir);
+    const del = map!.endpoints.find((e) => e.name === 'DELETE')!;
+    expect(del.sinks).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ kind: 'db', package: '@supabase/supabase-js', table: 'audit', op: 'delete' }),
+      ]),
+    );
   });
 });

@@ -1,7 +1,7 @@
-import { readFileSync, readdirSync, existsSync, realpathSync, statSync } from 'node:fs';
+import { readFileSync, readdirSync, realpathSync, statSync } from 'node:fs';
 import { builtinModules } from 'node:module';
-import { join, relative } from 'node:path';
-import type { SiteInputMap, Endpoint, InputField, Sink, TsModule } from './types.js';
+import { join, relative, isAbsolute } from 'node:path';
+import type { SiteInputMap, Endpoint, InputField, Sink, Flow, TsModule } from './types.js';
 
 // Framework-AGNOSTIC input-flow extractor. It doesn't gate on a specific stack — it walks any JS/TS
 // source and applies recognizer tables for (1) entry points, (2) inputs, (3) sinks, so it generalizes
@@ -91,18 +91,60 @@ function buildModuleBindings(sf: any, ts: TsModule): Bindings {
         }
         // const x = tracedFactory(...)  /  const x = new TracedClass(...)  → x carries that package.
         // Looking up nameToModule (not just direct imports) makes this transitive: pool → conn → ….
+        // Recorded as pending too, so a factory resolved LATER (a local wrapper, below) still binds x.
         if (init && ts.isIdentifier(decl.name)) {
           const callee = ts.isCallExpression(init) ? init.expression : ts.isNewExpression(init) ? init.expression : undefined;
           const root = callee ? rootIdentifier(callee, ts) : undefined;
-          if (root && nameToModule.has(root)) record(decl.name.text, nameToModule.get(root)!);
+          if (root) {
+            pending.push([decl.name.text, root]);
+            if (nameToModule.has(root)) record(decl.name.text, nameToModule.get(root)!);
+          }
         }
+      }
+    }
+    // A LOCAL factory that hands back a dependency object: `function getClient() { return createClient(…) }`.
+    // Without this, `const supabase = getClient()` looks like a plain local and every sink on it is
+    // dropped as "not a dependency" — silently losing the real client (the common AI-generated shape).
+    if ((ts.isFunctionDeclaration(node) || isFnLike(node, ts)) && node.body) {
+      const fnName = ts.isFunctionDeclaration(node) && node.name
+        ? node.name.text
+        : ts.isVariableDeclaration(node.parent) && ts.isIdentifier(node.parent.name)
+          ? node.parent.name.text
+          : undefined;
+      if (fnName) {
+        const root = returnedRootIdentifier(node.body, ts);
+        if (root) pending.push([fnName, root]);
       }
     }
     ts.forEachChild(node, visit);
   };
+  const pending: Array<[string, string]> = []; // [localName, rootIdentifierItCameFrom]
   visit(sf);
+  // Fixpoint: resolve chains like createClient → getClient → supabase (bounded; order-independent).
+  for (let i = 0; i < 4; i++) {
+    let changed = false;
+    for (const [name, root] of pending) {
+      if (!nameToModule.has(name) && nameToModule.has(root)) { record(name, nameToModule.get(root)!); changed = true; }
+    }
+    if (!changed) break;
+  }
   const locals = new Set([...declared].filter((n) => !nameToModule.has(n)));
   return { resolve: (name: string) => nameToModule.get(name), imports, locals };
+}
+
+// Root identifier of what a function body returns (`return createClient(…)` → "createClient"), for
+// following a local factory to the dependency it wraps. Concise arrow bodies are the expression itself.
+function returnedRootIdentifier(body: any, ts: TsModule): string | undefined {
+  if (!ts.isBlock(body)) return rootIdentifier(body, ts); // concise arrow body
+  let found: string | undefined;
+  const visit = (n: any) => {
+    if (found) return;
+    if (isUninvokedFunctionDeclaration(n, ts) && n !== body) return; // don't read a nested fn's return
+    if (ts.isReturnStatement(n) && n.expression) { found = rootIdentifier(n.expression, ts); return; }
+    ts.forEachChild(n, visit);
+  };
+  visit(body);
+  return found;
 }
 
 function requireSpecifier(init: any, ts: TsModule): string | undefined {
@@ -144,17 +186,27 @@ function lineOf(node: any): number | undefined {
   try { return sf.getLineAndCharacterOfPosition(node.getStart(sf)).line + 1; } catch { return undefined; }
 }
 
-export async function extractInputMap(cwd: string, ts: TsModule): Promise<SiteInputMap> {
+export interface ExtractOptions {
+  /** Follow symlinks that leave the project directory (off by default — keeps analysis in-project). */
+  followSymlinks?: boolean;
+}
+
+export async function extractInputMap(cwd: string, ts: TsModule, options: ExtractOptions = {}): Promise<SiteInputMap> {
   const notes: string[] = [];
   const endpoints: Endpoint[] = [];
   const failed: string[] = [];
-  const srcDir = join(cwd, 'src');
-  const root = existsSync(srcDir) ? srcDir : cwd;
+  let boundary = cwd;
+  try { boundary = realpathSync(cwd); } catch { /* use cwd as-is */ }
 
-  for (const file of collectSources(root)) {
+  const stats: WalkStats = { discovered: 0 };
+  const files = collectSources(cwd, boundary, { followOutside: options.followSymlinks }, [], new Set(), stats);
+  let parsed = 0;
+
+  for (const file of files) {
     try {
       const text = readFileSync(file, 'utf8');
       if (!hasEntrySignal(text)) continue;
+      parsed++;
       const sf = ts.createSourceFile(file, text, ts.ScriptTarget.Latest, true, guessScriptKind(ts, file));
       const bindings = buildModuleBindings(sf, ts);
       const localSinks = collectLocalSinks(sf, ts, bindings);
@@ -168,8 +220,10 @@ export async function extractInputMap(cwd: string, ts: TsModule): Promise<SiteIn
   }
 
   notes.push('Static analysis is best-effort — this is the DETECTED surface, not a proof of completeness.');
-  notes.push('Sinks are followed one level into same-file helpers; cross-file / dynamic indirection is not traced.');
+  notes.push('`inputs` and `sinks` are INVENTORIES (both present in the handler). Only `flows` asserts that an input reaches a sink — prefer flows with confidence "precise" when pinning a rule to a parameter.');
+  notes.push('Sinks are followed one level into same-file helpers; cross-file / dynamic indirection is not traced. Sinks inside declared-but-uncalled local functions are excluded.');
   notes.push('A sink `package` is resolved from the file’s imports (precise) or inferred from a known provider import; an unresolved package means the backing dependency could not be traced.');
+  if (!options.followSymlinks) notes.push('Symlinks leaving the project directory were not followed (use --follow-symlinks to include them).');
   if (failed.length > 0) {
     const sample = failed.slice(0, 5).join(', ');
     notes.push(`${failed.length} file(s) could not be analyzed and were skipped (fail-open): ${sample}${failed.length > 5 ? ', …' : ''}.`);
@@ -178,9 +232,25 @@ export async function extractInputMap(cwd: string, ts: TsModule): Promise<SiteIn
   if (unresolved > 0) {
     notes.push(`${unresolved} endpoint(s) declare an input validator that could not be statically parsed — their inputs are UNKNOWN, not empty (marked inputsResolved: false).`);
   }
-  if (endpoints.length === 0) notes.push('No recognized server-side entry points found under the source root.');
+  const heuristicOnly = endpoints.filter((e) => e.sinks.length > 0 && e.inputs.length > 0 && !e.flows.some((f) => f.confidence === 'precise')).length;
+  if (heuristicOnly > 0) {
+    notes.push(`${heuristicOnly} endpoint(s) have inputs and sinks but no PRECISE data link — their flows are "heuristic" (may reach), not proven.`);
+  }
+  if (endpoints.length === 0) notes.push('No recognized server-side entry points found under the analyzed roots.');
 
-  return { version: 1, framework: detectFramework(cwd), endpoints, coverage: { adapter: 'agnostic-v1', notes } };
+  return {
+    version: 1,
+    framework: detectFramework(cwd),
+    endpoints,
+    coverage: {
+      adapter: 'agnostic-v1',
+      filesDiscovered: stats.discovered,
+      filesParsed: parsed,
+      filesSkipped: failed.length,
+      roots: ['.'],
+      notes,
+    },
+  };
 }
 
 // Cheap textual pre-filter so we only parse files that could contain an entry point. Derived from the
@@ -216,29 +286,59 @@ function guessScriptKind(ts: TsModule, file: string) {
   return ts.ScriptKind.TS;
 }
 
-const isSourceFile = (name: string) => /\.(ts|tsx|js|jsx|mjs)$/.test(name) && !name.endsWith('.d.ts');
+const isSourceFile = (name: string) => /\.(ts|tsx|mts|cts|js|jsx|mjs|cjs)$/.test(name) && !name.endsWith('.d.ts');
 
-// Walks the tree following symlinked directories/files too (monorepos link packages into src), with a
-// realpath visited-set so link cycles can't loop.
-function collectSources(dir: string, out: string[] = [], seen = new Set<string>()): string[] {
+// Directories that never hold app source, so walking the whole project stays cheap. (We walk the whole
+// project rather than `src` only: server entrypoints, route dirs and platform function dirs commonly
+// live at the root — `server.ts`, `app/`, `api/`, `routes/`, `functions/`, `netlify/`, `supabase/`.)
+const SKIP_DIRS = new Set([
+  'node_modules', 'dist', 'build', 'out', 'coverage', 'public', 'static', 'assets',
+  '.git', '.next', '.nuxt', '.svelte-kit', '.output', '.vercel', '.wrangler', '.turbo', '.cache',
+  'vendor', 'tmp', 'temp', '__pycache__',
+]);
+
+export interface WalkStats { discovered: number }
+
+/**
+ * Walk the project for source files. Symlinks are followed ONLY while they stay inside the project
+ * boundary (`boundary`, a realpath) — a link to an external repo would otherwise pull unrelated code
+ * (and its paths) into the map. `followOutside` opts out of the boundary check. A realpath visited-set
+ * makes link cycles safe.
+ */
+function collectSources(
+  dir: string,
+  boundary: string,
+  opts: { followOutside?: boolean },
+  out: string[] = [],
+  seen = new Set<string>(),
+  stats: WalkStats = { discovered: 0 },
+): string[] {
   let key: string;
   try { key = realpathSync(dir); } catch { return out; }
   if (seen.has(key)) return out;
+  if (!opts.followOutside && !isInside(key, boundary)) return out;
   seen.add(key);
   let entries;
   try { entries = readdirSync(dir, { withFileTypes: true }); } catch { return out; }
   for (const e of entries) {
-    if (e.name === 'node_modules' || e.name === 'dist' || e.name === 'build' || e.name.startsWith('.')) continue;
+    if (SKIP_DIRS.has(e.name) || (e.name.startsWith('.') && e.name !== '.')) continue;
     const full = join(dir, e.name);
-    if (e.isDirectory()) collectSources(full, out, seen);
+    if (e.isDirectory()) collectSources(full, boundary, opts, out, seen, stats);
     else if (e.isSymbolicLink()) {
-      let st;
-      try { st = statSync(full); } catch { continue; }
-      if (st.isDirectory()) collectSources(full, out, seen);
-      else if (st.isFile() && isSourceFile(e.name)) out.push(full);
-    } else if (isSourceFile(e.name)) out.push(full);
+      let st, real;
+      try { st = statSync(full); real = realpathSync(full); } catch { continue; }
+      if (!opts.followOutside && !isInside(real, boundary)) continue; // link escapes the project
+      if (st.isDirectory()) collectSources(full, boundary, opts, out, seen, stats);
+      else if (st.isFile() && isSourceFile(e.name)) { out.push(full); stats.discovered++; }
+    } else if (isSourceFile(e.name)) { out.push(full); stats.discovered++; }
   }
   return out;
+}
+
+function isInside(candidate: string, boundary: string): boolean {
+  if (candidate === boundary) return true;
+  const rel = relative(boundary, candidate);
+  return rel !== '' && !rel.startsWith('..') && !isAbsolute(rel);
 }
 
 // --- entry-point recognizers -----------------------------------------------
@@ -255,13 +355,17 @@ function extractFromFile(sf: any, ts: TsModule, localSinks: Map<string, Sink[]>,
           if (chain.baseName === 'createServerFn' && ts.isIdentifier(decl.name)) {
             const validatorCall = chain.calls['inputValidator'] ?? chain.calls['validator'];
             const inputs = inputsFromValidator(validatorCall, ts, bindings);
+            const handlerFn = chain.calls['handler']?.arguments?.[0];
+            const sinks = sinksFrom(handlerFn, ts, localSinks, bindings);
+            const handlerBody = handlerFn && isFnLike(handlerFn, ts) ? handlerFn.body : undefined;
             const ep: Omit<Endpoint, 'file'> = {
               name: decl.name.text,
               entryKind: 'server-fn',
               method: methodFromObjectArg(chain.baseCall, ts),
               line: lineOf(decl),
               inputs,
-              sinks: sinksFrom(chain.calls['handler']?.arguments?.[0], ts, localSinks, bindings),
+              sinks,
+              flows: linkFlows(handlerBody, handlerFn?.parameters, inputs, sinks, ts),
             };
             // Honesty marker: a validator EXISTS but couldn't be read — inputs are unknown, not "none".
             if (validatorCall && inputs.length === 0) ep.inputsResolved = false;
@@ -385,14 +489,17 @@ function handlerEntry(
   extra: { method?: string; route?: string; line?: number } = {},
 ): Omit<Endpoint, 'file'> {
   const entryKind = kindLabel === 'route-registration' ? 'route-registration' : kindLabel === 'server-action' ? 'server-action' : 'route-handler';
+  const inputs = inputsFromHandler(params, body, ts, bindings);
+  const sinks = sinksFrom({ body, parameters: params, isSyntheticBody: true }, ts, localSinks, bindings);
   return {
     name,
     entryKind,
     method: extra.method ?? (HTTP_METHODS.has(name) ? name : undefined),
     route: extra.route,
     line: extra.line,
-    inputs: inputsFromHandler(params, body, ts, bindings),
-    sinks: sinksFrom({ body, parameters: params, isSyntheticBody: true }, ts, localSinks, bindings),
+    inputs,
+    sinks,
+    flows: linkFlows(body, params, inputs, sinks, ts),
   };
 }
 
@@ -621,6 +728,12 @@ function directSinks(node: any, ts: TsModule, bindings: Bindings): Sink[] {
   };
   const push = (s: Sink) => sinks.push(s);
   const visit = (n: any) => {
+    // A function that is DECLARED here but not invoked here is not reached by this endpoint — walking
+    // into it would report sinks the endpoint never touches (e.g. an unused local helper that shells
+    // out). Skip those subtrees; when the handler DOES call such a helper, `localCalls` +
+    // `collectLocalSinks` bring its sinks in by name. Inline callbacks / IIFEs are NOT skipped — those
+    // do run (`items.map(x => db.insert(x))`, `.then(...)`).
+    if (n !== node && isUninvokedFunctionDeclaration(n, ts)) return;
     if (ts.isCallExpression(n)) {
       const callee = n.expression;
       // db: `.from("t").<op>()` (supabase/knex/kysely)
@@ -680,6 +793,104 @@ function directSinks(node: any, ts: TsModule, bindings: Bindings): Sink[] {
   };
   visit(node);
   return sinks;
+}
+
+// A named function *declaration*, or a function bound to a variable/property — i.e. code that only runs
+// if something calls it. An inline callback (an arrow passed as an argument), an IIFE, or a function
+// used directly in an expression is NOT this: those execute where they appear.
+function isUninvokedFunctionDeclaration(n: any, ts: TsModule): boolean {
+  if (ts.isFunctionDeclaration(n)) return true;
+  if (isFnLike(n, ts)) {
+    const p = n.parent;
+    if (p && (ts.isVariableDeclaration(p) || ts.isPropertyAssignment(p) || ts.isPropertyDeclaration(p))) return true;
+  }
+  return false;
+}
+
+// --- input → sink flow linking ---------------------------------------------
+// Evidence-backed data links: for each sink, does an INPUT identifier/path appear inside the sink
+// call's arguments? "Tainted" roots are the handler's own parameter names (`{ data }`, `req`) plus any
+// local alias of them (`const body = await request.json()`, `const { title } = data`).
+//
+// Deliberately conservative: a match yields `precise`; no match yields `heuristic` (the input and sink
+// merely co-occur). It never claims a flow it didn't see, which is the point — a consumer pinning a
+// rule to a parameter should trust `precise` and treat `heuristic` as "may reach".
+function linkFlows(
+  bodyNode: any,
+  params: any,
+  inputs: InputField[],
+  sinks: Sink[],
+  ts: TsModule,
+): Flow[] {
+  if (!bodyNode || sinks.length === 0 || inputs.length === 0) return [];
+  const taintedRoots = new Set<string>();
+  for (const p of params ?? []) {
+    if (!p?.name) continue;
+    if (ts.isIdentifier(p.name)) taintedRoots.add(p.name.text);
+    else if (ts.isObjectBindingPattern(p.name)) {
+      for (const el of p.name.elements) if (ts.isBindingElement(el) && ts.isIdentifier(el.name)) taintedRoots.add(el.name.text);
+    }
+  }
+  // Local aliases of tainted data: `const body = await request.json()`, `const { title } = data`.
+  const aliasVisit = (n: any) => {
+    if (ts.isVariableDeclaration(n) && n.initializer) {
+      const root = rootIdentifier(n.initializer, ts);
+      const fromTainted = root ? taintedRoots.has(root) : false;
+      const isRequestRead = /\b(json|formData|text|body|query|params)\b/.test(n.initializer.getText?.() ?? '');
+      if (fromTainted || isRequestRead) {
+        if (ts.isIdentifier(n.name)) taintedRoots.add(n.name.text);
+        else if (ts.isObjectBindingPattern(n.name)) {
+          for (const el of n.name.elements) if (ts.isBindingElement(el) && ts.isIdentifier(el.name)) taintedRoots.add(el.name.text);
+        }
+      }
+    }
+    ts.forEachChild(n, aliasVisit);
+  };
+  aliasVisit(bodyNode);
+
+  // Index sink call sites by line so a sink (which carries `line`) can be matched to its AST node.
+  const callsByLine = new Map<number, any[]>();
+  const callVisit = (n: any) => {
+    if (ts.isCallExpression(n)) {
+      const ln = lineOf(n);
+      if (ln !== undefined) {
+        const list = callsByLine.get(ln) ?? [];
+        list.push(n);
+        callsByLine.set(ln, list);
+      }
+    }
+    ts.forEachChild(n, callVisit);
+  };
+  callVisit(bodyNode);
+
+  const flows: Flow[] = [];
+  for (const sink of sinks) {
+    const candidates = sink.line !== undefined ? (callsByLine.get(sink.line) ?? []) : [];
+    // Text of every argument at this sink's call site(s) — where a tainted value would appear.
+    let argText = '';
+    for (const c of candidates) {
+      for (const a of c.arguments ?? []) {
+        try { argText += ' ' + a.getText(); } catch { /* ignore */ }
+      }
+    }
+    for (const input of inputs) {
+      const leaf = input.name.split('.').pop()!.replace(/\[\]$/, '');
+      // `data.title` / `{ title }` / `req.body.title` — the leaf name appearing in the sink's args,
+      // qualified by a tainted root when it's a member path.
+      const mentionsLeaf = argText.length > 0 && new RegExp(`\\b${escapeRe(leaf)}\\b`).test(argText);
+      const mentionsTaintedRoot = [...taintedRoots].some((r) => new RegExp(`\\b${escapeRe(r)}\\b`).test(argText));
+      if (mentionsLeaf && (mentionsTaintedRoot || taintedRoots.has(leaf))) {
+        flows.push({ input: input.name, sink, confidence: 'precise', line: sink.line });
+      } else {
+        flows.push({ input: input.name, sink, confidence: 'heuristic', line: sink.line });
+      }
+    }
+  }
+  return flows;
+}
+
+function escapeRe(s: string): string {
+  return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
 
 function localCalls(node: any, ts: TsModule): string[] {
