@@ -17,6 +17,8 @@ beforeAll(() => {
   writeFileSync(join(dir, 'src', 'tasks.functions.ts'), `
     import { createServerFn } from "@tanstack/react-start";
     import { z } from "zod";
+    import { createClient } from "@supabase/supabase-js";
+    const supabase = createClient(process.env.URL, process.env.KEY);
     function listTasks() {
       return supabase.from("tasks").select("id, title").order("created_at");
     }
@@ -39,9 +41,19 @@ beforeAll(() => {
   `);
 
   writeFileSync(join(dir, 'src', 'route.ts'), `
+    import { createClient } from "@supabase/supabase-js";
+    const supabase = createClient(process.env.URL, process.env.KEY);
     export async function POST(request) {
       const body = await request.json();
       return supabase.from("orders").insert({ note: body.note });
+    }
+  `);
+
+  writeFileSync(join(dir, 'src', 'actions.ts'), `
+    'use server';
+    import { exec } from "node:child_process";
+    export async function runReport(input) {
+      exec("report " + input.name);
     }
   `);
 });
@@ -54,34 +66,37 @@ describe('agnostic input-flow extractor', () => {
     expect(map).not.toBeNull();
     const byName = Object.fromEntries(map!.endpoints.map((e) => [e.name, e]));
 
-    // TanStack server fn: zod input + direct + helper-indirected sinks.
+    // TanStack server fn: zod input + direct + helper-indirected sinks, each tagged with the package.
     expect(byName.createTask).toMatchObject({ entryKind: 'server-fn', method: 'POST' });
     expect(byName.createTask.inputs).toEqual([{ name: 'title', type: 'string', min: 1, max: 200 }]);
     expect(byName.createTask.sinks).toEqual(
       expect.arrayContaining([
-        { kind: 'db', provider: 'sql', table: 'tasks', op: 'insert' },
-        { kind: 'db', provider: 'sql', table: 'tasks', op: 'select' }, // via listTasks() one-level dataflow
+        { kind: 'db', provider: 'sql', package: '@supabase/supabase-js', table: 'tasks', op: 'insert' },
+        { kind: 'db', provider: 'sql', package: '@supabase/supabase-js', table: 'tasks', op: 'select' }, // via listTasks()
       ]),
     );
-    // getTasks has no input; sink reached only through the helper.
     expect(byName.getTasks.inputs).toEqual([]);
-    expect(byName.getTasks.sinks).toEqual([{ kind: 'db', provider: 'sql', table: 'tasks', op: 'select' }]);
+    expect(byName.getTasks.sinks).toEqual([{ kind: 'db', provider: 'sql', package: '@supabase/supabase-js', table: 'tasks', op: 'select' }]);
 
-    // Express route registration: path + method + req.body/query inputs + fs/exec sinks.
+    // Express route registration: path + method + req.body/query inputs + fs/exec sinks with node: packages.
     const convert = map!.endpoints.find((e) => e.route === '/api/convert')!;
     expect(convert.entryKind).toBe('route-registration');
     expect(convert.method).toBe('POST');
     expect(convert.inputs.map((i) => i.name).sort()).toEqual(['data', 'fmt', 'path']);
     expect(convert.sinks).toEqual(
       expect.arrayContaining([
-        { kind: 'fs', op: 'writeFileSync' },
-        { kind: 'exec', op: 'exec' },
+        { kind: 'fs', package: 'node:fs', op: 'writeFileSync' },
+        { kind: 'exec', package: 'node:child_process', op: 'exec' },
       ]),
     );
 
-    // Next-style route handler: method from the export name, supabase sink.
+    // Next-style route handler: method from the export name, supabase sink with package.
     expect(byName.POST).toMatchObject({ entryKind: 'route-handler', method: 'POST' });
-    expect(byName.POST.sinks).toEqual([{ kind: 'db', provider: 'sql', table: 'orders', op: 'insert' }]);
+    expect(byName.POST.sinks).toEqual([{ kind: 'db', provider: 'sql', package: '@supabase/supabase-js', table: 'orders', op: 'insert' }]);
+
+    // Next `'use server'` action: recognized as an entry point, exec sink tagged with its package.
+    expect(byName.runReport).toMatchObject({ entryKind: 'server-action' });
+    expect(byName.runReport.sinks).toEqual([{ kind: 'exec', package: 'node:child_process', op: 'exec' }]);
   });
 
   it('records honest coverage notes and a framework label', async () => {

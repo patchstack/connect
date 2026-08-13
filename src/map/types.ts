@@ -21,6 +21,13 @@ export interface Sink {
   kind: string;
   /** e.g. "supabase", "pg", "fetch". */
   provider?: string;
+  /**
+   * The npm package (or `node:` builtin) backing this sink — the link that lets a site's vulnerable
+   * dependency (from the manifest / TI) be correlated to the exact input that reaches it. Resolved from
+   * the file's imports (e.g. `@supabase/supabase-js`, `express`, `node:child_process`); undefined when
+   * it can't be traced (a global like `fetch`, or an untraced indirection).
+   */
+  package?: string;
   /** For db sinks: the table. */
   table?: string;
   /** For db sinks: insert | update | delete | select | rpc. */
