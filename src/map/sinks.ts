@@ -161,7 +161,7 @@ function directSinks(node: any, ts: TsModule, bindings: Bindings): Sink[] {
         // `!b.relative` is the member-call twin of the bare-call justification below: a receiver that
         // resolves to a RELATIVE module is app code, whatever its methods are named. Without it,
         // `import * as helper from './util'; helper.exec(req.body.cmd)` was read as child_process and
-        // produced a precise, auto-generatable command-injection candidate for harmless local code.
+        // produced a proven, auto-generatable command-injection candidate for harmless local code.
         // Such a receiver is not dropped outright — `sinksFrom` follows it into its module instead.
         if (!b.local && !b.relative) {
           // db: prisma-style `prisma.<model>.<op>()` — the op names are generic (`delete`, `update`, …),

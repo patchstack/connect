@@ -11,10 +11,30 @@ export type InputSource =
   | 'query' | 'route-param' | 'header' | 'cookie' | 'file'
   | 'server-fn-data' | 'unknown';
 
+/**
+ * Where an input lives in the request, as the rule engine addresses it. This — not the field name — is
+ * half of an input's identity: `query.id` and `body.id` are different inputs that happen to share a
+ * name, and keying by name alone let a rule be pinned to the wrong one.
+ */
+export type AddressSpace = 'post' | 'get' | 'cookie' | 'files' | 'server' | 'route-param' | 'unknown';
+
+/**
+ * A field's declared shape BEFORE it is placed in the request: validator extraction knows a name, a type
+ * and constraints, but not which region the value arrives in — so it cannot know the input's identity.
+ * `withCoordinates` attaches the space, the coordinate and the id in one step.
+ */
+export type FieldShape = Omit<InputField, 'id'>;
+
 export interface InputField {
+  /**
+   * Stable identity: `<address space>:<full path>` (e.g. `get:id`, `post:billing.email`). Two inputs
+   * with the same NAME in different spaces are different inputs, and `Flow.inputId` refers to this.
+   */
+  id: string;
   /**
    * Parameter / body-field name — the coordinate a rule pins to. Nested validator fields are
    * flattened to dotted paths (`address.city`, `tags[].label`), matching `array_key_value` paths.
+   * NOT unique within an endpoint: use `id` to correlate.
    */
   name: string;
   /** Coarse type when derivable (string | number | boolean | array | object | unknown). */
@@ -151,10 +171,9 @@ export interface Endpoint {
  * A DATA LINK from one input to one sink — the only place the map asserts that an input actually
  * *reaches* a sink. `inputs` and `sinks` on an endpoint are inventories (both present somewhere in the
  * handler); a `Flow` is evidence-backed:
- *   - `precise`   — the input identifier/path appears inside the sink call's arguments.
- *   - `heuristic` — the input and sink co-occur in the handler but no data link was found; treat as
- *                   "may reach", never as proven.
- * Consumers that pin a rule to a parameter should prefer `precise` flows and fall back to broad rules.
+ * see `confidence` for the tier, and `inputId` for WHICH input (a name is not unique). Consumers that pin
+ * a rule to a parameter must require a proven tier (`exact-local` / `transformed-local`) and fall back to
+ * broad rules otherwise — and only `exact-local` should ever be promoted to blocking automatically.
  */
 /**
  * Which argument of the sink call the tainted value landed in. This decides which mitigation class is
@@ -183,16 +202,36 @@ export interface Flow {
   candidateFamily?: CandidateFamily;
   /**
    * Whether a Patchstack rule can SAFELY be compiled from this flow — deliberately separate from
-   * `confidence`. `precise` means "the source reaches the sink"; it is NOT authorization to block
+   * `confidence`. A proven tier means "the source reaches the sink"; it is NOT authorization to block
    * traffic. `ruleGeneratableReasons` lists what is missing, which doubles as the improvement queue.
    */
   ruleGeneratable?: boolean;
   ruleGeneratableReasons?: string[];
-  /** Input field name (dotted path), matching an entry in `Endpoint.inputs`. */
+  /**
+   * Input field name (dotted path) — for display. Not an identity: an endpoint can read the same name
+   * from two spaces, so anything that pins a rule must use `inputId`.
+   */
   input: string;
+  /** Identity of the input this flow starts from — matches `InputField.id`. */
+  inputId: string;
   /** The sink reached. */
   sink: Sink;
-  confidence: 'precise' | 'heuristic';
+  /**
+   * How the link was established, from strongest to weakest:
+   *   - `exact-local`       the input IS an argument of the sink call, seen in this file. The only tier a
+   *                         server should consider for AUTOMATIC promotion to blocking.
+   *   - `transformed-local` the input reaches the argument through an expression (concatenation, a
+   *                         template literal, a wrapper call). The value still arrives in the same
+   *                         parameter, so a rule can be compiled — but what reaches the sink is not
+   *                         exactly what arrived, so promotion deserves a human or a probe.
+   *   - `imported`          the sink lives in another module: the input co-occurs, and the call site is
+   *                         not visible here, so no argument-level evidence exists.
+   *   - `heuristic`         input and sink are both present in the handler, with no proven link.
+   *   - `unknown`           the sink call has no source span at all, so no evidence is even possible. A
+   *                         sink reached through a same-file helper is `heuristic`, not this: it was
+   *                         located, just not attributable to an argument at this call site.
+   */
+  confidence: 'exact-local' | 'transformed-local' | 'imported' | 'heuristic' | 'unknown';
   /** 1-based line of the sink call — the auditable evidence location. */
   line?: number;
 }
@@ -220,12 +259,20 @@ export interface Coverage {
 
 export interface SiteInputMap {
   /**
-   * Schema version of this document. 2 added: input `source` + `runtimeParameter`, sink/endpoint source
-   * spans, per-file `fingerprint`, and `ruleGeneratable` on flows. Spans are **UTF-16 code-unit offsets**
-   * (JavaScript string indices), not byte offsets; pair them with `fingerprint` so a server can reject
-   * stale coordinates after a deploy.
+   * Schema version of this document. Treat it as a WIRE CONTRACT: a consumer must reject a version it does
+   * not implement rather than parse it optimistically. The v2 → v3 changes are silent-failure shaped —
+   * old code keeps running and quietly does the wrong thing:
+   *   - flows identify their input by `inputId`, not `input` (a NAME is not unique within an endpoint, so
+   *     keying by it can attribute a flow to the wrong parameter);
+   *   - `confidence` is a five-tier taxonomy — `precise` no longer exists, so `=== 'precise'` is now
+   *     permanently false and every proven flow reads as unproven (use `isProvenFlow`);
+   *   - only `exact-local` should feed an automatic promotion to blocking; `transformed-local` is
+   *     dry-run / review-only, because what reaches the sink is not exactly what arrived.
+   * v2 added: input `source` + `runtimeParameter`, sink/endpoint source spans, per-file `fingerprint`, and
+   * `ruleGeneratable` on flows. Spans are **UTF-16 code-unit offsets** (JavaScript string indices), not
+   * byte offsets; pair them with `fingerprint` so a server can reject stale coordinates after a deploy.
    */
-  version: 2;
+  version: 3;
   /** e.g. "tanstack-start". */
   framework: string;
   endpoints: Endpoint[];

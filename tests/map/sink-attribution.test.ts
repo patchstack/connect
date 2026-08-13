@@ -81,7 +81,7 @@ describe('sink attribution', () => {
     // Previously impossible: NewExpression was inventoried but never indexed, so it could not be located
     // and every flow into it stayed heuristic.
     const f = ep.flows.find((x) => x.input === 'code')!;
-    expect(f.confidence).toBe('precise');
+    expect(f.confidence).toBe('exact-local');
     expect(f.argumentRole).toBe('code');
     expect(f.candidateFamily).toBe('code-injection');
   });

@@ -67,10 +67,13 @@ describe('aliased request namespaces', () => {
   });
 
   it('captures the namespace when destructured from the request identifier itself', async () => {
-    const { field } = await input('/fromreq', 'doc');
-    // Previously invisible: no coordinate was mis-addressed, but the surface went unreported, which
-    // reads as "nothing here" rather than "something we cannot address".
-    expect(field).toMatchObject({ source: 'query', runtimeParameter: 'get.doc' });
+    const { ep, field } = await input('/fromreq', 'doc');
+    expect(field).toMatchObject({ source: 'query', runtimeParameter: 'get.doc', id: 'get:doc' });
+    // The flow is PRECISE through the alias too: the tainted root carries its address space, so the read
+    // off `q` is known to be a query read rather than merely "some request value".
+    const flow = ep.flows.find((f) => f.inputId === 'get:doc')!;
+    expect(flow.confidence).toBe('exact-local');
+    expect(flow.ruleGeneratable).toBe(true);
   });
 
   it('still refuses a coordinate for a route param destructured that way', async () => {
@@ -84,9 +87,6 @@ describe('aliased request namespaces', () => {
     const got = map!.endpoints
       .flatMap((e) => e.flows.filter((f) => f.ruleGeneratable).map((f) => `${e.route}:${f.input}`))
       .sort();
-    // `/fromreq` is absent by design: the input is now VISIBLE, but its flow evidence is heuristic
-    // (the alias is not yet tracked in the taint paths), so it must not compile a rule. Visible and
-    // non-generatable is the safe half of this fix; making such flows precise is a separate change.
-    expect(got).toEqual(['/bodyalias:file', '/nested:doc', '/plain:doc', '/renamed:doc']);
+    expect(got).toEqual(['/bodyalias:file', '/fromreq:doc', '/nested:doc', '/plain:doc', '/renamed:doc']);
   });
 });

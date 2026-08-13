@@ -3,6 +3,7 @@ import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { buildInputMap } from '../../src/map/index.js';
+import { isProvenFlow } from '../../src/map/coordinates.js';
 import type { SiteInputMap } from '../../src/map/types.js';
 
 // GOLDEN CORPUS. Unit fixtures prove a mechanism; this measures BEHAVIOUR across the stacks AI builders
@@ -101,13 +102,15 @@ const ADVERSARIAL: Case[] = [
     expectCandidates: [],
   },
   {
-    name: 'adversarial: one field name read from two request namespaces',
+    name: 'adversarial: one field name read from two request namespaces, addressed separately',
     kind: 'adversarial',
     pkg: { dependencies: { express: '4' } },
     files: {
-      // `params.id` and `query.id` share a NAME but not an address. Whichever read the walker saw last
-      // used to decide the coordinate, so this handler compiled a rule pinned to `get.id` for data
-      // arriving in the path segment. Both orders are covered because that is what made it a bug.
+      // `params.id` and `query.id` share a NAME but not an address, so they are two inputs. Name-keyed
+      // extraction kept one of them and let its coordinate stand for both, which pinned a rule to
+      // `get.id` for data arriving in the path segment. Now each is addressed on its own: the query read
+      // earns `get.id`, the route param earns nothing (the resolver cannot reach it). Both source orders
+      // are covered because the order dependence is what made it a bug.
       'src/a.ts': `
         import express from "express";
         import fs from "node:fs";
@@ -121,8 +124,8 @@ const ADVERSARIAL: Case[] = [
         app.get("/pq/:id", ({ params: p, query: q }, res) => { fs.readFileSync(p.id); fs.readFileSync(q.id); res.end(); });
       `,
     },
-    expectCandidates: [],
-    expectRefused: [['id', /more than one request namespace/]],
+    expectCandidates: ['path-traversal @ get.id', 'path-traversal @ get.id'],
+    expectRefused: [['id', /route parameters are not exposed/]],
   },
   {
     name: 'adversarial: a validator field and the sink read address different namespaces',
@@ -131,8 +134,8 @@ const ADVERSARIAL: Case[] = [
     files: {
       // The schema describes the BODY; the sink consumes the QUERY. Both are called `id`, and grouping
       // inputs by name made the schema's `post.id` the only surviving entry — so the candidate pinned a
-      // parameter the payload never travels in. Namespace comparison (not source labels) is what catches
-      // this: a schema field and an Express `req.body` read are both `post.*` and must NOT be a conflict.
+      // parameter the payload never travels in. As separate identities the query read is pinned correctly
+      // and the declared-but-unread body field simply has no proven flow.
       'src/server.ts': `
         import express from "express";
         import fs from "node:fs";
@@ -148,9 +151,10 @@ const ADVERSARIAL: Case[] = [
         });
       `,
     },
-    // `/agree` must still compile: the point is to refuse conflicts, not to refuse validated bodies.
-    expectCandidates: ['path-traversal @ post.doc'],
-    expectRefused: [['id', /more than one request namespace/]],
+    // `/agree` must still compile: a validated body field read by the sink is the common good case.
+    expectCandidates: ['path-traversal @ get.id', 'path-traversal @ post.doc'],
+    // The schema's `post:id` is declared but never read by the sink — proven-nothing, not blockable.
+    expectRefused: [['id', /no proven local read/]],
   },
   {
     name: 'adversarial: sibling expressions must not contaminate each other',
@@ -312,14 +316,18 @@ beforeAll(async () => {
 }, 120_000);
 afterAll(() => dirs.forEach((d) => rmSync(d, { recursive: true, force: true })));
 
-/** Every compiled candidate as `family @ runtimeParameter`. */
+/**
+ * Every compiled candidate as `family @ runtimeParameter`. Correlation is by input IDENTITY: keying this
+ * by name would collapse `get:id` and `post:id` into one entry — the same lossy key that caused the
+ * wrong-pin bugs, which would make the harness report the wrong coordinate for a correct candidate.
+ */
 function candidatesOf(map: SiteInputMap): string[] {
   const out: string[] = [];
   for (const ep of map.endpoints) {
-    const coord = new Map(ep.inputs.map((i) => [i.name, i.runtimeParameter]));
+    const coord = new Map(ep.inputs.map((i) => [i.id, i.runtimeParameter]));
     for (const f of ep.flows) {
       if (!f.ruleGeneratable) continue;
-      out.push(`${f.candidateFamily} @ ${coord.get(f.input)}`);
+      out.push(`${f.candidateFamily} @ ${coord.get(f.inputId)}`);
     }
   }
   return out.sort();
@@ -350,10 +358,19 @@ describe('golden corpus', () => {
       it('never emits a candidate whose input lacks a runtime coordinate', () => {
         const map = maps.get(c.name)!;
         for (const ep of map.endpoints) {
-          const coord = new Map(ep.inputs.map((i) => [i.name, i.runtimeParameter]));
+          const coord = new Map(ep.inputs.map((i) => [i.id, i.runtimeParameter]));
           for (const f of ep.flows.filter((x) => x.ruleGeneratable)) {
-            expect(coord.get(f.input), `${f.input} is a candidate without a coordinate`).toBeTruthy();
+            expect(coord.get(f.inputId), `${f.inputId} is a candidate without a coordinate`).toBeTruthy();
           }
+        }
+      });
+
+      it('gives every input a unique identity, and every flow a real one to point at', () => {
+        const map = maps.get(c.name)!;
+        for (const ep of map.endpoints) {
+          const ids = ep.inputs.map((i) => i.id);
+          expect(new Set(ids).size, `${ep.route ?? ep.name}: duplicate input ids`).toBe(ids.length);
+          for (const f of ep.flows) expect(ids, `flow points at unknown input ${f.inputId}`).toContain(f.inputId);
         }
       });
     });
@@ -370,8 +387,8 @@ describe('golden corpus', () => {
       expect(inputs.length, `${c.name}: no inputs detected — the fixture proves nothing`).toBeGreaterThan(0);
       const generatable = map.endpoints.flatMap((e) => e.flows).filter((f) => f.ruleGeneratable);
       const declared = new Set(c.expectCandidates);
-      const coord = new Map(map.endpoints.flatMap((e) => e.inputs).map((i) => [i.name, i.runtimeParameter]));
-      expect(generatable.filter((f) => !declared.has(`${f.candidateFamily} @ ${coord.get(f.input)}`))).toEqual([]);
+      const coord = new Map(map.endpoints.flatMap((e) => e.inputs).map((i) => [i.id, i.runtimeParameter]));
+      expect(generatable.filter((f) => !declared.has(`${f.candidateFamily} @ ${coord.get(f.inputId)}`))).toEqual([]);
     }
   });
 
@@ -386,19 +403,21 @@ describe('golden corpus', () => {
   });
 
   it('reports corpus-wide metrics (the numbers that gate auto-promotion)', () => {
-    let candidates = 0, precise = 0, heuristic = 0, refusedWithReason = 0, noCoordinate = 0;
+    let candidates = 0, refusedWithReason = 0, noCoordinate = 0;
+    const tiers = new Map<string, number>();
     for (const c of ALL) {
       for (const ep of maps.get(c.name)!.endpoints) {
         for (const i of ep.inputs) if (!i.runtimeParameter) noCoordinate++;
         for (const f of ep.flows) {
-          if (f.confidence === 'precise') precise++; else heuristic++;
+          tiers.set(f.confidence, (tiers.get(f.confidence) ?? 0) + 1);
           if (f.ruleGeneratable) candidates++;
           else if ((f.ruleGeneratableReasons ?? []).length > 0) refusedWithReason++;
         }
       }
     }
     // eslint-disable-next-line no-console
-    console.log(`corpus: ${CASES.length} stack + ${ADVERSARIAL.length} adversarial projects · ${candidates} candidates · ${precise} precise / ${heuristic} heuristic flows · ${refusedWithReason} refused-with-reason · ${noCoordinate} inputs without a coordinate`);
+    const byTier = [...tiers].sort().map(([t, n]) => `${n} ${t}`).join(', ');
+    console.log(`corpus: ${CASES.length} stack + ${ADVERSARIAL.length} adversarial projects · ${candidates} candidates · flows: ${byTier} · ${refusedWithReason} refused-with-reason · ${noCoordinate} inputs without a coordinate`);
     expect(candidates).toBeGreaterThan(0);          // the compiler does something
     expect(refusedWithReason).toBeGreaterThan(0);   // and refuses a lot, explicitly
     // Every non-candidate must explain itself: silence is what makes a map untrustworthy.

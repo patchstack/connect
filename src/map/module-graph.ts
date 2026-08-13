@@ -51,7 +51,7 @@ export function createModuleGraph(ts: TsModule, opts: { cwd: string; boundary: s
         for (const s of mod.fnSinks.get(callee) ?? []) collected.push(s);
       }
       // `line` refers to the HELPER's file, not the endpoint's — carry the file so the coordinate is
-      // interpretable (and so flow linking never claims `precise` for a sink it cannot see locally).
+      // interpretable (and so flow linking marks it `imported` rather than proven — it cannot see the call).
       const rel = relative(opts.cwd, target);
       return collected.map((s) => ({ ...s, file: rel }));
     },

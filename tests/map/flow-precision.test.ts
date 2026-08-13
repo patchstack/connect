@@ -3,6 +3,7 @@ import { mkdtempSync, mkdirSync, writeFileSync, rmSync, symlinkSync } from 'node
 import { tmpdir } from 'node:os';
 import { join, dirname } from 'node:path';
 import { buildInputMap } from '../../src/map/index.js';
+import { isProvenFlow } from '../../src/map/coordinates.js';
 
 // `precise` is a claim a consumer may PIN A RULE ON, so it must be evidence-backed: the input has to be
 // genuinely READ into the sink. A property key that merely shares the input's name, with an unrelated
@@ -76,7 +77,7 @@ describe('flow precision', () => {
   it('does claim precise for a real read (shorthand property)', async () => {
     const { map } = await buildInputMap(dir);
     const ep = map!.endpoints.find((e) => e.file.endsWith('real.ts'))!;
-    expect(ep.flows.some((f) => f.input === 'title' && f.confidence === 'precise')).toBe(true);
+    expect(ep.flows.some((f) => f.input === 'title' && isProvenFlow(f.confidence))).toBe(true);
   });
 
   it('resolves an ALIASED imported helper to its exported name', async () => {
@@ -87,12 +88,17 @@ describe('flow precision', () => {
     );
   });
 
-  it('labels an imported sink with ITS OWN file, and never calls it precise', async () => {
+  it('labels an imported sink with ITS OWN file, and never claims a proven flow for it', async () => {
     const { map } = await buildInputMap(dir);
     const ep = map!.endpoints.find((e) => e.file.endsWith('alias.ts'))!;
     const imported = ep.sinks.find((s) => s.table === 'orders')!;
     expect(imported.file).toBe(join('src', 'lib', 'db.ts'));
-    expect(ep.flows.filter((f) => f.sink.table === 'orders').every((f) => f.confidence === 'heuristic')).toBe(true);
+    // `imported`, not the generic `heuristic`: the call site is in another module, so no argument-level
+    // evidence can exist here. Naming the reason is the difference between "no link" and "cannot see".
+    const flows = ep.flows.filter((f) => f.sink.table === 'orders');
+    expect(flows.length).toBeGreaterThan(0);
+    expect(flows.every((f) => f.confidence === 'imported')).toBe(true);
+    expect(flows.every((f) => !isProvenFlow(f.confidence))).toBe(true);
   });
 
   it('refuses to follow an import outside the project directory', async () => {

@@ -8,6 +8,7 @@ import { collectSources, detectFramework, hasEntrySignal, type WalkStats } from 
 import { functionNameFromPath, routeFromFilePath } from './routes.js';
 import { collectLocalSinks } from './sinks.js';
 import { createModuleGraph } from './module-graph.js';
+import { isProvenFlow } from './coordinates.js';
 import { extractFromFile } from './entries.js';
 
 // Framework-AGNOSTIC input-flow extractor. It doesn't gate on a specific stack — it walks any JS/TS
@@ -77,9 +78,9 @@ export async function extractInputMap(cwd: string, ts: TsModule, options: Extrac
   }
 
   notes.push('Static analysis is best-effort — this is the DETECTED surface, not a proof of completeness.');
-  notes.push('`inputs` and `sinks` are INVENTORIES (both present in the handler). Only `flows` asserts that an input reaches a sink — prefer flows with confidence "precise" when pinning a rule to a parameter.');
+  notes.push('`inputs` and `sinks` are INVENTORIES (both present in the handler). Only `flows` asserts that an input reaches a sink: require confidence "exact-local" or "transformed-local" before pinning a rule, and identify the input by `inputId` — a field NAME can occur in more than one request namespace.');
   notes.push('Sinks are followed into same-file helpers and ONE hop into an imported relative module (a dependency\u2019s internals are not followed); deeper or dynamic indirection is not traced. Sinks inside declared-but-uncalled local functions are excluded.');
-  notes.push('A sink `package` is resolved from the file’s imports (precise) or inferred from a known provider import; an unresolved package means the backing dependency could not be traced.');
+  notes.push('A sink `package` is resolved from the file’s imports (`attribution: "import"`) or inferred from another import in the same file (`"inferred"`); an inferred package is a hint for a reviewer, not evidence about the receiver, and never licenses a rule.');
   if (!options.followSymlinks) notes.push('Symlinks leaving the project directory were not followed (use --follow-symlinks to include them).');
   if (failed.length > 0) {
     const sample = failed.slice(0, 5).join(', ');
@@ -89,14 +90,14 @@ export async function extractInputMap(cwd: string, ts: TsModule, options: Extrac
   if (unresolved > 0) {
     notes.push(`${unresolved} endpoint(s) declare an input validator that could not be statically parsed — their inputs are UNKNOWN, not empty (marked inputsResolved: false).`);
   }
-  const heuristicOnly = endpoints.filter((e) => e.sinks.length > 0 && e.inputs.length > 0 && !e.flows.some((f) => f.confidence === 'precise')).length;
+  const heuristicOnly = endpoints.filter((e) => e.sinks.length > 0 && e.inputs.length > 0 && !e.flows.some((f) => isProvenFlow(f.confidence))).length;
   if (heuristicOnly > 0) {
-    notes.push(`${heuristicOnly} endpoint(s) have inputs and sinks but no PRECISE data link — their flows are "heuristic" (may reach), not proven.`);
+    notes.push(`${heuristicOnly} endpoint(s) have inputs and sinks but no proven data link — their flows say "may reach", not "does reach" (see each flow's confidence).`);
   }
   if (endpoints.length === 0) notes.push('No recognized server-side entry points found under the analyzed roots.');
 
   return {
-    version: 2,
+    version: 3,
     framework: detectFramework(cwd),
     endpoints,
     coverage: {
