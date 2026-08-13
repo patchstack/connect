@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { readFileSync, readdirSync, existsSync } from 'node:fs';
+import { readFileSync, readdirSync, existsSync, statSync } from 'node:fs';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -38,9 +38,15 @@ describe('protect runtime stays edge-safe', () => {
     expect(offenders.map((f) => f.replace(PROTECT_DIR, ''))).toEqual([]);
   });
 
-  it('the built protect bundle has no static Node-builtin import (when dist exists)', () => {
+  it('the built protect bundle has no static Node-builtin import (when dist is fresh)', () => {
     const dist = fileURLToPath(new URL('../../dist/protect.js', import.meta.url));
-    if (!existsSync(dist)) return; // dist is gitignored / built on publish
+    if (!existsSync(dist)) return; // dist is gitignored and CI tests before building
+    // Only assert against a build that reflects the current sources: a STALE dist (left by a build on
+    // another branch) would otherwise fail this spuriously. The source-graph assertion above is the
+    // real invariant and always runs.
+    const distMtime = statSync(dist).mtimeMs;
+    const newestSrc = Math.max(...files.map((f) => statSync(f).mtimeMs));
+    if (distMtime < newestSrc) return;
     const built = readFileSync(dist, 'utf8');
     // The bundler rewrites `node:fs` → `fs`; either form at top level would break an edge build.
     const bad = built.match(/^import\s[^;]*?\sfrom\s*["'](?:node:)?(?:fs|path|child_process|dns|net|os)["']/gm);
