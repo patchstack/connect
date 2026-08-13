@@ -1,7 +1,7 @@
 import type { InputField, InputSource, TsModule } from './types.js';
 import { bindingKey, rootIdentifier } from './ast.js';
 import { npmPackageOf, type Bindings } from './bindings.js';
-import { runtimeCoordinate, withCoordinates } from './coordinates.js';
+import { namespaceOf, runtimeCoordinate, withCoordinates } from './coordinates.js';
 
 const ZOD_BASE = new Set(['string', 'number', 'boolean', 'array', 'object', 'enum', 'bigint', 'date', 'record']);
 // String-format refinements a validator can declare — kept on the field so a rule can pin the shape.
@@ -26,13 +26,45 @@ export function inputsFromHandler(
 ): InputField[] {
   // A validated schema inside a handler describes the request body — except for a payload-style entry
   // (a server action), where the schema describes the action's own argument.
-  const fields = withCoordinates(zodObjectFields(body, ts, bindings), opts.validatorSource ?? 'json-body');
-  const names = new Set(fields.map((f) => f.name));
-  for (const { name, source } of requestMemberAccesses(params, body, ts, opts)) {
-    if (!names.has(name)) {
-      names.add(name);
-      fields.push({ name, source, ...runtimeCoordinate(source, name) });
+  const schemaSource = opts.validatorSource ?? 'json-body';
+  const schemaFields = zodObjectFields(body, ts, bindings);
+  const reads = requestMemberAccesses(params, body, ts, opts);
+
+  // ONE collision pass over both origins. A schema field and a request read can share a name while
+  // addressing different places — `z.object({ id }).parse(req.body)` next to `fs.read(req.query.id)`
+  // used to yield the schema's `post.id` while the sink actually consumed `get.id`, so a rule inspected
+  // a parameter the payload never travels in. Grouping by name is what makes that invisible, so the
+  // grouping now carries every source, and the verdict compares effective NAMESPACES: `json-body` and
+  // an Express `req.body` read are both `post.*` (not a conflict), `post.id` vs `get.id` is.
+  const sourcesByName = new Map<string, InputSource[]>();
+  const add = (name: string, source: InputSource) => {
+    const list = sourcesByName.get(name) ?? [];
+    if (!list.includes(source)) list.push(source);
+    sourcesByName.set(name, list);
+  };
+  for (const f of schemaFields) add(f.name, f.source ?? schemaSource);
+  for (const r of reads) for (const s of r.sources) add(r.name, s);
+
+  const coordFor = (name: string, primary: InputSource) => {
+    const sources = sourcesByName.get(name) ?? [primary];
+    if (new Set(sources.map((s) => namespaceOf(s, name))).size > 1) {
+      return {
+        runtimeParameter: null,
+        runtimeParameterReason: `field is read from more than one request namespace (${sources.join(', ')}): no single parameter addresses it`,
+      };
     }
+    return runtimeCoordinate(primary, name);
+  };
+
+  const fields: InputField[] = withCoordinates(schemaFields, schemaSource)
+    .map((f) => ({ ...f, ...coordFor(f.name, f.source ?? schemaSource) }));
+  const names = new Set(fields.map((f) => f.name));
+  for (const { name, sources } of reads) {
+    if (names.has(name)) continue;
+    const primary = sources[0]; // first-seen, so the reported source is deterministic
+    if (!primary) continue;
+    names.add(name);
+    fields.push({ name, source: primary, ...coordFor(name, primary) });
   }
   return fields;
 }
@@ -117,9 +149,19 @@ function requestMemberAccesses(
   body: any,
   ts: TsModule,
   opts: { payloadParam?: boolean } = {},
-): Array<{ name: string; source: InputSource }> {
+): Array<{ name: string; sources: InputSource[] }> {
   if (!body) return [];
-  const out = new Map<string, InputSource>();
+  // Keyed by FIELD NAME, which two namespaces can share (`params.id` and `query.id` in one handler).
+  // Last-write-wins silently picked one, and since the pick decided the coordinate, a handler reading
+  // both compiled a rule pinned to `get.id` for data that arrives in the path segment — a wrong-input
+  // pin, the one failure this whole layer exists to prevent. Collisions are now recorded, and the
+  // first-seen source wins so the record is at least deterministic.
+  const out = new Map<string, InputSource[]>();
+  const record = (name: string, source: InputSource) => {
+    const list = out.get(name) ?? [];
+    if (!list.includes(source)) list.push(source);
+    out.set(name, list);
+  };
   const p0 = params?.[0];
   const reqName = p0 && ts.isIdentifier(p0.name) ? p0.name.text : undefined;
   // Identifiers that ARE a request-input object (destructured `({ body })` param, `await req.json()`),
@@ -157,7 +199,7 @@ function requestMemberAccesses(
   const visit = (n: any) => {
     // <source>.<field>
     if (ts.isPropertyAccessExpression(n) && isReqSourceExpr(n.expression)) {
-      out.set(n.name.text, sourceOfExpr(n.expression));
+      record(n.name.text, sourceOfExpr(n.expression));
     }
     if (ts.isVariableDeclaration(n) && n.initializer) {
       const init = unwrap(n.initializer);
@@ -177,14 +219,14 @@ function requestMemberAccesses(
         const src = isBodyReadCall(n.initializer) ? bodyReadSource(n.initializer) : sourceOfExpr(init);
         for (const el of n.name.elements) {
           const key = bindingKey(el, ts);
-          if (key) out.set(key, src);
+          if (key) record(key, src);
         }
       }
     }
     ts.forEachChild(n, visit);
   };
   visit(body);
-  return [...out].map(([name, source]) => ({ name, source }));
+  return [...out].map(([name, sources]) => ({ name, sources }));
 
   // `req.body.x` / `req.query.x` / `req.params.x` — the namespace decides the runtime coordinate, and
   // route params notably have NONE, so this distinction is load-bearing rather than cosmetic.

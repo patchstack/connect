@@ -20,6 +20,14 @@ import type { SiteInputMap } from '../../src/map/types.js';
 
 interface Case {
   name: string;
+  /**
+   * `stack`: a project shape a builder really generates — measures recall and correct pinning.
+   * `adversarial`: app code CONSTRUCTED to look dangerous. A permanent category, not a bag of
+   * regressions: every false-candidate class we have found came from code that merely resembled a
+   * dangerous API, so the corpus has to contain lookalikes on purpose. These cases must produce a
+   * visible surface (inputs, usually sinks) and still compile no rule.
+   */
+  kind?: 'stack' | 'adversarial';
   pkg: Record<string, unknown>;
   files: Record<string, string>;
   /** `family @ runtimeParameter` for every flow that SHOULD compile to a candidate. */
@@ -27,6 +35,147 @@ interface Case {
   /** Proven flows that must NOT be candidates, as `input -> reason-fragment`. */
   expectRefused?: Array<[string, RegExp]>;
 }
+
+const ADVERSARIAL: Case[] = [
+  {
+    name: 'adversarial: app code whose exports collide with dangerous API names',
+    kind: 'adversarial',
+    pkg: { dependencies: { express: '4' } },
+    files: {
+      'src/util.ts': `
+        export function exec(x) { return x.length }
+        export function query(x) { return x }
+        export function readFileSync(p) { return p }
+        export function fetch(u) { return { u } }
+      `,
+      'src/server.ts': `
+        import * as helper from "./util";
+        import { fetch, exec } from "./util";
+        import express from "express";
+        const app = express();
+        // Namespace member calls AND named imports, both from a relative module.
+        app.post("/ns", (req, res) => {
+          helper.exec(req.body.cmd); helper.query(req.body.sql); helper.readFileSync(req.body.path);
+          res.end();
+        });
+        app.post("/named", (req, res) => { fetch(req.body.url); exec(req.body.cmd2); res.end(); });
+      `,
+    },
+    expectCandidates: [],
+  },
+  {
+    name: 'adversarial: untraceable receivers in a file that imports real db clients',
+    kind: 'adversarial',
+    pkg: { dependencies: { express: '4', pg: '8', '@supabase/supabase-js': '2' } },
+    files: {
+      'src/server.ts': `
+        import { Pool } from "pg";
+        import { createClient } from "@supabase/supabase-js";
+        import express from "express";
+        const app = express();
+        // The package is only INFERRED from the file's imports; the receivers are app objects.
+        app.post("/raw", (req, res) => { res.locals.db.query(req.body.sql); res.end(); });
+        app.post("/from", (req, res) => { res.locals.sb.from("t").insert({ v: req.body.v }); res.end(); });
+      `,
+    },
+    expectCandidates: [],
+    expectRefused: [['sql', /inferred from the file's other imports/]],
+  },
+  {
+    name: 'adversarial: parameters shadowing dangerous globals',
+    kind: 'adversarial',
+    pkg: { dependencies: { express: '4' } },
+    files: {
+      'src/server.ts': `
+        import express from "express";
+        const app = express();
+        app.post("/shadow", (req, res) => {
+          const send = (fetch) => fetch(req.body.url);
+          send((u) => ({ u }));
+          const run = (eval2) => eval2(req.body.code);
+          run((c) => c);
+          res.end();
+        });
+      `,
+    },
+    expectCandidates: [],
+  },
+  {
+    name: 'adversarial: one field name read from two request namespaces',
+    kind: 'adversarial',
+    pkg: { dependencies: { express: '4' } },
+    files: {
+      // `params.id` and `query.id` share a NAME but not an address. Whichever read the walker saw last
+      // used to decide the coordinate, so this handler compiled a rule pinned to `get.id` for data
+      // arriving in the path segment. Both orders are covered because that is what made it a bug.
+      'src/a.ts': `
+        import express from "express";
+        import fs from "node:fs";
+        const app = express();
+        app.get("/qp/:id", ({ params: p, query: q }, res) => { fs.readFileSync(q.id); fs.readFileSync(p.id); res.end(); });
+      `,
+      'src/b.ts': `
+        import express from "express";
+        import fs from "node:fs";
+        const app = express();
+        app.get("/pq/:id", ({ params: p, query: q }, res) => { fs.readFileSync(p.id); fs.readFileSync(q.id); res.end(); });
+      `,
+    },
+    expectCandidates: [],
+    expectRefused: [['id', /more than one request namespace/]],
+  },
+  {
+    name: 'adversarial: a validator field and the sink read address different namespaces',
+    kind: 'adversarial',
+    pkg: { dependencies: { express: '4', zod: '3' } },
+    files: {
+      // The schema describes the BODY; the sink consumes the QUERY. Both are called `id`, and grouping
+      // inputs by name made the schema's `post.id` the only surviving entry — so the candidate pinned a
+      // parameter the payload never travels in. Namespace comparison (not source labels) is what catches
+      // this: a schema field and an Express `req.body` read are both `post.*` and must NOT be a conflict.
+      'src/server.ts': `
+        import express from "express";
+        import fs from "node:fs";
+        import { z } from "zod";
+        const app = express();
+        app.post("/mismatch", (req, res) => {
+          z.object({ id: z.string() }).parse(req.body);
+          res.end(fs.readFileSync(req.query.id));
+        });
+        app.post("/agree", (req, res) => {
+          z.object({ doc: z.string() }).parse(req.body);
+          res.end(fs.readFileSync(req.body.doc));
+        });
+      `,
+    },
+    // `/agree` must still compile: the point is to refuse conflicts, not to refuse validated bodies.
+    expectCandidates: ['path-traversal @ post.doc'],
+    expectRefused: [['id', /more than one request namespace/]],
+  },
+  {
+    name: 'adversarial: sibling expressions must not contaminate each other',
+    kind: 'adversarial',
+    pkg: { dependencies: { express: '4' } },
+    files: {
+      'src/server.ts': `
+        import express from "express";
+        import fs from "node:fs";
+        import { exec } from "node:child_process";
+        const STATIC = "ls -la";
+        const app = express();
+        // Only ONE pairing is real: path -> readFileSync. \`label\` reaches no sink, and the exec call
+        // takes no request data at all — an inventory-level "both present" must not become a flow.
+        app.post("/two", (req, res) => {
+          const label = req.body.label;
+          fs.readFileSync(req.body.path);
+          exec(STATIC);
+          res.end(label);
+        });
+      `,
+    },
+    expectCandidates: ['path-traversal @ post.path'],
+  },
+];
 
 const CASES: Case[] = [
   {
@@ -141,11 +290,13 @@ const CASES: Case[] = [
   },
 ];
 
+const ALL: Case[] = [...CASES, ...ADVERSARIAL];
+
 const maps = new Map<string, SiteInputMap>();
 let dirs: string[] = [];
 
 beforeAll(async () => {
-  for (const c of CASES) {
+  for (const c of ALL) {
     const d = mkdtempSync(join(tmpdir(), 'ps-corpus-'));
     dirs.push(d);
     for (const [rel, body] of Object.entries(c.files)) {
@@ -175,7 +326,7 @@ function candidatesOf(map: SiteInputMap): string[] {
 }
 
 describe('golden corpus', () => {
-  for (const c of CASES) {
+  for (const c of ALL) {
     describe(c.name, () => {
       it('compiles exactly the expected candidates — no wrong-input pins', () => {
         const got = candidatesOf(maps.get(c.name)!);
@@ -208,9 +359,35 @@ describe('golden corpus', () => {
     });
   }
 
+  // An adversarial case that found NOTHING would pass its zero-candidate assertion for the wrong
+  // reason — a parser bug or a bad fixture would read as a security property. Each one has to prove it
+  // actually saw the handler and the request fields, and only then that it compiled no rule.
+  it('adversarial cases detect a real surface and still refuse to compile a rule', () => {
+    for (const c of ADVERSARIAL) {
+      const map = maps.get(c.name)!;
+      const inputs = map.endpoints.flatMap((e) => e.inputs);
+      expect(map.endpoints.length, `${c.name}: no endpoint detected — the fixture proves nothing`).toBeGreaterThan(0);
+      expect(inputs.length, `${c.name}: no inputs detected — the fixture proves nothing`).toBeGreaterThan(0);
+      const generatable = map.endpoints.flatMap((e) => e.flows).filter((f) => f.ruleGeneratable);
+      const declared = new Set(c.expectCandidates);
+      const coord = new Map(map.endpoints.flatMap((e) => e.inputs).map((i) => [i.name, i.runtimeParameter]));
+      expect(generatable.filter((f) => !declared.has(`${f.candidateFamily} @ ${coord.get(f.input)}`))).toEqual([]);
+    }
+  });
+
+  it('keeps a standing adversarial category (lookalikes are how every false candidate got in)', () => {
+    // Guards against the category quietly emptying out; the classes listed are the ones that have
+    // actually produced false candidates, so losing one should fail loudly.
+    expect(ADVERSARIAL.length).toBeGreaterThanOrEqual(6);
+    const names = ADVERSARIAL.map((c) => c.name).join(' | ');
+    for (const cls of ['collide with dangerous API names', 'untraceable receivers', 'shadowing dangerous globals', 'two request namespaces', 'sibling expressions', 'different namespaces']) {
+      expect(names, `missing adversarial class: ${cls}`).toContain(cls);
+    }
+  });
+
   it('reports corpus-wide metrics (the numbers that gate auto-promotion)', () => {
     let candidates = 0, precise = 0, heuristic = 0, refusedWithReason = 0, noCoordinate = 0;
-    for (const c of CASES) {
+    for (const c of ALL) {
       for (const ep of maps.get(c.name)!.endpoints) {
         for (const i of ep.inputs) if (!i.runtimeParameter) noCoordinate++;
         for (const f of ep.flows) {
@@ -221,11 +398,11 @@ describe('golden corpus', () => {
       }
     }
     // eslint-disable-next-line no-console
-    console.log(`corpus: ${CASES.length} projects · ${candidates} candidates · ${precise} precise / ${heuristic} heuristic flows · ${refusedWithReason} refused-with-reason · ${noCoordinate} inputs without a coordinate`);
+    console.log(`corpus: ${CASES.length} stack + ${ADVERSARIAL.length} adversarial projects · ${candidates} candidates · ${precise} precise / ${heuristic} heuristic flows · ${refusedWithReason} refused-with-reason · ${noCoordinate} inputs without a coordinate`);
     expect(candidates).toBeGreaterThan(0);          // the compiler does something
     expect(refusedWithReason).toBeGreaterThan(0);   // and refuses a lot, explicitly
     // Every non-candidate must explain itself: silence is what makes a map untrustworthy.
-    for (const c of CASES) {
+    for (const c of ALL) {
       for (const ep of maps.get(c.name)!.endpoints) {
         for (const f of ep.flows.filter((x) => x.ruleGeneratable === false)) {
           expect(f.ruleGeneratableReasons?.length, `${c.name}/${f.input}: refused without a reason`).toBeGreaterThan(0);
