@@ -292,6 +292,34 @@ const CASES: Case[] = [
     },
     expectCandidates: [],
   },
+  {
+    name: 'express + a client in lib/ (the layout generated apps actually use)',
+    pkg: { dependencies: { express: '4', '@supabase/supabase-js': '2', pg: '8' } },
+    files: {
+      // The handler's file imports the CLIENT, not the driver. The receiver therefore resolves to a
+      // relative specifier, and treating that as app code made these sinks vanish — which also broke the
+      // package join a server needs to connect a CVE in `pg` to the endpoint that reaches it.
+      'src/lib/db.ts': `
+        import { createClient } from "@supabase/supabase-js";
+        export const db = createClient(process.env.URL, process.env.KEY);
+      `,
+      'src/lib/pool.ts': `
+        import { Pool } from "pg";
+        export const pool = new Pool({ connectionString: process.env.DATABASE_URL });
+      `,
+      'src/server.ts': `
+        import express from "express";
+        import { db } from "./lib/db";
+        import { pool } from "./lib/pool";
+        const app = express();
+        app.post("/tasks", async (req, res) => { await db.from("tasks").insert({ title: req.body.title }); res.end(); });
+        app.post("/report", async (req, res) => { await pool.query(req.body.sql); res.end(); });
+      `,
+    },
+    // The raw query is a blockable pattern; the inserted row value is context, not a rule.
+    expectCandidates: ['sql-injection @ post.sql'],
+    expectRefused: [['title', /not a blockable pattern/]],
+  },
 ];
 
 const ALL: Case[] = [...CASES, ...ADVERSARIAL];

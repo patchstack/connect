@@ -2,7 +2,7 @@ import { readFileSync, realpathSync, statSync } from 'node:fs';
 import { dirname, join, relative, resolve as resolvePath } from 'node:path';
 import type { Sink, TsModule } from './types.js';
 import { guessScriptKind, isFnLike, localCalls } from './ast.js';
-import { buildModuleBindings } from './bindings.js';
+import { buildModuleBindings, npmPackageOf, type Bindings } from './bindings.js';
 import { isInside } from './sources.js';
 import { collectLocalSinks, type ModuleGraph } from './sinks.js';
 
@@ -14,17 +14,19 @@ import { collectLocalSinks, type ModuleGraph } from './sinks.js';
 const RESOLVE_EXTS = ['.ts', '.tsx', '.mts', '.cts', '.js', '.jsx', '.mjs', '.cjs'];
 
 export function createModuleGraph(ts: TsModule, opts: { cwd: string; boundary: string; followOutside?: boolean }): ModuleGraph {
-  // file → { fnSinks, calleesOf } | null (unreadable/unparseable)
-  const cache = new Map<string, { fnSinks: Map<string, Sink[]>; calleesOf: Map<string, string[]> } | null>();
+  // file → { fnSinks, calleesOf, bindings } | null (unreadable/unparseable)
+  type Entry = { fnSinks: Map<string, Sink[]>; calleesOf: Map<string, string[]>; bindings: Bindings };
+  const cache = new Map<string, Entry | null>();
 
   const load = (file: string) => {
     if (cache.has(file)) return cache.get(file) ?? null;
-    let entry: { fnSinks: Map<string, Sink[]>; calleesOf: Map<string, string[]> } | null = null;
+    let entry: Entry | null = null;
     try {
       const text = readFileSync(file, 'utf8');
       const sf = ts.createSourceFile(file, text, ts.ScriptTarget.Latest, true, guessScriptKind(ts, file));
       const bindings = buildModuleBindings(sf, ts);
-      entry = { fnSinks: collectLocalSinks(sf, ts, bindings), calleesOf: collectCallees(sf, ts) };
+      // `bindings` is kept for `importedPackage`: the module's own view of what its exports came from.
+      entry = { fnSinks: collectLocalSinks(sf, ts, bindings), calleesOf: collectCallees(sf, ts), bindings };
     } catch {
       entry = null; // fail-open: an unreadable dependency must not break the map
     }
@@ -32,17 +34,24 @@ export function createModuleGraph(ts: TsModule, opts: { cwd: string; boundary: s
     return entry;
   };
 
+  /** Shared guard: resolve a relative specifier, and refuse to leave the project. */
+  const resolveInProject = (fromFile: string, specifier: string): string | undefined => {
+    const target = resolveRelativeModule(fromFile, specifier);
+    if (!target) return undefined;
+    // Stay inside the project: `../../other-repo/db` (or a symlink) would otherwise pull an unrelated
+    // codebase into this app's attack surface. The primary walker enforces this; so must the resolver.
+    if (!opts.followOutside) {
+      let real = target;
+      try { real = realpathSync(target); } catch { /* use as-is */ }
+      if (!isInside(real, opts.boundary)) return undefined;
+    }
+    return target;
+  };
+
   return {
     importedSinks(fromFile, specifier, exportName) {
-      const target = resolveRelativeModule(fromFile, specifier);
+      const target = resolveInProject(fromFile, specifier);
       if (!target) return [];
-      // Stay inside the project: `../../other-repo/db` (or a symlink) would otherwise pull an unrelated
-      // codebase into this app's attack surface. The primary walker enforces this; so must the resolver.
-      if (!opts.followOutside) {
-        let real = target;
-        try { real = realpathSync(target); } catch { /* use as-is */ }
-        if (!isInside(real, opts.boundary)) return [];
-      }
       const mod = load(target);
       if (!mod) return [];
       const collected = [...(mod.fnSinks.get(exportName) ?? [])];
@@ -54,6 +63,22 @@ export function createModuleGraph(ts: TsModule, opts: { cwd: string; boundary: s
       // interpretable (and so flow linking marks it `imported` rather than proven — it cannot see the call).
       const rel = relative(opts.cwd, target);
       return collected.map((s) => ({ ...s, file: rel }));
+    },
+
+    // A different question about the same module: not "what sinks are in there" but "what does this
+    // export TRACE TO". The common AI-built layout puts the client in a lib file —
+    // `export const db = createClient(...)` in `lib/db.ts`, imported everywhere — so the receiver of
+    // `db.from('orders').insert(...)` resolves to a relative specifier and nothing else. Refusing it (as
+    // an unattributable receiver) is right for app code but wrong here: one hop away it is a real
+    // dependency, and that chain is import-to-import, fully static — evidence, not inference.
+    importedPackage(fromFile, specifier, exportName) {
+      const target = resolveInProject(fromFile, specifier);
+      if (!target) return undefined;
+      const mod = load(target);
+      if (!mod) return undefined;
+      // The target module's own bindings answer it: `db` there resolves through
+      // `const db = createClient(...)` back to the package `createClient` was imported from.
+      return npmPackageOf(mod.bindings.resolve(exportName));
     },
   };
 }

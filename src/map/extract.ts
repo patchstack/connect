@@ -50,9 +50,11 @@ export async function extractInputMap(cwd: string, ts: TsModule, options: Extrac
       const fingerprint = createHash('sha256').update(text).digest('hex').slice(0, 16);
       const sf = ts.createSourceFile(file, text, ts.ScriptTarget.Latest, true, guessScriptKind(ts, file));
       const bindings = buildModuleBindings(sf, ts);
-      const localSinks = collectLocalSinks(sf, ts, bindings);
       const relFile = relative(cwd, file);
-      for (const ep of extractFromFile(sf, ts, localSinks, bindings, { file, owner: relFile, graph })) {
+      const ctx = { file, owner: relFile, graph };
+      // The ctx reaches helper summaries too, so a same-file helper using an imported client resolves.
+      const localSinks = collectLocalSinks(sf, ts, bindings, ctx);
+      for (const ep of extractFromFile(sf, ts, localSinks, bindings, ctx)) {
         // A FILE-BASED route handler carries its URL path in its location, not in the code, so derive
         // it here — without this a rule can only be param-pinned, never route-scoped (`when.path`).
         if (ep.route === undefined && ep.entryKind === 'edge-function') {

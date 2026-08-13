@@ -32,6 +32,12 @@ const isExecPackage = (pkg: string) => pkg === 'node:child_process' || EXEC_PACK
 export interface ModuleGraph {
   /** Sinks of `exportName` in the module `specifier` resolves to, relative to `fromFile`. */
   importedSinks(fromFile: string, specifier: string, exportName: string): Sink[];
+  /**
+   * The npm package `exportName` traces to inside the module `specifier` resolves to — for a client
+   * instance re-exported from a local module (`export const db = createClient(...)`). ONE hop: a
+   * re-export chain (`export { db } from './client'`) is not followed.
+   */
+  importedPackage(fromFile: string, specifier: string, exportName: string): string | undefined;
 }
 
 export interface SinkContext {
@@ -43,14 +49,14 @@ export interface SinkContext {
 }
 
 // --- sinks (agnostic) -------------------------------------------------------
-export function collectLocalSinks(sf: any, ts: TsModule, bindings: Bindings): Map<string, Sink[]> {
+export function collectLocalSinks(sf: any, ts: TsModule, bindings: Bindings, ctx?: SinkContext): Map<string, Sink[]> {
   const map = new Map<string, Sink[]>();
   const visit = (node: any) => {
-    if (ts.isFunctionDeclaration(node) && node.name && node.body) map.set(node.name.text, directSinks(node.body, ts, bindings));
+    if (ts.isFunctionDeclaration(node) && node.name && node.body) map.set(node.name.text, directSinks(node.body, ts, bindings, ctx));
     else if (ts.isVariableStatement(node)) {
       for (const decl of node.declarationList.declarations) {
         if (ts.isIdentifier(decl.name) && decl.initializer && isFnLike(decl.initializer, ts)) {
-          map.set(decl.name.text, directSinks(decl.initializer.body, ts, bindings));
+          map.set(decl.name.text, directSinks(decl.initializer.body, ts, bindings, ctx));
         }
       }
     }
@@ -65,7 +71,7 @@ export function sinksFrom(arrowOrNode: any, ts: TsModule, localSinks: Map<string
   const body = arrowOrNode.isSyntheticBody ? arrowOrNode.body
     : isFnLike(arrowOrNode, ts) ? arrowOrNode.body : arrowOrNode;
   if (!body) return [];
-  const sinks = directSinks(body, ts, bindings);
+  const sinks = directSinks(body, ts, bindings, ctx);
   for (const called of localCalls(body, ts)) {
     // Same-file helper.
     for (const s of localSinks.get(called) ?? []) sinks.push(s);
@@ -109,7 +115,7 @@ function namespaceMemberCalls(node: any, ts: TsModule): Array<[string, string]> 
 // it: resolved precisely from the call's base identifier via the file's imports, else inferred from
 // the file's imports of a known provider for that sink kind. A receiver that traces to a plain local
 // object/class/function is NOT a dependency sink and is dropped.
-function directSinks(node: any, ts: TsModule, bindings: Bindings): Sink[] {
+function directSinks(node: any, ts: TsModule, bindings: Bindings, ctx?: SinkContext): Sink[] {
   const sinks: Sink[] = [];
   // `spec` is the raw module specifier the receiver came from, which `pkg` cannot express: a RELATIVE
   // specifier yields no package, and that is a positive fact (the receiver is app code) rather than the
@@ -122,6 +128,16 @@ function directSinks(node: any, ts: TsModule, bindings: Bindings): Sink[] {
     const relative = spec !== undefined && (spec.startsWith('.') || spec.startsWith('/'));
     const pkg = npmPackageOf(spec);
     if (pkg) return { pkg, root, spec };
+    // A RELATIVE receiver is app code — unless one hop away it is a dependency. `import { db } from
+    // './lib/db'` where that module does `export const db = createClient(...)` is the most common layout
+    // in generated apps, and treating it as app code made the sink vanish entirely. Ask the target module
+    // what the export traces to: a package means the receiver IS that dependency (an import-to-import
+    // chain, so `attribution: 'import'`), and NO package means it stays app code — which is what keeps
+    // `import * as helper from './util'; helper.exec(x)` correctly sink-free.
+    if (relative && ctx && spec) {
+      const viaModule = ctx.graph.importedPackage(ctx.file, spec, bindings.exportNameOf(root) ?? root);
+      if (viaModule) return { pkg: viaModule, root, spec };
+    }
     return { local: bindings.locals.has(root), root, spec, relative };
   };
   // Whether `package` is evidence or a guess. A resolved import binding is evidence ('import'); a
