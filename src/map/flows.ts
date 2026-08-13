@@ -155,8 +155,15 @@ function linkFlows(
       if (!input.runtimeParameter) reasons.push(input.runtimeParameterReason ?? 'input has no runtime parameter');
       if (sink.file !== undefined) reasons.push('sink is in an imported module: no local call-site evidence');
       if (sink.start === undefined) reasons.push('sink call could not be located in the source');
-      if (sink.attribution === undefined) {
-        reasons.push(`sink receiver could not be traced to a dependency (${sink.kind}.${sink.op ?? '?'} on an unresolved receiver): a rule here would be a guess`);
+      // Only a receiver traced to a dependency ('import') or a genuine runtime global earns a rule.
+      // 'inferred' is deliberately NOT enough: the package came from some OTHER import in the file, not
+      // from the receiver, so `res.locals.db.query(x)` in a file that happens to import `pg` looks
+      // identical to a real pool — and `res.locals.db` may be any app object. Such sinks stay in the
+      // inventory for review; they just cannot compile a rule that blocks live traffic on a guess.
+      if (sink.attribution !== 'import' && sink.attribution !== 'global') {
+        reasons.push(sink.attribution === 'inferred'
+          ? `sink package "${sink.package}" was inferred from the file's other imports, not from the receiver (${sink.kind}.${sink.op ?? '?'}): the receiver may be any app object`
+          : `sink receiver could not be traced to a dependency (${sink.kind}.${sink.op ?? '?'} on an unresolved receiver): a rule here would be a guess`);
       }
       if (precise && argumentRole === 'unknown') reasons.push(`sink argument role is not modelled for ${sink.kind}.${sink.op ?? '?'}`);
       // A dynamic key or a spread in this sink's arguments means no coordinate can name the field that

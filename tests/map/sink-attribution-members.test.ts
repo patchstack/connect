@@ -124,3 +124,90 @@ describe('sink identity is map-wide', () => {
     expect(a.sinks.map((s) => s.id)).toEqual(b.sinks.map((s) => s.id));
   });
 });
+
+// An INFERRED package is not evidence about the receiver. `res.locals.db.query(x)` in a file that
+// happens to import `pg` was getting package "pg" and a precise SQL-injection candidate — the exact
+// guarantee this file's first half claims to enforce, defeated by the fallback that fills in a package
+// from the file's OTHER imports. Inferred sinks stay in the inventory; they never compile a rule.
+describe('an inferred package does not license a rule', () => {
+  let d: string;
+  beforeAll(() => {
+    d = mkdtempSync(join(tmpdir(), 'ps-infer-'));
+    mkdirSync(join(d, 'src'), { recursive: true });
+    writeFileSync(join(d, 'package.json'), JSON.stringify({
+      dependencies: { express: '4', pg: '8', '@supabase/supabase-js': '2', '@prisma/client': '5' },
+    }));
+    writeFileSync(join(d, 'src', 'inferred.ts'), `
+      import { Pool } from "pg";
+      import { createClient } from "@supabase/supabase-js";
+      import { PrismaClient } from "@prisma/client";
+      import express from "express";
+      const app = express();
+      // Every receiver here is an app object the analyzer cannot trace.
+      app.post("/raw", (req, res) => { res.locals.db.query(req.body.sql); res.end("ok"); });
+      app.post("/from", (req, res) => { res.locals.sb.from("t").insert({ v: req.body.v }); res.end("ok"); });
+      app.post("/prisma", (req, res) => { res.locals.prisma.user.update({ where: { id: req.body.id } }); res.end("ok"); });
+    `);
+    // Controls: receivers that really do resolve to the dependency.
+    writeFileSync(join(d, 'src', 'resolved.ts'), `
+      import { Pool } from "pg";
+      import { createClient } from "@supabase/supabase-js";
+      import express from "express";
+      const pool = new Pool();
+      const sb = createClient("u", "k");
+      const app = express();
+      app.post("/pool", (req, res) => { pool.query(req.body.sql); res.end("ok"); });
+      app.post("/sb", (req, res) => { sb.from("t").insert({ v: req.body.v }); res.end("ok"); });
+    `);
+  });
+  afterAll(() => rmSync(d, { recursive: true, force: true }));
+
+  const route = async (r: string) => {
+    const { map } = await buildInputMap(d);
+    return map!.endpoints.find((e) => e.route === r)!;
+  };
+
+  it('refuses a rule for an untraceable receiver even when the file imports a db package', async () => {
+    const e = await route('/raw');
+    const sink = e.sinks.find((s) => s.kind === 'db')!;
+    // Note WHICH package inference picks: the first known db package the file imports, in table order —
+    // here supabase, not the `pg` a reader would guess from `.query()`. A useful hint for a human
+    // reviewer, and a good illustration of why it must not address a rule.
+    expect(sink.package).toBe('@supabase/supabase-js');
+    expect(sink.attribution).toBe('inferred');
+    const flow = e.flows.find((f) => f.sink.kind === 'db')!;
+    expect(flow.confidence).toBe('precise');   // the data really does reach it
+    expect(flow.ruleGeneratable).toBe(false);  // and it still must not be auto-ruled
+    expect(flow.ruleGeneratableReasons!.join(' ')).toMatch(/inferred from the file's other imports/);
+  });
+
+  it('refuses the same for an untraceable .from().insert() receiver', async () => {
+    const e = await route('/from');
+    const sink = e.sinks.find((s) => s.kind === 'db')!;
+    expect(sink.attribution).toBe('inferred');
+    const flow = e.flows.find((f) => f.sink.kind === 'db')!;
+    expect(flow.ruleGeneratable).toBe(false);
+    // Assert the ATTRIBUTION reason specifically: this shape is also refused for its argument role
+    // ("values"), so without this the fixture would pass for the wrong reason and regress silently.
+    expect(flow.ruleGeneratableReasons!.join(' ')).toMatch(/inferred from the file's other imports/);
+  });
+
+  it('refuses the prisma-shaped path on an untraceable receiver', async () => {
+    const e = await route('/prisma');
+    const sink = e.sinks.find((s) => s.provider === 'prisma');
+    expect(sink?.attribution).toBe('inferred');
+    expect(e.flows.filter((f) => f.ruleGeneratable)).toEqual([]);
+  });
+
+  it('still generates for receivers that genuinely resolve to the dependency', async () => {
+    const pool = await route('/pool');
+    const sink = pool.sinks.find((s) => s.kind === 'db')!;
+    expect(sink.attribution).toBe('import');
+    const flow = pool.flows.find((f) => f.sink.kind === 'db')!;
+    expect(flow.ruleGeneratable).toBe(true);
+    expect(flow.candidateFamily).toBe('sql-injection');
+    // And the resolved supabase receiver keeps its (separate, role-based) refusal — unchanged.
+    const sb = await route('/sb');
+    expect(sb.sinks.find((s) => s.kind === 'db')!.attribution).toBe('import');
+  });
+});
