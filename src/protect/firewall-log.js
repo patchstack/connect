@@ -27,10 +27,30 @@ export function parseApiKey(apiKey) {
  * Derive api.patchstack.com origin from a Pulse manifest/rules URL override.
  * @param {string | undefined} pulseOrManifestUrl
  */
+// https, or an explicit local origin for development. Anything else is refused as an api-key target.
+function isSafeApiOrigin(value) {
+  try {
+    const u = new URL(value);
+    if (u.protocol === 'https:') return true;
+    return u.protocol === 'http:' && (u.hostname === 'localhost' || u.hostname === '127.0.0.1' || u.hostname === '::1');
+  } catch {
+    return false;
+  }
+}
+
 export function resolveApiBase(pulseOrManifestUrl) {
   const fromEnv = typeof process !== 'undefined' ? process.env?.PATCHSTACK_API_BASE : undefined;
   if (typeof fromEnv === 'string' && fromEnv.length > 0) {
-    return fromEnv.replace(/\/$/, '');
+    // The site api_key is exchanged for a token against this origin, so a hostile/injected env value
+    // would be a credential-exfiltration path. Require HTTPS (localhost excepted for local testing);
+    // anything else falls back to the default origin rather than shipping the key off-platform.
+    const candidate = fromEnv.replace(/\/$/, '');
+    if (isSafeApiOrigin(candidate)) return candidate;
+    // eslint-disable-next-line no-console
+    console.warn(
+      '[patchstack] ignoring PATCHSTACK_API_BASE: block-log reporting requires an https origin ' +
+        '(or localhost). Falling back to the default API origin.',
+    );
   }
   if (typeof pulseOrManifestUrl === 'string' && pulseOrManifestUrl.length > 0) {
     try {

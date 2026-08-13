@@ -4,25 +4,26 @@
 // The `store` (see ./store.js) is passed in so a refresh reuses the same tiered cache.
 import { PatchstackRuleClient } from '../engine/index.js';
 import { PulseRuleClient } from '../engine/pulse-client.js';
+import { validateBundle } from './validate.js';
 
 export async function resolveRules(options, store) {
   if (options.siteUuid) {
     const prior = await store.read(); // { bundle, etag } | null
     const client = new PulseRuleClient({ siteUuid: options.siteUuid, baseUrl: options.pulseRulesUrl, etag: prior?.etag });
     const res = await client.getRules();
-    if (res.success && res.notModified && prior?.bundle) return normalizeBundle(prior.bundle);
+    if (res.success && res.notModified && prior?.bundle) return normalizeBundle(prior.bundle, options);
     if (res.success && !res.notModified) {
-      const bundle = normalizeBundle(res);
+      const bundle = normalizeBundle(res, options);
       await store.write({ bundle, etag: res.etag ?? null });
       return bundle;
     }
     if (prior?.bundle) {
       options.onError?.(new Error(`pulse rule fetch failed (${res.error ?? 'no usable response'}); using cached bundle`));
-      return normalizeBundle(prior.bundle);
+      return normalizeBundle(prior.bundle, options);
     }
     if (options.rules) {
       options.onError?.(new Error(`pulse rule fetch failed (${res.error ?? 'no usable response'}); using bundled fallback`));
-      return normalizeBundle(options.rules);
+      return normalizeBundle(options.rules, options);
     }
     options.onError?.(new Error(`pulse rule fetch failed (${res.error ?? 'no usable response'}); no cache — running with no rules`));
     return emptyBundle();
@@ -32,32 +33,55 @@ export async function resolveRules(options, store) {
     const prior = await store.read();
     const client = new PatchstackRuleClient({ token: options.token, baseUrl: options.baseUrl, etag: prior?.etag });
     const res = await client.getRules();
-    if (res.success && res.notModified && prior?.bundle) return normalizeBundle(prior.bundle);
+    if (res.success && res.notModified && prior?.bundle) return normalizeBundle(prior.bundle, options);
     if (res.success && !res.notModified) {
-      const bundle = normalizeBundle(res);
+      const bundle = normalizeBundle(res, options);
       await store.write({ bundle, etag: res.etag ?? null });
       return bundle;
     }
     if (prior?.bundle) {
       options.onError?.(new Error(`rule fetch failed (${res.error ?? 'no usable response'}); using cached bundle`));
-      return normalizeBundle(prior.bundle);
+      return normalizeBundle(prior.bundle, options);
     }
     options.onError?.(new Error(`rule fetch failed (${res.error ?? 'no usable response'}); no cache — running with no rules`));
     return emptyBundle();
   }
 
   if (options.rules) {
-    return normalizeBundle(options.rules);
+    return normalizeBundle(options.rules, options);
   }
 
   return emptyBundle();
 }
 
-export function normalizeBundle(b) {
+// Every rule path (live fetch, cache, bundled fallback) funnels through here, so this is where the
+// delivered policy is VALIDATED before the engine ever executes it: bounded rule count / conditions /
+// nesting / pattern length, known phases + actions. A rule that fails is dropped with a reported reason
+// (`onRuleRejected`) rather than silently kept — an unenforceable rule must never look enforced.
+export function normalizeBundle(b, options = {}) {
   const enforcement = b?.enforcement ?? b?.mode;
-  return {
+  const { bundle: checked, rejected } = validateBundle({
     firewall: Array.isArray(b.firewall) ? b.firewall : [],
     whitelists: Array.isArray(b.whitelists) ? b.whitelists : [],
+  });
+  if (rejected.length > 0) {
+    const report = options.onRuleRejected;
+    if (typeof report === 'function') {
+      for (const r of rejected) {
+        try { report(r); } catch { /* reporting must never break rule loading */ }
+      }
+    } else {
+      const sample = rejected.slice(0, 3).map((r) => `${r.id} (${r.reason})`).join('; ');
+      // eslint-disable-next-line no-console
+      console.warn(
+        `[patchstack] ${rejected.length} delivered rule(s) rejected as invalid/oversized and are NOT enforced: ${sample}` +
+          (rejected.length > 3 ? ', …' : ''),
+      );
+    }
+  }
+  return {
+    firewall: checked.firewall,
+    whitelists: checked.whitelists,
     whitelist_keys: b.whitelist_keys ?? {},
     ...(enforcement === 'block' || enforcement === 'dry-run' ? { enforcement } : {}),
   };

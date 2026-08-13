@@ -29,8 +29,16 @@ function warnRejectedPatternOnce(pattern) {
   );
 }
 
+// An absurdly long pattern is either a mistake or an attack on our own matcher; compiling and running
+// it on every request is unbounded work. The rule-bundle validator rejects these upstream — this is the
+// backstop for a caller-supplied bundle that never went through it.
+const MAX_PATTERN_LENGTH = 1000;
+
 export function safeRegExp(pattern) {
   if (!pattern) {
+    return null;
+  }
+  if (typeof pattern !== 'string' || pattern.length > MAX_PATTERN_LENGTH) {
     return null;
   }
 
