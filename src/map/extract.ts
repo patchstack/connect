@@ -215,6 +215,10 @@ export async function extractInputMap(cwd: string, ts: TsModule, options: Extrac
         const relFile = relative(cwd, file);
         // A FILE-BASED route handler carries its URL path in its location, not in the code, so derive
         // it here — without this a rule can only be param-pinned, never route-scoped (`when.path`).
+        if (ep.route === undefined && ep.entryKind === 'edge-function') {
+          const fn = functionNameFromPath(relFile);
+          if (fn) ep.route = '/' + fn; // how the platform invokes it (…/functions/v1/<name>)
+        }
         if (ep.route === undefined && (ep.entryKind === 'route-handler' || ep.entryKind === 'server-action')) {
           const derived = routeFromFilePath(relFile);
           if (derived.route) {
@@ -271,7 +275,8 @@ function hasEntrySignal(text: string): boolean {
     text.includes('createServerFn') ||
     /\bexport\s+(async\s+)?(function|const)\s+(GET|POST|PUT|PATCH|DELETE|HEAD|OPTIONS)\b/.test(text) ||
     ROUTE_CALL_RE.test(text) ||
-    text.includes("'use server'") || text.includes('"use server"')
+    text.includes("'use server'") || text.includes('"use server"') ||
+    text.includes('Deno.serve') || /\bserve\s*\(/.test(text)
   );
 }
 
@@ -286,6 +291,13 @@ function detectFramework(cwd: string): string {
     if (d['fastify']) return 'fastify';
     if (d['express']) return 'express';
     if (d['hono']) return 'hono';
+  } catch { /* ignore */ }
+  // A Deno/edge functions project may have no package.json at all.
+  try {
+    if (statSync(join(cwd, 'supabase', 'functions')).isDirectory()) return 'supabase-functions';
+  } catch { /* not a supabase project */ }
+  try {
+    if (statSync(join(cwd, 'functions')).isDirectory()) return 'deno-functions';
   } catch { /* ignore */ }
   return 'unknown';
 }
@@ -363,6 +375,19 @@ function isInside(candidate: string, boundary: string): boolean {
 //                       pages/api/[id].ts               -> /api/:id            (dynamic)
 //   SvelteKit           src/routes/api/items/+server.ts -> /api/items
 //   Nuxt                server/api/items.post.ts        -> /api/items
+// The deployed name of a platform function, from its conventional location:
+//   supabase/functions/<name>/index.ts  (Supabase Edge Functions)
+//   functions/<name>/index.ts | functions/<name>.ts  (Base44 / generic Deno function dirs)
+export function functionNameFromPath(relFile: string): string | undefined {
+  const parts = relFile.split(/[\\/]/).filter(Boolean);
+  const i = parts.lastIndexOf('functions');
+  if (i === -1 || i === parts.length - 1) return undefined;
+  const next = parts[i + 1];
+  if (!next) return undefined;
+  const base = next.replace(/\.(ts|tsx|mts|cts|js|jsx|mjs|cjs)$/, '');
+  return base === 'index' ? undefined : base;
+}
+
 export function routeFromFilePath(relFile: string): { route?: string; dynamic?: boolean } {
   const parts = relFile.split(/[\\/]/).filter(Boolean);
   if (parts.length === 0) return {};
@@ -448,6 +473,23 @@ function extractFromFile(sf: any, ts: TsModule, localSinks: Map<string, Sink[]>,
         out.push(handlerEntry(node.name.text, node.name.text, node.parameters, node.body, ts, localSinks, bindings, ctx, { line: lineOf(node) }));
       } else if (isServerActionsFile || hasUseServerDirective(node, ts)) {
         out.push(handlerEntry(node.name.text, 'server-action', node.parameters, node.body, ts, localSinks, bindings, ctx, { line: lineOf(node) }));
+      }
+    }
+
+    // (2c) Deno / WinterCG function entry: `Deno.serve(handler)` or `serve(handler)` — Supabase Edge
+    // Functions, Base44 backend functions, Deno workers. These platforms have no router and no route
+    // file: one handler per module, invoked by the function's NAME, so the endpoint's identity comes
+    // from the file location. Without this recognizer such a project maps to nothing at all.
+    if (ts.isCallExpression(node)) {
+      const c = node.expression;
+      const denoServe = ts.isPropertyAccessExpression(c) && c.name.text === 'serve' &&
+        ts.isIdentifier(c.expression) && c.expression.text === 'Deno';
+      const bareServe = ts.isIdentifier(c) && c.text === 'serve';
+      if (denoServe || bareServe) {
+        const handler = node.arguments.find((a: any) => isFnLike(a, ts));
+        if (handler) {
+          out.push(handlerEntry(functionNameFromPath(ctx.file) ?? 'serve', 'edge-function', handler.parameters, handler.body, ts, localSinks, bindings, ctx, { line: lineOf(node) }));
+        }
       }
     }
 
@@ -547,7 +589,9 @@ function handlerEntry(
   ctx: { file: string; graph: ModuleGraph },
   extra: { method?: string; route?: string; line?: number } = {},
 ): Omit<Endpoint, 'file'> {
-  const entryKind = kindLabel === 'route-registration' ? 'route-registration' : kindLabel === 'server-action' ? 'server-action' : 'route-handler';
+  const entryKind = kindLabel === 'route-registration' || kindLabel === 'server-action' || kindLabel === 'edge-function'
+    ? kindLabel
+    : 'route-handler';
   const inputs = inputsFromHandler(params, body, ts, bindings);
   const sinks = sinksFrom({ body, parameters: params, isSyntheticBody: true }, ts, localSinks, bindings, ctx);
   return {
