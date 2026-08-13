@@ -1,6 +1,6 @@
 import { readFileSync, readdirSync, realpathSync, statSync } from 'node:fs';
 import { builtinModules } from 'node:module';
-import { join, relative, isAbsolute } from 'node:path';
+import { join, relative, isAbsolute, dirname, resolve as resolvePath } from 'node:path';
 import type { SiteInputMap, Endpoint, InputField, Sink, Flow, TsModule } from './types.js';
 
 // Framework-AGNOSTIC input-flow extractor. It doesn't gate on a specific stack — it walks any JS/TS
@@ -198,6 +198,7 @@ export async function extractInputMap(cwd: string, ts: TsModule, options: Extrac
   let boundary = cwd;
   try { boundary = realpathSync(cwd); } catch { /* use cwd as-is */ }
 
+  const graph = createModuleGraph(ts); // shared cache across files
   const stats: WalkStats = { discovered: 0 };
   const files = collectSources(cwd, boundary, { followOutside: options.followSymlinks }, [], new Set(), stats);
   let parsed = 0;
@@ -210,7 +211,7 @@ export async function extractInputMap(cwd: string, ts: TsModule, options: Extrac
       const sf = ts.createSourceFile(file, text, ts.ScriptTarget.Latest, true, guessScriptKind(ts, file));
       const bindings = buildModuleBindings(sf, ts);
       const localSinks = collectLocalSinks(sf, ts, bindings);
-      for (const ep of extractFromFile(sf, ts, localSinks, bindings)) {
+      for (const ep of extractFromFile(sf, ts, localSinks, bindings, { file, graph })) {
         const relFile = relative(cwd, file);
         // A FILE-BASED route handler carries its URL path in its location, not in the code, so derive
         // it here — without this a rule can only be param-pinned, never route-scoped (`when.path`).
@@ -231,7 +232,7 @@ export async function extractInputMap(cwd: string, ts: TsModule, options: Extrac
 
   notes.push('Static analysis is best-effort — this is the DETECTED surface, not a proof of completeness.');
   notes.push('`inputs` and `sinks` are INVENTORIES (both present in the handler). Only `flows` asserts that an input reaches a sink — prefer flows with confidence "precise" when pinning a rule to a parameter.');
-  notes.push('Sinks are followed one level into same-file helpers; cross-file / dynamic indirection is not traced. Sinks inside declared-but-uncalled local functions are excluded.');
+  notes.push('Sinks are followed into same-file helpers and ONE hop into an imported relative module (a dependency\u2019s internals are not followed); deeper or dynamic indirection is not traced. Sinks inside declared-but-uncalled local functions are excluded.');
   notes.push('A sink `package` is resolved from the file’s imports (precise) or inferred from a known provider import; an unresolved package means the backing dependency could not be traced.');
   if (!options.followSymlinks) notes.push('Symlinks leaving the project directory were not followed (use --follow-symlinks to include them).');
   if (failed.length > 0) {
@@ -399,7 +400,7 @@ export function routeFromFilePath(relFile: string): { route?: string; dynamic?: 
 }
 
 // --- entry-point recognizers -----------------------------------------------
-function extractFromFile(sf: any, ts: TsModule, localSinks: Map<string, Sink[]>, bindings: Bindings): Omit<Endpoint, 'file'>[] {
+function extractFromFile(sf: any, ts: TsModule, localSinks: Map<string, Sink[]>, bindings: Bindings, ctx: { file: string; graph: ModuleGraph }): Omit<Endpoint, 'file'>[] {
   const out: Omit<Endpoint, 'file'>[] = [];
   const isServerActionsFile = fileHasUseServer(sf, ts);
 
@@ -413,7 +414,7 @@ function extractFromFile(sf: any, ts: TsModule, localSinks: Map<string, Sink[]>,
             const validatorCall = chain.calls['inputValidator'] ?? chain.calls['validator'];
             const inputs = inputsFromValidator(validatorCall, ts, bindings);
             const handlerFn = chain.calls['handler']?.arguments?.[0];
-            const sinks = sinksFrom(handlerFn, ts, localSinks, bindings);
+            const sinks = sinksFrom(handlerFn, ts, localSinks, bindings, ctx);
             const handlerBody = handlerFn && isFnLike(handlerFn, ts) ? handlerFn.body : undefined;
             const ep: Omit<Endpoint, 'file'> = {
               name: decl.name.text,
@@ -433,9 +434,9 @@ function extractFromFile(sf: any, ts: TsModule, localSinks: Map<string, Sink[]>,
         // (2b) `export const POST = (req) => …` route handler, or a `'use server'` action arrow.
         if (ts.isIdentifier(decl.name) && decl.initializer && isFnLike(decl.initializer, ts)) {
           if (HTTP_METHODS.has(decl.name.text)) {
-            out.push(handlerEntry(decl.name.text, decl.name.text, decl.initializer.parameters, decl.initializer.body, ts, localSinks, bindings, { line: lineOf(decl) }));
+            out.push(handlerEntry(decl.name.text, decl.name.text, decl.initializer.parameters, decl.initializer.body, ts, localSinks, bindings, ctx, { line: lineOf(decl) }));
           } else if (isServerActionsFile) {
-            out.push(handlerEntry(decl.name.text, 'server-action', decl.initializer.parameters, decl.initializer.body, ts, localSinks, bindings, { line: lineOf(decl) }));
+            out.push(handlerEntry(decl.name.text, 'server-action', decl.initializer.parameters, decl.initializer.body, ts, localSinks, bindings, ctx, { line: lineOf(decl) }));
           }
         }
       }
@@ -444,9 +445,9 @@ function extractFromFile(sf: any, ts: TsModule, localSinks: Map<string, Sink[]>,
     // (2a) Route handlers / server actions declared as functions.
     if (ts.isFunctionDeclaration(node) && node.name && hasExport(node, ts)) {
       if (HTTP_METHODS.has(node.name.text)) {
-        out.push(handlerEntry(node.name.text, node.name.text, node.parameters, node.body, ts, localSinks, bindings, { line: lineOf(node) }));
+        out.push(handlerEntry(node.name.text, node.name.text, node.parameters, node.body, ts, localSinks, bindings, ctx, { line: lineOf(node) }));
       } else if (isServerActionsFile || hasUseServerDirective(node, ts)) {
-        out.push(handlerEntry(node.name.text, 'server-action', node.parameters, node.body, ts, localSinks, bindings, { line: lineOf(node) }));
+        out.push(handlerEntry(node.name.text, 'server-action', node.parameters, node.body, ts, localSinks, bindings, ctx, { line: lineOf(node) }));
       }
     }
 
@@ -460,7 +461,7 @@ function extractFromFile(sf: any, ts: TsModule, localSinks: Map<string, Sink[]>,
         const route = first && ts.isStringLiteralLike(first) ? first.text : routeFromChain(node.expression.expression, ts);
         const handler = args[args.length - 1];
         if (route !== undefined && handler && isFnLike(handler, ts)) {
-          out.push(handlerEntry(route, 'route-registration', handler.parameters, handler.body, ts, localSinks, bindings, {
+          out.push(handlerEntry(route, 'route-registration', handler.parameters, handler.body, ts, localSinks, bindings, ctx, {
             // `use`/`all` register handlers but are not HTTP methods — leave method undefined.
             method: HTTP_METHODS.has(mname.toUpperCase()) ? mname.toUpperCase() : undefined,
             route,
@@ -475,7 +476,7 @@ function extractFromFile(sf: any, ts: TsModule, localSinks: Map<string, Sink[]>,
           const reg = routeObject(arg, ts);
           if (reg.url && reg.handler) {
             for (const m of reg.methods.length ? reg.methods : [undefined]) {
-              out.push(handlerEntry(reg.url, 'route-registration', reg.handler.parameters, reg.handler.body, ts, localSinks, bindings, { method: m, route: reg.url, line: lineOf(node) }));
+              out.push(handlerEntry(reg.url, 'route-registration', reg.handler.parameters, reg.handler.body, ts, localSinks, bindings, ctx, { method: m, route: reg.url, line: lineOf(node) }));
             }
           }
         }
@@ -543,11 +544,12 @@ function handlerEntry(
   ts: TsModule,
   localSinks: Map<string, Sink[]>,
   bindings: Bindings,
+  ctx: { file: string; graph: ModuleGraph },
   extra: { method?: string; route?: string; line?: number } = {},
 ): Omit<Endpoint, 'file'> {
   const entryKind = kindLabel === 'route-registration' ? 'route-registration' : kindLabel === 'server-action' ? 'server-action' : 'route-handler';
   const inputs = inputsFromHandler(params, body, ts, bindings);
-  const sinks = sinksFrom({ body, parameters: params, isSyntheticBody: true }, ts, localSinks, bindings);
+  const sinks = sinksFrom({ body, parameters: params, isSyntheticBody: true }, ts, localSinks, bindings, ctx);
   return {
     name,
     entryKind,
@@ -755,13 +757,113 @@ function collectLocalSinks(sf: any, ts: TsModule, bindings: Bindings): Map<strin
   return map;
 }
 
-function sinksFrom(arrowOrNode: any, ts: TsModule, localSinks: Map<string, Sink[]>, bindings: Bindings): Sink[] {
+// --- cross-file (imported) helper tracing -----------------------------------
+// AI-generated apps routinely put the data access in a sibling module (`import { saveOrder } from
+// './db'`), so a handler's real sink lives one file away. Without following that, the endpoint looks
+// sink-free and no rule can be correlated to it. We follow ONE cross-file hop (plus same-file helpers
+// inside the target), which covers the common shape while keeping the walk bounded and cheap.
+const RESOLVE_EXTS = ['.ts', '.tsx', '.mts', '.cts', '.js', '.jsx', '.mjs', '.cjs'];
+
+export interface ModuleGraph {
+  /** Sinks of `exportName` in the module `specifier` resolves to, relative to `fromFile`. */
+  importedSinks(fromFile: string, specifier: string, exportName: string): Sink[];
+}
+
+function createModuleGraph(ts: TsModule): ModuleGraph {
+  // file → { fnSinks, calleesOf } | null (unreadable/unparseable)
+  const cache = new Map<string, { fnSinks: Map<string, Sink[]>; calleesOf: Map<string, string[]> } | null>();
+
+  const load = (file: string) => {
+    if (cache.has(file)) return cache.get(file) ?? null;
+    let entry: { fnSinks: Map<string, Sink[]>; calleesOf: Map<string, string[]> } | null = null;
+    try {
+      const text = readFileSync(file, 'utf8');
+      const sf = ts.createSourceFile(file, text, ts.ScriptTarget.Latest, true, guessScriptKind(ts, file));
+      const bindings = buildModuleBindings(sf, ts);
+      entry = { fnSinks: collectLocalSinks(sf, ts, bindings), calleesOf: collectCallees(sf, ts) };
+    } catch {
+      entry = null; // fail-open: an unreadable dependency must not break the map
+    }
+    cache.set(file, entry);
+    return entry;
+  };
+
+  return {
+    importedSinks(fromFile, specifier, exportName) {
+      const target = resolveRelativeModule(fromFile, specifier);
+      if (!target) return [];
+      const mod = load(target);
+      if (!mod) return [];
+      const out = [...(mod.fnSinks.get(exportName) ?? [])];
+      // One same-file hop inside the target: `export function saveOrder(){ return doInsert() }`.
+      for (const callee of mod.calleesOf.get(exportName) ?? []) {
+        for (const s of mod.fnSinks.get(callee) ?? []) out.push(s);
+      }
+      return out;
+    },
+  };
+}
+
+// Resolve a RELATIVE specifier to a real file (extension + /index, and the TS-ESM `./db.js` → db.ts
+// convention). Bare package specifiers are intentionally NOT followed — that's node_modules, and a
+// dependency's internals are not this app's attack surface.
+function resolveRelativeModule(fromFile: string, spec: string): string | undefined {
+  if (!spec.startsWith('.')) return undefined;
+  const dir = dirname(fromFile);
+  const base = resolvePath(dir, spec);
+  const candidates: string[] = [];
+  const jsLike = /\.(js|jsx|mjs|cjs)$/.exec(base);
+  if (jsLike) {
+    const stem = base.slice(0, -jsLike[0].length);
+    for (const e of RESOLVE_EXTS) candidates.push(stem + e); // ./db.js may mean db.ts
+  }
+  candidates.push(base);
+  for (const e of RESOLVE_EXTS) candidates.push(base + e);
+  for (const e of RESOLVE_EXTS) candidates.push(join(base, 'index' + e));
+  for (const c of candidates) {
+    try {
+      if (statSync(c).isFile()) return c;
+    } catch {
+      /* next */
+    }
+  }
+  return undefined;
+}
+
+// name → the local function names it calls (for one same-file hop inside an imported module).
+function collectCallees(sf: any, ts: TsModule): Map<string, string[]> {
+  const map = new Map<string, string[]>();
+  const visit = (node: any) => {
+    let name: string | undefined;
+    let body: any;
+    if (ts.isFunctionDeclaration(node) && node.name && node.body) { name = node.name.text; body = node.body; }
+    else if (ts.isVariableDeclaration(node) && ts.isIdentifier(node.name) && node.initializer && isFnLike(node.initializer, ts)) {
+      name = node.name.text; body = node.initializer.body;
+    }
+    if (name && body) map.set(name, localCalls(body, ts));
+    ts.forEachChild(node, visit);
+  };
+  visit(sf);
+  return map;
+}
+
+function sinksFrom(arrowOrNode: any, ts: TsModule, localSinks: Map<string, Sink[]>, bindings: Bindings, ctx?: { file: string; graph: ModuleGraph }): Sink[] {
   if (!arrowOrNode) return [];
   const body = arrowOrNode.isSyntheticBody ? arrowOrNode.body
     : isFnLike(arrowOrNode, ts) ? arrowOrNode.body : arrowOrNode;
   if (!body) return [];
   const sinks = directSinks(body, ts, bindings);
-  for (const called of localCalls(body, ts)) for (const s of localSinks.get(called) ?? []) sinks.push(s);
+  for (const called of localCalls(body, ts)) {
+    // Same-file helper.
+    for (const s of localSinks.get(called) ?? []) sinks.push(s);
+    // Imported helper: the name resolves to a RELATIVE module → follow one hop into it.
+    if (ctx) {
+      const spec = bindings.resolve(called);
+      if (spec && spec.startsWith('.')) {
+        for (const s of ctx.graph.importedSinks(ctx.file, spec, called)) sinks.push(s);
+      }
+    }
+  }
   return dedupeSinks(sinks);
 }
 

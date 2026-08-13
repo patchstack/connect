@@ -24,6 +24,11 @@
     },
     "./protect": {
       "types": "./dist/protect.d.ts",
+      "workerd": "./dist/protect.edge.js",
+      "worker": "./dist/protect.edge.js",
+      "edge-light": "./dist/protect.edge.js",
+      "deno": "./dist/protect.edge.js",
+      "browser": "./dist/protect.edge.js",
       "import": "./dist/protect.js",
       "require": "./dist/protect.cjs"
     }
@@ -38,7 +43,7 @@
     "LICENSE"
   ],
   "scripts": {
-    "build": "tsup && node scripts/copy-protect-templates.mjs",
+    "build": "tsup && node scripts/build-edge.mjs && node scripts/copy-protect-templates.mjs",
     "dev": "tsup --watch",
     "test": "vitest run",
     "test:manifest": "bun scripts/test-manifest.ts",
