@@ -20,6 +20,21 @@ const HTTP_MEMBER_METHODS = new Set(['get', 'post', 'put', 'patch', 'delete', 'h
 // When a sink's base can't be traced precisely, infer its package from the file's imports of a known
 // provider for that sink kind (a file almost always uses one db/http client).
 const DB_PACKAGES = ['@supabase/supabase-js', '@prisma/client', 'drizzle-orm', 'knex', 'kysely', 'pg', 'mysql2', 'mysql', 'sequelize', 'typeorm', 'mongoose', 'better-sqlite3'];
+// Drivers that are not in the inference list above but do establish a database API when a receiver
+// resolves to them. Extend deliberately: this list is what separates "a package we can trace" from
+// "a package that proves a DB API", and admitting the wrong one produces a false SQL-injection rule.
+const MORE_DB_PACKAGES = ['postgres', 'mssql', 'tedious', 'oracledb', 'sqlite3', 'mongodb', 'ioredis',
+  '@planetscale/database', '@neondatabase/serverless', '@libsql/client', '@vercel/postgres', 'slonik', 'sql.js'];
+/**
+ * Does `pkg` establish a DATABASE api? Package provenance is not API provenance: `.query()` is a generic
+ * method name, and an `@apollo/client` (or any HTTP-ish client) instance resolves to a real package while
+ * having nothing to do with SQL. Without this gate, `client.query(req.body.sql)` compiled a precise
+ * SQL-injection candidate for a GraphQL call — a rule that blocks legitimate traffic and mitigates nothing.
+ * Subpath imports count (`drizzle-orm/node-postgres`).
+ */
+const isDbPackage = (pkg: string) =>
+  DB_PACKAGES.includes(pkg) || MORE_DB_PACKAGES.includes(pkg) ||
+  [...DB_PACKAGES, ...MORE_DB_PACKAGES].some((p) => pkg.startsWith(p + '/'));
 const HTTP_PACKAGES = ['axios', 'got', 'node-fetch', 'undici', 'superagent', 'ky'];
 const isHttpPackage = (pkg: string) => HTTP_PACKAGES.includes(pkg) || pkg === 'node:http' || pkg === 'node:https';
 // A filesystem/process API is not only a node: builtin — these wrappers expose the same sinks, and
@@ -32,6 +47,12 @@ const isExecPackage = (pkg: string) => pkg === 'node:child_process' || EXEC_PACK
 export interface ModuleGraph {
   /** Sinks of `exportName` in the module `specifier` resolves to, relative to `fromFile`. */
   importedSinks(fromFile: string, specifier: string, exportName: string): Sink[];
+  /**
+   * The npm package `exportName` traces to inside the module `specifier` resolves to — for a client
+   * instance re-exported from a local module (`export const db = createClient(...)`). ONE hop: a
+   * re-export chain (`export { db } from './client'`) is not followed.
+   */
+  importedPackage(fromFile: string, specifier: string, exportName: string): string | undefined;
 }
 
 export interface SinkContext {
@@ -43,14 +64,14 @@ export interface SinkContext {
 }
 
 // --- sinks (agnostic) -------------------------------------------------------
-export function collectLocalSinks(sf: any, ts: TsModule, bindings: Bindings): Map<string, Sink[]> {
+export function collectLocalSinks(sf: any, ts: TsModule, bindings: Bindings, ctx?: SinkContext): Map<string, Sink[]> {
   const map = new Map<string, Sink[]>();
   const visit = (node: any) => {
-    if (ts.isFunctionDeclaration(node) && node.name && node.body) map.set(node.name.text, directSinks(node.body, ts, bindings));
+    if (ts.isFunctionDeclaration(node) && node.name && node.body) map.set(node.name.text, directSinks(node.body, ts, bindings, ctx));
     else if (ts.isVariableStatement(node)) {
       for (const decl of node.declarationList.declarations) {
         if (ts.isIdentifier(decl.name) && decl.initializer && isFnLike(decl.initializer, ts)) {
-          map.set(decl.name.text, directSinks(decl.initializer.body, ts, bindings));
+          map.set(decl.name.text, directSinks(decl.initializer.body, ts, bindings, ctx));
         }
       }
     }
@@ -65,7 +86,7 @@ export function sinksFrom(arrowOrNode: any, ts: TsModule, localSinks: Map<string
   const body = arrowOrNode.isSyntheticBody ? arrowOrNode.body
     : isFnLike(arrowOrNode, ts) ? arrowOrNode.body : arrowOrNode;
   if (!body) return [];
-  const sinks = directSinks(body, ts, bindings);
+  const sinks = directSinks(body, ts, bindings, ctx);
   for (const called of localCalls(body, ts)) {
     // Same-file helper.
     for (const s of localSinks.get(called) ?? []) sinks.push(s);
@@ -109,7 +130,7 @@ function namespaceMemberCalls(node: any, ts: TsModule): Array<[string, string]> 
 // it: resolved precisely from the call's base identifier via the file's imports, else inferred from
 // the file's imports of a known provider for that sink kind. A receiver that traces to a plain local
 // object/class/function is NOT a dependency sink and is dropped.
-function directSinks(node: any, ts: TsModule, bindings: Bindings): Sink[] {
+function directSinks(node: any, ts: TsModule, bindings: Bindings, ctx?: SinkContext): Sink[] {
   const sinks: Sink[] = [];
   // `spec` is the raw module specifier the receiver came from, which `pkg` cannot express: a RELATIVE
   // specifier yields no package, and that is a positive fact (the receiver is app code) rather than the
@@ -122,6 +143,16 @@ function directSinks(node: any, ts: TsModule, bindings: Bindings): Sink[] {
     const relative = spec !== undefined && (spec.startsWith('.') || spec.startsWith('/'));
     const pkg = npmPackageOf(spec);
     if (pkg) return { pkg, root, spec };
+    // A RELATIVE receiver is app code — unless one hop away it is a dependency. `import { db } from
+    // './lib/db'` where that module does `export const db = createClient(...)` is the most common layout
+    // in generated apps, and treating it as app code made the sink vanish entirely. Ask the target module
+    // what the export traces to: a package means the receiver IS that dependency (an import-to-import
+    // chain, so `attribution: 'import'`), and NO package means it stays app code — which is what keeps
+    // `import * as helper from './util'; helper.exec(x)` correctly sink-free.
+    if (relative && ctx && spec) {
+      const viaModule = ctx.graph.importedPackage(ctx.file, spec, bindings.exportNameOf(root) ?? root);
+      if (viaModule) return { pkg: viaModule, root, spec };
+    }
     return { local: bindings.locals.has(root), root, spec, relative };
   };
   // Whether `package` is evidence or a guess. A resolved import binding is evidence ('import'); a
@@ -129,6 +160,21 @@ function directSinks(node: any, ts: TsModule, bindings: Bindings): Sink[] {
   // untraceable receiver is neither (undefined) and must not drive an auto-generated rule.
   const attributionOf = (b: { pkg?: string }, pkg: string | undefined): Sink['attribution'] =>
     b.pkg ? 'import' : pkg ? 'inferred' : undefined;
+  /**
+   * Claim `provider: 'sql'` only when the package actually establishes a database API. A traced package
+   * that is not a DB provider stays in the INVENTORY (a `.query()` on it is worth a human's attention)
+   * but is marked so no rule can be compiled from it — and it does not get to call itself SQL.
+   */
+  const dbApi = (pkg: string | undefined, attribution: Sink['attribution']): { provider?: string; apiUnconfirmed?: true } => {
+    if (pkg && !isDbPackage(pkg)) return { apiUnconfirmed: true };
+    // `provider` is a claim about the API at THIS call site, so it needs the receiver — not just the file.
+    // An INFERRED package means "this file talks to pg", never "this receiver is a pg client", and
+    // `res.locals.db.query(x)` in a file that imports pg is exactly that. The flow is already refused;
+    // asserting `provider: 'sql'` anyway would overstate it in the inventory, where a human reads it.
+    // `package` still carries the hint, and `attribution` already says how strong it is — deriving the
+    // claim from it here keeps one source of truth rather than a second confidence field to drift.
+    return attribution === 'import' || attribution === 'global' ? { provider: 'sql' } : {};
+  };
   const infer = (kind: 'db' | 'http'): string | undefined => {
     const table = kind === 'db' ? DB_PACKAGES : HTTP_PACKAGES;
     for (const p of table) if (bindings.imports.has(p)) return p;
@@ -152,7 +198,8 @@ function directSinks(node: any, ts: TsModule, bindings: Bindings): Sink[] {
         const parent = n.parent;
         if (!b.local && !b.relative && parent && ts.isPropertyAccessExpression(parent) && DB_OPS.has(parent.name.text)) {
           const pkg = b.pkg ?? infer('db');
-          push({ kind: 'db', provider: 'sql', package: pkg, table, op: parent.name.text, attribution: attributionOf(b, pkg), ...spanOf(opCallOf(parent, ts)) });
+          const attribution = attributionOf(b, pkg);
+          push({ kind: 'db', ...dbApi(pkg, attribution), package: pkg, table, op: parent.name.text, attribution, ...spanOf(opCallOf(parent, ts)) });
         }
       }
       if (ts.isPropertyAccessExpression(callee)) {
@@ -169,13 +216,16 @@ function directSinks(node: any, ts: TsModule, bindings: Bindings): Sink[] {
           if (PRISMA_OPS.has(method) && ts.isPropertyAccessExpression(callee.expression)) {
             const prismaLikely = b.pkg === '@prisma/client' ||
               (!b.pkg && (bindings.imports.has('@prisma/client') || /prisma/i.test(b.root ?? '')));
-            if (prismaLikely) push({ kind: 'db', provider: 'prisma', package: '@prisma/client', table: callee.expression.name.text, op: method, attribution: b.pkg ? 'import' : 'inferred', ...spanOf(n) });
+            // Same rule for the provider claim: only a resolved receiver earns `provider: 'prisma'`; a
+            // prisma-NAMED receiver is a hint, and `package` + `attribution` already say so.
+            if (prismaLikely) push({ kind: 'db', ...(b.pkg ? { provider: 'prisma' } : {}), package: '@prisma/client', table: callee.expression.name.text, op: method, attribution: b.pkg ? 'import' : 'inferred', ...spanOf(n) });
           }
           // db: raw `.query(` / `.execute(`. Any object can have a `.query` method, so an untraceable
           // receiver stays in the inventory with NO attribution — visible to a human, never auto-ruled.
           if (method === 'query' || method === 'execute') {
             const pkg = b.pkg ?? infer('db');
-            push({ kind: 'db', provider: 'sql', package: pkg, op: method, attribution: attributionOf(b, pkg), ...spanOf(n) });
+            const attribution = attributionOf(b, pkg);
+            push({ kind: 'db', ...dbApi(pkg, attribution), package: pkg, op: method, attribution, ...spanOf(n) });
           }
           // fs / exec via a namespace: `fs.writeFile(` / `child_process.exec(`. The receiver must
           // actually resolve to a filesystem/process package — the method name alone proves nothing.

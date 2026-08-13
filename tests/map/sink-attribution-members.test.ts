@@ -194,8 +194,13 @@ describe('an inferred package does not license a rule', () => {
 
   it('refuses the prisma-shaped path on an untraceable receiver', async () => {
     const e = await route('/prisma');
-    const sink = e.sinks.find((s) => s.provider === 'prisma');
-    expect(sink?.attribution).toBe('inferred');
+    // Found by PACKAGE, not by provider: a prisma-shaped call on an untraceable receiver deliberately
+    // makes no provider claim — `provider` describes the API at this call site, and that needs the
+    // receiver. The package remains as the hint that made us look.
+    const sink = e.sinks.find((s) => s.package === '@prisma/client');
+    expect(sink).toBeDefined();
+    expect(sink!.attribution).toBe('inferred');
+    expect(sink!.provider).toBeUndefined();
     expect(e.flows.filter((f) => f.ruleGeneratable)).toEqual([]);
   });
 

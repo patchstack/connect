@@ -193,7 +193,12 @@ function linkFlows(
         : 'heuristic';
       const roles = new Set<ArgumentRole>(matched.flatMap(({ roles: rs }) => [...rs]));
       // Prefer a role that maps to a mitigation class over a generic one (a value can reach two args).
-      const family = [...roles].map((r) => CANDIDATE_FAMILIES[sink.kind]?.[r]).find(Boolean);
+      // A sink whose package does not establish this API cannot support the mitigation class either:
+      // labelling a GraphQL `.query()` as the sql-injection family would mis-classify it for any consumer
+      // that reads `candidateFamily` without also checking `ruleGeneratable`.
+      const family = sink.apiUnconfirmed
+        ? undefined
+        : [...roles].map((r) => CANDIDATE_FAMILIES[sink.kind]?.[r]).find(Boolean);
       const argumentRole = family
         ? [...roles].find((r) => CANDIDATE_FAMILIES[sink.kind]?.[r])
         : [...roles].find((r) => r !== 'unknown') ?? (proven ? 'unknown' : undefined);
@@ -211,6 +216,9 @@ function linkFlows(
       // from the receiver, so `res.locals.db.query(x)` in a file that happens to import `pg` looks
       // identical to a real pool — and `res.locals.db` may be any app object. Such sinks stay in the
       // inventory for review; they just cannot compile a rule that blocks live traffic on a guess.
+      if (sink.apiUnconfirmed) {
+        reasons.push(`sink package "${sink.package}" is not a known ${sink.kind} provider: it does not establish a ${sink.kind} API (method name alone is not evidence)`);
+      }
       if (sink.attribution !== 'import' && sink.attribution !== 'global') {
         reasons.push(sink.attribution === 'inferred'
           ? `sink package "${sink.package}" was inferred from the file's other imports, not from the receiver (${sink.kind}.${sink.op ?? '?'}): the receiver may be any app object`
@@ -224,7 +232,10 @@ function linkFlows(
           ? `dynamic computed key reaches this sink (${l.detail}): the field cannot be named by a parameter`
           : `spread reaches this sink (${l.detail}): the specific field is not identifiable`);
       }
-      if (proven && argumentRole && argumentRole !== 'unknown' && !family) {
+      // `!sink.apiUnconfirmed`: when the family was withheld because the PACKAGE does not establish this
+      // API, the role is not what's wrong — role "sql" is normally blockable, and saying otherwise sends a
+      // reviewer to look at the wrong thing. The package reason above already explains the refusal.
+      if (proven && argumentRole && argumentRole !== 'unknown' && !family && !sink.apiUnconfirmed) {
         // e.g. a request value in a parameterized db `values` object: real reachability, but not a
         // pattern a generic blocking rule can express.
         reasons.push(`argument role "${argumentRole}" on a ${sink.kind} sink is not a blockable pattern on its own`);

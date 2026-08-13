@@ -157,6 +157,28 @@ const ADVERSARIAL: Case[] = [
     expectRefused: [['id', /no proven local read/]],
   },
   {
+    name: 'adversarial: a traced package that does not establish the API',
+    kind: 'adversarial',
+    pkg: { dependencies: { express: '4', '@apollo/client': '3' } },
+    files: {
+      // `.query()` is a generic method name. An ApolloClient instance resolves to a REAL dependency, so
+      // attribution alone admits it — and a GraphQL call became a precise SQL-injection candidate. Package
+      // provenance is not API provenance.
+      'src/lib/gql.ts': `
+        import { ApolloClient } from "@apollo/client";
+        export const client = new ApolloClient({ uri: "https://api.example.com" });
+      `,
+      'src/server.ts': `
+        import express from "express";
+        import { client } from "./lib/gql";
+        const app = express();
+        app.post("/graphql", async (req, res) => { await client.query(req.body.sql); res.end(); });
+      `,
+    },
+    expectCandidates: [],
+    expectRefused: [['sql', /does not establish a db API/]],
+  },
+  {
     name: 'adversarial: sibling expressions must not contaminate each other',
     kind: 'adversarial',
     pkg: { dependencies: { express: '4' } },
@@ -292,6 +314,34 @@ const CASES: Case[] = [
     },
     expectCandidates: [],
   },
+  {
+    name: 'express + a client in lib/ (the layout generated apps actually use)',
+    pkg: { dependencies: { express: '4', '@supabase/supabase-js': '2', pg: '8' } },
+    files: {
+      // The handler's file imports the CLIENT, not the driver. The receiver therefore resolves to a
+      // relative specifier, and treating that as app code made these sinks vanish — which also broke the
+      // package join a server needs to connect a CVE in `pg` to the endpoint that reaches it.
+      'src/lib/db.ts': `
+        import { createClient } from "@supabase/supabase-js";
+        export const db = createClient(process.env.URL, process.env.KEY);
+      `,
+      'src/lib/pool.ts': `
+        import { Pool } from "pg";
+        export const pool = new Pool({ connectionString: process.env.DATABASE_URL });
+      `,
+      'src/server.ts': `
+        import express from "express";
+        import { db } from "./lib/db";
+        import { pool } from "./lib/pool";
+        const app = express();
+        app.post("/tasks", async (req, res) => { await db.from("tasks").insert({ title: req.body.title }); res.end(); });
+        app.post("/report", async (req, res) => { await pool.query(req.body.sql); res.end(); });
+      `,
+    },
+    // The raw query is a blockable pattern; the inserted row value is context, not a rule.
+    expectCandidates: ['sql-injection @ post.sql'],
+    expectRefused: [['title', /not a blockable pattern/]],
+  },
 ];
 
 const ALL: Case[] = [...CASES, ...ADVERSARIAL];
@@ -395,9 +445,9 @@ describe('golden corpus', () => {
   it('keeps a standing adversarial category (lookalikes are how every false candidate got in)', () => {
     // Guards against the category quietly emptying out; the classes listed are the ones that have
     // actually produced false candidates, so losing one should fail loudly.
-    expect(ADVERSARIAL.length).toBeGreaterThanOrEqual(6);
+    expect(ADVERSARIAL.length).toBeGreaterThanOrEqual(7);
     const names = ADVERSARIAL.map((c) => c.name).join(' | ');
-    for (const cls of ['collide with dangerous API names', 'untraceable receivers', 'shadowing dangerous globals', 'two request namespaces', 'sibling expressions', 'different namespaces']) {
+    for (const cls of ['collide with dangerous API names', 'untraceable receivers', 'shadowing dangerous globals', 'two request namespaces', 'sibling expressions', 'different namespaces', 'does not establish the API']) {
       expect(names, `missing adversarial class: ${cls}`).toContain(cls);
     }
   });
