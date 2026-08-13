@@ -24,8 +24,6 @@ import { makeStore } from './rules/store.js';
 import { resolveRules } from './rules/source.js';
 import { startRefresh, makeRefreshHandler } from './rules/refresh.js';
 import { createFirewallLogReporter, resolveApiBase, telemetryEnabled } from './firewall-log.js';
-import { readFileSync } from 'node:fs';
-import { join } from 'node:path';
 
 // Supabase-tunnel guard for AI-builder apps (Lovable / TanStack Start + Supabase).
 export { createSupabaseGuard, GUARD_PATH } from './supabase-guard.js';
@@ -72,7 +70,7 @@ export async function createProtection(options = {}) {
   // Report enforced blocks via existing connector POST /api/logs/log (WP path).
   // Needs api_key from provision / PATCHSTACK_API_KEY / .patchstackrc.json.
   // Opt out: PATCHSTACK_TELEMETRY=off. Never embed api_key in the public widget.
-  const apiKey = resolveApiKey(options);
+  const apiKey = await resolveApiKey(options);
   const firewallLog =
     apiKey && telemetryEnabled() && options.reportFirewallLog !== false
       ? createFirewallLogReporter({
@@ -580,8 +578,13 @@ function resolveMode(options, bundle) {
   return 'dry-run';
 }
 
-/** WP-format api_key for connector /api/logs/log. Never use the public site UUID. */
-function resolveApiKey(options) {
+/**
+ * WP-format api_key for connector /api/logs/log. Never use the public site UUID.
+ * The `.patchstackrc.json` fallback reads the filesystem, so fs/path are imported LAZILY — this
+ * module must stay loadable on edge runtimes (Next edge middleware, Workers, Deno, Supabase
+ * Functions), where a static `node:fs` import fails to resolve and would take the guard down.
+ */
+async function resolveApiKey(options) {
   if (typeof options?.apiKey === 'string' && options.apiKey.length > 0) return options.apiKey;
   if (typeof process !== 'undefined') {
     const fromEnv = process.env?.PATCHSTACK_API_KEY;
@@ -589,12 +592,13 @@ function resolveApiKey(options) {
   }
   try {
     if (typeof process === 'undefined' || typeof process.cwd !== 'function') return undefined;
+    const [{ readFileSync }, { join }] = await Promise.all([import('node:fs'), import('node:path')]);
     const cwd = options?.cwd ?? process.cwd();
     const raw = readFileSync(join(cwd, '.patchstackrc.json'), 'utf8');
     const key = JSON.parse(raw)?.apiKey;
     if (typeof key === 'string' && key.length > 0) return key;
   } catch {
-    /* missing — reporting stays off */
+    /* missing, or no filesystem on this runtime — reporting stays off */
   }
   return undefined;
 }

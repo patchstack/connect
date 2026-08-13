@@ -5,8 +5,29 @@
 //                   a KV store for filesystem-less runtimes). Survives process restarts.
 // read: memory → durable → null.  write: memory + best-effort durable.  Everything is fail-open —
 // a read/write error yields "no cache" rather than throwing.
-import { readFileSync, writeFileSync, mkdirSync } from 'node:fs';
-import { join } from 'node:path';
+//
+// Node's fs/path are loaded LAZILY (dynamic import), never as a static top-level import: this module
+// is part of the WinterCG/edge-safe graph (Next edge middleware, Workers, Deno, Supabase Functions),
+// where a static `node:fs` import fails to resolve at build/load time and would take the whole guard
+// down. On those runtimes the disk tier simply reports "no cache" and the memory tier (or a pluggable
+// `ruleCache` adapter) carries last-known-good.
+
+let fsMod; // memoized { readFileSync, writeFileSync, mkdirSync, join } | null (unavailable)
+async function loadFs() {
+  if (fsMod !== undefined) return fsMod;
+  try {
+    const [fs, path] = await Promise.all([import('node:fs'), import('node:path')]);
+    fsMod = {
+      readFileSync: fs.readFileSync,
+      writeFileSync: fs.writeFileSync,
+      mkdirSync: fs.mkdirSync,
+      join: path.join,
+    };
+  } catch {
+    fsMod = null; // no filesystem here (edge runtime) — memory/adapter tiers still work
+  }
+  return fsMod;
+}
 
 export function makeStore(options = {}) {
   let mem = null;
@@ -54,24 +75,24 @@ function durableTier(options) {
   };
 }
 
-function cachePath(dir) {
-  return join(dir, 'patchstack-rules.json');
-}
-
-function cacheWrite(dir, env) {
+async function cacheWrite(dir, env) {
   if (!dir) return;
+  const fs = await loadFs();
+  if (!fs) return; // filesystem-less runtime — memory tier only
   try {
-    mkdirSync(dir, { recursive: true });
-    writeFileSync(cachePath(dir), JSON.stringify(env));
+    fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(fs.join(dir, 'patchstack-rules.json'), JSON.stringify(env));
   } catch {
     /* cache is best-effort — the memory tier still holds last-known-good */
   }
 }
 
-function cacheRead(dir) {
+async function cacheRead(dir) {
   if (!dir) return null;
+  const fs = await loadFs();
+  if (!fs) return null;
   try {
-    return toEnvelope(JSON.parse(readFileSync(cachePath(dir), 'utf8')));
+    return toEnvelope(JSON.parse(fs.readFileSync(fs.join(dir, 'patchstack-rules.json'), 'utf8')));
   } catch {
     return null;
   }
