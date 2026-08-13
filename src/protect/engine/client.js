@@ -1,3 +1,5 @@
+import { safeBaseUrl } from '../safe-origin.js';
+
 const DEFAULT_BASE_URL = 'https://api.patchstack.com';
 const DEFAULT_CACHE_TTL = 300_000;
 // Randomly shorten the effective TTL by up to this fraction so many long-lived clients don't all
@@ -21,7 +23,7 @@ export class PatchstackRuleClient {
     // Bounded so app STARTUP can't hang on a slow API (see the boot budget in rules/source.js).
     this.#timeoutMs = Number(timeoutMs) > 0 ? Number(timeoutMs) : 30_000;
     this.#token = token ?? process.env.PATCHSTACK_WAF_TOKEN;
-    this.#baseUrl = baseUrl ?? process.env.PATCHSTACK_WAF_API_URL ?? DEFAULT_BASE_URL;
+    this.#baseUrl = safeBaseUrl(baseUrl ?? process.env.PATCHSTACK_WAF_API_URL, DEFAULT_BASE_URL, 'rule endpoint');
     this.#cacheTtl = Number.isFinite(cacheTtl) && cacheTtl > 0 ? cacheTtl : DEFAULT_CACHE_TTL;
     this.#etag = etag ?? null;
 

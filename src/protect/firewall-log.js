@@ -1,3 +1,4 @@
+import { isSafeOrigin } from './safe-origin.js';
 // Fire-and-forget reporter: Connect runtime → existing connector POST /api/logs/log
 // (same path WordPress uses). Auth: WP-style api_key (`{secret}-{oauth.id}`) →
 // POST /oauth/token (client_credentials) → Bearer JWT on /api/logs/log.
@@ -30,7 +31,16 @@ export function parseApiKey(apiKey) {
 export function resolveApiBase(pulseOrManifestUrl) {
   const fromEnv = typeof process !== 'undefined' ? process.env?.PATCHSTACK_API_BASE : undefined;
   if (typeof fromEnv === 'string' && fromEnv.length > 0) {
-    return fromEnv.replace(/\/$/, '');
+    // The site api_key is exchanged for a token against this origin, so a hostile/injected env value
+    // would be a credential-exfiltration path. Require HTTPS (localhost excepted for local testing);
+    // anything else falls back to the default origin rather than shipping the key off-platform.
+    const candidate = fromEnv.replace(/\/$/, '');
+    if (isSafeOrigin(candidate)) return candidate;
+    // eslint-disable-next-line no-console
+    console.warn(
+      '[patchstack] ignoring PATCHSTACK_API_BASE: block-log reporting requires an https origin ' +
+        '(or localhost). Falling back to the default API origin.',
+    );
   }
   if (typeof pulseOrManifestUrl === 'string' && pulseOrManifestUrl.length > 0) {
     try {
