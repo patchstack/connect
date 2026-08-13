@@ -1342,6 +1342,12 @@ function pathFromTainted(node: any, ts: TsModule, rootPath: Map<string, string>)
   if (!cur || !ts.isIdentifier(cur)) return undefined;
   const base = rootPath.get(cur.text);
   if (base === undefined) return undefined;
+  // Drop a leading NAMESPACE segment (`req.body.webhookUrl` → `webhookUrl`). Input names — and the
+  // runtime coordinates derived from them — are relative to their namespace (`post.webhookUrl`), so
+  // leaving `body.` in the read path would fail to match the very inputs it came from. Without this,
+  // the highest-value flows (`req.body.webhookUrl` → fetch, `req.body.command` → exec) never reach
+  // `precise`.
+  if (base === '' && segs.length > 1 && REQ_SOURCES.includes(segs[0]!)) segs.shift();
   return normalizePath([base, ...segs].filter(Boolean).join('.'));
 }
 

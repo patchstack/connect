@@ -90,3 +90,39 @@ describe('coordinates on a real project', () => {
     expect(routeParamFlow?.ruleGeneratableReasons?.join(' ')).toMatch(/route parameters are not exposed/i);
   });
 });
+
+describe('high-signal candidate families reach precise', () => {
+  // These are the first candidate families a rule compiler would target (SSRF / traversal / command
+  // injection). They read straight off `req.<namespace>.<field>` into the sink, and previously never
+  // reached `precise` because the namespace segment made the read path mismatch the input name.
+  let dir: string;
+  beforeAll(() => {
+    dir = mkdtempSync(join(tmpdir(), 'ps-fams-'));
+    mkdirSync(join(dir, 'src'), { recursive: true });
+    writeFileSync(join(dir, 'package.json'), JSON.stringify({ dependencies: { express: '4', axios: '1' } }));
+    writeFileSync(join(dir, 'src', 'server.ts'), `
+      import express from "express";
+      import fs from "node:fs";
+      import { exec } from "node:child_process";
+      import axios from "axios";
+      const app = express();
+      app.post("/api/fetch", async (req, res) => { await axios.get(req.body.webhookUrl); res.end(); });
+      app.post("/api/read", (req, res) => { res.end(fs.readFileSync(req.body.filename)); });
+      app.post("/api/run", (req, res) => { exec(req.body.command); res.end(); });
+      app.get("/api/search", (req, res) => { res.end(fs.readFileSync(req.query.file)); });
+    `);
+  });
+  afterAll(() => rmSync(dir, { recursive: true, force: true }));
+
+  it.each([
+    ['/api/fetch', 'webhookUrl', 'http', 'post.webhookUrl'],
+    ['/api/read', 'filename', 'fs', 'post.filename'],
+    ['/api/run', 'command', 'exec', 'post.command'],
+    ['/api/search', 'file', 'fs', 'get.file'],
+  ])('%s: %s reaches the %s sink precisely with coordinate %s', async (route, input, kind, coord) => {
+    const { map } = await buildInputMap(dir);
+    const ep = map!.endpoints.find((e) => e.route === route)!;
+    expect(ep.inputs.find((i) => i.name === input)?.runtimeParameter).toBe(coord);
+    expect(ep.flows.some((f) => f.input === input && f.sink.kind === kind && f.confidence === 'precise')).toBe(true);
+  });
+});
