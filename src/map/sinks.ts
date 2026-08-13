@@ -165,8 +165,16 @@ function directSinks(node: any, ts: TsModule, bindings: Bindings, ctx?: SinkCont
    * that is not a DB provider stays in the INVENTORY (a `.query()` on it is worth a human's attention)
    * but is marked so no rule can be compiled from it — and it does not get to call itself SQL.
    */
-  const dbApi = (pkg: string | undefined): { provider?: string; apiUnconfirmed?: true } =>
-    pkg && !isDbPackage(pkg) ? { apiUnconfirmed: true } : { provider: 'sql' };
+  const dbApi = (pkg: string | undefined, attribution: Sink['attribution']): { provider?: string; apiUnconfirmed?: true } => {
+    if (pkg && !isDbPackage(pkg)) return { apiUnconfirmed: true };
+    // `provider` is a claim about the API at THIS call site, so it needs the receiver — not just the file.
+    // An INFERRED package means "this file talks to pg", never "this receiver is a pg client", and
+    // `res.locals.db.query(x)` in a file that imports pg is exactly that. The flow is already refused;
+    // asserting `provider: 'sql'` anyway would overstate it in the inventory, where a human reads it.
+    // `package` still carries the hint, and `attribution` already says how strong it is — deriving the
+    // claim from it here keeps one source of truth rather than a second confidence field to drift.
+    return attribution === 'import' || attribution === 'global' ? { provider: 'sql' } : {};
+  };
   const infer = (kind: 'db' | 'http'): string | undefined => {
     const table = kind === 'db' ? DB_PACKAGES : HTTP_PACKAGES;
     for (const p of table) if (bindings.imports.has(p)) return p;
@@ -190,7 +198,8 @@ function directSinks(node: any, ts: TsModule, bindings: Bindings, ctx?: SinkCont
         const parent = n.parent;
         if (!b.local && !b.relative && parent && ts.isPropertyAccessExpression(parent) && DB_OPS.has(parent.name.text)) {
           const pkg = b.pkg ?? infer('db');
-          push({ kind: 'db', ...dbApi(pkg), package: pkg, table, op: parent.name.text, attribution: attributionOf(b, pkg), ...spanOf(opCallOf(parent, ts)) });
+          const attribution = attributionOf(b, pkg);
+          push({ kind: 'db', ...dbApi(pkg, attribution), package: pkg, table, op: parent.name.text, attribution, ...spanOf(opCallOf(parent, ts)) });
         }
       }
       if (ts.isPropertyAccessExpression(callee)) {
@@ -207,13 +216,16 @@ function directSinks(node: any, ts: TsModule, bindings: Bindings, ctx?: SinkCont
           if (PRISMA_OPS.has(method) && ts.isPropertyAccessExpression(callee.expression)) {
             const prismaLikely = b.pkg === '@prisma/client' ||
               (!b.pkg && (bindings.imports.has('@prisma/client') || /prisma/i.test(b.root ?? '')));
-            if (prismaLikely) push({ kind: 'db', provider: 'prisma', package: '@prisma/client', table: callee.expression.name.text, op: method, attribution: b.pkg ? 'import' : 'inferred', ...spanOf(n) });
+            // Same rule for the provider claim: only a resolved receiver earns `provider: 'prisma'`; a
+            // prisma-NAMED receiver is a hint, and `package` + `attribution` already say so.
+            if (prismaLikely) push({ kind: 'db', ...(b.pkg ? { provider: 'prisma' } : {}), package: '@prisma/client', table: callee.expression.name.text, op: method, attribution: b.pkg ? 'import' : 'inferred', ...spanOf(n) });
           }
           // db: raw `.query(` / `.execute(`. Any object can have a `.query` method, so an untraceable
           // receiver stays in the inventory with NO attribution — visible to a human, never auto-ruled.
           if (method === 'query' || method === 'execute') {
             const pkg = b.pkg ?? infer('db');
-            push({ kind: 'db', ...dbApi(pkg), package: pkg, op: method, attribution: attributionOf(b, pkg), ...spanOf(n) });
+            const attribution = attributionOf(b, pkg);
+            push({ kind: 'db', ...dbApi(pkg, attribution), package: pkg, op: method, attribution, ...spanOf(n) });
           }
           // fs / exec via a namespace: `fs.writeFile(` / `child_process.exec(`. The receiver must
           // actually resolve to a filesystem/process package — the method name alone proves nothing.

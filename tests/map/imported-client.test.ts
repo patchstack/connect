@@ -150,6 +150,7 @@ describe('a traced package must also establish the API', () => {
     writeFileSync(join(d, 'src', 'server.ts'), `
       import express from "express";
       import { ApolloClient } from "@apollo/client";
+      import { Pool } from "pg";
       import { client } from "./lib/gql";
       import { pool } from "./lib/pool";
       import { orm } from "./lib/orm";
@@ -159,6 +160,9 @@ describe('a traced package must also establish the API', () => {
       app.post("/gql-inline", async (req, res) => { await inline.query(req.body.sql); res.end(); });
       app.post("/pg", async (req, res) => { await pool.query(req.body.sql); res.end(); });
       app.post("/orm", async (req, res) => { await orm.execute(req.body.sql); res.end(); });
+      // The direct \`pg\` import above is what makes this an INFERRED package rather than an untraceable
+      // one: the file demonstrably talks to pg, but nothing traces \`res.locals.db\` to it.
+      app.post("/untraced", async (req, res) => { await res.locals.db.query(req.body.sql); res.end(); });
     `);
   });
   afterAll(() => rmSync(d, { recursive: true, force: true }));
@@ -180,6 +184,20 @@ describe('a traced package must also establish the API', () => {
     expect(flow.ruleGeneratable).toBe(false);
     expect(flow.candidateFamily).toBeUndefined(); // and it must not advertise a class it cannot support
     expect(flow.ruleGeneratableReasons!.join(' ')).toMatch(/does not establish a db API/);
+  });
+
+  it('claims a provider only when the RECEIVER was traced, not just the package', async () => {
+    // `res.locals.db.query(x)` in a file that imports pg: the package is inferred from the file, so the
+    // sink must not assert `provider: 'sql'` about a receiver nobody traced. The flow was already refused
+    // for the inferred attribution; this is about not overstating it in the inventory, where a human reads
+    // it. No separate confidence field — `attribution` already carries the strength.
+    const e = await route('/untraced');
+    const sink = e.sinks.find((s) => s.kind === 'db')!;
+    expect(sink.package).toBe('pg');          // the hint survives
+    expect(sink.attribution).toBe('inferred');
+    expect(sink.provider).toBeUndefined();    // …but the API claim does not
+    expect(sink.apiUnconfirmed).toBeUndefined(); // and this is NOT the "wrong package" case
+    expect(e.flows.every((f) => f.ruleGeneratable === false)).toBe(true);
   });
 
   it('keeps the sink in the inventory — a .query() on an unknown client is worth a human look', async () => {
