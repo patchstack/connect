@@ -1,4 +1,5 @@
-import { readFileSync, readdirSync, existsSync } from 'node:fs';
+import { readFileSync, readdirSync, existsSync, realpathSync, statSync } from 'node:fs';
+import { builtinModules } from 'node:module';
 import { join, relative } from 'node:path';
 import type { SiteInputMap, Endpoint, InputField, Sink, TsModule } from './types.js';
 
@@ -7,33 +8,61 @@ import type { SiteInputMap, Endpoint, InputField, Sink, TsModule } from './types
 // across builders (TanStack Start, Next, SvelteKit, Express/Fastify/Hono, …) and providers, and
 // degrades gracefully (recording what it couldn't see in `coverage.notes`). Add a stack by adding a
 // recognizer, not a new adapter.
+//
+// False-positive control: sink and validator recognizers are gated on the file's module bindings —
+// a call whose receiver is a plain local object/class/function is NOT a dependency sink, and
+// `.object({…})` is only read as an input schema when its receiver traces to a known validator
+// package. Receivers that can't be traced (handler params, cross-file imports) stay heuristic,
+// favoring recall over precision.
 
 const HTTP_METHODS = new Set(['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'HEAD', 'OPTIONS']);
-const ROUTE_REGISTER = new Set(['get', 'post', 'put', 'patch', 'delete', 'options', 'all', 'head', 'use']);
+// One list drives BOTH the AST route-registration recognizer and the textual pre-filter — they must
+// never diverge: a file the pre-filter skips is invisible to every recognizer.
+const ROUTE_REGISTER_NAMES = ['get', 'post', 'put', 'patch', 'delete', 'options', 'all', 'head', 'use'];
+const ROUTE_REGISTER = new Set(ROUTE_REGISTER_NAMES);
+const ROUTE_CALL_RE = new RegExp(`\\.(${[...ROUTE_REGISTER_NAMES, 'route'].join('|')})\\s*\\(`);
 const DB_OPS = new Set(['insert', 'update', 'delete', 'select', 'upsert', 'rpc']);
 const PRISMA_OPS = new Set(['create', 'createMany', 'update', 'updateMany', 'delete', 'deleteMany', 'upsert', 'findFirst', 'findUnique', 'findMany', 'count', 'aggregate']);
 const FS_CALLS = /^(readFile|writeFile|readFileSync|writeFileSync|appendFile|createReadStream|createWriteStream|unlink|rm|rmSync|mkdir|readdir|stat|open)$/;
 const EXEC_CALLS = /^(exec|execSync|spawn|spawnSync|execFile|execFileSync|fork)$/;
 const HTTP_CALLS = /^(fetch|got|request)$/;
+const HTTP_MEMBER_METHODS = new Set(['get', 'post', 'put', 'patch', 'delete', 'head', 'request']);
 const ZOD_BASE = new Set(['string', 'number', 'boolean', 'array', 'object', 'enum', 'bigint', 'date', 'record']);
+// String-format refinements a validator can declare — kept on the field so a rule can pin the shape.
+const STRING_FORMATS = new Set(['email', 'uuid', 'url', 'ip', 'ipv4', 'ipv6', 'cuid', 'cuid2', 'ulid', 'emoji', 'datetime', 'base64', 'jwt', 'nanoid']);
+// Packages whose `.object({…})` calls describe an input schema.
+const VALIDATOR_PACKAGES = new Set(['zod', 'valibot', 'yup', 'joi', '@hapi/joi', 'superstruct']);
 // When a sink's base can't be traced precisely, infer its package from the file's imports of a known
 // provider for that sink kind (a file almost always uses one db/http client).
 const DB_PACKAGES = ['@supabase/supabase-js', '@prisma/client', 'drizzle-orm', 'knex', 'kysely', 'pg', 'mysql2', 'mysql', 'sequelize', 'typeorm', 'mongoose', 'better-sqlite3'];
 const HTTP_PACKAGES = ['axios', 'got', 'node-fetch', 'undici', 'superagent', 'ky'];
+const isHttpPackage = (pkg: string) => HTTP_PACKAGES.includes(pkg) || pkg === 'node:http' || pkg === 'node:https';
+const BUILTINS = new Set(builtinModules);
 
 // Per-file module bindings: resolve a local identifier to the npm package (or node: builtin) it came
 // from — directly (an import), or via `const x = <importedFn|new ImportedClass>(...)` /
-// `const x = require('mod')`. `imports` is every module specifier the file imports (for the fallback).
+// `const x = require('mod')`; derived names resolve transitively (`const conn = pool.promise()`).
+// `imports` is every module specifier the file imports (for the fallback). `locals` is every name
+// declared in-file that does NOT trace to a module — calls on those receivers are not dependency
+// sinks. (Names assigned outside their declaration, e.g. `let fs; fs = require('fs')`, are treated
+// as local — an accepted miss.)
 interface Bindings {
   resolve(name: string): string | undefined;
   imports: Set<string>;
+  locals: Set<string>;
 }
 function buildModuleBindings(sf: any, ts: TsModule): Bindings {
   const nameToModule = new Map<string, string>(); // local name → module specifier
-  const importedNames = new Map<string, string>(); // imported binding → module (for the const-from-import step)
+  const declared = new Set<string>(); // every name declared in this file
   const imports = new Set<string>();
 
   const record = (local: string, mod: string) => { nameToModule.set(local, mod); imports.add(mod); };
+  const declareBound = (nameNode: any) => {
+    if (ts.isIdentifier(nameNode)) declared.add(nameNode.text);
+    else if (ts.isObjectBindingPattern(nameNode) || ts.isArrayBindingPattern(nameNode)) {
+      for (const el of nameNode.elements) if (ts.isBindingElement(el) && ts.isIdentifier(el.name)) declared.add(el.name.text);
+    }
+  };
 
   const visit = (node: any) => {
     // import … from 'mod'
@@ -41,34 +70,39 @@ function buildModuleBindings(sf: any, ts: TsModule): Bindings {
       const mod = node.moduleSpecifier.text;
       imports.add(mod);
       const clause = node.importClause;
-      if (clause?.name) { record(clause.name.text, mod); importedNames.set(clause.name.text, mod); } // default
+      if (clause?.name) record(clause.name.text, mod); // default
       const nb = clause?.namedBindings;
       if (nb) {
-        if (ts.isNamespaceImport(nb)) { record(nb.name.text, mod); importedNames.set(nb.name.text, mod); }
-        else if (ts.isNamedImports(nb)) for (const el of nb.elements) { record(el.name.text, mod); importedNames.set(el.name.text, mod); }
+        if (ts.isNamespaceImport(nb)) record(nb.name.text, mod);
+        else if (ts.isNamedImports(nb)) for (const el of nb.elements) record(el.name.text, mod);
       }
     }
+    if (ts.isFunctionDeclaration(node) && node.name) declared.add(node.name.text);
+    if (ts.isClassDeclaration(node) && node.name) declared.add(node.name.text);
     // const x = require('mod')  /  const { a } = require('mod')
     if (ts.isVariableStatement(node)) {
       for (const decl of node.declarationList.declarations) {
+        declareBound(decl.name);
         const init = decl.initializer;
         const reqMod = requireSpecifier(init, ts);
         if (reqMod) {
           if (ts.isIdentifier(decl.name)) record(decl.name.text, reqMod);
           else if (ts.isObjectBindingPattern(decl.name)) for (const el of decl.name.elements) if (ts.isIdentifier(el.name)) record(el.name.text, reqMod);
         }
-        // const x = importedFactory(...)  /  const x = new ImportedClass(...)  → x carries that package
+        // const x = tracedFactory(...)  /  const x = new TracedClass(...)  → x carries that package.
+        // Looking up nameToModule (not just direct imports) makes this transitive: pool → conn → ….
         if (init && ts.isIdentifier(decl.name)) {
           const callee = ts.isCallExpression(init) ? init.expression : ts.isNewExpression(init) ? init.expression : undefined;
           const root = callee ? rootIdentifier(callee, ts) : undefined;
-          if (root && importedNames.has(root)) record(decl.name.text, importedNames.get(root)!);
+          if (root && nameToModule.has(root)) record(decl.name.text, nameToModule.get(root)!);
         }
       }
     }
     ts.forEachChild(node, visit);
   };
   visit(sf);
-  return { resolve: (name: string) => nameToModule.get(name), imports };
+  const locals = new Set([...declared].filter((n) => !nameToModule.has(n)));
+  return { resolve: (name: string) => nameToModule.get(name), imports, locals };
 }
 
 function requireSpecifier(init: any, ts: TsModule): string | undefined {
@@ -91,47 +125,71 @@ function rootIdentifier(node: any, ts: TsModule): string | undefined {
   return undefined;
 }
 
-// Normalize a module specifier to its npm package root (keep scope, drop subpath); node: builtins kept
-// as-is (they signal a builtin, not an npm CVE); relative paths → undefined (local, not a package).
+// Normalize a module specifier to its npm package root (keep scope, drop subpath). Node builtins are
+// normalized to the `node:` form even when imported bare (`import fs from 'fs'`) — there IS an npm
+// package named `fs`, and CVE correlation must never confuse the two. Relative paths → undefined.
 function npmPackageOf(spec: string | undefined): string | undefined {
   if (!spec) return undefined;
   if (spec.startsWith('.') || spec.startsWith('/')) return undefined;
   if (spec.startsWith('node:')) return spec;
+  if (BUILTINS.has(spec)) return `node:${spec}`;
   const parts = spec.split('/');
   return spec.startsWith('@') ? parts.slice(0, 2).join('/') : parts[0];
+}
+
+// 1-based line of a node in its source file — the auditable coordinate rules and humans point at.
+function lineOf(node: any): number | undefined {
+  const sf = typeof node?.getSourceFile === 'function' ? node.getSourceFile() : undefined;
+  if (!sf) return undefined;
+  try { return sf.getLineAndCharacterOfPosition(node.getStart(sf)).line + 1; } catch { return undefined; }
 }
 
 export async function extractInputMap(cwd: string, ts: TsModule): Promise<SiteInputMap> {
   const notes: string[] = [];
   const endpoints: Endpoint[] = [];
+  const failed: string[] = [];
   const srcDir = join(cwd, 'src');
   const root = existsSync(srcDir) ? srcDir : cwd;
 
   for (const file of collectSources(root)) {
-    const text = readFileSync(file, 'utf8');
-    if (!hasEntrySignal(text)) continue;
-    const sf = ts.createSourceFile(file, text, ts.ScriptTarget.Latest, true, guessScriptKind(ts, file));
-    const bindings = buildModuleBindings(sf, ts);
-    const localSinks = collectLocalSinks(sf, ts, bindings);
-    for (const ep of extractFromFile(sf, ts, localSinks, bindings)) {
-      endpoints.push({ ...ep, file: relative(cwd, file) });
+    try {
+      const text = readFileSync(file, 'utf8');
+      if (!hasEntrySignal(text)) continue;
+      const sf = ts.createSourceFile(file, text, ts.ScriptTarget.Latest, true, guessScriptKind(ts, file));
+      const bindings = buildModuleBindings(sf, ts);
+      const localSinks = collectLocalSinks(sf, ts, bindings);
+      for (const ep of extractFromFile(sf, ts, localSinks, bindings)) {
+        endpoints.push({ ...ep, file: relative(cwd, file) });
+      }
+    } catch {
+      // Fail-open: one unreadable/unparseable file must never kill the whole map.
+      failed.push(relative(cwd, file));
     }
   }
 
   notes.push('Static analysis is best-effort — this is the DETECTED surface, not a proof of completeness.');
   notes.push('Sinks are followed one level into same-file helpers; cross-file / dynamic indirection is not traced.');
   notes.push('A sink `package` is resolved from the file’s imports (precise) or inferred from a known provider import; an unresolved package means the backing dependency could not be traced.');
+  if (failed.length > 0) {
+    const sample = failed.slice(0, 5).join(', ');
+    notes.push(`${failed.length} file(s) could not be analyzed and were skipped (fail-open): ${sample}${failed.length > 5 ? ', …' : ''}.`);
+  }
+  const unresolved = endpoints.filter((e) => e.inputsResolved === false).length;
+  if (unresolved > 0) {
+    notes.push(`${unresolved} endpoint(s) declare an input validator that could not be statically parsed — their inputs are UNKNOWN, not empty (marked inputsResolved: false).`);
+  }
   if (endpoints.length === 0) notes.push('No recognized server-side entry points found under the source root.');
 
   return { version: 1, framework: detectFramework(cwd), endpoints, coverage: { adapter: 'agnostic-v1', notes } };
 }
 
-// Cheap textual pre-filter so we only parse files that could contain an entry point.
+// Cheap textual pre-filter so we only parse files that could contain an entry point. Derived from the
+// same list as the AST recognizer (see ROUTE_REGISTER_NAMES).
 function hasEntrySignal(text: string): boolean {
   return (
     text.includes('createServerFn') ||
     /\bexport\s+(async\s+)?(function|const)\s+(GET|POST|PUT|PATCH|DELETE|HEAD|OPTIONS)\b/.test(text) ||
-    /\.(get|post|put|patch|delete|options|all)\s*\(/.test(text) ||
+    ROUTE_CALL_RE.test(text) ||
     text.includes("'use server'") || text.includes('"use server"')
   );
 }
@@ -158,14 +216,27 @@ function guessScriptKind(ts: TsModule, file: string) {
   return ts.ScriptKind.TS;
 }
 
-function collectSources(dir: string, out: string[] = []): string[] {
+const isSourceFile = (name: string) => /\.(ts|tsx|js|jsx|mjs)$/.test(name) && !name.endsWith('.d.ts');
+
+// Walks the tree following symlinked directories/files too (monorepos link packages into src), with a
+// realpath visited-set so link cycles can't loop.
+function collectSources(dir: string, out: string[] = [], seen = new Set<string>()): string[] {
+  let key: string;
+  try { key = realpathSync(dir); } catch { return out; }
+  if (seen.has(key)) return out;
+  seen.add(key);
   let entries;
   try { entries = readdirSync(dir, { withFileTypes: true }); } catch { return out; }
   for (const e of entries) {
     if (e.name === 'node_modules' || e.name === 'dist' || e.name === 'build' || e.name.startsWith('.')) continue;
     const full = join(dir, e.name);
-    if (e.isDirectory()) collectSources(full, out);
-    else if (/\.(ts|tsx|js|jsx|mjs)$/.test(e.name) && !e.name.endsWith('.d.ts')) out.push(full);
+    if (e.isDirectory()) collectSources(full, out, seen);
+    else if (e.isSymbolicLink()) {
+      let st;
+      try { st = statSync(full); } catch { continue; }
+      if (st.isDirectory()) collectSources(full, out, seen);
+      else if (st.isFile() && isSourceFile(e.name)) out.push(full);
+    } else if (isSourceFile(e.name)) out.push(full);
   }
   return out;
 }
@@ -182,22 +253,28 @@ function extractFromFile(sf: any, ts: TsModule, localSinks: Map<string, Sink[]>,
         if (decl.initializer && ts.isCallExpression(decl.initializer)) {
           const chain = unwindChain(decl.initializer, ts);
           if (chain.baseName === 'createServerFn' && ts.isIdentifier(decl.name)) {
-            out.push({
+            const validatorCall = chain.calls['inputValidator'] ?? chain.calls['validator'];
+            const inputs = inputsFromValidator(validatorCall, ts, bindings);
+            const ep: Omit<Endpoint, 'file'> = {
               name: decl.name.text,
               entryKind: 'server-fn',
               method: methodFromObjectArg(chain.baseCall, ts),
-              inputs: inputsFromValidator(chain.calls['inputValidator'] ?? chain.calls['validator'], ts),
+              line: lineOf(decl),
+              inputs,
               sinks: sinksFrom(chain.calls['handler']?.arguments?.[0], ts, localSinks, bindings),
-            });
+            };
+            // Honesty marker: a validator EXISTS but couldn't be read — inputs are unknown, not "none".
+            if (validatorCall && inputs.length === 0) ep.inputsResolved = false;
+            out.push(ep);
             continue;
           }
         }
         // (2b) `export const POST = (req) => …` route handler, or a `'use server'` action arrow.
         if (ts.isIdentifier(decl.name) && decl.initializer && isFnLike(decl.initializer, ts)) {
           if (HTTP_METHODS.has(decl.name.text)) {
-            out.push(handlerEntry(decl.name.text, decl.name.text, decl.initializer.parameters, decl.initializer.body, ts, localSinks, bindings));
+            out.push(handlerEntry(decl.name.text, decl.name.text, decl.initializer.parameters, decl.initializer.body, ts, localSinks, bindings, { line: lineOf(decl) }));
           } else if (isServerActionsFile) {
-            out.push(handlerEntry(decl.name.text, 'server-action', decl.initializer.parameters, decl.initializer.body, ts, localSinks, bindings));
+            out.push(handlerEntry(decl.name.text, 'server-action', decl.initializer.parameters, decl.initializer.body, ts, localSinks, bindings, { line: lineOf(decl) }));
           }
         }
       }
@@ -206,22 +283,41 @@ function extractFromFile(sf: any, ts: TsModule, localSinks: Map<string, Sink[]>,
     // (2a) Route handlers / server actions declared as functions.
     if (ts.isFunctionDeclaration(node) && node.name && hasExport(node, ts)) {
       if (HTTP_METHODS.has(node.name.text)) {
-        out.push(handlerEntry(node.name.text, node.name.text, node.parameters, node.body, ts, localSinks, bindings));
+        out.push(handlerEntry(node.name.text, node.name.text, node.parameters, node.body, ts, localSinks, bindings, { line: lineOf(node) }));
       } else if (isServerActionsFile || hasUseServerDirective(node, ts)) {
-        out.push(handlerEntry(node.name.text, 'server-action', node.parameters, node.body, ts, localSinks, bindings));
+        out.push(handlerEntry(node.name.text, 'server-action', node.parameters, node.body, ts, localSinks, bindings, { line: lineOf(node) }));
       }
     }
 
-    // (3) Route registrations: `app.post('/path', …, handler)` / `router.get('/x', handler)` (Express/Fastify/Hono/Koa)
-    if (ts.isCallExpression(node) && ts.isPropertyAccessExpression(node.expression) && ROUTE_REGISTER.has(node.expression.name.text)) {
-      const args = node.arguments;
-      const pathArg = args[0];
-      const handler = args[args.length - 1];
-      if (pathArg && ts.isStringLiteralLike(pathArg) && handler && isFnLike(handler, ts)) {
-        out.push(handlerEntry(pathArg.text, `route-registration`, handler.parameters, handler.body, ts, localSinks, bindings, {
-          method: node.expression.name.text.toUpperCase(),
-          route: pathArg.text,
-        }));
+    if (ts.isCallExpression(node) && ts.isPropertyAccessExpression(node.expression)) {
+      const mname = node.expression.name.text;
+      // (3a) Route registrations: `app.post('/path', …, handler)` (Express/Fastify/Hono/Koa) and the
+      // chained `router.route('/x').get(handler)` idiom (path lives on the inner `.route()` call).
+      if (ROUTE_REGISTER.has(mname)) {
+        const args = node.arguments;
+        const first = args[0];
+        const route = first && ts.isStringLiteralLike(first) ? first.text : routeFromChain(node.expression.expression, ts);
+        const handler = args[args.length - 1];
+        if (route !== undefined && handler && isFnLike(handler, ts)) {
+          out.push(handlerEntry(route, 'route-registration', handler.parameters, handler.body, ts, localSinks, bindings, {
+            // `use`/`all` register handlers but are not HTTP methods — leave method undefined.
+            method: HTTP_METHODS.has(mname.toUpperCase()) ? mname.toUpperCase() : undefined,
+            route,
+            line: lineOf(node),
+          }));
+        }
+      }
+      // (3b) Fastify object form: `app.route({ method, url, handler })` — one endpoint per method.
+      if (mname === 'route') {
+        const arg = node.arguments[0];
+        if (arg && ts.isObjectLiteralExpression(arg)) {
+          const reg = routeObject(arg, ts);
+          if (reg.url && reg.handler) {
+            for (const m of reg.methods.length ? reg.methods : [undefined]) {
+              out.push(handlerEntry(reg.url, 'route-registration', reg.handler.parameters, reg.handler.body, ts, localSinks, bindings, { method: m, route: reg.url, line: lineOf(node) }));
+            }
+          }
+        }
       }
     }
 
@@ -229,6 +325,43 @@ function extractFromFile(sf: any, ts: TsModule, localSinks: Map<string, Sink[]>,
   };
   visit(sf);
   return out;
+}
+
+// Unwind `router.route('/x').get(h).post(h2)` down to the `.route('/x')` call to recover the path.
+function routeFromChain(expr: any, ts: TsModule): string | undefined {
+  let cur = expr;
+  while (cur && ts.isCallExpression(cur) && ts.isPropertyAccessExpression(cur.expression)) {
+    const nm = cur.expression.name.text;
+    if (nm === 'route') {
+      const a = cur.arguments[0];
+      return a && ts.isStringLiteralLike(a) ? a.text : undefined;
+    }
+    if (!ROUTE_REGISTER.has(nm)) return undefined;
+    cur = cur.expression.expression;
+  }
+  return undefined;
+}
+
+// Read `{ method, url|path, handler }` from a Fastify-style route object (handler as arrow/function
+// property or as an object-method shorthand).
+function routeObject(obj: any, ts: TsModule): { url?: string; methods: string[]; handler?: any } {
+  let url: string | undefined;
+  let handler: any;
+  const methods: string[] = [];
+  for (const p of obj.properties) {
+    const key = (p.name as any)?.text;
+    if (ts.isPropertyAssignment(p)) {
+      if ((key === 'url' || key === 'path') && ts.isStringLiteralLike(p.initializer)) url = p.initializer.text;
+      if (key === 'method') {
+        if (ts.isStringLiteralLike(p.initializer)) methods.push(p.initializer.text.toUpperCase());
+        else if (ts.isArrayLiteralExpression(p.initializer)) {
+          for (const el of p.initializer.elements) if (ts.isStringLiteralLike(el)) methods.push(el.text.toUpperCase());
+        }
+      }
+      if (key === 'handler' && isFnLike(p.initializer, ts)) handler = p.initializer;
+    } else if (ts.isMethodDeclaration(p) && key === 'handler') handler = p;
+  }
+  return { url, methods, handler };
 }
 
 // Next server actions: a `'use server'` directive at the top of a module (whole file) or a function body.
@@ -249,7 +382,7 @@ function handlerEntry(
   ts: TsModule,
   localSinks: Map<string, Sink[]>,
   bindings: Bindings,
-  extra: { method?: string; route?: string } = {},
+  extra: { method?: string; route?: string; line?: number } = {},
 ): Omit<Endpoint, 'file'> {
   const entryKind = kindLabel === 'route-registration' ? 'route-registration' : kindLabel === 'server-action' ? 'server-action' : 'route-handler';
   return {
@@ -257,7 +390,8 @@ function handlerEntry(
     entryKind,
     method: extra.method ?? (HTTP_METHODS.has(name) ? name : undefined),
     route: extra.route,
-    inputs: inputsFromHandler(params, body, ts),
+    line: extra.line,
+    inputs: inputsFromHandler(params, body, ts, bindings),
     sinks: sinksFrom({ body, parameters: params, isSyntheticBody: true }, ts, localSinks, bindings),
   };
 }
@@ -294,14 +428,15 @@ function methodFromObjectArg(baseCall: any, ts: TsModule): string | undefined {
 }
 
 // --- inputs -----------------------------------------------------------------
-function inputsFromValidator(validatorCall: any, ts: TsModule): InputField[] {
+function inputsFromValidator(validatorCall: any, ts: TsModule, bindings: Bindings): InputField[] {
   if (!validatorCall) return [];
-  return zodObjectFields(validatorCall, ts);
+  return zodObjectFields(validatorCall, ts, bindings);
 }
 
-// From a raw handler: zod schema fields it parses, plus request member-accesses (req.body/query/params.X).
-function inputsFromHandler(params: any, body: any, ts: TsModule): InputField[] {
-  const fields = zodObjectFields(body, ts);
+// From a raw handler: validator schema fields it parses, plus the request fields it actually reads
+// (member accesses, destructuring, `await request.json()` bodies).
+function inputsFromHandler(params: any, body: any, ts: TsModule, bindings: Bindings): InputField[] {
+  const fields = zodObjectFields(body, ts, bindings);
   const names = new Set(fields.map((f) => f.name));
   for (const n of requestMemberAccesses(params, body, ts)) {
     if (!names.has(n)) { names.add(n); fields.push({ name: n }); }
@@ -309,27 +444,55 @@ function inputsFromHandler(params: any, body: any, ts: TsModule): InputField[] {
   return fields;
 }
 
-// Find the first `z.object({...})` in a subtree and read its fields (name + zod type/constraints).
-function zodObjectFields(node: any, ts: TsModule): InputField[] {
-  if (!node) return [];
-  let objectLiteral: any = null;
+// Find the first validator `.object({...})` in a subtree — gated on the receiver tracing to a known
+// validator package (so an unrelated `.object(` never becomes a schema). An untraceable receiver
+// literally named `z` is accepted as a heuristic (covers `z` re-exported from a local module).
+function findValidatorObject(node: any, ts: TsModule, bindings: Bindings): any {
+  let found: any = null;
   const find = (n: any) => {
-    if (objectLiteral || !n) return;
+    if (found || !n) return;
     if (ts.isCallExpression(n) && ts.isPropertyAccessExpression(n.expression) && n.expression.name.text === 'object') {
-      const arg = n.arguments[0];
-      if (arg && ts.isObjectLiteralExpression(arg)) { objectLiteral = arg; return; }
+      const root = rootIdentifier(n.expression.expression, ts);
+      const pkg = root ? npmPackageOf(bindings.resolve(root)) : undefined;
+      const isValidator = (pkg && VALIDATOR_PACKAGES.has(pkg)) || (!pkg && root === 'z' && !bindings.locals.has(root));
+      if (isValidator) {
+        const arg = n.arguments[0];
+        if (arg && ts.isObjectLiteralExpression(arg)) { found = arg; return; }
+      }
     }
     ts.forEachChild(n, find);
   };
-  find(node.body ?? node);
-  if (!objectLiteral) return [];
+  find(node);
+  return found;
+}
+
+// Read a validator object's fields (name + type/constraints). Nested objects/arrays are flattened to
+// dotted paths — `address.city`, `tags[].label` — the same coordinates `array_key_value` rules use.
+function zodObjectFields(node: any, ts: TsModule, bindings: Bindings): InputField[] {
+  if (!node) return [];
+  const lit = findValidatorObject(node.body ?? node, ts, bindings);
+  return lit ? fieldsOfObject(lit, ts, bindings, '') : [];
+}
+
+function fieldsOfObject(objectLiteral: any, ts: TsModule, bindings: Bindings, prefix: string): InputField[] {
   const fields: InputField[] = [];
   for (const p of objectLiteral.properties) {
     if (!ts.isPropertyAssignment(p) || !p.name) continue;
     const fname = (p.name as any).text;
-    if (fname) fields.push({ name: fname, ...zodShape(p.initializer, ts) });
+    if (!fname) continue;
+    const shape = zodShape(p.initializer, ts);
+    fields.push({ name: prefix + fname, ...shape });
+    const nested = findValidatorObject(p.initializer, ts, bindings);
+    if (nested) fields.push(...fieldsOfObject(nested, ts, bindings, prefix + fname + (shape.type === 'array' ? '[].' : '.')));
   }
   return fields;
+}
+
+function numericValue(arg: any, ts: TsModule): number | undefined {
+  if (!arg) return undefined;
+  if (ts.isNumericLiteral(arg)) return Number(arg.text);
+  if (ts.isPrefixUnaryExpression(arg) && arg.operator === ts.SyntaxKind.MinusToken && ts.isNumericLiteral(arg.operand)) return -Number(arg.operand.text);
+  return undefined;
 }
 
 function zodShape(node: any, ts: TsModule): Omit<InputField, 'name'> {
@@ -339,32 +502,75 @@ function zodShape(node: any, ts: TsModule): Omit<InputField, 'name'> {
     const method = cur.expression.name.text;
     const arg0 = cur.arguments[0];
     if (ZOD_BASE.has(method) && !shape.type) shape.type = method;
-    if (method === 'min' && arg0 && ts.isNumericLiteral(arg0)) shape.min = Number(arg0.text);
-    if (method === 'max' && arg0 && ts.isNumericLiteral(arg0)) shape.max = Number(arg0.text);
+    if (method === 'min') { const v = numericValue(arg0, ts); if (v !== undefined) shape.min = v; }
+    if (method === 'max') { const v = numericValue(arg0, ts); if (v !== undefined) shape.max = v; }
+    if (STRING_FORMATS.has(method) && !shape.format) shape.format = method;
+    if (method === 'regex' && arg0 && ts.isRegularExpressionLiteral(arg0) && !shape.pattern) shape.pattern = arg0.text;
     if (method === 'optional' || method === 'nullish') shape.optional = true;
     cur = cur.expression.expression;
   }
   return shape;
 }
 
-// `req.body.X` / `req.query.X` / `req.params.X` where req is the handler's first param.
+const REQ_SOURCES = ['body', 'query', 'params'];
+
+// The request fields a handler reads, across the common idioms:
+//   req.body.x / req.query.x / req.params.x        (member access)
+//   const { x } = req.body                          (destructuring)
+//   ({ body }) => body.x / const { x } = body       (destructured handler param)
+//   const b = await request.json(); b.x / const { x } = await request.json()   (fetch-style Request)
 function requestMemberAccesses(params: any, body: any, ts: TsModule): string[] {
-  const reqName = params?.[0] && ts.isIdentifier(params[0].name) ? params[0].name.text : undefined;
-  const out = new Set<string>();
   if (!body) return [];
+  const out = new Set<string>();
+  const p0 = params?.[0];
+  const reqName = p0 && ts.isIdentifier(p0.name) ? p0.name.text : undefined;
+  // Identifiers that ARE a request-input object (destructured `({ body })` param, `await req.json()`).
+  const sourceNames = new Set<string>();
+  if (p0 && !reqName && ts.isObjectBindingPattern(p0.name)) {
+    for (const el of p0.name.elements) {
+      const key = bindingKey(el, ts);
+      if (key && REQ_SOURCES.includes(key) && ts.isIdentifier(el.name)) sourceNames.add(el.name.text);
+    }
+  }
+  const unwrap = (e: any): any => {
+    let cur = e;
+    while (cur && (ts.isAwaitExpression(cur) || ts.isAsExpression(cur) || ts.isParenthesizedExpression(cur) || ts.isNonNullExpression(cur))) cur = cur.expression;
+    return cur;
+  };
+  const isReqSourceExpr = (e: any): boolean =>
+    (ts.isPropertyAccessExpression(e) && ts.isIdentifier(e.expression) && e.expression.text === reqName && REQ_SOURCES.includes(e.name.text)) ||
+    (ts.isIdentifier(e) && sourceNames.has(e.text));
+  const isBodyReadCall = (e: any): boolean => {
+    const inner = unwrap(e);
+    return Boolean(inner && ts.isCallExpression(inner) && ts.isPropertyAccessExpression(inner.expression) &&
+      ['json', 'formData'].includes(inner.expression.name.text) &&
+      ts.isIdentifier(inner.expression.expression) && inner.expression.expression.text === reqName);
+  };
   const visit = (n: any) => {
-    // <req>.<body|query|params>.<field>
-    if (ts.isPropertyAccessExpression(n) && ts.isPropertyAccessExpression(n.expression)) {
-      const mid = n.expression;
-      if (ts.isIdentifier(mid.expression) && (!reqName || mid.expression.text === reqName) &&
-          ['body', 'query', 'params'].includes(mid.name.text)) {
-        out.add(n.name.text);
+    // <source>.<field>
+    if (ts.isPropertyAccessExpression(n) && isReqSourceExpr(n.expression)) out.add(n.name.text);
+    if (ts.isVariableDeclaration(n) && n.initializer) {
+      const init = unwrap(n.initializer);
+      // const b = await request.json() → b is a request-input object from here on.
+      if (ts.isIdentifier(n.name) && isBodyReadCall(n.initializer)) sourceNames.add(n.name.text);
+      // const { a, b } = <source> | await request.json()
+      if (ts.isObjectBindingPattern(n.name) && (isReqSourceExpr(init) || isBodyReadCall(n.initializer))) {
+        for (const el of n.name.elements) {
+          const key = bindingKey(el, ts);
+          if (key) out.add(key);
+        }
       }
     }
     ts.forEachChild(n, visit);
   };
   visit(body);
   return [...out];
+}
+
+function bindingKey(el: any, ts: TsModule): string | undefined {
+  if (!ts.isBindingElement(el)) return undefined;
+  const prop = el.propertyName ?? el.name;
+  return prop && ts.isIdentifier(prop) ? prop.text : undefined;
 }
 
 // --- sinks (agnostic) -------------------------------------------------------
@@ -397,15 +603,20 @@ function sinksFrom(arrowOrNode: any, ts: TsModule, localSinks: Map<string, Sink[
 
 // Provider-agnostic sink recognizers over a subtree. Each sink is tagged with the npm package behind
 // it: resolved precisely from the call's base identifier via the file's imports, else inferred from
-// the file's imports of a known provider for that sink kind (a file uses one db/http client).
+// the file's imports of a known provider for that sink kind. A receiver that traces to a plain local
+// object/class/function is NOT a dependency sink and is dropped.
 function directSinks(node: any, ts: TsModule, bindings: Bindings): Sink[] {
   const sinks: Sink[] = [];
-  const pkgOf = (base: any, kind: string): string | undefined => {
+  const baseOf = (base: any): { pkg?: string; local?: boolean; root?: string } => {
     const root = base ? rootIdentifier(base, ts) : undefined;
-    const precise = root ? npmPackageOf(bindings.resolve(root)) : undefined;
-    if (precise) return precise;
-    const table = kind === 'db' ? DB_PACKAGES : kind === 'http' ? HTTP_PACKAGES : null;
-    if (table) for (const p of table) if (bindings.imports.has(p)) return p;
+    if (!root) return {};
+    const pkg = npmPackageOf(bindings.resolve(root));
+    if (pkg) return { pkg, root };
+    return { local: bindings.locals.has(root), root };
+  };
+  const infer = (kind: 'db' | 'http'): string | undefined => {
+    const table = kind === 'db' ? DB_PACKAGES : HTTP_PACKAGES;
+    for (const p of table) if (bindings.imports.has(p)) return p;
     return undefined;
   };
   const push = (s: Sink) => sinks.push(s);
@@ -414,41 +625,56 @@ function directSinks(node: any, ts: TsModule, bindings: Bindings): Sink[] {
       const callee = n.expression;
       // db: `.from("t").<op>()` (supabase/knex/kysely)
       if (ts.isPropertyAccessExpression(callee) && callee.name.text === 'from') {
+        const b = baseOf(callee.expression);
         const t = n.arguments[0];
         const table = t && ts.isStringLiteralLike(t) ? t.text : undefined;
         const parent = n.parent;
-        if (parent && ts.isPropertyAccessExpression(parent) && DB_OPS.has(parent.name.text)) {
-          push({ kind: 'db', provider: 'sql', package: pkgOf(callee.expression, 'db'), table, op: parent.name.text });
+        if (!b.local && parent && ts.isPropertyAccessExpression(parent) && DB_OPS.has(parent.name.text)) {
+          push({ kind: 'db', provider: 'sql', package: b.pkg ?? infer('db'), table, op: parent.name.text, line: lineOf(parent) });
         }
       }
       if (ts.isPropertyAccessExpression(callee)) {
         const method = callee.name.text;
-        // db: prisma-style `prisma.<model>.<op>()`
-        if (PRISMA_OPS.has(method) && ts.isPropertyAccessExpression(callee.expression)) {
-          push({ kind: 'db', provider: 'prisma', package: pkgOf(callee.expression, 'db') ?? '@prisma/client', table: callee.expression.name.text, op: method });
-        }
-        // db: raw `.query(` / `.execute(`
-        if (method === 'query' || method === 'execute') push({ kind: 'db', provider: 'sql', package: pkgOf(callee.expression, 'db'), op: method });
-        // fs / exec via a namespace: `fs.writeFile(` / `child_process.exec(`
-        if (FS_CALLS.test(method)) push({ kind: 'fs', package: pkgOf(callee.expression, 'fs'), op: method });
-        if (EXEC_CALLS.test(method)) push({ kind: 'exec', package: pkgOf(callee.expression, 'exec'), op: method });
-        // http: `axios.get(` / `http.request(`
-        if ((method === 'get' || method === 'post' || method === 'request') && ts.isIdentifier(callee.expression) &&
-            /^(axios|http|https|got)$/.test(callee.expression.text)) {
-          push({ kind: 'http', provider: callee.expression.text, package: pkgOf(callee.expression, 'http'), op: method });
+        const b = baseOf(callee.expression);
+        if (!b.local) {
+          // db: prisma-style `prisma.<model>.<op>()` — the op names are generic (`delete`, `update`, …),
+          // so require a real prisma signal: a resolved binding, the import, or a prisma-named receiver.
+          if (PRISMA_OPS.has(method) && ts.isPropertyAccessExpression(callee.expression)) {
+            const prismaLikely = b.pkg === '@prisma/client' ||
+              (!b.pkg && (bindings.imports.has('@prisma/client') || /prisma/i.test(b.root ?? '')));
+            if (prismaLikely) push({ kind: 'db', provider: 'prisma', package: '@prisma/client', table: callee.expression.name.text, op: method, line: lineOf(n) });
+          }
+          // db: raw `.query(` / `.execute(`
+          if (method === 'query' || method === 'execute') {
+            push({ kind: 'db', provider: 'sql', package: b.pkg ?? infer('db'), op: method, line: lineOf(n) });
+          }
+          // fs / exec via a namespace: `fs.writeFile(` / `child_process.exec(`
+          if (FS_CALLS.test(method)) push({ kind: 'fs', package: b.pkg, op: method, line: lineOf(n) });
+          if (EXEC_CALLS.test(method)) push({ kind: 'exec', package: b.pkg, op: method, line: lineOf(n) });
+          // http: any client whose binding resolves to a known http package (`axios.get`, `ky.post`,
+          // `http.request`), else the classic identifiers by name as a heuristic.
+          if (HTTP_MEMBER_METHODS.has(method)) {
+            if (b.pkg && isHttpPackage(b.pkg)) {
+              push({ kind: 'http', provider: b.root, package: b.pkg, op: method, line: lineOf(n) });
+            } else if (!b.pkg && ts.isIdentifier(callee.expression) && /^(axios|http|https|got|ky)$/.test(callee.expression.text)) {
+              push({ kind: 'http', provider: callee.expression.text, package: infer('http'), op: method, line: lineOf(n) });
+            }
+          }
         }
       }
-      // bare calls: fetch( / exec( / readFile( / eval( / new Function
-      if (ts.isIdentifier(callee)) {
+      // bare calls: fetch( / exec( / readFile( / eval( — unless the name is a plain local function.
+      if (ts.isIdentifier(callee) && !bindings.locals.has(callee.text)) {
         const name = callee.text;
-        if (HTTP_CALLS.test(name)) push({ kind: 'http', provider: name, package: pkgOf(callee, 'http'), op: 'request' });
-        if (FS_CALLS.test(name)) push({ kind: 'fs', package: pkgOf(callee, 'fs'), op: name });
-        if (EXEC_CALLS.test(name)) push({ kind: 'exec', package: pkgOf(callee, 'exec'), op: name });
-        if (name === 'eval') push({ kind: 'eval', op: 'eval' });
+        const pkg = npmPackageOf(bindings.resolve(name));
+        // `fetch` is a global — never attribute it to an unrelated imported http client.
+        if (HTTP_CALLS.test(name)) push({ kind: 'http', provider: name, package: pkg ?? (name === 'fetch' ? undefined : infer('http')), op: 'request', line: lineOf(n) });
+        if (FS_CALLS.test(name)) push({ kind: 'fs', package: pkg, op: name, line: lineOf(n) });
+        if (EXEC_CALLS.test(name)) push({ kind: 'exec', package: pkg, op: name, line: lineOf(n) });
+        if (name === 'eval') push({ kind: 'eval', op: 'eval', line: lineOf(n) });
       }
     }
     if (ts.isNewExpression(n) && ts.isIdentifier(n.expression) && n.expression.text === 'Function') {
-      push({ kind: 'eval', op: 'new Function' });
+      push({ kind: 'eval', op: 'new Function', line: lineOf(n) });
     }
     ts.forEachChild(n, visit);
   };
@@ -470,7 +696,7 @@ function dedupeSinks(sinks: Sink[]): Sink[] {
   const seen = new Set<string>();
   const out: Sink[] = [];
   for (const s of sinks) {
-    const key = `${s.kind}:${s.provider}:${s.package}:${s.table}:${s.op}`;
+    const key = `${s.kind}:${s.provider}:${s.package}:${s.table}:${s.op}:${s.line}`;
     if (!seen.has(key)) { seen.add(key); out.push(s); }
   }
   return out;

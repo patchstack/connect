@@ -71,12 +71,14 @@ describe('agnostic input-flow extractor', () => {
     expect(byName.createTask.inputs).toEqual([{ name: 'title', type: 'string', min: 1, max: 200 }]);
     expect(byName.createTask.sinks).toEqual(
       expect.arrayContaining([
-        { kind: 'db', provider: 'sql', package: '@supabase/supabase-js', table: 'tasks', op: 'insert' },
-        { kind: 'db', provider: 'sql', package: '@supabase/supabase-js', table: 'tasks', op: 'select' }, // via listTasks()
+        expect.objectContaining({ kind: 'db', provider: 'sql', package: '@supabase/supabase-js', table: 'tasks', op: 'insert' }),
+        expect.objectContaining({ kind: 'db', provider: 'sql', package: '@supabase/supabase-js', table: 'tasks', op: 'select' }), // via listTasks()
       ]),
     );
     expect(byName.getTasks.inputs).toEqual([]);
-    expect(byName.getTasks.sinks).toEqual([{ kind: 'db', provider: 'sql', package: '@supabase/supabase-js', table: 'tasks', op: 'select' }]);
+    expect(byName.getTasks.sinks).toEqual([
+      expect.objectContaining({ kind: 'db', provider: 'sql', package: '@supabase/supabase-js', table: 'tasks', op: 'select' }),
+    ]);
 
     // Express route registration: path + method + req.body/query inputs + fs/exec sinks with node: packages.
     const convert = map!.endpoints.find((e) => e.route === '/api/convert')!;
@@ -85,18 +87,23 @@ describe('agnostic input-flow extractor', () => {
     expect(convert.inputs.map((i) => i.name).sort()).toEqual(['data', 'fmt', 'path']);
     expect(convert.sinks).toEqual(
       expect.arrayContaining([
-        { kind: 'fs', package: 'node:fs', op: 'writeFileSync' },
-        { kind: 'exec', package: 'node:child_process', op: 'exec' },
+        expect.objectContaining({ kind: 'fs', package: 'node:fs', op: 'writeFileSync' }),
+        expect.objectContaining({ kind: 'exec', package: 'node:child_process', op: 'exec' }),
       ]),
     );
 
     // Next-style route handler: method from the export name, supabase sink with package.
     expect(byName.POST).toMatchObject({ entryKind: 'route-handler', method: 'POST' });
-    expect(byName.POST.sinks).toEqual([{ kind: 'db', provider: 'sql', package: '@supabase/supabase-js', table: 'orders', op: 'insert' }]);
+    expect(byName.POST.sinks).toEqual([
+      expect.objectContaining({ kind: 'db', provider: 'sql', package: '@supabase/supabase-js', table: 'orders', op: 'insert' }),
+    ]);
+    expect(byName.POST.inputs.map((i) => i.name)).toEqual(['note']); // via `const body = await request.json()`
 
     // Next `'use server'` action: recognized as an entry point, exec sink tagged with its package.
     expect(byName.runReport).toMatchObject({ entryKind: 'server-action' });
-    expect(byName.runReport.sinks).toEqual([{ kind: 'exec', package: 'node:child_process', op: 'exec' }]);
+    expect(byName.runReport.sinks).toEqual([
+      expect.objectContaining({ kind: 'exec', package: 'node:child_process', op: 'exec' }),
+    ]);
   });
 
   it('records honest coverage notes and a framework label', async () => {

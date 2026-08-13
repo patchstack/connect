@@ -6,7 +6,10 @@
 // adapter could and couldn't see. Never present the map as "complete".
 
 export interface InputField {
-  /** Parameter / body-field name — the coordinate a rule pins to. */
+  /**
+   * Parameter / body-field name — the coordinate a rule pins to. Nested validator fields are
+   * flattened to dotted paths (`address.city`, `tags[].label`), matching `array_key_value` paths.
+   */
   name: string;
   /** Coarse type when derivable (string | number | boolean | array | object | unknown). */
   type?: string;
@@ -14,6 +17,10 @@ export interface InputField {
   min?: number;
   max?: number;
   optional?: boolean;
+  /** Declared string format when the validator names one (email | uuid | url | …). */
+  format?: string;
+  /** Declared regex constraint (the regex literal's source text), when present. */
+  pattern?: string;
 }
 
 export interface Sink {
@@ -30,8 +37,10 @@ export interface Sink {
   package?: string;
   /** For db sinks: the table. */
   table?: string;
-  /** For db sinks: insert | update | delete | select | rpc. */
+  /** The operation at the sink (db: insert | select | …; fs/exec/http: the called function). */
   op?: string;
+  /** 1-based line of the sink call in the endpoint's file — the auditable coordinate. */
+  line?: number;
 }
 
 export interface Endpoint {
@@ -45,8 +54,15 @@ export interface Endpoint {
   route?: string;
   /** Repo-relative source file. */
   file: string;
+  /** 1-based line of the entry-point declaration in `file`. */
+  line?: number;
   inputs: InputField[];
   sinks: Sink[];
+  /**
+   * false when the endpoint DECLARES an input validator that static analysis could not parse — its
+   * `inputs` are UNKNOWN rather than empty. Absent when the extracted inputs can be trusted as-is.
+   */
+  inputsResolved?: boolean;
 }
 
 export interface Coverage {
