@@ -41,9 +41,12 @@ export interface InputField {
   runtimeParameterReason?: string;
 }
 
+/** Sink families the extractor recognizes today. Kept as a closed union so a consumer can exhaustively
+ * switch on it; add a member here when a recognizer is added. */
+export type SinkKind = 'db' | 'fs' | 'http' | 'exec' | 'eval';
+
 export interface Sink {
-  /** db | fs | http | exec | template | redirect | … */
-  kind: string;
+  kind: SinkKind;
   /** e.g. "supabase", "pg", "fetch". */
   provider?: string;
   /**
@@ -71,6 +74,20 @@ export interface Sink {
    */
   start?: number;
   end?: number;
+  /**
+   * Stable identity of this sink within the map. `Flow.sink` is an embedded COPY for convenience, so
+   * correlate the two on this id rather than by deep-equality — a copy that ever drifts from the
+   * inventory entry would otherwise look like a second, distinct sink.
+   */
+  id?: string;
+}
+
+/** Something the analyser could not model at this endpoint — i.e. why it cannot be rule-generated. */
+export interface Limitation {
+  kind: 'dynamic-key' | 'spread-into-sink' | 'non-static-sink-argument' | 'unresolved-helper';
+  /** The offending expression as written, e.g. `body[field]`. */
+  detail: string;
+  line?: number;
 }
 
 export interface Endpoint {
@@ -113,6 +130,12 @@ export interface Endpoint {
    * `inputs` are UNKNOWN rather than empty. Absent when the extracted inputs can be trusted as-is.
    */
   inputsResolved?: boolean;
+  /**
+   * Why this endpoint (or a sink within it) cannot be turned into a rule — a dynamic computed key, a
+   * spread that hides which field reaches the sink, etc. This is the improvement queue: it is more
+   * useful than silently emitting an incomplete picture.
+   */
+  limitations?: Limitation[];
 }
 
 /**
@@ -172,6 +195,12 @@ export interface Coverage {
   filesDiscovered: number;
   /** Files actually parsed (passed the entry-point pre-filter). */
   filesParsed: number;
+  /**
+   * Files skipped BEFORE parsing because they contained no entry-point signal at all. These are not
+   * failures — most of a project is client code. Reported explicitly so a consumer never has to infer
+   * it by subtracting, which reads as "91% unanalysed".
+   */
+  filesPreFiltered: number;
   /** Files skipped because they could not be read/parsed (fail-open). */
   filesSkipped: number;
   /** Source roots analyzed, repo-relative. */

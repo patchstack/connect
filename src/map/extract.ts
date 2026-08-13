@@ -2,7 +2,7 @@ import { readFileSync, readdirSync, realpathSync, statSync } from 'node:fs';
 import { builtinModules } from 'node:module';
 import { createHash } from 'node:crypto';
 import { join, relative, isAbsolute, dirname, resolve as resolvePath } from 'node:path';
-import type { SiteInputMap, Endpoint, InputField, InputSource, Sink, Flow, ArgumentRole, CandidateFamily, TsModule } from './types.js';
+import type { SiteInputMap, Endpoint, InputField, InputSource, Sink, Flow, Limitation, ArgumentRole, CandidateFamily, TsModule } from './types.js';
 
 // Framework-AGNOSTIC input-flow extractor. It doesn't gate on a specific stack — it walks any JS/TS
 // source and applies recognizer tables for (1) entry points, (2) inputs, (3) sinks, so it generalizes
@@ -218,11 +218,12 @@ export async function extractInputMap(cwd: string, ts: TsModule, options: Extrac
   const stats: WalkStats = { discovered: 0 };
   const files = collectSources(cwd, boundary, { followOutside: options.followSymlinks }, [], new Set(), stats);
   let parsed = 0;
+  let preFiltered = 0;
 
   for (const file of files) {
     try {
       const text = readFileSync(file, 'utf8');
-      if (!hasEntrySignal(text)) continue;
+      if (!hasEntrySignal(text)) { preFiltered++; continue; }
       parsed++;
       // Coordinates are only valid for the exact file content they were derived from.
       const fingerprint = createHash('sha256').update(text).digest('hex').slice(0, 16);
@@ -282,6 +283,7 @@ export async function extractInputMap(cwd: string, ts: TsModule, options: Extrac
       adapter: 'agnostic-v1',
       filesDiscovered: stats.discovered,
       filesParsed: parsed,
+      filesPreFiltered: preFiltered,
       filesSkipped: failed.length,
       roots: ['.'],
       notes,
@@ -514,7 +516,7 @@ function extractFromFile(sf: any, ts: TsModule, localSinks: Map<string, Sink[]>,
               ...spanOf(decl),
               inputs,
               sinks,
-              flows: linkFlows(handlerBody, handlerFn?.parameters, inputs, sinks, ts),
+              ...linkedFlows(handlerBody, handlerFn?.parameters, inputs, sinks, ts),
             };
             // Honesty marker: a validator EXISTS but couldn't be read — inputs are unknown, not "none".
             if (validatorCall && inputs.length === 0) ep.inputsResolved = false;
@@ -675,7 +677,7 @@ function handlerEntry(
     end: extra.end,
     inputs,
     sinks,
-    flows: linkFlows(body, params, inputs, sinks, ts),
+    ...linkedFlows(body, params, inputs, sinks, ts),
   };
 }
 
@@ -1105,18 +1107,36 @@ function directSinks(node: any, ts: TsModule, bindings: Bindings): Sink[] {
           }
         }
       }
-      // bare calls: fetch( / exec( / readFile( / eval( — unless the name is a plain local function.
+      // Bare calls: `fetch(…)` / `exec(…)` / `readFile(…)` / `eval(…)`. A dangerous NAME is not a
+      // dangerous API: `import { fetch } from './util'` and a callback parameter named `fetch` both look
+      // identical here, and treating either as an HTTP request produced a FALSE SSRF candidate. So the
+      // call must be justified — either it resolves to a module that plausibly provides that API, or it
+      // is a genuine unresolved global (only `fetch`/`eval`/`Function` ever are).
       if (ts.isIdentifier(callee) && !bindings.locals.has(callee.text)) {
         const name = callee.text;
-        const pkg = npmPackageOf(bindings.resolve(name));
-        // `fetch` is a global — never attribute it to an unrelated imported http client.
-        if (HTTP_CALLS.test(name)) push({ kind: 'http', provider: name, package: pkg ?? (name === 'fetch' ? undefined : infer('http')), op: 'request', ...spanOf(n) });
-        if (FS_CALLS.test(name)) push({ kind: 'fs', package: pkg, op: name, ...spanOf(n) });
-        if (EXEC_CALLS.test(name)) push({ kind: 'exec', package: pkg, op: name, ...spanOf(n) });
-        if (name === 'eval') push({ kind: 'eval', op: 'eval', ...spanOf(n) });
+        const spec = bindings.resolve(name);
+        const pkg = npmPackageOf(spec);
+        const shadowed = isShadowedByEnclosingBinding(n, name, ts);
+        // A relative import resolves to no package: it's app code, not the API it shares a name with.
+        const fromModule = spec !== undefined;
+        const trueGlobal = !fromModule && !shadowed;
+
+        if (HTTP_CALLS.test(name)) {
+          if (pkg && isHttpPackage(pkg)) push({ kind: 'http', provider: name, package: pkg, op: 'request', ...spanOf(n) });
+          else if (name === 'fetch' && trueGlobal) push({ kind: 'http', provider: 'fetch', op: 'request', ...spanOf(n) });
+        }
+        // `readFile`/`exec` are never globals: without a matching module binding this is app code.
+        if (FS_CALLS.test(name) && pkg && /^node:fs(\/promises)?$/.test(pkg)) {
+          push({ kind: 'fs', package: pkg, op: name, ...spanOf(n) });
+        }
+        if (EXEC_CALLS.test(name) && pkg === 'node:child_process') {
+          push({ kind: 'exec', package: pkg, op: name, ...spanOf(n) });
+        }
+        if (name === 'eval' && trueGlobal) push({ kind: 'eval', op: 'eval', ...spanOf(n) });
       }
     }
-    if (ts.isNewExpression(n) && ts.isIdentifier(n.expression) && n.expression.text === 'Function') {
+    if (ts.isNewExpression(n) && ts.isIdentifier(n.expression) && n.expression.text === 'Function'
+        && !bindings.locals.has('Function') && !isShadowedByEnclosingBinding(n, 'Function', ts)) {
       push({ kind: 'eval', op: 'new Function', ...spanOf(n) });
     }
     ts.forEachChild(n, visit);
@@ -1145,14 +1165,20 @@ function isUninvokedFunctionDeclaration(n: any, ts: TsModule): boolean {
 // Deliberately conservative: a match yields `precise`; no match yields `heuristic` (the input and sink
 // merely co-occur). It never claims a flow it didn't see, which is the point — a consumer pinning a
 // rule to a parameter should trust `precise` and treat `heuristic` as "may reach".
+// Spread onto an endpoint: `flows`, plus `limitations` only when there are any (keeps the common case clean).
+function linkedFlows(body: any, params: any, inputs: InputField[], sinks: Sink[], ts: TsModule): { flows: Flow[]; limitations?: Limitation[] } {
+  const { flows, limitations } = linkFlows(body, params, inputs, sinks, ts);
+  return limitations.length > 0 ? { flows, limitations } : { flows };
+}
+
 function linkFlows(
   bodyNode: any,
   params: any,
   inputs: InputField[],
   sinks: Sink[],
   ts: TsModule,
-): Flow[] {
-  if (!bodyNode || sinks.length === 0 || inputs.length === 0) return [];
+): { flows: Flow[]; limitations: Limitation[] } {
+  if (!bodyNode || sinks.length === 0 || inputs.length === 0) return { flows: [], limitations: [] };
 
   // Tainted roots and the PATH each one stands for. `req` → '' (its own members are the path);
   // `const { billing } = await req.json()` → billing stands for 'billing', so a read of
@@ -1224,7 +1250,9 @@ function linkFlows(
   // is ambiguous — the end distinguishes them.
   const callBySpan = new Map<string, any>();
   const callVisit = (n: any) => {
-    if (ts.isCallExpression(n)) {
+    // NewExpression too, or `new Function(...)` — inventoried as an eval sink — could never be located,
+    // leaving its flows permanently heuristic and its argument-role entry unreachable.
+    if (ts.isCallExpression(n) || ts.isNewExpression(n)) {
       try { callBySpan.set(`${n.getStart()}:${n.getEnd()}`, n); } catch { /* synthetic */ }
     }
     ts.forEachChild(n, callVisit);
@@ -1232,6 +1260,7 @@ function linkFlows(
   callVisit(bodyNode);
 
   const flows: Flow[] = [];
+  const allLimits: Limitation[] = [];
   for (const sink of sinks) {
     // A sink from an imported module has no call site here — never claim precise for it.
     const node = sink.file === undefined && sink.start !== undefined && sink.end !== undefined
@@ -1240,6 +1269,7 @@ function linkFlows(
     // path → the argument ROLES it was read into. Per-argument attribution is what makes a candidate
     // possible: the same value in `url` vs `body`, or `path` vs `content`, implies different mitigations.
     const reads = new Map<string, Set<ArgumentRole>>();
+    const sinkLimits: Limitation[] = [];
     if (node) {
       // ONLY this sink call's own arguments, plus other calls in the SAME fluent chain
       // (`.update({…}).eq('id', data.id)` is one operation). Never the enclosing statement: a sibling
@@ -1247,8 +1277,9 @@ function linkFlows(
       for (const call of fluentChainCalls(node, ts)) {
         const method = calleeName(call, ts);
         const args = call.arguments ?? [];
+        for (const a of args) for (const l of sinkArgumentLimitations(a, ts, rootPath)) sinkLimits.push(l);
         for (let i = 0; i < args.length; i++) {
-          const role = argumentRoleOf(sink.kind, method, i);
+          const role = argumentRoleOf(sink.kind, method, i, args.length);
           for (const path of taintedReadPaths(args[i], ts, rootPath)) {
             const set = reads.get(path) ?? new Set<ArgumentRole>();
             set.add(role);
@@ -1279,6 +1310,13 @@ function linkFlows(
       if (sink.file !== undefined) reasons.push('sink is in an imported module: no local call-site evidence');
       if (sink.start === undefined) reasons.push('sink call could not be located in the source');
       if (precise && argumentRole === 'unknown') reasons.push(`sink argument role is not modelled for ${sink.kind}.${sink.op ?? '?'}`);
+      // A dynamic key or a spread in this sink's arguments means no coordinate can name the field that
+      // actually reaches it — report the specific cause rather than a generic "heuristic".
+      for (const l of sinkLimits) {
+        reasons.push(l.kind === 'dynamic-key'
+          ? `dynamic computed key reaches this sink (${l.detail}): the field cannot be named by a parameter`
+          : `spread reaches this sink (${l.detail}): the specific field is not identifiable`);
+      }
       if (precise && argumentRole && argumentRole !== 'unknown' && !family) {
         // e.g. a request value in a parameterized db `values` object: real reachability, but not a
         // pattern a generic blocking rule can express.
@@ -1295,8 +1333,19 @@ function linkFlows(
         ruleGeneratableReasons: reasons,
       });
     }
+    for (const l of sinkLimits) allLimits.push(l);
   }
-  return flows;
+  return { flows, limitations: dedupeLimitations(allLimits) };
+}
+
+function dedupeLimitations(list: Limitation[]): Limitation[] {
+  const seen = new Set<string>();
+  return list.filter((l) => {
+    const k = `${l.kind}:${l.detail}:${l.line}`;
+    if (seen.has(k)) return false;
+    seen.add(k);
+    return true;
+  });
 }
 
 /** Join two path segments, tolerating an empty base. */
@@ -1351,17 +1400,45 @@ const CANDIDATE_FAMILIES: Record<string, Partial<Record<ArgumentRole, CandidateF
   eval: { code: 'code-injection' },
 };
 
+/**
+ * Is `name` bound by an enclosing function parameter (or catch clause) at this call site? If so the call
+ * is NOT the global of that name — a callback parameter called `fetch` is the single most likely way to
+ * fake an SSRF candidate. Scoped to parameters/catch bindings: cheap, and it covers the shadowing shapes
+ * that occur in practice. Erring here loses a candidate rather than inventing one.
+ */
+function isShadowedByEnclosingBinding(node: any, name: string, ts: TsModule): boolean {
+  for (let cur = node?.parent; cur; cur = cur.parent) {
+    if (ts.isCatchClause(cur) && cur.variableDeclaration && ts.isIdentifier(cur.variableDeclaration.name)
+        && cur.variableDeclaration.name.text === name) return true;
+    const params = (cur as any).parameters;
+    if (!params) continue;
+    for (const p of params) {
+      if (!p?.name) continue;
+      if (ts.isIdentifier(p.name) && p.name.text === name) return true;
+      if (ts.isObjectBindingPattern(p.name) || ts.isArrayBindingPattern(p.name)) {
+        for (const el of p.name.elements) {
+          if (ts.isBindingElement(el) && ts.isIdentifier(el.name) && el.name.text === name) return true;
+        }
+      }
+    }
+  }
+  return false;
+}
+
 /** Method name a call invokes (`db.from(t).insert(x)` → "insert", `exec(x)` → "exec"). */
 function calleeName(call: any, ts: TsModule): string | undefined {
   const c = call?.expression;
   if (!c) return undefined;
   if (ts.isPropertyAccessExpression(c)) return c.name.text;
-  if (ts.isIdentifier(c)) return c.text;
+  if (ts.isIdentifier(c)) return c.text; // also covers `new Function(...)`
   return undefined;
 }
 
 /** Role of argument `index` for this call, given the sink kind it was recognized as. */
-function argumentRoleOf(sinkKind: string, method: string | undefined, index: number): ArgumentRole {
+function argumentRoleOf(sinkKind: string, method: string | undefined, index: number, total = 0): ArgumentRole {
+  // `new Function(a, b, "return a+b")` — every argument but the LAST declares a parameter name; only the
+  // last one is executable code. An index-based table cannot express that.
+  if (sinkKind === 'eval' && method === 'Function') return index === total - 1 ? 'code' : 'args';
   const table = method ? ARGUMENT_ROLES[sinkKind]?.[method] : undefined;
   return table?.[index] ?? 'unknown';
 }
@@ -1396,7 +1473,7 @@ function fluentChainCalls(call: any, ts: TsModule): any[] {
   const out: any[] = [];
   const collect = (n: any) => {
     if (!n) return;
-    if (ts.isCallExpression(n)) out.push(n);
+    if (ts.isCallExpression(n) || ts.isNewExpression(n)) out.push(n);
     if (ts.isCallExpression(n) || ts.isPropertyAccessExpression(n) || ts.isAwaitExpression(n) || ts.isParenthesizedExpression(n) || ts.isNonNullExpression(n)) {
       collect(n.expression);
     }
@@ -1422,6 +1499,46 @@ function taintedReadPaths(node: any, ts: TsModule, rootPath: Map<string, string>
     if (ts.isIdentifier(n) && rootPath.has(n.text) && isValueRead(n, ts)) {
       const p = rootPath.get(n.text)!;
       if (p) out.add(normalizePath(p));
+    }
+    ts.forEachChild(n, visit);
+  };
+  visit(node);
+  return out;
+}
+
+/**
+ * Shapes that defeat parameter pinning, found in a sink call's arguments. Reporting these is the point:
+ * "we could not model this" is far more useful to an operator than an endpoint that silently shows no
+ * flow, and it is the queue for improving the extractor.
+ *   - `insert({ v: body[field] })` → the field is chosen at runtime; no coordinate can name it.
+ *   - `insert({ ...body })`        → the whole payload reaches the sink; which field is unidentifiable.
+ */
+function sinkArgumentLimitations(node: any, ts: TsModule, rootPath: Map<string, string>): Limitation[] {
+  const out: Limitation[] = [];
+  const seen = new Set<string>();
+  const add = (kind: Limitation['kind'], detail: string, n: any) => {
+    const key = `${kind}:${detail}`;
+    if (seen.has(key)) return;
+    seen.add(key);
+    out.push({ kind, detail, line: lineOf(n) });
+  };
+  const text = (n: any) => {
+    try { return String(n.getText()).replace(/\s+/g, ' ').slice(0, 120); } catch { return '<expression>'; }
+  };
+  const visit = (n: any) => {
+    if (!n) return;
+    // A computed member read off tainted data with a non-literal index.
+    if (ts.isElementAccessExpression(n)) {
+      const root = rootIdentifier(n.expression, ts);
+      const arg = n.argumentExpression;
+      if (root && rootPath.has(root) && arg && !ts.isStringLiteralLike(arg) && !ts.isNumericLiteral(arg)) {
+        add('dynamic-key', text(n), n);
+      }
+    }
+    // A spread of tainted data into the sink's argument.
+    if ((ts.isSpreadAssignment?.(n) || ts.isSpreadElement(n)) && n.expression) {
+      const root = rootIdentifier(n.expression, ts);
+      if (root && rootPath.has(root)) add('spread-into-sink', text(n.parent ?? n), n);
     }
     ts.forEachChild(n, visit);
   };
@@ -1489,12 +1606,21 @@ function localCalls(node: any, ts: TsModule): string[] {
   return names;
 }
 
+// Deterministic identity for a sink, so `Flow.sink` (an embedded copy) can be correlated back to the
+// inventory entry without deep-equality.
+function sinkId(s: Sink): string {
+  return createHash('sha256')
+    .update([s.kind, s.provider, s.package, s.table, s.op, s.file, s.start, s.end].join('|'))
+    .digest('hex')
+    .slice(0, 12);
+}
+
 function dedupeSinks(sinks: Sink[]): Sink[] {
   const seen = new Set<string>();
   const out: Sink[] = [];
   for (const s of sinks) {
-    const key = `${s.kind}:${s.provider}:${s.package}:${s.table}:${s.op}:${s.line}`;
-    if (!seen.has(key)) { seen.add(key); out.push(s); }
+    const key = `${s.kind}:${s.provider}:${s.package}:${s.table}:${s.op}:${s.line}:${s.start}`;
+    if (!seen.has(key)) { seen.add(key); out.push({ ...s, id: sinkId(s) }); }
   }
   return out;
 }

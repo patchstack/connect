@@ -222,8 +222,12 @@ async function runMap(args: ParsedArgs): Promise<number> {
       `${precise} proven input→sink flow(s) [${map.framework}].`,
   );
   console.error(
-    `patchstack: ${c.filesParsed}/${c.filesDiscovered} file(s) parsed` +
-      (c.filesSkipped ? `, ${c.filesSkipped} skipped` : '') +
+    // All three buckets, explicitly: "6/66 parsed" reads as "91% unanalysed" when the other 60 files
+    // simply contain no server entry point (most of a project is client code). Only `skipped` is a
+    // failure to analyse.
+    `patchstack: ${c.filesDiscovered} file(s) found — ${c.filesParsed} analysed, ` +
+      `${c.filesPreFiltered} skipped (no server entry point)` +
+      (c.filesSkipped ? `, ${c.filesSkipped} could not be analysed` : '') +
       `. DETECTED surface only — static analysis is best-effort; unproven pairs are marked "heuristic".`,
   );
   const json = JSON.stringify(map, null, 2);
