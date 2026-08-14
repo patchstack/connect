@@ -4,6 +4,7 @@ import { scanLockfile } from './parsers/index.js';
 import { buildWirePayload } from './normalize.js';
 import { computeManifestChecksum } from './checksum.js';
 import {
+  postInputMap,
   DEFAULT_ENDPOINT,
   buildClaimUrl,
   fetchSiteStatus,
@@ -58,7 +59,8 @@ Usage:
                                                      manage the widget, install + verify runtime
                                                      protection, and wire dependency/build scans.
                                                      Never runs the project build
-  patchstack-connect map    [--dir <p>] [--out <f>]  Map the app's attack surface: entry points, the
+  patchstack-connect map    [--dir <p>] [--out <f>] [--upload]
+                                                     Map the app's attack surface: entry points, the
                                                      inputs each reads, the sinks it can reach, and
                                                      evidence-backed input→sink flows (each labelled
                                                      with how the link was established). Best-effort static
@@ -236,8 +238,36 @@ async function runMap(args: ParsedArgs): Promise<number> {
   if (out) {
     writeFileSync(out, json);
     console.error(`patchstack: wrote ${out}`);
-  } else {
+  } else if (args.flags.get('upload') !== true) {
+    // With --upload the map goes to Patchstack instead of stdout: printing a full structural document
+    // AND sending it is noise, and the interesting output becomes what the server did with it.
     console.log(json);
+  }
+
+  // Opt-in, never implied. This is the only path that sends anything derived from source code, so it
+  // takes an explicit flag rather than happening because a site UUID exists.
+  if (args.flags.get('upload') === true) {
+    if (map.endpoints.length === 0) {
+      console.error('patchstack: nothing to upload — no server entry points were detected.');
+      return 0;
+    }
+    // Same resolution order as every other network path: CLI flags, then env, then `.patchstackrc.json`.
+    const config = await resolveConfig({
+      cwd,
+      cliSiteUuid: getStringFlag(args.flags, 'site-uuid'),
+      cliEndpoint: getStringFlag(args.flags, 'endpoint'),
+    });
+    const outcome = await postInputMap(config, map);
+    if (outcome.result === 'stored') {
+      console.error(`patchstack: uploaded the attack surface (revision ${outcome.revision}).`);
+    } else if (outcome.result === 'unchanged') {
+      console.error(`patchstack: attack surface unchanged since revision ${outcome.revision} — nothing to store.`);
+    } else if (outcome.result === 'skipped') {
+      console.error(`patchstack: did not upload the attack surface — ${outcome.message}`);
+    } else {
+      // Fail-open: this runs inside someone's build, so a Patchstack problem must not fail it.
+      console.error(`patchstack: could not upload the attack surface — ${outcome.message}`);
+    }
   }
   return 0;
 }
