@@ -56,6 +56,79 @@ export function buildPackageRemovedUrl(manifestEndpoint: string, siteUuid: strin
   return url.toString();
 }
 
+/** Build the input-map ingest URL corresponding to a manifest endpoint override. */
+export function buildInputMapUrl(manifestEndpoint: string, siteUuid: string): string {
+  const url = new URL(manifestEndpoint);
+  const path = url.pathname.replace(/\/$/, '');
+  url.pathname = path.endsWith('/manifest')
+    ? `${path.slice(0, -'/manifest'.length)}/input-map/${encodeURIComponent(siteUuid)}`
+    : `/monitor/pulse/input-map/${encodeURIComponent(siteUuid)}`;
+  url.search = '';
+  url.hash = '';
+  return url.toString();
+}
+
+/**
+ * Outcome of uploading an attack-surface map. `unchanged` is a first-class result, not a failure: most
+ * builds do not change the surface, and the server keeps one revision per distinct surface rather than
+ * one per deploy. `skipped` covers the cases where there is nothing to send or nowhere to send it.
+ */
+export type InputMapUploadOutcome =
+  | { result: 'stored'; revision: number }
+  | { result: 'unchanged'; revision: number }
+  | { result: 'skipped'; message: string }
+  | { result: 'failed'; message: string };
+
+/**
+ * Upload an attack-surface map for this site.
+ *
+ * Fail-open by construction: every failure path returns a result rather than throwing, because this runs
+ * during someone's build and a Patchstack outage must never break it. The caller decides what to print.
+ */
+export async function postInputMap(
+  config: Config,
+  map: { version: number; endpoints: unknown[] },
+): Promise<InputMapUploadOutcome> {
+  if (config.siteUuid === null) {
+    return { result: 'skipped', message: 'No site UUID configured — run `patchstack-connect scan` first.' };
+  }
+
+  const url = buildInputMapUrl(config.endpoint, config.siteUuid);
+  try {
+    const response = await fetch(url, {
+      method: 'POST',
+      headers: {
+        Accept: 'application/json',
+        'Content-Type': 'application/json',
+        'User-Agent': '@patchstack/connect',
+      },
+      body: JSON.stringify(map),
+      signal: AbortSignal.timeout(config.timeoutMs),
+    });
+    if (response.status === 404) {
+      return { result: 'failed', message: 'Site not found — the configured site UUID is unknown to Patchstack.' };
+    }
+    if (response.status === 422) {
+      // The server implements a different map schema than this client emits. Say so plainly: it means
+      // one side is out of date, and guessing at compatibility is how a consumer misreads a document.
+      return { result: 'failed', message: `Patchstack does not accept this map schema (version ${map.version}). Update @patchstack/connect.` };
+    }
+    if (!response.ok) {
+      return { result: 'failed', message: `Patchstack returned ${response.status}.` };
+    }
+    const body = (await response.json()) as { result?: string; revision?: number };
+    // The revision is part of the contract, not decoration: "stored, revision 0" is not a state the server
+    // can be in, so accepting it would report a successful upload that cannot be pointed at afterwards.
+    const revision = Number(body.revision);
+    if ((body.result === 'stored' || body.result === 'unchanged') && Number.isInteger(revision) && revision > 0) {
+      return { result: body.result, revision };
+    }
+    return { result: 'failed', message: 'Patchstack returned an unexpected response.' };
+  } catch {
+    return { result: 'failed', message: `Could not reach Patchstack at ${url}.` };
+  }
+}
+
 /**
  * Outcome of the package-removed signal. 'deleted' — the site was unclaimed
  * and its record was removed; 'flagged' — the site is claimed, so it was only
