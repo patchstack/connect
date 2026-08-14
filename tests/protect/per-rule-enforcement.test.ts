@@ -85,3 +85,101 @@ describe('per-rule enforcement', () => {
     expect((await protection.fetch(ok)(get('/search?q=union%20select%201'))).status).toBe(403);
   });
 });
+
+// Per-rule enforcement has to hold in EVERY phase. A generated response rule that still redacts, or a
+// generated egress rule that still prevents an outbound request, is not "detecting until justified" — it is
+// changing what the app does, which is exactly what dry-run exists to avoid.
+describe('per-rule enforcement in the response and egress phases', () => {
+  const secretResponse = () =>
+    new Response(JSON.stringify({ token: 'sk_live_abcdef', ok: true }), {
+      status: 200,
+      headers: { 'content-type': 'application/json' },
+    });
+
+  const redactRule = (extra: object = {}) => ({
+    id: 'pulse-resp',
+    phase: 'response',
+    category: 'secret',
+    action: 'redact',
+    rule_v2: [{ parameter: 'response.body', match: { type: 'contains', value: 'sk_live_' } }],
+    ...extra,
+  });
+
+  it('does not redact the body for a dry-run response rule on a blocking site', async () => {
+    const detections: any[] = [];
+    const protection: any = await createProtection({
+      rules: bundle(),
+      responseRules: [redactRule({ enforcement: 'dry-run' })],
+      mode: 'block',
+      onDetect: (d: unknown) => detections.push(d),
+    });
+
+    const screened = await protection.screenResponse(secretResponse());
+
+    // The secret is still there: observed, not rewritten.
+    expect(JSON.parse(await screened.text()).token).toBe('sk_live_abcdef');
+    expect(detections).toHaveLength(1);
+    expect(detections[0].mode).toBe('dry-run');
+  });
+
+  it('still redacts for a response rule that does not opt out', async () => {
+    const protection: any = await createProtection({
+      rules: bundle(),
+      responseRules: [redactRule()],
+      mode: 'block',
+    });
+
+    const screened = await protection.screenResponse(secretResponse());
+
+    expect(JSON.parse(await screened.text()).token).not.toBe('sk_live_abcdef');
+  });
+
+  it('does not stop an outbound request for a dry-run egress rule', async () => {
+    // Egress screening wraps the global fetch, so the observable behaviour is whether the call throws.
+    const detections: any[] = [];
+    const orig = globalThis.fetch;
+    globalThis.fetch = (async () => ({ marker: 'stub' })) as any;
+    const protection: any = await createProtection({
+      egress: true,
+      mode: 'block',
+      egressRules: [{
+        id: 'pulse-egress',
+        phase: 'egress',
+        category: 'ssrf',
+        enforcement: 'dry-run',
+        rule_v2: [{ parameter: 'egress.host', match: { type: 'contains', value: 'evil.com' } }],
+      }],
+      onDetect: (d: unknown) => detections.push(d),
+    });
+    try {
+      // Recorded, and allowed through: blocking a request the app makes is at least as disruptive as
+      // blocking one it receives, so dry-run has to mean dry-run here too.
+      expect((await (globalThis.fetch as any)('https://api.evil.com/x')).marker).toBe('stub');
+      expect(detections.map((d) => d.mode)).toEqual(['dry-run']);
+    } finally {
+      protection.uninstallEgress?.();
+      globalThis.fetch = orig;
+    }
+  });
+
+  it('still stops an outbound request for an egress rule that does not opt out', async () => {
+    const orig = globalThis.fetch;
+    globalThis.fetch = (async () => ({ marker: 'stub' })) as any;
+    const protection: any = await createProtection({
+      egress: true,
+      mode: 'block',
+      egressRules: [{
+        id: 'pulse-egress-2',
+        phase: 'egress',
+        category: 'ssrf',
+        rule_v2: [{ parameter: 'egress.host', match: { type: 'contains', value: 'evil.com' } }],
+      }],
+    });
+    try {
+      await expect(globalThis.fetch('https://api.evil.com/x')).rejects.toThrow();
+    } finally {
+      protection.uninstallEgress?.();
+      globalThis.fetch = orig;
+    }
+  });
+});

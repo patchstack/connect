@@ -238,8 +238,12 @@ export async function createProtection(options = {}) {
         continue;
       }
       if (!result.blocked) continue;
-      onDetect({ phase: 'response', mode, category: rule.category, rule, message: result.message });
-      if (mode !== 'block') continue; // dry-run: observe only
+      // Per-rule enforcement applies to every phase, not just the request. A generated response rule in
+      // dry-run must not redact or withhold a body either: "detect until justified" is meaningless if the
+      // rule still rewrites what the user sees.
+      const responseMode = ruleMode(rule);
+      onDetect({ phase: 'response', mode: responseMode, category: rule.category, rule, message: result.message });
+      if (responseMode !== 'block') continue; // dry-run: observe only
       if (redactors && redactors.length) {
         // Span redactors on a mutation-decoded rule can't map back to the raw body → fail closed.
         const spanRedactors = redactors.filter((r) => !r.jsonPath);
@@ -416,8 +420,11 @@ export async function createProtection(options = {}) {
       return false;
     }
     if (!result.blocked) return false;
-    onDetect({ phase: 'egress', mode, category: result.rule?.category, rule: result.rule, message: result.message });
-    return mode === 'block';
+    // Same for egress: a dry-run rule records the outbound attempt without preventing it. Blocking a
+    // request the app makes is at least as disruptive as blocking one it receives.
+    const egressMode = ruleMode(result.rule);
+    onDetect({ phase: 'egress', mode: egressMode, category: result.rule?.category, rule: result.rule, message: result.message });
+    return egressMode === 'block';
   };
 
   const protection = {
