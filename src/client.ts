@@ -117,8 +117,11 @@ export async function postInputMap(
       return { result: 'failed', message: `Patchstack returned ${response.status}.` };
     }
     const body = (await response.json()) as { result?: string; revision?: number };
-    if (body.result === 'stored' || body.result === 'unchanged') {
-      return { result: body.result, revision: Number(body.revision ?? 0) };
+    // The revision is part of the contract, not decoration: "stored, revision 0" is not a state the server
+    // can be in, so accepting it would report a successful upload that cannot be pointed at afterwards.
+    const revision = Number(body.revision);
+    if ((body.result === 'stored' || body.result === 'unchanged') && Number.isInteger(revision) && revision > 0) {
+      return { result: body.result, revision };
     }
     return { result: 'failed', message: 'Patchstack returned an unexpected response.' };
   } catch {

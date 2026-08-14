@@ -105,6 +105,15 @@ describe('postInputMap', () => {
     await expect(postInputMap(config(), map)).resolves.toMatchObject({ result: 'failed' });
   });
 
+  it('rejects a "stored" result with no usable revision instead of reporting revision 0', async () => {
+    // "stored, revision 0" is not a state the server can be in. Reporting it would announce a successful
+    // upload that cannot be pointed at afterwards — worse than saying the upload failed.
+    for (const body of [{ result: 'stored' }, { result: 'stored', revision: 0 }, { result: 'unchanged', revision: 'x' }]) {
+      vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response(JSON.stringify(body), { status: 200 })));
+      await expect(postInputMap(config(), map)).resolves.toMatchObject({ result: 'failed' });
+    }
+  });
+
   it('reports an unexpected shape rather than inventing a revision', async () => {
     vi.stubGlobal('fetch', vi.fn().mockResolvedValue(
       new Response(JSON.stringify({ result: 'something-else' }), { status: 200 }),
