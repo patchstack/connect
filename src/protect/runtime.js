@@ -184,11 +184,22 @@ export async function createProtection(options = {}) {
       : () => (typeof options.maskWith === 'string' ? options.maskWith : '[REDACTED]');
 
   // Given a request/egress result, enforce (block mode) or just record (dry-run).
+  //
+  // A rule may carry its own `enforcement: 'dry-run'`, which wins over block mode for that rule alone.
+  // Auto-generated rules arrive that way: their coordinate comes from best-effort static analysis, so they
+  // are served to detect until a probe or a human has justified them, WITHOUT holding back the
+  // hand-authored rules on the same site. A rule with no `enforcement` follows the bundle exactly as
+  // before, so an older server that never sends the field behaves identically.
+  const ruleMode = (rule) => (rule?.enforcement === 'dry-run' ? 'dry-run' : mode);
+
   const decide = (phase, result, block, allow, ctx = {}) => {
     if (!result || !result.blocked) return allow();
+    const effectiveMode = ruleMode(result.rule);
     onDetect({
       phase,
-      mode,
+      // The mode this detection was actually handled under, not the site's: a consumer counting blocks
+      // would otherwise over-report, and the whole point of a dry-run rule is that it did not block.
+      mode: effectiveMode,
       category: result.rule?.category,
       rule: result.rule,
       message: result.message,
@@ -197,7 +208,7 @@ export async function createProtection(options = {}) {
       ip: ctx.ip,
       userAgent: ctx.userAgent,
     });
-    return mode === 'block' ? block() : allow();
+    return effectiveMode === 'block' ? block() : allow();
   };
 
   // Response phase core: screen a text body → { verdict: 'pass'|'block'|'redact', body? }.
