@@ -75,3 +75,68 @@ export const CAPABILITY_MANIFEST = {
   attributions: ATTRIBUTIONS,
   addressSpaces: ADDRESS_SPACES,
 } as const;
+
+/**
+ * What a declared capability owes before it counts as supported.
+ *
+ * Declaring a member of `SINK_KINDS` is a claim that the extractor recognizes that operation. Nothing in
+ * the vocabulary enforces it: a kind can be added, the manifest regenerated, and every consumer taught to
+ * accept a capability that no recognizer ever emits — a vocabulary entry with no behaviour behind it, and
+ * a rule family that can never fire. The corpus does not catch it either, because a fixture that exercises
+ * the OTHER kinds still passes a "we emit some sinks" assertion.
+ *
+ * So each kind names its own control: the minimal shape that must produce a sink of exactly that kind.
+ * `tests/map/capabilities.test.ts` runs every control and fails on the one that produces nothing, and the
+ * `Record<SinkKind, …>` type means adding a kind without a control is a TYPE error rather than a missing
+ * test — the compiler asks the question before CI does.
+ */
+export interface CapabilityControl {
+  /**
+   * Handler body for the control fixture: one statement that must yield a sink of this kind, written the
+   * way an app really would. `req.body.<param>` is the tainted input.
+   */
+  control: string;
+  /** Imports the control needs, and the packages they come from. */
+  setup: string;
+  /** Dependencies the fixture's package.json must declare. */
+  deps: string[];
+  /**
+   * true when a proven flow into this kind can compile a rule. Those are the kinds where a wrong
+   * recognizer blocks real traffic, so they additionally owe adversarial corpus coverage — a lookalike
+   * that must produce NO candidate. See the adversarial category in tests/map/corpus.test.ts.
+   */
+  ruleGeneratable: boolean;
+}
+
+export const CAPABILITY_CONTROLS: Record<(typeof SINK_KINDS)[number], CapabilityControl> = {
+  db: {
+    setup: 'import { Pool } from "pg";\nconst pool = new Pool();',
+    control: 'pool.query(req.body.sql);',
+    deps: ['pg'],
+    ruleGeneratable: true,
+  },
+  fs: {
+    setup: 'import fs from "node:fs";',
+    control: 'fs.readFileSync(req.body.path);',
+    deps: [],
+    ruleGeneratable: true,
+  },
+  http: {
+    setup: '',
+    control: 'fetch(req.body.url);',
+    deps: [],
+    ruleGeneratable: true,
+  },
+  exec: {
+    setup: 'import { exec } from "node:child_process";',
+    control: 'exec(req.body.cmd);',
+    deps: [],
+    ruleGeneratable: true,
+  },
+  eval: {
+    setup: '',
+    control: 'eval(req.body.code);',
+    deps: [],
+    ruleGeneratable: true,
+  },
+};

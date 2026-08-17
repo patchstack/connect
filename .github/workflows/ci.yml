@@ -15,6 +15,33 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  capability-contract:
+    name: Capability contract
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          # The version check compares the manifest against the base branch, so it needs history.
+          fetch-depth: 0
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22.x
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Manifest is up to date with its source
+        run: node scripts/emit-capabilities.mjs --check
+
+      - name: Vocabulary changes carry a version bump
+        # A member added or removed without moving CAPABILITY_VERSION leaves every vendoring consumer
+        # unable to tell it is behind — the same silent drift the manifest exists to remove.
+        run: node scripts/check-capability-version.mjs --base "origin/${{ github.base_ref || github.event.repository.default_branch }}"
+
   validate:
     name: Validate on Node ${{ matrix.node-version }}
     runs-on: ubuntu-latest

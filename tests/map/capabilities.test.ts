@@ -4,6 +4,7 @@ import { join } from 'node:path';
 import { execFileSync } from 'node:child_process';
 import {
   ADDRESS_SPACES,
+  CAPABILITY_CONTROLS,
   ARGUMENT_ROLES,
   CANDIDATE_FAMILIES,
   CAPABILITY_MANIFEST,
@@ -123,5 +124,80 @@ describe('what the map emits stays inside the contract', () => {
       for (const k of dep.recognizedSinkKinds) expect(SINK_KINDS as readonly string[]).toContain(k);
     }
     rmSync(d, { recursive: true, force: true });
+  });
+});
+
+// A declared capability with no recognizer behind it is a silent hole: the vocabulary accepts it, every
+// consumer accepts it, and no flow of that kind is ever emitted — so the rule family it unlocks can never
+// fire. The existing "everything emitted falls inside the vocabulary" test cannot see it, because it only
+// proves the kinds that DO emit are legal. This is the other direction: every kind we declare must be
+// emitted by its own control.
+describe('every declared capability has a recognizer behind it', () => {
+  const build = async (kind: string, ctl: (typeof CAPABILITY_CONTROLS)[keyof typeof CAPABILITY_CONTROLS]) => {
+    const d = mkdtempSync(join(tmpdir(), `ps-ctl-${kind}-`));
+    mkdirSync(join(d, 'src'), { recursive: true });
+    const deps: Record<string, string> = { express: '4' };
+    for (const dep of ctl.deps) deps[dep] = '*';
+    writeFileSync(join(d, 'package.json'), JSON.stringify({ dependencies: deps }));
+    writeFileSync(join(d, 'src', 'app.ts'), [
+      'import express from "express";',
+      ctl.setup,
+      'const app = express();',
+      `app.post("/${kind}", (req, res) => { ${ctl.control} res.end("ok"); });`,
+    ].join('\n'));
+    const { map } = await buildInputMap(d);
+    rmSync(d, { recursive: true, force: true });
+    return map!;
+  };
+
+  it('names a control for every sink kind — enforced by the type, verified here', () => {
+    // Record<SinkKind, …> already makes a missing control a compile error; this asserts the runtime
+    // object matches too, so a cast or a merge accident cannot slip past.
+    expect(Object.keys(CAPABILITY_CONTROLS).sort()).toEqual([...SINK_KINDS].sort());
+  });
+
+  for (const kind of SINK_KINDS) {
+    const ctl = CAPABILITY_CONTROLS[kind];
+
+    it(`emits a '${kind}' sink from its own control fixture`, async () => {
+      const map = await build(kind, ctl);
+      const kinds = map.endpoints.flatMap((e) => e.sinks.map((s) => s.kind));
+      expect(kinds, `control for '${kind}' produced ${JSON.stringify(kinds)}`).toContain(kind);
+    });
+
+    if (ctl.ruleGeneratable) {
+      it(`compiles a candidate from a proven '${kind}' flow`, async () => {
+        const map = await build(kind, ctl);
+        const flows = map.endpoints.flatMap((e) => e.flows).filter((f) => f.sink.kind === kind);
+        expect(flows.length, `no flow reached the '${kind}' sink`).toBeGreaterThan(0);
+        const generatable = flows.filter((f) => f.ruleGeneratable);
+        expect(generatable.length, `'${kind}' is declared rule-generatable but compiled nothing`).toBeGreaterThan(0);
+        // A candidate with no family cannot be turned into a rule, so the claim would be hollow.
+        for (const f of generatable) {
+          expect(f.candidateFamily, `'${kind}' candidate has no candidateFamily`).toBeDefined();
+          expect(CANDIDATE_FAMILIES as readonly string[]).toContain(f.candidateFamily!);
+        }
+      });
+    }
+  }
+
+  it('requires adversarial coverage for every rule-generatable capability', () => {
+    // A capability that can compile a rule can also compile a WRONG rule, and every wrong-pin bug we
+    // have found came from code that merely resembled a dangerous API. So the lookalike case is a
+    // precondition for rule generation, not an optional extra: this asserts the adversarial corpus
+    // actually exercises each such kind rather than trusting that it does.
+    const corpus = readFileSync(join(root, 'tests/map/corpus.test.ts'), 'utf8');
+    const adversarial = corpus.slice(corpus.indexOf('const ADVERSARIAL'), corpus.indexOf('const STACKS'));
+    expect(adversarial.length, 'could not locate the adversarial corpus block').toBeGreaterThan(200);
+    const missing = (Object.keys(CAPABILITY_CONTROLS) as Array<keyof typeof CAPABILITY_CONTROLS>)
+      .filter((kind) => CAPABILITY_CONTROLS[kind].ruleGeneratable)
+      // The lookalike is written in the app's own vocabulary, so match on the API the control calls
+      // (`query`, `readFileSync`, `exec`, `fetch`, `eval`) rather than on the kind's name.
+      .filter((kind) => {
+        const api = /([A-Za-z_$][\w$]*)\s*\(/.exec(CAPABILITY_CONTROLS[kind].control);
+        const needle = api ? api[1]!.split('.').pop()! : kind;
+        return !adversarial.includes(needle);
+      });
+    expect(missing, `rule-generatable capabilities with no adversarial lookalike: ${missing.join(', ')}`).toEqual([]);
   });
 });
