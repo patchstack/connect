@@ -70,6 +70,10 @@ export function collectSources(
   seen.add(key);
   let entries;
   try { entries = readdirSync(dir, { withFileTypes: true }); } catch { return out; }
+  // Directory order is filesystem-dependent (APFS and ext4 disagree), and it decides the order of
+  // endpoints and import sites in the document. Sorting makes the same tree produce the same bytes on
+  // any machine — otherwise a rebuild in CI looks like a changed app and cuts a pointless new revision.
+  entries.sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0));
   for (const e of entries) {
     if (SKIP_DIRS.has(e.name) || (e.name.startsWith('.') && e.name !== '.')) continue;
     const full = join(dir, e.name);

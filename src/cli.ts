@@ -231,7 +231,9 @@ async function runMap(args: ParsedArgs): Promise<number> {
     `patchstack: ${c.filesDiscovered} file(s) found — ${c.filesParsed} analysed, ` +
       `${c.filesPreFiltered} skipped (no server entry point)` +
       (c.filesSkipped ? `, ${c.filesSkipped} could not be analysed` : '') +
-      `. DETECTED surface only — static analysis is best-effort; unproven pairs are marked "heuristic".`,
+      `. DETECTED surface only — static analysis is best-effort; every flow carries the tier it was ` +
+      `established at ("exact-local" and "transformed-local" are proven; "imported", "heuristic" and ` +
+      `"unknown" are not).`,
   );
   const imported = map.imports ?? [];
   if (imported.length > 0) {

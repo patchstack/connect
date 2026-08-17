@@ -265,6 +265,17 @@ export interface Coverage {
   filesPreFiltered: number;
   /** Files skipped because they could not be read/parsed (fail-open). */
   filesSkipped: number;
+  /**
+   * Whether `SiteInputMap.imports` covers every discovered file — false when at least one file could not
+   * be read or scanned, so a package may be imported without appearing there.
+   *
+   * This is the field that licenses a NEGATIVE conclusion. A package's absence from the inventory means
+   * "not imported" only when this is true; otherwise it means "we do not know", and the difference is a
+   * vulnerability wrongly closed. **Absent (rather than false) on maps produced before the inventory
+   * existed** — that case is also "we do not know", so a consumer must check the field is present and
+   * true, not merely that it isn't false.
+   */
+  importsComplete?: boolean;
   /** Source roots analyzed, repo-relative. */
   roots: string[];
   /** Honest notes on what static analysis could not resolve (dynamic dispatch, indirection, …). */

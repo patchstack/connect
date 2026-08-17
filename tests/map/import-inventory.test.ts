@@ -1,8 +1,9 @@
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
-import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, writeFileSync, rmSync, chmodSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { buildInputMap } from '../../src/map/index.js';
+import { scanFileImports } from '../../src/map/imports.js';
 import type { ImportedPackage } from '../../src/map/types.js';
 
 // The import inventory answers a question the sink list cannot: "does this app use package P at all?"
@@ -119,6 +120,48 @@ describe('unmodelled is not unreachable', () => {
   });
 });
 
+describe('absence is only evidence when the inventory is complete', () => {
+  it('reports the inventory as complete for a clean tree', async () => {
+    const { map } = await buildInputMap(dir);
+    expect(map!.coverage.importsComplete).toBe(true);
+  });
+
+  it('marks it incomplete when a file could not be analysed, and says so in the notes', async (ctx) => {
+    const d = mkdtempSync(join(tmpdir(), 'ps-imp-partial-'));
+    mkdirSync(join(d, 'src'), { recursive: true });
+    writeFileSync(join(d, 'package.json'), JSON.stringify({ dependencies: { express: '4' } }));
+    writeFileSync(join(d, 'src', 'ok.ts'), `
+      import express from "express";
+      const app = express();
+      app.get("/ok", (req, res) => res.end("ok"));
+    `);
+    // The walker finds this file, reading it throws, and its imports are therefore UNKNOWN. A server
+    // must not conclude "package P is not imported" from an inventory with a hole in it.
+    const bad = join(d, 'src', 'secret.ts');
+    writeFileSync(bad, 'import hidden from "hidden-package";');
+    chmodSync(bad, 0o000);
+    let unreadable = false;
+    try { readFileSync(bad, 'utf8'); } catch { unreadable = true; }
+    if (!unreadable) { rmSync(d, { recursive: true, force: true }); ctx.skip(); return; } // running as root
+
+    const { map } = await buildInputMap(d);
+    expect(map!.coverage.importsComplete).toBe(false);
+    expect(map!.coverage.notes.some((n) => n.includes('import inventory is INCOMPLETE'))).toBe(true);
+    // The point of the flag: the package really is missing from the inventory, so the flag is the only
+    // thing standing between a hole in our analysis and a "not imported" conclusion.
+    expect((map!.imports ?? []).map((p) => p.package)).not.toContain('hidden-package');
+    chmodSync(bad, 0o644);
+    rmSync(d, { recursive: true, force: true });
+  });
+
+  it('reports a failed scan as unknown rather than as no imports', () => {
+    // null, not [] — an empty array would say "this file imports nothing", which is a claim we cannot
+    // make about a file we failed to read.
+    const exploding = { preProcessFile() { throw new Error('boom'); } } as unknown as Parameters<typeof scanFileImports>[1];
+    expect(scanFileImports('import x from "pg";', exploding)).toBeNull();
+  });
+});
+
 describe('the document stays a v3 wire contract', () => {
   it('adds the inventory without bumping the version', async () => {
     const { map } = await buildInputMap(dir);
@@ -155,6 +198,27 @@ describe('a path alias is app code, not a dependency', () => {
     // `@app/*` is indistinguishable from a real scoped package by name alone — only the tsconfig says
     // otherwise, which is why the aliases are read rather than guessed.
     expect(pkgs).toEqual(['express']);
+    rmSync(d, { recursive: true, force: true });
+  });
+
+  it('does not let a non-wildcard alias swallow a real package that shares its prefix', async () => {
+    const d = mkdtempSync(join(tmpdir(), 'ps-imp-wild-'));
+    mkdirSync(join(d, 'src'), { recursive: true });
+    writeFileSync(join(d, 'package.json'), JSON.stringify({ dependencies: { express: '4', foobar: '1' } }));
+    // `"foo"` aliases exactly one specifier. Treating it as a prefix would also exclude `foobar` —
+    // a real dependency silently vanishing from the inventory, which is the failure mode this whole
+    // file exists to prevent.
+    writeFileSync(join(d, 'tsconfig.json'), '{"compilerOptions":{"paths":{"foo":["./src/foo.ts"],"@/*":["./src/*"]}}}');
+    writeFileSync(join(d, 'src', 'w.ts'), `
+      import express from "express";
+      import x from "foo";
+      import y from "foobar";
+      import z from "@/util";
+      const app = express();
+      app.get("/w", (req, res) => res.end(String(x) + y + z));
+    `);
+    const { map } = await buildInputMap(d);
+    expect((map!.imports ?? []).map((p) => p.package)).toEqual(['express', 'foobar']);
     rmSync(d, { recursive: true, force: true });
   });
 

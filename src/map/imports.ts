@@ -20,6 +20,12 @@ import { recognizedSinkKinds } from './sinks.js';
 // matters for correlation. The mixed fidelity is reported per package as `namesComplete` rather than
 // smoothed over.
 
+/** A `compilerOptions.paths` entry: `"@/*"` is a prefix, `"foo"` matches only the specifier `foo`. */
+export interface PathAlias {
+  prefix: string;
+  wildcard: boolean;
+}
+
 /** One import edge as found in a single file. */
 export interface RawImport {
   /** Module specifier exactly as written (`node:fs`, `lodash/merge`, `./db`). */
@@ -50,8 +56,8 @@ function isNpmPackageName(pkg: string): boolean {
  * is code, not data) are not followed, so the name check above remains the backstop. Reads tolerantly —
  * these files routinely carry comments and trailing commas, which `JSON.parse` rejects.
  */
-export function readPathAliases(cwd: string): string[] {
-  const prefixes: string[] = [];
+export function readPathAliases(cwd: string): PathAlias[] {
+  const aliases: PathAlias[] = [];
   for (const name of ['tsconfig.json', 'jsconfig.json']) {
     let paths: Record<string, unknown> | undefined;
     try {
@@ -63,11 +69,14 @@ export function readPathAliases(cwd: string): string[] {
     }
     for (const key of Object.keys(paths ?? {})) {
       if (key.startsWith('.')) continue; // a relative alias is already excluded as a non-package
-      // `@/*` matches anything under `@/`; a key without a wildcard matches only itself.
-      prefixes.push(key.endsWith('*') ? key.slice(0, -1) : key);
+      // The wildcard has to be carried, not flattened into a prefix: an alias `"foo"` covers the
+      // specifier `foo` and nothing else, so prefix-matching it would also swallow the real npm
+      // package `foobar`. Only `"foo/*"` is a prefix.
+      if (key.endsWith('*')) aliases.push({ prefix: key.slice(0, -1), wildcard: true });
+      else aliases.push({ prefix: key, wildcard: false });
     }
   }
-  return prefixes;
+  return aliases;
 }
 
 function stripJsonComments(text: string): string {
@@ -152,14 +161,18 @@ export function collectFileImports(sf: any, ts: TsModule): RawImport[] {
  * same scan the compiler uses to discover a file's dependencies. Token-accurate (a specifier inside a
  * comment or string is not reported), and cheap enough to run over every file in a project.
  * Names are not recoverable this way; callers mark the result as name-incomplete.
+ *
+ * Returns **null** when the scan itself failed. That is deliberately distinct from an empty array: a file
+ * we could not scan is not a file that imports nothing, and collapsing the two is what would let a server
+ * conclude "package absent" from a gap in our own analysis.
  */
-export function scanFileImports(text: string, ts: TsModule): RawImport[] {
+export function scanFileImports(text: string, ts: TsModule): RawImport[] | null {
   let refs: Array<{ fileName: string; pos: number }>;
   try {
     const pre = ts.preProcessFile(text, /* readImportFiles */ true, /* detectJavaScriptImports */ true);
     refs = pre.importedFiles ?? [];
   } catch {
-    return []; // fail-open: the inventory is best-effort, never a reason to lose a file
+    return null; // fail-open for the map, but the caller must record that the inventory is now partial
   }
   if (refs.length === 0) return [];
   const lineStarts = lineStartOffsets(text);
@@ -170,7 +183,7 @@ export function scanFileImports(text: string, ts: TsModule): RawImport[] {
  * Aggregates per-file import edges into the per-package inventory. Order-independent: the output is
  * sorted, so two runs over the same tree produce byte-identical documents.
  */
-export function createImportInventory(aliasPrefixes: string[] = []) {
+export function createImportInventory(aliases: PathAlias[] = []) {
   interface Acc {
     specifiers: Set<string>;
     names: Set<string>;
@@ -184,7 +197,8 @@ export function createImportInventory(aliasPrefixes: string[] = []) {
     /** @param parsed whether these edges came from a full parse (names are trustworthy) or the scan. */
     add(relFile: string, edges: RawImport[], parsed: boolean): void {
       for (const edge of edges) {
-        if (aliasPrefixes.some((p) => edge.specifier === p || edge.specifier.startsWith(p))) continue;
+        const aliased = aliases.some((a) => (a.wildcard ? edge.specifier.startsWith(a.prefix) : edge.specifier === a.prefix));
+        if (aliased) continue;
         const pkg = npmPackageOf(edge.specifier);
         if (!pkg) continue; // relative/absolute path: app code, not a dependency
         if (!isNpmPackageName(pkg)) continue; // an unaliased-but-bare path (`@/x`, `~/lib`)
