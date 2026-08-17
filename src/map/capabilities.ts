@@ -20,7 +20,7 @@
  * member is breaking and bumps the MAJOR, because a consumer pinned to the old list will keep emitting a
  * value that can no longer match.
  */
-export const CAPABILITY_VERSION = '1.0.0';
+export const CAPABILITY_VERSION = '1.1.0';
 
 /** Sink families the extractor recognizes. A dangerous OPERATION, not a package. */
 export const SINK_KINDS = ['db', 'fs', 'http', 'exec', 'eval'] as const;
@@ -57,6 +57,22 @@ export const PROVEN_CONFIDENCE_TIERS = ['exact-local', 'transformed-local'] as c
 /** The single tier eligible for automatic promotion to blocking (subject to the server's own gates). */
 export const AUTO_PROMOTABLE_CONFIDENCE = 'exact-local';
 
+/**
+ * Shapes of a recognized call to a dependency's API, for the invocation inventory. Narrower than it looks:
+ * these are the three syntactic forms whose RECEIVER we can resolve, not a taxonomy of call syntax.
+ */
+export const INVOCATION_KINDS = ['call', 'member', 'construct'] as const;
+
+/**
+ * How the value being called was traced back to its package — evidence, not decoration. `direct` is an
+ * imported binding; `factory` followed a traced call chain (`const db = createClient(...)`); `reexport`
+ * crossed one hop into a local module that re-exports a dependency value.
+ *
+ * A consumer weighing whether to act on an invocation needs this: "called on an imported binding" and
+ * "called on something we followed two steps" are different strengths of the same claim.
+ */
+export const INVOCATION_RESOLUTIONS = ['direct', 'factory', 'reexport'] as const;
+
 /** How a sink's package was established. Absent attribution is deliberately not a member: see `Sink`. */
 export const ATTRIBUTIONS = ['import', 'global', 'inferred'] as const;
 
@@ -74,6 +90,8 @@ export const CAPABILITY_MANIFEST = {
   autoPromotableConfidence: AUTO_PROMOTABLE_CONFIDENCE,
   attributions: ATTRIBUTIONS,
   addressSpaces: ADDRESS_SPACES,
+  invocationKinds: INVOCATION_KINDS,
+  invocationResolutions: INVOCATION_RESOLUTIONS,
 } as const;
 
 /**

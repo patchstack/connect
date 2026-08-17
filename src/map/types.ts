@@ -5,6 +5,8 @@ import {
   ADDRESS_SPACES,
   ARGUMENT_ROLES,
   CANDIDATE_FAMILIES,
+  INVOCATION_KINDS,
+  INVOCATION_RESOLUTIONS,
   SINK_KINDS,
 } from './capabilities.js';
 
@@ -277,6 +279,49 @@ export interface Coverage {
    */
   pathsUnwalked?: number;
   /**
+   * Metrics for the API-invocation pass, so the cost/benefit of parsing more files is decided with numbers
+   * rather than intuition.
+   *
+   * Four buckets, not resolved-vs-not, because a two-way split measures the APP rather than the resolver:
+   * a codebase full of local helpers would score badly through no fault of the analysis, and widening the
+   * parse would LOWER such a rate by finding more local calls — backwards for a number meant to justify
+   * widening the parse.
+   *
+   *   callsTotal       every call/new expression seen — workload scale
+   *   callsDependency  traced to a package: what `apiInvocations` records
+   *   callsLocal       a known local binding or an enclosing parameter (`res.json()`) — correctly excluded
+   *   callsAmbiguous   a receiver that could not be classified either way, or a computed/dynamic callee
+   *
+   * **Resolver quality is `callsDependency / (callsDependency + callsAmbiguous)`.** `callsLocal` belongs in
+   * neither term: excluding a local helper is a correct answer, not a miss.
+   */
+  apiInvocations?: number;
+  callsTotal?: number;
+  callsDependency?: number;
+  callsLocal?: number;
+  callsAmbiguous?: number;
+  sourceBytes?: number;
+  analysisMs?: number;
+  /**
+   * Resident set size when extraction finished — a point-in-time reading, NOT a peak. Named for what it is:
+   * the walk's garbage may already have been collected by the time it is taken, so treating it as a
+   * high-water mark would overstate it.
+   */
+  rssBytes?: number;
+  /**
+   * A real high-water mark, from the OS (`resourceUsage().maxRSS`), but for the whole PROCESS — it includes
+   * loading the TypeScript compiler. So it bounds the cost of running `map` from above rather than
+   * attributing a peak to extraction alone. Absent where the platform does not report it.
+   */
+  peakRssBytes?: number;
+  /**
+   * Invocation shapes this pass cannot see. Present whenever the inventory is — the list IS the statement
+   * that the inventory is partial, which is why there is no `apiInventoryComplete` boolean: parsing more
+   * files raises recall but none of these go away, so no amount of parsing could make absence here mean
+   * "the vulnerable API is not called".
+   */
+  apiInventoryLimitations?: string[];
+  /**
    * Whether `SiteInputMap.imports` covers every discovered file — false when at least one file could not
    * be read or scanned, so a package may be imported without appearing there.
    *
@@ -321,6 +366,66 @@ export interface SiteInputMap {
    * Absent on maps produced before this shipped — treat missing as "unknown", never as "imports nothing".
    */
   imports?: ImportedPackage[];
+  /**
+   * Dependency APIs the app calls — see `ApiInvocation`. **Positive evidence only**: its absence for a
+   * package never means the package's API is not called (see `coverage.apiInventoryLimitations`).
+   * Collected from the files the extractor parses, which is not every file.
+   */
+  apiInvocations?: ApiInvocation[];
+}
+
+export type InvocationKind = (typeof INVOCATION_KINDS)[number];
+export type InvocationResolution = (typeof INVOCATION_RESOLUTIONS)[number];
+
+/**
+ * A dependency API the app CALLS, independent of whether request input reaches it.
+ *
+ * Why this is separate from `Sink`: a sink asserts "a dangerous operation that input can reach", which the
+ * extractor can only claim for the few API families it models. An invocation asserts the much simpler
+ * "this package's function is called here" — askable for any package, and the entire answer for an advisory
+ * whose precondition is calling the vulnerable function rather than feeding it untrusted input. Folding the
+ * two together would weaken what a sink means.
+ *
+ * Every record carries its own evidence (`attribution`, `resolution`, the span) rather than leaving a
+ * consumer to infer strength from context: "called on an imported binding" and "called on a value we
+ * followed through a factory" are different claims, and a server deciding what to act on needs both told
+ * apart and told plainly.
+ */
+export interface ApiInvocation {
+  /** npm package root, scope kept, or a `node:` builtin. */
+  package: string;
+  /** Module specifiers as written that reached this API. */
+  specifiers: string[];
+  /** The called function or method, as the package exports/documents it — never a local alias. */
+  api: string;
+  /**
+   * The receiver's name, and ONLY when the binding came straight from the package (`resolution: 'direct'`).
+   * Absent for a factory-derived value or a re-exported one, because those names are the app's own — a
+   * `pool` re-exported from `./lib`, a `Student` returned by `sequelize.define()` — and reporting them as
+   * part of the package's API would invent an API name.
+   *
+   * For a named import the local name IS the exported name; for a default or namespace import it is the
+   * app's alias, so treat this as a hint for a reader and match on `api` when correlating.
+   */
+  receiver?: string;
+  /** `receiver.api` when a receiver is known, else `api` — the form advisories tend to name. */
+  symbol: string;
+  kind: InvocationKind;
+  /** Always `import`: a global has no package, and an inferred package is not evidence about the value. */
+  attribution: 'import';
+  resolution: InvocationResolution;
+  /** How many call sites were seen; `sites` is capped, this is not. */
+  callCount: number;
+  /** Where it is called — capped, with the span so the exact call can be pointed at. */
+  sites: InvocationSite[];
+}
+
+/** A call site: the file and line for a human, the span for machine correlation. */
+export interface InvocationSite {
+  file: string;
+  line?: number;
+  start?: number;
+  end?: number;
 }
 
 /** One place a package is imported. */
