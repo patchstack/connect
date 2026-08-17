@@ -194,7 +194,7 @@ describe('the document stays a v3 wire contract', () => {
   it('adds the inventory without bumping the version', async () => {
     const { map } = await buildInputMap(dir);
     // Additive-only: a v3 consumer that ignores `imports` is still correct, so bumping would break every
-    // existing reader (including the saas ingest gate) for no safety gain.
+    // existing reader for no safety gain.
     expect(map!.version).toBe(3);
     expect(Array.isArray(map!.imports)).toBe(true);
   });
