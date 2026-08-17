@@ -291,6 +291,65 @@ export interface SiteInputMap {
   framework: string;
   endpoints: Endpoint[];
   coverage: Coverage;
+  /**
+   * Every package the app imports — see `ImportedPackage`. **Still version 3 on purpose:** this field is
+   * purely additive, so a v3 reader that ignores it keeps behaving correctly. The version exists to catch
+   * *silent-failure* changes (a field whose meaning shifted under an unchanged name); a new optional field
+   * is not one, and bumping for it would make every existing consumer reject the document instead.
+   * Absent on maps produced before this shipped — treat missing as "unknown", never as "imports nothing".
+   */
+  imports?: ImportedPackage[];
+}
+
+/** One place a package is imported. */
+export interface ImportSite {
+  /** Repo-relative file. */
+  file: string;
+  /** 1-based line of the import statement. */
+  line?: number;
+}
+
+/**
+ * A package the app imports, INDEPENDENT of whether anything flows into it.
+ *
+ * Why this exists separately from `Endpoint.sinks`: a sink is only recorded for the handful of API
+ * families the extractor models (`SinkKind`), so "this app has no sink for package P" is not evidence
+ * that P is unused — it usually means P's API is not one we recognize. A consumer correlating a
+ * vulnerable dependency against the map needs to tell those two apart, because reading the second as the
+ * first turns "we cannot see it" into "it is not reachable" — a confident false negative on a real
+ * vulnerability. `recognizedSinkKinds` is what separates them.
+ */
+export interface ImportedPackage {
+  /** npm package root, scope kept (`@supabase/supabase-js`), or a `node:` builtin. */
+  package: string;
+  /**
+   * The module specifiers as WRITTEN, deduped (`lodash`, `lodash/merge`). Advisories are frequently
+   * scoped to a subpath ("only `lodash/merge` is affected"), which the package root alone cannot express.
+   */
+  specifiers: string[];
+  /**
+   * Imported binding names — `default`, `*` for a namespace import, `require` for a CJS whole-module
+   * require, `import()` for a dynamic import, otherwise the named bindings. Only collected from files the
+   * extractor fully parsed; see `namesComplete`.
+   */
+  names?: string[];
+  /**
+   * false when at least one import of this package came from the cheap specifier scan rather than a full
+   * parse, so `names` is a SUBSET of what is actually imported. A consumer must not treat a name's absence
+   * as proof it is not imported when this is false.
+   */
+  namesComplete: boolean;
+  /** Where it is imported — capped, so `siteCount` carries the real total. */
+  sites: ImportSite[];
+  /** Total number of import sites found, including any beyond the `sites` cap. */
+  siteCount: number;
+  /**
+   * Which sink families the extractor can recognize for this package. **Empty means the map cannot answer
+   * a dataflow question about this package at all** — not that nothing reaches it. A vulnerability in a
+   * package with no recognized kind must stay "needs review"; it can never be closed as unreachable on the
+   * strength of this map.
+   */
+  recognizedSinkKinds: SinkKind[];
 }
 
 /** The TypeScript module surface we use (a subset of `typescript`), resolved from the target app. */
