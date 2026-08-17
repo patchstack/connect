@@ -143,13 +143,25 @@ export async function extractInputMap(cwd: string, ts: TsModule, options: Extrac
     notes.push(`\`apiInvocations\` records ${invocationList.length} dependency API call(s) resolved from the ${parsed} parsed file(s). POSITIVE EVIDENCE ONLY: a package missing from it may still have its API called — see coverage.apiInventoryLimitations.`);
   }
 
+  // Node-only and best-effort: the map runs in a build, but the runtime this file belongs to must stay
+  // edge-safe, so nothing here may assume `process`.
+  //
+  // Two numbers, because the obvious one is not the one a performance decision needs. `memoryUsage().rss`
+  // is the resident size AT THIS MOMENT — after extraction, with the walk's garbage possibly already
+  // collected — so calling it a peak would overstate what it measures. `resourceUsage().maxRSS` is a real
+  // high-water mark, but for the whole process (it includes loading TypeScript), so it is an upper bound on
+  // the cost of running `map` rather than extraction's own peak. Both are reported and both are labelled
+  // for what they are.
+  let rssBytes;
   let peakRssBytes;
   try {
-    // Node-only and best-effort: the map runs in a build, but the runtime this file belongs to must stay
-    // edge-safe, so nothing here may assume `process`.
-    peakRssBytes = typeof process !== 'undefined' && typeof process.memoryUsage === 'function'
-      ? process.memoryUsage().rss
-      : undefined;
+    if (typeof process !== 'undefined') {
+      if (typeof process.memoryUsage === 'function') rssBytes = process.memoryUsage().rss;
+      if (typeof process.resourceUsage === 'function') {
+        const maxRssKb = process.resourceUsage().maxRSS; // kilobytes, per Node's docs
+        if (typeof maxRssKb === 'number' && maxRssKb > 0) peakRssBytes = maxRssKb * 1024;
+      }
+    }
   } catch { /* not available */ }
 
   return {
@@ -173,6 +185,7 @@ export async function extractInputMap(cwd: string, ts: TsModule, options: Extrac
       callsAmbiguous: calls.ambiguous,
       sourceBytes,
       analysisMs: Date.now() - startedAt,
+      ...(rssBytes !== undefined ? { rssBytes } : {}),
       ...(peakRssBytes !== undefined ? { peakRssBytes } : {}),
       // The list IS the partiality statement. There is deliberately no `apiInventoryComplete`: parsing
       // every file would raise recall without removing any of these, so no parsing budget could make an

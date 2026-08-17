@@ -302,6 +302,17 @@ export interface Coverage {
   callsAmbiguous?: number;
   sourceBytes?: number;
   analysisMs?: number;
+  /**
+   * Resident set size when extraction finished — a point-in-time reading, NOT a peak. Named for what it is:
+   * the walk's garbage may already have been collected by the time it is taken, so treating it as a
+   * high-water mark would overstate it.
+   */
+  rssBytes?: number;
+  /**
+   * A real high-water mark, from the OS (`resourceUsage().maxRSS`), but for the whole PROCESS — it includes
+   * loading the TypeScript compiler. So it bounds the cost of running `map` from above rather than
+   * attributing a peak to extraction alone. Absent where the platform does not report it.
+   */
   peakRssBytes?: number;
   /**
    * Invocation shapes this pass cannot see. Present whenever the inventory is — the list IS the statement

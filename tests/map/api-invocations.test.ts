@@ -188,6 +188,19 @@ describe('the measurements needed to decide whether to parse more', () => {
     expect(c.filesParsed).toBeGreaterThan(0);
   });
 
+  it('labels the two memory readings for what they actually are', async () => {
+    const { map } = await buildInputMap(dir);
+    const c = map!.coverage as Record<string, number>;
+
+    // `rssBytes` is a point-in-time reading taken after extraction; calling it a peak would overstate it,
+    // since the walk's garbage may already be collected. `peakRssBytes` is a real high-water mark from the
+    // OS, but process-wide — it includes loading the TypeScript compiler — so it bounds the cost from above.
+    if (c.rssBytes !== undefined && c.peakRssBytes !== undefined) {
+      expect(c.peakRssBytes).toBeGreaterThanOrEqual(c.rssBytes);
+    }
+    expect(c.rssBytes ?? 1).toBeGreaterThan(0);
+  });
+
   it('accounts for every call expression exactly once', async () => {
     const { map } = await buildInputMap(dir);
     const c = map!.coverage as Record<string, number>;
