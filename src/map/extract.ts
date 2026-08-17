@@ -46,8 +46,7 @@ export async function extractInputMap(cwd: string, ts: TsModule, options: Extrac
   let preFiltered = 0;
   let importScanFailures = 0;
   let sourceBytes = 0;
-  let callsResolved = 0;
-  let callsUnresolved = 0;
+  const calls = { total: 0, dependency: 0, local: 0, ambiguous: 0 };
   const startedAt = Date.now();
 
   for (const file of files) {
@@ -77,8 +76,10 @@ export async function extractInputMap(cwd: string, ts: TsModule, options: Extrac
       // makes it cheap enough to ship before deciding whether to parse more files.
       const called = collectInvocations(sf, ts, bindings, ctx);
       invocations.add(called.invocations);
-      callsResolved += called.invocations.length;
-      callsUnresolved += called.unresolved;
+      calls.total += called.counts.total;
+      calls.dependency += called.counts.dependency;
+      calls.local += called.counts.local;
+      calls.ambiguous += called.counts.ambiguous;
       const localSinks = collectLocalSinks(sf, ts, bindings, ctx);
       for (const ep of extractFromFile(sf, ts, localSinks, bindings, ctx)) {
         // A FILE-BASED route handler carries its URL path in its location, not in the code, so derive
@@ -166,8 +167,10 @@ export async function extractInputMap(cwd: string, ts: TsModule, options: Extrac
       pathsUnwalked: stats.unwalked,
       importsComplete,
       apiInvocations: invocationList.length,
-      apiCallsResolved: callsResolved,
-      apiCallsUnresolved: callsUnresolved,
+      callsTotal: calls.total,
+      callsDependency: calls.dependency,
+      callsLocal: calls.local,
+      callsAmbiguous: calls.ambiguous,
       sourceBytes,
       analysisMs: Date.now() - startedAt,
       ...(peakRssBytes !== undefined ? { peakRssBytes } : {}),

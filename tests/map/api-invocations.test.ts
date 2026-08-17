@@ -177,17 +177,62 @@ describe('the inventory says plainly that it is partial', () => {
 });
 
 describe('the measurements needed to decide whether to parse more', () => {
-  it('reports the cost and the coverage rate', async () => {
+  it('reports the cost and the four call buckets', async () => {
     const { map } = await buildInputMap(dir);
     const c = map!.coverage as Record<string, number>;
 
     expect(c.apiInvocations).toBeGreaterThan(0);
-    expect(c.apiCallsResolved).toBeGreaterThan(0);
-    // Unresolved calls are the honest denominator: without them "we found N invocations" has no scale.
-    expect(c.apiCallsUnresolved).toBeGreaterThan(0);
+    expect(c.callsDependency).toBeGreaterThan(0);
     expect(c.sourceBytes).toBeGreaterThan(0);
     expect(c.analysisMs).toBeGreaterThanOrEqual(0);
     expect(c.filesParsed).toBeGreaterThan(0);
+  });
+
+  it('accounts for every call expression exactly once', async () => {
+    const { map } = await buildInputMap(dir);
+    const c = map!.coverage as Record<string, number>;
+
+    // If the buckets do not sum, one of them is silently absorbing calls and every ratio built on them is
+    // wrong in an unknown direction.
+    expect(c.callsDependency + c.callsLocal + c.callsAmbiguous).toBe(c.callsTotal);
+  });
+
+  it('counts a local helper as local, not as a failure to resolve', async () => {
+    // The measurement error this replaced: counting local calls as "unresolved" made the rate a property
+    // of the app rather than of the resolver — and widening the parse would have LOWERED it by finding more
+    // local calls, which is backwards for a number meant to justify widening the parse.
+    const d = mkdtempSync(join(tmpdir(), 'ps-inv-local-'));
+    mkdirSync(join(d, 'src'), { recursive: true });
+    writeFileSync(join(d, 'package.json'), JSON.stringify({ dependencies: { express: '4' } }));
+    writeFileSync(join(d, 'src', 'local.ts'), `
+      import express from "express";
+      function helper(x) { return x + 1 }
+      const shape = { build: (x) => x };
+      const app = express();
+      app.post("/x", (req, res) => {
+        helper(req.body.a);
+        shape.build(req.body.b);
+        res.json({ ok: true });   // a handler PARAMETER, not a dependency
+      });
+    `);
+    const { map } = await buildInputMap(d);
+    const c = map!.coverage as Record<string, number>;
+
+    // helper(), shape.build(), res.json() — three local calls, none of them ambiguous.
+    expect(c.callsLocal).toBeGreaterThanOrEqual(3);
+    expect(c.callsAmbiguous).toBe(0);
+    // And resolver quality is unaffected by how many local helpers the app happens to have.
+    expect(c.callsDependency / (c.callsDependency + c.callsAmbiguous)).toBe(1);
+    rmSync(d, { recursive: true, force: true });
+  });
+
+  it('counts an untraceable receiver as ambiguous, because it is a real miss', async () => {
+    const { map } = await buildInputMap(dir);
+    const c = map!.coverage as Record<string, number>;
+
+    // `res.locals.db.query(...)` in the fixture: we cannot say whether that is a dependency, so it counts
+    // against resolver quality rather than being quietly filed as local.
+    expect(c.callsAmbiguous).toBeGreaterThan(0);
   });
 
   it('counts every call site even though the sites list is capped', async () => {

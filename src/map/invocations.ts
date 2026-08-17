@@ -1,5 +1,5 @@
 import type { ApiInvocation, InvocationResolution, TsModule } from './types.js';
-import { rootIdentifier, spanOf } from './ast.js';
+import { isShadowedByEnclosingBinding, rootIdentifier, spanOf } from './ast.js';
 import { npmPackageOf, type Bindings } from './bindings.js';
 import type { ModuleGraph } from './sinks.js';
 
@@ -34,20 +34,39 @@ export interface InvocationContext {
 }
 
 /**
- * Collect resolved dependency calls from one parsed file.
+ * How the call expressions in a file classified. Four buckets rather than resolved-vs-not, because
+ * "resolved / everything else" measures the APP, not the resolver: a codebase full of local helpers would
+ * score badly through no fault of ours, and widening the parse would *lower* the number by finding more
+ * local calls — precisely backwards for a metric meant to justify widening the parse.
  *
- * Returns the invocations plus a count of calls whose callee could NOT be traced to a package. That count
- * is the honest denominator: it is what turns "we found 40 invocations" into "we resolved 40 of 300 calls",
- * which is the number that decides whether more parsing is worth paying for.
+ *   total       every call/new expression seen — workload scale
+ *   dependency  traced to a package: what the inventory records
+ *   local       the callee is a known local binding or an enclosing parameter — correctly not a dependency
+ *   ambiguous   a receiver we could not classify either way, or a computed/dynamic callee
+ *
+ * Resolver quality is `dependency / (dependency + ambiguous)`. `local` belongs in neither term: excluding a
+ * local helper is a correct answer, not a miss.
  */
+export interface CallCounts {
+  total: number;
+  dependency: number;
+  local: number;
+  ambiguous: number;
+}
+
+/** Collect resolved dependency calls from one parsed file, with the call classification alongside. */
 export function collectInvocations(
   sf: any,
   ts: TsModule,
   bindings: Bindings,
   ctx: InvocationContext,
-): { invocations: ApiInvocation[]; unresolved: number } {
+): { invocations: ApiInvocation[]; counts: CallCounts } {
   const found: ApiInvocation[] = [];
-  let unresolved = 0;
+  const counts: CallCounts = { total: 0, dependency: 0, local: 0, ambiguous: 0 };
+
+  /** A name we can positively account for as app-local: declared in-file, or an enclosing parameter. */
+  const isLocalName = (name: string, node: any): boolean =>
+    bindings.locals.has(name) || isShadowedByEnclosingBinding(node, name, ts);
 
   const lineOf = (node: any): number | undefined => {
     try {
@@ -107,6 +126,7 @@ export function collectInvocations(
   const visit = (node: any) => {
     if (ts.isCallExpression(node) || ts.isNewExpression(node)) {
       const callee = node.expression;
+      counts.total++;
 
       if (ts.isIdentifier(callee)) {
         // `merge(a, b)` / `new Pool()` — the callee itself is the imported binding.
@@ -114,8 +134,11 @@ export function collectInvocations(
         if (traced) {
           const api = bindings.exportNameOf(callee.text) ?? callee.text;
           push(traced, api, undefined, ts.isNewExpression(node) ? 'construct' : 'call', node);
+          counts.dependency++;
+        } else if (isLocalName(callee.text, node)) {
+          counts.local++;
         } else {
-          unresolved++;
+          counts.ambiguous++;
         }
       } else if (ts.isPropertyAccessExpression(callee) && ts.isIdentifier(callee.name)) {
         // `pool.query(sql)` / `helper.exec(cmd)` — resolve the RECEIVER, never the method name. A
@@ -123,24 +146,32 @@ export function collectInvocations(
         const root = rootIdentifier(callee.expression, ts);
         const traced = root !== undefined ? traceRoot(root) : null;
         if (traced && root !== undefined) {
+          counts.dependency++;
           // A receiver name is only reported when the binding came STRAIGHT from the package. Anything
           // else is the app's own name for a value: `pool` re-exported from `./lib`, or `Student` returned
           // by `sequelize.define()`. Reporting those as part of the package's API would be inventing an
           // API name — and the first version of this did exactly that, calling pg's method `pool.query`.
           const receiver = traced.resolution === 'direct' ? bindings.exportNameOf(root) ?? root : undefined;
           push(traced, callee.name.text, receiver, 'member', node);
+        } else if (root !== undefined && ts.isIdentifier(callee.expression) && isLocalName(root, node)) {
+          // A method called DIRECTLY on a local binding or a handler parameter — `res.json()`,
+          // `shape.build()`. Declining to attribute that to a package is a correct answer.
+          counts.local++;
         } else {
-          unresolved++;
+          // Anything deeper is ambiguous even when the ROOT is local: in `res.locals.db.query()` the value
+          // being called is whatever was stashed on `res.locals`, not the parameter itself, and a database
+          // client is exactly what apps put there. Filing it as "local" would hide a real miss.
+          counts.ambiguous++;
         }
       } else {
-        unresolved++; // computed callee, IIFE, dynamic import — see the limitations note
+        counts.ambiguous++; // computed callee, IIFE, dynamic import — see the limitations note
       }
     }
     ts.forEachChild(node, visit);
   };
   visit(sf);
 
-  return { invocations: found, unresolved };
+  return { invocations: found, counts };
 }
 
 /**

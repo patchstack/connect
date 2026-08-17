@@ -280,12 +280,26 @@ export interface Coverage {
   pathsUnwalked?: number;
   /**
    * Metrics for the API-invocation pass, so the cost/benefit of parsing more files is decided with numbers
-   * rather than intuition. `apiCallsResolved / (apiCallsResolved + apiCallsUnresolved)` is the coverage
-   * rate — the share of call sites whose callee we could trace to a dependency.
+   * rather than intuition.
+   *
+   * Four buckets, not resolved-vs-not, because a two-way split measures the APP rather than the resolver:
+   * a codebase full of local helpers would score badly through no fault of the analysis, and widening the
+   * parse would LOWER such a rate by finding more local calls — backwards for a number meant to justify
+   * widening the parse.
+   *
+   *   callsTotal       every call/new expression seen — workload scale
+   *   callsDependency  traced to a package: what `apiInvocations` records
+   *   callsLocal       a known local binding or an enclosing parameter (`res.json()`) — correctly excluded
+   *   callsAmbiguous   a receiver that could not be classified either way, or a computed/dynamic callee
+   *
+   * **Resolver quality is `callsDependency / (callsDependency + callsAmbiguous)`.** `callsLocal` belongs in
+   * neither term: excluding a local helper is a correct answer, not a miss.
    */
   apiInvocations?: number;
-  apiCallsResolved?: number;
-  apiCallsUnresolved?: number;
+  callsTotal?: number;
+  callsDependency?: number;
+  callsLocal?: number;
+  callsAmbiguous?: number;
   sourceBytes?: number;
   analysisMs?: number;
   peakRssBytes?: number;

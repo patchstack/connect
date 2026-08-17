@@ -238,13 +238,17 @@ async function runMap(args: ParsedArgs): Promise<number> {
   const invoked = map.apiInvocations ?? [];
   if (invoked.length > 0) {
     const c = map.coverage as unknown as Record<string, number>;
-    const total = (c.apiCallsResolved ?? 0) + (c.apiCallsUnresolved ?? 0);
-    const rate = total > 0 ? Math.round((100 * (c.apiCallsResolved ?? 0)) / total) : 0;
-    // The coverage rate is reported because the count alone has no scale: "31 dependency calls" means
-    // nothing without knowing how many calls we could not trace.
+    const dependency = c.callsDependency ?? 0;
+    const ambiguous = c.callsAmbiguous ?? 0;
+    // Resolver quality, NOT "share of all calls": local helpers are excluded from both terms, because
+    // declining to attribute `res.json()` to a package is a correct answer rather than a miss.
+    const denominator = dependency + ambiguous;
+    const quality = denominator > 0 ? Math.round((100 * dependency) / denominator) : 100;
     console.error(
       `patchstack: ${invoked.length} dependency API call(s) resolved across ${new Set(invoked.map((i) => i.package)).size} package(s) ` +
-        `— ${rate}% of call sites traced. Positive evidence only: absence here never means an API is not called.`,
+        `from ${c.callsTotal ?? 0} call site(s) — ${quality}% of dependency-candidate receivers resolved ` +
+        `(${c.callsLocal ?? 0} local, ${ambiguous} ambiguous). Positive evidence only: absence here never ` +
+        `means an API is not called.`,
     );
   }
   const imported = map.imports ?? [];
