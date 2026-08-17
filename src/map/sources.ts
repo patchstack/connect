@@ -47,7 +47,19 @@ const SKIP_DIRS = new Set([
   'vendor', 'tmp', 'temp', '__pycache__',
 ]);
 
-export interface WalkStats { discovered: number }
+export interface WalkStats {
+  discovered: number;
+  /**
+   * Directories or links the walk could not traverse (permissions, a broken link, a vanished path) plus
+   * subtrees deliberately left unvisited because a symlink escapes the project.
+   *
+   * These never become "files", so nothing downstream can notice them by counting: an unreadable
+   * directory simply makes the tree look smaller. That is fine for the surface view and NOT fine for the
+   * import inventory, whose whole value is that a package's absence means something — an unwalked subtree
+   * can import anything. Any non-zero value here forfeits that claim.
+   */
+  unwalked: number;
+}
 
 /**
  * Walk the project for source files. Symlinks are followed ONLY while they stay inside the project
@@ -61,23 +73,33 @@ export function collectSources(
   opts: { followOutside?: boolean },
   out: string[] = [],
   seen = new Set<string>(),
-  stats: WalkStats = { discovered: 0 },
+  stats: WalkStats = { discovered: 0, unwalked: 0 },
 ): string[] {
   let key: string;
-  try { key = realpathSync(dir); } catch { return out; }
-  if (seen.has(key)) return out;
-  if (!opts.followOutside && !isInside(key, boundary)) return out;
+  try { key = realpathSync(dir); } catch { stats.unwalked++; return out; }
+  if (seen.has(key)) return out; // already walked via another path — not a gap
+  if (!opts.followOutside && !isInside(key, boundary)) { stats.unwalked++; return out; }
   seen.add(key);
   let entries;
-  try { entries = readdirSync(dir, { withFileTypes: true }); } catch { return out; }
+  try { entries = readdirSync(dir, { withFileTypes: true }); } catch { stats.unwalked++; return out; }
+  // Directory order is filesystem-dependent (APFS and ext4 disagree), and it decides the order of
+  // endpoints and import sites in the document. Sorting makes the same tree produce the same bytes on
+  // any machine — otherwise a rebuild in CI looks like a changed app and cuts a pointless new revision.
+  entries.sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0));
   for (const e of entries) {
     if (SKIP_DIRS.has(e.name) || (e.name.startsWith('.') && e.name !== '.')) continue;
     const full = join(dir, e.name);
     if (e.isDirectory()) collectSources(full, boundary, opts, out, seen, stats);
     else if (e.isSymbolicLink()) {
       let st, real;
-      try { st = statSync(full); real = realpathSync(full); } catch { continue; }
-      if (!opts.followOutside && !isInside(real, boundary)) continue; // link escapes the project
+      try { st = statSync(full); real = realpathSync(full); } catch { stats.unwalked++; continue; }
+      // The link escapes the project: deliberate, but still a part of the tree we did not read, so it
+      // counts against the inventory's completeness exactly like a failure would — but only when it
+      // could have held source. A symlinked README outside the project must not forfeit the claim.
+      if (!opts.followOutside && !isInside(real, boundary)) {
+        if (st.isDirectory() || isSourceFile(e.name)) stats.unwalked++;
+        continue;
+      }
       if (st.isDirectory()) collectSources(full, boundary, opts, out, seen, stats);
       else if (st.isFile() && isSourceFile(e.name)) { out.push(full); stats.discovered++; }
     } else if (isSourceFile(e.name)) { out.push(full); stats.discovered++; }

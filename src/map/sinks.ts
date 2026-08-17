@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto';
-import type { ArgumentRole, CandidateFamily, Sink, TsModule } from './types.js';
+import type { ArgumentRole, CandidateFamily, Sink, SinkKind, TsModule } from './types.js';
 import {
   isFnLike,
   isShadowedByEnclosingBinding,
@@ -43,6 +43,23 @@ const FS_PACKAGES = ['fs-extra', 'graceful-fs', 'memfs'];
 const isFsPackage = (pkg: string) => /^node:fs(\/promises)?$/.test(pkg) || FS_PACKAGES.includes(pkg);
 const EXEC_PACKAGES = ['execa', 'cross-spawn', 'shelljs', 'zx'];
 const isExecPackage = (pkg: string) => pkg === 'node:child_process' || EXEC_PACKAGES.includes(pkg);
+
+/**
+ * Which sink families this package can produce, per the recognizer tables above — i.e. what the map is
+ * even *able* to see about it. Empty for the vast majority of npm: a package with no recognizer can still
+ * be imported and called, we just have no model of its API, so no flow into it will ever be reported.
+ * Exposed so the import inventory can say that out loud rather than let a consumer read "no sink" as
+ * "not reachable". Takes a package ROOT (subpaths already normalized away by `npmPackageOf`), except for
+ * `node:fs/promises`, whose subpath is part of the builtin's identity.
+ */
+export function recognizedSinkKinds(pkg: string): SinkKind[] {
+  const kinds: SinkKind[] = [];
+  if (isDbPackage(pkg)) kinds.push('db');
+  if (isFsPackage(pkg)) kinds.push('fs');
+  if (isExecPackage(pkg)) kinds.push('exec');
+  if (isHttpPackage(pkg)) kinds.push('http');
+  return kinds;
+}
 
 export interface ModuleGraph {
   /** Sinks of `exportName` in the module `specifier` resolves to, relative to `fromFile`. */

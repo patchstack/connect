@@ -10,6 +10,7 @@ import { collectLocalSinks } from './sinks.js';
 import { createModuleGraph } from './module-graph.js';
 import { isProvenFlow } from './coordinates.js';
 import { extractFromFile } from './entries.js';
+import { collectFileImports, createImportInventory, readPathAliases, scanFileImports } from './imports.js';
 
 // Framework-AGNOSTIC input-flow extractor. It doesn't gate on a specific stack — it walks any JS/TS
 // source and applies recognizer tables for (1) entry points, (2) inputs, (3) sinks, so it generalizes
@@ -36,21 +37,33 @@ export async function extractInputMap(cwd: string, ts: TsModule, options: Extrac
   try { boundary = realpathSync(cwd); } catch { /* use cwd as-is */ }
 
   const graph = createModuleGraph(ts, { cwd, boundary, followOutside: options.followSymlinks }); // shared cache
-  const stats: WalkStats = { discovered: 0 };
+  const stats: WalkStats = { discovered: 0, unwalked: 0 };
   const files = collectSources(cwd, boundary, { followOutside: options.followSymlinks }, [], new Set(), stats);
+  const imports = createImportInventory(readPathAliases(cwd));
   let parsed = 0;
   let preFiltered = 0;
+  let importScanFailures = 0;
 
   for (const file of files) {
     try {
       const text = readFileSync(file, 'utf8');
-      if (!hasEntrySignal(text)) { preFiltered++; continue; }
+      const relFile = relative(cwd, file);
+      // Imports are collected from EVERY file, entry point or not: the data layer of an AI-built app
+      // usually lives in a file with no handler in it, so a pre-filtered file is exactly where the
+      // interesting dependency is imported.
+      if (!hasEntrySignal(text)) {
+        preFiltered++;
+        const scanned = scanFileImports(text, ts);
+        if (scanned === null) importScanFailures++; // this file's imports are unknown, not empty
+        else imports.add(relFile, scanned, false);
+        continue;
+      }
       parsed++;
       // Coordinates are only valid for the exact file content they were derived from.
       const fingerprint = createHash('sha256').update(text).digest('hex').slice(0, 16);
       const sf = ts.createSourceFile(file, text, ts.ScriptTarget.Latest, true, guessScriptKind(ts, file));
       const bindings = buildModuleBindings(sf, ts);
-      const relFile = relative(cwd, file);
+      imports.add(relFile, collectFileImports(sf, ts), true);
       const ctx = { file, owner: relFile, graph };
       // The ctx reaches helper summaries too, so a same-file helper using an imported client resolves.
       const localSinks = collectLocalSinks(sf, ts, bindings, ctx);
@@ -98,16 +111,32 @@ export async function extractInputMap(cwd: string, ts: TsModule, options: Extrac
   }
   if (endpoints.length === 0) notes.push('No recognized server-side entry points found under the analyzed roots.');
 
+  const importList = imports.list();
+  const unmodelled = importList.filter((d) => d.recognizedSinkKinds.length === 0).length;
+  // A file we could not read is a file whose imports we do not know — the same unknown as a failed scan.
+  // An unwalked subtree is the quietest gap of the three: it produces no file, so no counter moves and
+  // the tree just looks smaller. It has to be part of this or the flag certifies an inventory with a
+  // hole in it.
+  const importsComplete = importScanFailures === 0 && failed.length === 0 && stats.unwalked === 0;
+  notes.push('`imports` lists every package the app imports, from ALL source files — not only files holding an entry point. Absence of a SINK for a package is never evidence; absence of the PACKAGE is evidence only when coverage.importsComplete is true.');
+  notes.push(`${unmodelled} of ${importList.length} imported package(s) have no recognized sink family (recognizedSinkKinds: []). The extractor models a small set of API families, so for those packages it cannot tell whether input reaches them: a vulnerability in one must stay "needs review" and can never be closed as unreachable using this map.`);
+  if (!importsComplete) {
+    notes.push(`The import inventory is INCOMPLETE: ${failed.length} file(s) could not be read, ${importScanFailures} could not be scanned, and ${stats.unwalked} path(s) could not be walked at all (unreadable directory, broken link, or a symlink leaving the project). A package may therefore be imported without appearing in \`imports\`. Do not read a package's absence as "not imported" while coverage.importsComplete is false.`);
+  }
+
   return {
     version: 3,
     framework: detectFramework(cwd),
     endpoints,
+    imports: importList,
     coverage: {
       adapter: 'agnostic-v1',
       filesDiscovered: stats.discovered,
       filesParsed: parsed,
       filesPreFiltered: preFiltered,
       filesSkipped: failed.length,
+      pathsUnwalked: stats.unwalked,
+      importsComplete,
       roots: ['.'],
       notes,
     },

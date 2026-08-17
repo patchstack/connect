@@ -231,8 +231,20 @@ async function runMap(args: ParsedArgs): Promise<number> {
     `patchstack: ${c.filesDiscovered} file(s) found — ${c.filesParsed} analysed, ` +
       `${c.filesPreFiltered} skipped (no server entry point)` +
       (c.filesSkipped ? `, ${c.filesSkipped} could not be analysed` : '') +
-      `. DETECTED surface only — static analysis is best-effort; unproven pairs are marked "heuristic".`,
+      `. DETECTED surface only — static analysis is best-effort; every flow carries the tier it was ` +
+      `established at ("exact-local" and "transformed-local" are proven; "imported", "heuristic" and ` +
+      `"unknown" are not).`,
   );
+  const imported = map.imports ?? [];
+  if (imported.length > 0) {
+    // The unmodelled count is the honest headline: it is how much of the dependency surface this map
+    // cannot speak to at all, and a reader who only sees flows would never learn it.
+    const unmodelled = imported.filter((d) => d.recognizedSinkKinds.length === 0).length;
+    console.error(
+      `patchstack: ${imported.length} package(s) imported — ${unmodelled} with no recognized sink family, ` +
+        `so a vulnerability in those cannot be judged reachable or unreachable from this map.`,
+    );
+  }
   const json = JSON.stringify(map, null, 2);
   const out = getStringFlag(args.flags, 'out');
   if (out) {
