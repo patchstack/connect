@@ -1,3 +1,13 @@
+// The closed vocabularies below are derived from `capabilities.ts` — the single versioned definition
+// shared with the rule-authoring and rule-binding layers. Declaring a union here too would be a copy,
+// and the failure mode of the two disagreeing is silent (a value that can never match).
+import {
+  ADDRESS_SPACES,
+  ARGUMENT_ROLES,
+  CANDIDATE_FAMILIES,
+  SINK_KINDS,
+} from './capabilities.js';
+
 // The build-time input-flow ("attack surface") map. connect's `map` command walks the app's source
 // and emits this per-site: entry points → the inputs each reads → the sinks/dependencies they reach.
 // It's both a user-facing surface view and the coordinate source dynamic vPatch templates bind against.
@@ -16,7 +26,7 @@ export type InputSource =
  * half of an input's identity: `query.id` and `body.id` are different inputs that happen to share a
  * name, and keying by name alone let a rule be pinned to the wrong one.
  */
-export type AddressSpace = 'post' | 'get' | 'cookie' | 'files' | 'server' | 'route-param' | 'unknown';
+export type AddressSpace = (typeof ADDRESS_SPACES)[number];
 
 /**
  * A field's declared shape BEFORE it is placed in the request: validator extraction knows a name, a type
@@ -63,7 +73,7 @@ export interface InputField {
 
 /** Sink families the extractor recognizes today. Kept as a closed union so a consumer can exhaustively
  * switch on it; add a member here when a recognizer is added. */
-export type SinkKind = 'db' | 'fs' | 'http' | 'exec' | 'eval';
+export type SinkKind = (typeof SINK_KINDS)[number];
 
 export interface Sink {
   kind: SinkKind;
@@ -194,12 +204,7 @@ export interface Endpoint {
  * even applicable, so a candidate compiler cannot work without it: `command` vs `args` for exec,
  * `url` vs `body` for http, `path` vs `content` for the filesystem, `sql` vs `values` for a database.
  */
-export type ArgumentRole =
-  | 'command' | 'file' | 'args'
-  | 'url' | 'init' | 'body' | 'options'
-  | 'path' | 'content'
-  | 'sql' | 'values' | 'columns' | 'column' | 'value'
-  | 'code' | 'unknown';
+export type ArgumentRole = (typeof ARGUMENT_ROLES)[number];
 
 /**
  * The mitigation class a flow could support. Deliberately narrow: only patterns where a request value
@@ -207,7 +212,7 @@ export type ArgumentRole =
  * generic database *values* is real reachability signal but NOT a blockable pattern on its own, so it
  * gets no family.
  */
-export type CandidateFamily = 'ssrf' | 'command-injection' | 'path-traversal' | 'sql-injection' | 'code-injection';
+export type CandidateFamily = (typeof CANDIDATE_FAMILIES)[number];
 
 export interface Flow {
   /** Which argument of the sink call received the value (see ArgumentRole). */
