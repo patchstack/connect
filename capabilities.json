@@ -1,6 +1,6 @@
 {
   "$comment": "GENERATED from src/map/capabilities.ts by scripts/emit-capabilities.mjs — do not edit by hand. The single versioned definition of what the input-flow map can describe, vendored by the reachability recipe schema/validator and by the server that binds coordinates into rules.",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "sinkKinds": [
     "db",
     "fs",
@@ -58,5 +58,15 @@
     "server",
     "route-param",
     "unknown"
+  ],
+  "invocationKinds": [
+    "call",
+    "member",
+    "construct"
+  ],
+  "invocationResolutions": [
+    "direct",
+    "factory",
+    "reexport"
   ]
 }

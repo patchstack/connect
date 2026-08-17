@@ -11,6 +11,7 @@ import { createModuleGraph } from './module-graph.js';
 import { isProvenFlow } from './coordinates.js';
 import { extractFromFile } from './entries.js';
 import { collectFileImports, createImportInventory, readPathAliases, scanFileImports } from './imports.js';
+import { collectInvocations, createInvocationInventory } from './invocations.js';
 
 // Framework-AGNOSTIC input-flow extractor. It doesn't gate on a specific stack — it walks any JS/TS
 // source and applies recognizer tables for (1) entry points, (2) inputs, (3) sinks, so it generalizes
@@ -40,14 +41,20 @@ export async function extractInputMap(cwd: string, ts: TsModule, options: Extrac
   const stats: WalkStats = { discovered: 0, unwalked: 0 };
   const files = collectSources(cwd, boundary, { followOutside: options.followSymlinks }, [], new Set(), stats);
   const imports = createImportInventory(readPathAliases(cwd));
+  const invocations = createInvocationInventory();
   let parsed = 0;
   let preFiltered = 0;
   let importScanFailures = 0;
+  let sourceBytes = 0;
+  let callsResolved = 0;
+  let callsUnresolved = 0;
+  const startedAt = Date.now();
 
   for (const file of files) {
     try {
       const text = readFileSync(file, 'utf8');
       const relFile = relative(cwd, file);
+      sourceBytes += text.length;
       // Imports are collected from EVERY file, entry point or not: the data layer of an AI-built app
       // usually lives in a file with no handler in it, so a pre-filtered file is exactly where the
       // interesting dependency is imported.
@@ -66,6 +73,12 @@ export async function extractInputMap(cwd: string, ts: TsModule, options: Extrac
       imports.add(relFile, collectFileImports(sf, ts), true);
       const ctx = { file, owner: relFile, graph };
       // The ctx reaches helper summaries too, so a same-file helper using an imported client resolves.
+      // The invocation inventory rides the parse we already did for sinks — no second pass, which is what
+      // makes it cheap enough to ship before deciding whether to parse more files.
+      const called = collectInvocations(sf, ts, bindings, ctx);
+      invocations.add(called.invocations);
+      callsResolved += called.invocations.length;
+      callsUnresolved += called.unresolved;
       const localSinks = collectLocalSinks(sf, ts, bindings, ctx);
       for (const ep of extractFromFile(sf, ts, localSinks, bindings, ctx)) {
         // A FILE-BASED route handler carries its URL path in its location, not in the code, so derive
@@ -124,11 +137,26 @@ export async function extractInputMap(cwd: string, ts: TsModule, options: Extrac
     notes.push(`The import inventory is INCOMPLETE: ${failed.length} file(s) could not be read, ${importScanFailures} could not be scanned, and ${stats.unwalked} path(s) could not be walked at all (unreadable directory, broken link, or a symlink leaving the project). A package may therefore be imported without appearing in \`imports\`. Do not read a package's absence as "not imported" while coverage.importsComplete is false.`);
   }
 
+  const invocationList = invocations.list();
+  if (invocationList.length > 0 || parsed > 0) {
+    notes.push(`\`apiInvocations\` records ${invocationList.length} dependency API call(s) resolved from the ${parsed} parsed file(s). POSITIVE EVIDENCE ONLY: a package missing from it may still have its API called — see coverage.apiInventoryLimitations.`);
+  }
+
+  let peakRssBytes;
+  try {
+    // Node-only and best-effort: the map runs in a build, but the runtime this file belongs to must stay
+    // edge-safe, so nothing here may assume `process`.
+    peakRssBytes = typeof process !== 'undefined' && typeof process.memoryUsage === 'function'
+      ? process.memoryUsage().rss
+      : undefined;
+  } catch { /* not available */ }
+
   return {
     version: 3,
     framework: detectFramework(cwd),
     endpoints,
     imports: importList,
+    apiInvocations: invocationList,
     coverage: {
       adapter: 'agnostic-v1',
       filesDiscovered: stats.discovered,
@@ -137,6 +165,22 @@ export async function extractInputMap(cwd: string, ts: TsModule, options: Extrac
       filesSkipped: failed.length,
       pathsUnwalked: stats.unwalked,
       importsComplete,
+      apiInvocations: invocationList.length,
+      apiCallsResolved: callsResolved,
+      apiCallsUnresolved: callsUnresolved,
+      sourceBytes,
+      analysisMs: Date.now() - startedAt,
+      ...(peakRssBytes !== undefined ? { peakRssBytes } : {}),
+      // The list IS the partiality statement. There is deliberately no `apiInventoryComplete`: parsing
+      // every file would raise recall without removing any of these, so no parsing budget could make an
+      // absent invocation mean "not called".
+      apiInventoryLimitations: [
+        'only files carrying an entry-point signal are parsed, so a call in any other file is unseen',
+        'a computed callee or property (`client[name]()`) cannot be resolved to an API',
+        'a dynamic import()/require() with a non-literal specifier is not traced',
+        'reflection, generated code, and syntax that fails to parse are invisible',
+        'a receiver reached through more than one local hop, or through dependency injection, is not followed',
+      ],
       roots: ['.'],
       notes,
     },

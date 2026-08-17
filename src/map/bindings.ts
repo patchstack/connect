@@ -15,6 +15,15 @@ export interface Bindings {
   resolve(name: string): string | undefined;
   /** For `import { saveOrder as write }`, maps the local name back to the EXPORTED name. */
   exportNameOf(name: string): string | undefined;
+  /**
+   * HOW a name reached its package: `direct` from an import/require declaration, `factory` through a
+   * traced call chain (`const db = createClient(...)`, `const conn = pool.promise()`).
+   *
+   * Recorded rather than inferred because the API inventory reports it as evidence: "this call is on a
+   * value we followed through a factory" is a weaker claim than "this call is on an imported binding",
+   * and a consumer deciding what to act on needs to tell them apart.
+   */
+  originOf(name: string): 'direct' | 'factory' | undefined;
   imports: Set<string>;
   locals: Set<string>;
 }
@@ -23,8 +32,13 @@ export function buildModuleBindings(sf: any, ts: TsModule): Bindings {
   const declared = new Set<string>(); // every name declared in this file
   const exportNames = new Map<string, string>(); // local alias → exported name
   const imports = new Set<string>();
+  const origins = new Map<string, 'direct' | 'factory'>();
 
-  const record = (local: string, mod: string) => { nameToModule.set(local, mod); imports.add(mod); };
+  const record = (local: string, mod: string, origin: 'direct' | 'factory' = 'direct') => {
+    nameToModule.set(local, mod);
+    imports.add(mod);
+    if (!origins.has(local)) origins.set(local, origin);
+  };
   const declareBound = (nameNode: any) => {
     if (ts.isIdentifier(nameNode)) declared.add(nameNode.text);
     else if (ts.isObjectBindingPattern(nameNode) || ts.isArrayBindingPattern(nameNode)) {
@@ -69,7 +83,7 @@ export function buildModuleBindings(sf: any, ts: TsModule): Bindings {
           const root = callee ? rootIdentifier(callee, ts) : undefined;
           if (root) {
             pending.push([decl.name.text, root]);
-            if (nameToModule.has(root)) record(decl.name.text, nameToModule.get(root)!);
+            if (nameToModule.has(root)) record(decl.name.text, nameToModule.get(root)!, 'factory');
           }
         }
       }
@@ -96,12 +110,18 @@ export function buildModuleBindings(sf: any, ts: TsModule): Bindings {
   for (let i = 0; i < 4; i++) {
     let changed = false;
     for (const [name, root] of pending) {
-      if (!nameToModule.has(name) && nameToModule.has(root)) { record(name, nameToModule.get(root)!); changed = true; }
+      if (!nameToModule.has(name) && nameToModule.has(root)) { record(name, nameToModule.get(root)!, 'factory'); changed = true; }
     }
     if (!changed) break;
   }
   const locals = new Set([...declared].filter((n) => !nameToModule.has(n)));
-  return { resolve: (name: string) => nameToModule.get(name), exportNameOf: (name: string) => exportNames.get(name), imports, locals };
+  return {
+    resolve: (name: string) => nameToModule.get(name),
+    exportNameOf: (name: string) => exportNames.get(name),
+    originOf: (name: string) => origins.get(name),
+    imports,
+    locals,
+  };
 }
 
 // Root identifier of what a function body returns (`return createClient(…)` → "createClient"), for

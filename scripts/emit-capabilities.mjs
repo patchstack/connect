@@ -47,6 +47,8 @@ const manifest = {
   autoPromotableConfidence: stringOf('AUTO_PROMOTABLE_CONFIDENCE'),
   attributions: arrayOf('ATTRIBUTIONS'),
   addressSpaces: arrayOf('ADDRESS_SPACES'),
+  invocationKinds: arrayOf('INVOCATION_KINDS'),
+  invocationResolutions: arrayOf('INVOCATION_RESOLUTIONS'),
 };
 
 const out = join(root, 'capabilities.json');

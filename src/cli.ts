@@ -235,6 +235,18 @@ async function runMap(args: ParsedArgs): Promise<number> {
       `established at ("exact-local" and "transformed-local" are proven; "imported", "heuristic" and ` +
       `"unknown" are not).`,
   );
+  const invoked = map.apiInvocations ?? [];
+  if (invoked.length > 0) {
+    const c = map.coverage as unknown as Record<string, number>;
+    const total = (c.apiCallsResolved ?? 0) + (c.apiCallsUnresolved ?? 0);
+    const rate = total > 0 ? Math.round((100 * (c.apiCallsResolved ?? 0)) / total) : 0;
+    // The coverage rate is reported because the count alone has no scale: "31 dependency calls" means
+    // nothing without knowing how many calls we could not trace.
+    console.error(
+      `patchstack: ${invoked.length} dependency API call(s) resolved across ${new Set(invoked.map((i) => i.package)).size} package(s) ` +
+        `— ${rate}% of call sites traced. Positive evidence only: absence here never means an API is not called.`,
+    );
+  }
   const imported = map.imports ?? [];
   if (imported.length > 0) {
     // The unmodelled count is the honest headline: it is how much of the dependency surface this map
