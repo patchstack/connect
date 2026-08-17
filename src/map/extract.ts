@@ -37,7 +37,7 @@ export async function extractInputMap(cwd: string, ts: TsModule, options: Extrac
   try { boundary = realpathSync(cwd); } catch { /* use cwd as-is */ }
 
   const graph = createModuleGraph(ts, { cwd, boundary, followOutside: options.followSymlinks }); // shared cache
-  const stats: WalkStats = { discovered: 0 };
+  const stats: WalkStats = { discovered: 0, unwalked: 0 };
   const files = collectSources(cwd, boundary, { followOutside: options.followSymlinks }, [], new Set(), stats);
   const imports = createImportInventory(readPathAliases(cwd));
   let parsed = 0;
@@ -114,11 +114,14 @@ export async function extractInputMap(cwd: string, ts: TsModule, options: Extrac
   const importList = imports.list();
   const unmodelled = importList.filter((d) => d.recognizedSinkKinds.length === 0).length;
   // A file we could not read is a file whose imports we do not know — the same unknown as a failed scan.
-  const importsComplete = importScanFailures === 0 && failed.length === 0;
+  // An unwalked subtree is the quietest gap of the three: it produces no file, so no counter moves and
+  // the tree just looks smaller. It has to be part of this or the flag certifies an inventory with a
+  // hole in it.
+  const importsComplete = importScanFailures === 0 && failed.length === 0 && stats.unwalked === 0;
   notes.push('`imports` lists every package the app imports, from ALL source files — not only files holding an entry point. Absence of a SINK for a package is never evidence; absence of the PACKAGE is evidence only when coverage.importsComplete is true.');
   notes.push(`${unmodelled} of ${importList.length} imported package(s) have no recognized sink family (recognizedSinkKinds: []). The extractor models a small set of API families, so for those packages it cannot tell whether input reaches them: a vulnerability in one must stay "needs review" and can never be closed as unreachable using this map.`);
   if (!importsComplete) {
-    notes.push(`The import inventory is INCOMPLETE: ${failed.length} file(s) could not be read and ${importScanFailures} could not be scanned, so a package may be imported without appearing in \`imports\`. Do not read a package's absence as "not imported" while coverage.importsComplete is false.`);
+    notes.push(`The import inventory is INCOMPLETE: ${failed.length} file(s) could not be read, ${importScanFailures} could not be scanned, and ${stats.unwalked} path(s) could not be walked at all (unreadable directory, broken link, or a symlink leaving the project). A package may therefore be imported without appearing in \`imports\`. Do not read a package's absence as "not imported" while coverage.importsComplete is false.`);
   }
 
   return {
@@ -132,6 +135,7 @@ export async function extractInputMap(cwd: string, ts: TsModule, options: Extrac
       filesParsed: parsed,
       filesPreFiltered: preFiltered,
       filesSkipped: failed.length,
+      pathsUnwalked: stats.unwalked,
       importsComplete,
       roots: ['.'],
       notes,

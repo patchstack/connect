@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
-import { mkdtempSync, mkdirSync, writeFileSync, rmSync, chmodSync, readFileSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, writeFileSync, rmSync, chmodSync, readFileSync, readdirSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { buildInputMap } from '../../src/map/index.js';
@@ -151,6 +151,34 @@ describe('absence is only evidence when the inventory is complete', () => {
     // thing standing between a hole in our analysis and a "not imported" conclusion.
     expect((map!.imports ?? []).map((p) => p.package)).not.toContain('hidden-package');
     chmodSync(bad, 0o644);
+    rmSync(d, { recursive: true, force: true });
+  });
+
+  it('marks it incomplete when a directory could not be walked', async (ctx) => {
+    const d = mkdtempSync(join(tmpdir(), 'ps-imp-dir-'));
+    mkdirSync(join(d, 'src', 'locked'), { recursive: true });
+    writeFileSync(join(d, 'package.json'), JSON.stringify({ dependencies: { express: '4' } }));
+    writeFileSync(join(d, 'src', 'ok.ts'), `
+      import express from "express";
+      const app = express();
+      app.get("/ok", (req, res) => res.end("ok"));
+    `);
+    writeFileSync(join(d, 'src', 'locked', 'hidden.ts'), 'import x from "hidden-package";');
+    // An unreadable DIRECTORY is the quiet case: its files are never discovered, so filesDiscovered and
+    // filesSkipped both stay silent and the tree merely looks smaller. Nothing but an explicit traversal
+    // counter can notice — and without it the flag would certify an inventory missing a whole subtree.
+    chmodSync(join(d, 'src', 'locked'), 0o000);
+    let unwalkable = false;
+    try { readdirSync(join(d, 'src', 'locked')); } catch { unwalkable = true; }
+    if (!unwalkable) { chmodSync(join(d, 'src', 'locked'), 0o755); rmSync(d, { recursive: true, force: true }); ctx.skip(); return; }
+
+    const { map } = await buildInputMap(d);
+    expect(map!.coverage.pathsUnwalked).toBeGreaterThan(0);
+    expect(map!.coverage.importsComplete).toBe(false);
+    expect((map!.imports ?? []).map((p) => p.package)).not.toContain('hidden-package');
+    // The give-away: the file counters look perfectly healthy while a subtree is missing.
+    expect(map!.coverage.filesSkipped).toBe(0);
+    chmodSync(join(d, 'src', 'locked'), 0o755);
     rmSync(d, { recursive: true, force: true });
   });
 

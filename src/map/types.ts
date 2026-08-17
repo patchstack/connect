@@ -266,6 +266,12 @@ export interface Coverage {
   /** Files skipped because they could not be read/parsed (fail-open). */
   filesSkipped: number;
   /**
+   * Paths the walk never entered: an unreadable directory, a broken link, or a symlinked subtree that
+   * leaves the project. Distinct from `filesSkipped` because these never became files — an unwalked
+   * subtree makes the project look *smaller*, so no other counter moves.
+   */
+  pathsUnwalked?: number;
+  /**
    * Whether `SiteInputMap.imports` covers every discovered file — false when at least one file could not
    * be read or scanned, so a package may be imported without appearing there.
    *
