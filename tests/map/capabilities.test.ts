@@ -14,6 +14,7 @@ import {
   SINK_KINDS,
 } from '../../src/map/capabilities.js';
 import { buildInputMap } from '../../src/map/index.js';
+import { ADVERSARIAL } from './corpus-cases.js';
 import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 
@@ -172,32 +173,57 @@ describe('every declared capability has a recognizer behind it', () => {
         expect(flows.length, `no flow reached the '${kind}' sink`).toBeGreaterThan(0);
         const generatable = flows.filter((f) => f.ruleGeneratable);
         expect(generatable.length, `'${kind}' is declared rule-generatable but compiled nothing`).toBeGreaterThan(0);
-        // A candidate with no family cannot be turned into a rule, so the claim would be hollow.
+        // EQUALITY, not membership. "Some candidate with some family" would accept a recognizer that
+        // classified this flow as the wrong mitigation class — a rule inspecting the wrong thing, and
+        // blocking the wrong traffic, with the suite still green.
         for (const f of generatable) {
-          expect(f.candidateFamily, `'${kind}' candidate has no candidateFamily`).toBeDefined();
-          expect(CANDIDATE_FAMILIES as readonly string[]).toContain(f.candidateFamily!);
+          expect(f.argumentRole, `'${kind}' candidate role`).toBe(ctl.expectRole);
+          expect(f.candidateFamily, `'${kind}' candidate family`).toBe(ctl.expectFamily);
         }
       });
     }
   }
 
-  it('requires adversarial coverage for every rule-generatable capability', () => {
-    // A capability that can compile a rule can also compile a WRONG rule, and every wrong-pin bug we
-    // have found came from code that merely resembled a dangerous API. So the lookalike case is a
-    // precondition for rule generation, not an optional extra: this asserts the adversarial corpus
-    // actually exercises each such kind rather than trusting that it does.
-    const corpus = readFileSync(join(root, 'tests/map/corpus.test.ts'), 'utf8');
-    const adversarial = corpus.slice(corpus.indexOf('const ADVERSARIAL'), corpus.indexOf('const STACKS'));
-    expect(adversarial.length, 'could not locate the adversarial corpus block').toBeGreaterThan(200);
-    const missing = (Object.keys(CAPABILITY_CONTROLS) as Array<keyof typeof CAPABILITY_CONTROLS>)
-      .filter((kind) => CAPABILITY_CONTROLS[kind].ruleGeneratable)
-      // The lookalike is written in the app's own vocabulary, so match on the API the control calls
-      // (`query`, `readFileSync`, `exec`, `fetch`, `eval`) rather than on the kind's name.
-      .filter((kind) => {
-        const api = /([A-Za-z_$][\w$]*)\s*\(/.exec(CAPABILITY_CONTROLS[kind].control);
-        const needle = api ? api[1]!.split('.').pop()! : kind;
-        return !adversarial.includes(needle);
-      });
-    expect(missing, `rule-generatable capabilities with no adversarial lookalike: ${missing.join(', ')}`).toEqual([]);
+  it('names an existing adversarial case for every rule-generatable capability', () => {
+    // The link is declaration-to-declaration: a named id that must resolve to a real case. The previous
+    // version searched the corpus file for the API name, which a comment or an unrelated positive fixture
+    // satisfied just as well — coverage that could be true by coincidence.
+    const byId = new Map(ADVERSARIAL.map((c) => [c.id, c]));
+    for (const kind of SINK_KINDS) {
+      const ctl = CAPABILITY_CONTROLS[kind];
+      if (!ctl.ruleGeneratable) continue;
+      const c = byId.get(ctl.adversarialCaseId);
+      expect(c, `'${kind}' names adversarial case '${ctl.adversarialCaseId}', which does not exist`).toBeDefined();
+      expect(c!.kind, `'${ctl.adversarialCaseId}' is not in the adversarial category`).toBe('adversarial');
+      // An adversarial case that expects candidates cannot be evidence that a lookalike compiles nothing.
+      expect(c!.expectCandidates, `'${ctl.adversarialCaseId}' expects candidates`).toEqual([]);
+    }
   });
+
+  it('and that case really compiles nothing while still showing a surface', async () => {
+    // The declaration says it expects no candidates; this builds it and checks the extractor agrees —
+    // plus the corpus non-vacuity rule, since a case that detects nothing at all would satisfy a
+    // zero-candidate assertion for the wrong reason.
+    const ids = new Set(
+      SINK_KINDS.map((k) => CAPABILITY_CONTROLS[k]).filter((c) => c.ruleGeneratable)
+        .map((c) => (c as Extract<typeof c, { ruleGeneratable: true }>).adversarialCaseId),
+    );
+    for (const id of ids) {
+      const c = ADVERSARIAL.find((x) => x.id === id)!;
+      const d = mkdtempSync(join(tmpdir(), 'ps-adv-'));
+      for (const [rel, body] of Object.entries(c.files)) {
+        mkdirSync(join(d, rel, '..'), { recursive: true });
+        writeFileSync(join(d, rel), body);
+      }
+      writeFileSync(join(d, 'package.json'), JSON.stringify(c.pkg));
+      const { map } = await buildInputMap(d);
+      const candidates = map!.endpoints.flatMap((e) => e.flows).filter((f) => f.ruleGeneratable);
+      expect(candidates.map((f) => f.candidateFamily), `${id} compiled a candidate`).toEqual([]);
+      const inputs = map!.endpoints.flatMap((e) => e.inputs);
+      expect(inputs.length, `${id} detected no surface at all — the zero-candidate result is vacuous`)
+        .toBeGreaterThan(0);
+      rmSync(d, { recursive: true, force: true });
+    }
+  }, 60_000);
+
 });

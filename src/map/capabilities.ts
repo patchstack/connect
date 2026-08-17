@@ -90,7 +90,8 @@ export const CAPABILITY_MANIFEST = {
  * `Record<SinkKind, …>` type means adding a kind without a control is a TYPE error rather than a missing
  * test — the compiler asks the question before CI does.
  */
-export interface CapabilityControl {
+/** The shape shared by every control, whatever it is allowed to compile. */
+interface ControlBase {
   /**
    * Handler body for the control fixture: one statement that must yield a sink of this kind, written the
    * way an app really would. `req.body.<param>` is the tainted input.
@@ -100,13 +101,33 @@ export interface CapabilityControl {
   setup: string;
   /** Dependencies the fixture's package.json must declare. */
   deps: string[];
-  /**
-   * true when a proven flow into this kind can compile a rule. Those are the kinds where a wrong
-   * recognizer blocks real traffic, so they additionally owe adversarial corpus coverage — a lookalike
-   * that must produce NO candidate. See the adversarial category in tests/map/corpus.test.ts.
-   */
-  ruleGeneratable: boolean;
 }
+
+/**
+ * A capability whose flows can compile a rule owes three exact claims, not just "something generatable".
+ *
+ * `expectRole` and `expectFamily` are asserted for EQUALITY. A control that merely produces "some
+ * candidate with some family" would accept a recognizer that classified an archive-extraction flow as
+ * command injection — a rule that inspects the wrong thing and blocks the wrong traffic while the test
+ * stays green.
+ *
+ * `adversarialCaseId` names the corpus case that proves the recognizer does not fire on code which merely
+ * RESEMBLES this API. It is an id rather than a search term because coverage has to be a link between two
+ * declarations: a grep for an API name is satisfied by a comment.
+ */
+interface GeneratableControl extends ControlBase {
+  ruleGeneratable: true;
+  expectRole: (typeof ARGUMENT_ROLES)[number];
+  expectFamily: (typeof CANDIDATE_FAMILIES)[number];
+  adversarialCaseId: string;
+}
+
+/** A capability the map can see but never turns into a rule — reported for review only. */
+interface ObservableControl extends ControlBase {
+  ruleGeneratable: false;
+}
+
+export type CapabilityControl = GeneratableControl | ObservableControl;
 
 export const CAPABILITY_CONTROLS: Record<(typeof SINK_KINDS)[number], CapabilityControl> = {
   db: {
@@ -114,29 +135,44 @@ export const CAPABILITY_CONTROLS: Record<(typeof SINK_KINDS)[number], Capability
     control: 'pool.query(req.body.sql);',
     deps: ['pg'],
     ruleGeneratable: true,
+    expectRole: 'sql',
+    expectFamily: 'sql-injection',
+    adversarialCaseId: 'adv/inferred-db-receivers',
   },
   fs: {
     setup: 'import fs from "node:fs";',
     control: 'fs.readFileSync(req.body.path);',
     deps: [],
     ruleGeneratable: true,
+    expectRole: 'path',
+    expectFamily: 'path-traversal',
+    adversarialCaseId: 'adv/lookalike-exports',
   },
   http: {
     setup: '',
     control: 'fetch(req.body.url);',
     deps: [],
     ruleGeneratable: true,
+    expectRole: 'url',
+    expectFamily: 'ssrf',
+    adversarialCaseId: 'adv/shadowed-globals',
   },
   exec: {
     setup: 'import { exec } from "node:child_process";',
     control: 'exec(req.body.cmd);',
     deps: [],
     ruleGeneratable: true,
+    expectRole: 'command',
+    expectFamily: 'command-injection',
+    adversarialCaseId: 'adv/lookalike-exports',
   },
   eval: {
     setup: '',
     control: 'eval(req.body.code);',
     deps: [],
     ruleGeneratable: true,
+    expectRole: 'code',
+    expectFamily: 'code-injection',
+    adversarialCaseId: 'adv/local-eval-lookalikes',
   },
 };
