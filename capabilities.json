@@ -1,0 +1,62 @@
+{
+  "$comment": "GENERATED from src/map/capabilities.ts by scripts/emit-capabilities.mjs — do not edit by hand. The single versioned definition of what the input-flow map can describe, vendored by the reachability recipe schema/validator and by the server that binds coordinates into rules.",
+  "version": "1.0.0",
+  "sinkKinds": [
+    "db",
+    "fs",
+    "http",
+    "exec",
+    "eval"
+  ],
+  "argumentRoles": [
+    "command",
+    "file",
+    "args",
+    "url",
+    "init",
+    "body",
+    "options",
+    "path",
+    "content",
+    "sql",
+    "values",
+    "columns",
+    "column",
+    "value",
+    "code",
+    "unknown"
+  ],
+  "candidateFamilies": [
+    "ssrf",
+    "command-injection",
+    "path-traversal",
+    "sql-injection",
+    "code-injection"
+  ],
+  "confidenceTiers": [
+    "exact-local",
+    "transformed-local",
+    "imported",
+    "heuristic",
+    "unknown"
+  ],
+  "provenConfidenceTiers": [
+    "exact-local",
+    "transformed-local"
+  ],
+  "autoPromotableConfidence": "exact-local",
+  "attributions": [
+    "import",
+    "global",
+    "inferred"
+  ],
+  "addressSpaces": [
+    "post",
+    "get",
+    "cookie",
+    "files",
+    "server",
+    "route-param",
+    "unknown"
+  ]
+}
