@@ -73,7 +73,13 @@ export function buildModuleBindings(sf: any, ts: TsModule): Bindings {
         const reqMod = requireSpecifier(init, ts);
         if (reqMod) {
           if (ts.isIdentifier(decl.name)) record(decl.name.text, reqMod);
-          else if (ts.isObjectBindingPattern(decl.name)) for (const el of decl.name.elements) if (ts.isIdentifier(el.name)) record(el.name.text, reqMod);
+          else if (ts.isObjectBindingPattern(decl.name)) for (const el of decl.name.elements) if (ts.isIdentifier(el.name)) {
+            record(el.name.text, reqMod);
+            // `const { merge: deepMerge } = require("lodash")` — the CommonJS twin of an import alias.
+            // Without this the local alias looks like the package's own export name, and reporting it as
+            // one invents an API the package does not have.
+            if (el.propertyName && ts.isIdentifier(el.propertyName)) exportNames.set(el.name.text, el.propertyName.text);
+          }
         }
         // const x = tracedFactory(...)  /  const x = new TracedClass(...)  → x carries that package.
         // Looking up nameToModule (not just direct imports) makes this transitive: pool → conn → ….

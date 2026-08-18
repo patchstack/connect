@@ -122,6 +122,9 @@ export const LADDER_CASES: LadderCase[] = [
     expect: {
       imports: ['json5'],
       invocations: ['json5.parse'],
+      // `loadConfig` is this app's own function. json5 has no such export, so recording it would hand a
+      // consumer a name that is in no advisory while `parse` — the name that IS — went unreported.
+      absentInvocations: ['json5.loadConfig'],
       // No flow from request input to the parse call. If one appears, the case has stopped testing
       // `api-called` and silently become a second `reachable` case.
       provenFlow: false,

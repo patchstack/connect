@@ -16,6 +16,14 @@ import type { ModuleGraph } from './sinks.js';
 // package guessed from another import in the same file — does not qualify at all here, because unlike a
 // sink there is no second signal (an argument role, a dangerous operation) to corroborate it.
 //
+// A record has two halves — the package and the API NAME — and tracing the value only establishes the first.
+// A name the APP chose is not part of the package's surface however faithfully the value traces: `loadConfig`
+// (a local function re-exported from a helper module) and `log` (`const log = createLogger()`) both trace to
+// a real dependency, and neither is an API that dependency has. Reporting one is worse than reporting
+// nothing: a consumer asking "is the vulnerable function called" gets a name that appears in no advisory,
+// while the call that IS in the advisory's surface goes unmentioned. So a name is reported only where it came
+// from the package itself, and calls we cannot name are counted, not invented.
+//
 // PARTIAL BY CONSTRUCTION, and that is not a parsing budget problem. Parsing every file would raise recall,
 // but dynamic property access (`client[method]()`), dynamic `import()`/`require()` with a computed
 // specifier, reflection, aliases we do not follow, generated code and syntax we cannot parse all remain
@@ -40,9 +48,10 @@ export interface InvocationContext {
  * local calls — precisely backwards for a metric meant to justify widening the parse.
  *
  *   total       every call/new expression seen — workload scale
- *   dependency  traced to a package: what the inventory records
+ *   dependency  traced to a package AND nameable: exactly what the inventory records
  *   local       the callee is a known local binding or an enclosing parameter — correctly not a dependency
- *   ambiguous   a receiver we could not classify either way, or a computed/dynamic callee
+ *   ambiguous   a receiver we could not classify either way, a computed/dynamic callee, or a value that
+ *               traces to a package under a name the app chose (nothing to record — see `named` below)
  *
  * Resolver quality is `dependency / (dependency + ambiguous)`. `local` belongs in neither term: excluding a
  * local helper is a correct answer, not a miss.
@@ -52,6 +61,17 @@ export interface CallCounts {
   dependency: number;
   local: number;
   ambiguous: number;
+}
+
+/** A value traced to a package, and how strong that trace is. */
+interface Traced {
+  pkg: string;
+  specifier: string;
+  resolution: InvocationResolution;
+  /** Whether the name this value is known by here is the PACKAGE's own name for it. */
+  named: boolean;
+  /** The package's own name, when an intermediate module renamed the binding on import. */
+  apiName?: string;
 }
 
 /** Collect resolved dependency calls from one parsed file, with the call classification alongside. */
@@ -76,8 +96,17 @@ export function collectInvocations(
     }
   };
 
-  /** The package a local name traces to, and how — including one hop for a re-exported dependency value. */
-  const traceRoot = (root: string): { pkg: string; specifier: string; resolution: InvocationResolution } | null => {
+  /**
+   * The package a local name traces to, and how — including one hop for a re-exported dependency value.
+   *
+   * `named` answers the second question a record needs: is this name the PACKAGE's, or the app's? It is
+   * true only for a binding that came straight out of the package — an import/require here, or a
+   * pass-through re-export from a local module. A value the app derived (`const log = createLogger()`, or a
+   * local function whose return value happens to root in the package) carries a name the app invented, so
+   * `named` is false and there is no API to report even though the package is certain. `apiName` carries the
+   * package's own name for a pass-through, since an intermediate module may have renamed it on import.
+   */
+  const traceRoot = (root: string): Traced | null => {
     const specifier = bindings.resolve(root);
     if (specifier === undefined) return null;
 
@@ -85,22 +114,29 @@ export function collectInvocations(
     if (direct !== undefined) {
       // `direct` vs `factory` is already recorded by the bindings; default to direct when unknown so a
       // missing origin cannot silently upgrade a weaker claim.
-      return { pkg: direct, specifier, resolution: bindings.originOf(root) ?? 'direct' };
+      const resolution = bindings.originOf(root) ?? 'direct';
+      return { pkg: direct, specifier, resolution, named: resolution === 'direct' };
     }
 
     // A relative specifier: the value may still be a dependency re-exported from a local module
     // (`export const db = createClient(...)` in lib/db.ts — the layout generated apps actually use).
     const exportName = bindings.exportNameOf(root) ?? root;
-    const viaModule = ctx.graph.importedPackage(ctx.file, specifier, exportName);
+    const viaModule = ctx.graph.importedBinding(ctx.file, specifier, exportName);
     if (viaModule !== undefined) {
-      return { pkg: viaModule, specifier, resolution: 'reexport' };
+      return {
+        pkg: viaModule.package,
+        specifier,
+        resolution: 'reexport',
+        named: viaModule.origin === 'direct',
+        apiName: viaModule.name,
+      };
     }
 
     return null;
   };
 
   const push = (
-    traced: { pkg: string; specifier: string; resolution: InvocationResolution },
+    traced: Traced,
     api: string,
     receiver: string | undefined,
     kind: ApiInvocation['kind'],
@@ -131,10 +167,19 @@ export function collectInvocations(
       if (ts.isIdentifier(callee)) {
         // `merge(a, b)` / `new Pool()` — the callee itself is the imported binding.
         const traced = traceRoot(callee.text);
-        if (traced) {
-          const api = bindings.exportNameOf(callee.text) ?? callee.text;
+        if (traced?.named) {
+          // The package's own name for the binding: from the target module for a pass-through re-export,
+          // otherwise this file's (`import { saveOrder as write }` → `saveOrder`).
+          const api = traced.apiName ?? bindings.exportNameOf(callee.text) ?? callee.text;
           push(traced, api, undefined, ts.isNewExpression(node) ? 'construct' : 'call', node);
           counts.dependency++;
+        } else if (traced) {
+          // Traced to a package, under a name the app chose — `loadConfig()` from a helper module, or a
+          // factory result called directly. The only name available is one the package does not export, so
+          // there is nothing to record. Counted AMBIGUOUS rather than local or dependency: we failed to
+          // name an API here, and filing that as either a correct exclusion or a recorded call would hide
+          // the miss. (The real call is recorded where it is written — in the module that makes it.)
+          counts.ambiguous++;
         } else if (isLocalName(callee.text, node)) {
           counts.local++;
         } else {
