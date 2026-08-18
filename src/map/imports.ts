@@ -180,7 +180,14 @@ export function scanFileImports(text: string, ts: TsModule): RawImport[] | null 
 }
 
 /**
- * Count `require(…)` / `import(…)` calls whose specifier is NOT a literal string.
+ * Count imports whose module cannot be determined statically. Two shapes, one number — both feed
+ * `coverage.importCoverageGaps.unresolvableImports`:
+ *
+ *   1. a COMPUTED specifier — `require(REGISTRY[kind])`, `import(name)`, `require("a" + b)`
+ *   2. an ESCAPED loader — `const r = require`, `(require)(x)`, `module.exports = require`
+ *
+ * The second is reported at the escape rather than at the later call: once the loader is behind another
+ * name, what it loads is unknowable here whether or not the argument is a literal.
  *
  * `scanFileImports` cannot see these. It reads `ts.preProcessFile(...).importedFiles`, which reports
  * resolved literal specifiers only — a computed specifier produces no entry at all, so the import is
@@ -193,7 +200,7 @@ export function scanFileImports(text: string, ts: TsModule): RawImport[] | null 
  * and `"require(y)"` in a string from counting — a text match would clear the completeness flag on
  * prose about `require`, which trades a false negative for a permanent false alarm.
  */
-export function countComputedSpecifiers(text: string, ts: TsModule): number {
+export function countUnresolvableImports(text: string, ts: TsModule): number {
   let scanner: any;
   try {
     scanner = ts.createScanner(ts.ScriptTarget.Latest, /* skipTrivia */ true, undefined, text);

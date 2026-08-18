@@ -10,7 +10,7 @@ import { collectLocalSinks } from './sinks.js';
 import { createModuleGraph } from './module-graph.js';
 import { isProvenFlow } from './coordinates.js';
 import { extractFromFile } from './entries.js';
-import { collectFileImports, countComputedSpecifiers, createImportInventory, readPathAliases, scanFileImports } from './imports.js';
+import { collectFileImports, countUnresolvableImports, createImportInventory, readPathAliases, scanFileImports } from './imports.js';
 import { collectInvocations, createInvocationInventory } from './invocations.js';
 
 // Framework-AGNOSTIC input-flow extractor. It doesn't gate on a specific stack — it walks any JS/TS
@@ -63,7 +63,7 @@ export async function extractInputMap(cwd: string, ts: TsModule, options: Extrac
         const scanned = scanFileImports(text, ts);
         if (scanned === null) importScanFailures++; // this file's imports are unknown, not empty
         else imports.add(relFile, scanned, false);
-        unresolvableImports += countComputedSpecifiers(text, ts);
+        unresolvableImports += countUnresolvableImports(text, ts);
         continue;
       }
       parsed++;
@@ -75,7 +75,7 @@ export async function extractInputMap(cwd: string, ts: TsModule, options: Extrac
       // Counted on this path too. A parsed file is not a covered file: `collectFileImports` requires a
       // string-literal specifier, so a computed require in an entry file is just as unattributable as
       // one in a pre-filtered file — and this is the path where it is easiest to assume otherwise.
-      unresolvableImports += countComputedSpecifiers(text, ts);
+      unresolvableImports += countUnresolvableImports(text, ts);
       const ctx = { file, owner: relFile, graph };
       // The ctx reaches helper summaries too, so a same-file helper using an imported client resolves.
       // The invocation inventory rides the parse we already did for sinks — no second pass, which is what

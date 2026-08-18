@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import ts from 'typescript';
-import { countComputedSpecifiers } from '../../src/map/imports.js';
+import { countUnresolvableImports } from '../../src/map/imports.js';
 
 // Detection of imports whose module name is computed at runtime.
 //
@@ -15,7 +15,7 @@ import { countComputedSpecifiers } from '../../src/map/imports.js';
 // conclusion is blocked forever and the field becomes noise a consumer learns to ignore. That is why
 // this tokenises instead of matching text.
 
-const count = (src: string) => countComputedSpecifiers(src, ts as never);
+const count = (src: string) => countUnresolvableImports(src, ts as never);
 
 describe('a computed specifier is detected', () => {
   it.each([
