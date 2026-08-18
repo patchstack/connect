@@ -180,6 +180,162 @@ export function scanFileImports(text: string, ts: TsModule): RawImport[] | null 
 }
 
 /**
+ * Count `require(…)` / `import(…)` calls whose specifier is NOT a literal string.
+ *
+ * `scanFileImports` cannot see these. It reads `ts.preProcessFile(...).importedFiles`, which reports
+ * resolved literal specifiers only — a computed specifier produces no entry at all, so the import is
+ * not merely unrecorded, it is invisible. That matters because the inventory's contract says a
+ * package's ABSENCE is evidence when `importsComplete` is true, and `require(REGISTRY[kind])` makes
+ * absence unprovable while leaving every read-and-scan check satisfied.
+ *
+ * Tokenised rather than parsed: this runs on files deliberately kept out of the AST pass, so it must
+ * stay at scanner cost. Tokenising (rather than a regex) is what keeps `// require(x)` in a comment
+ * and `"require(y)"` in a string from counting — a text match would clear the completeness flag on
+ * prose about `require`, which trades a false negative for a permanent false alarm.
+ */
+export function countComputedSpecifiers(text: string, ts: TsModule): number {
+  let scanner: any;
+  try {
+    scanner = ts.createScanner(ts.ScriptTarget.Latest, /* skipTrivia */ true, undefined, text);
+  } catch {
+    return 0; // fail-open: the caller already treats an unscannable file as incomplete
+  }
+
+  // `require` does NOT arrive as an identifier: TypeScript scans it as the contextual `RequireKeyword`
+  // (it appears in `import x = require(…)`). Keying on the token TEXT with a kind allowlist covers both
+  // spellings, and survives a TS version that classifies it differently — which is worth the small
+  // looseness here, because the failure mode of a missed kind is a silent zero count, i.e. exactly the
+  // false "complete" this function exists to prevent.
+  const CALLEE_KINDS = new Set<number>([
+    ts.SyntaxKind.Identifier,
+    ts.SyntaxKind.RequireKeyword,
+    ts.SyntaxKind.ImportKeyword,
+  ].filter((k) => k !== undefined) as number[]);
+
+  // Three tokens of history, because one is not enough to identify the callee. The token that decides
+  // whether this is CommonJS `require` sits on a different side of the name in each form:
+  //
+  //   require(x)            callee is the previous token
+  //   require?.(x)          `?.` sits BETWEEN the name and `(` — the callee is two back
+  //   loader.require(x)     an app method that merely shares the name — `.` sits BEFORE the callee
+  //   loader.require?.(x)   both at once, so the qualifier is three back
+  //
+  // Getting either direction wrong is a real failure, and they fail in opposite ways: missing the
+  // optional form leaves `importsComplete` true over an unresolvable import, while counting a member
+  // method makes it permanently false for an app that named a method `require` — which trains a reader
+  // to ignore the field. Hence a qualifier check rather than a looser name match.
+  const DOT_KINDS = new Set<number>([ts.SyntaxKind.DotToken, ts.SyntaxKind.QuestionDotToken]
+    .filter((k) => k !== undefined) as number[]);
+
+  interface Token { kind: number | undefined; text: string }
+  const EMPTY: Token = { kind: undefined, text: '' };
+  // Most recent first: history[0] is the token before the current one.
+  const history: [Token, Token, Token] = [EMPTY, EMPTY, EMPTY];
+  const remember = (kind: number, text: string): void => {
+    history[2] = history[1];
+    history[1] = history[0];
+    history[0] = { kind, text };
+  };
+
+  /**
+   * Did the token just before `next` leave a bare `require` unresolvable?
+   *
+   * Deliberately asked about `require` only. `import` is a keyword that legitimately appears without a
+   * following paren in every ESM file (`import qs from "qs"`, `import.meta.url`), so the same rule there
+   * would report a gap for ordinary static imports — the exact always-false flag the member-method guard
+   * exists to prevent.
+   */
+  const escapedLoaderReference = (next: number): boolean => {
+    const callee = history[0];
+    const qualifier = history[1];
+
+    if (callee.kind === undefined || !CALLEE_KINDS.has(callee.kind) || callee.text !== 'require') return false;
+    // Someone's method named `require` — not the loader.
+    if (qualifier.kind !== undefined && DOT_KINDS.has(qualifier.kind)) return false;
+
+    // Called in place (`require(…)` / `require?.(…)`) is the resolvable form the rest of this function
+    // judges, and `require.resolve` / `require.cache` reach a property of the loader without loading a
+    // module at all. Anything else means the loader itself became a value.
+    return next !== ts.SyntaxKind.OpenParenToken
+      && next !== ts.SyntaxKind.QuestionDotToken
+      && next !== ts.SyntaxKind.DotToken;
+  };
+
+  let count = 0;
+
+  try {
+    for (let token = scanner.scan(); token !== ts.SyntaxKind.EndOfFileToken; token = scanner.scan()) {
+      const text = scanner.getTokenText();
+
+      // `require` used as a VALUE rather than called in place: `const r = require`, `(require)(x)`,
+      // `module.exports = require`. Once the loader is behind another name, resolving what it loads
+      // needs dataflow this scan does not do — so the honest answer is that the inventory has a gap,
+      // and the conservative one is the same answer. Counted at the ESCAPE, not at the later call:
+      // whatever `r(…)` loads is unknowable from here, literal argument or not.
+      if (escapedLoaderReference(token)) count++;
+
+      if (token !== ts.SyntaxKind.OpenParenToken) {
+        remember(token, text);
+        continue;
+      }
+
+      // `?.` immediately before the paren shifts both the callee and its qualifier one place back.
+      const optionalCall = history[0].kind === ts.SyntaxKind.QuestionDotToken;
+      const callee = optionalCall ? history[1] : history[0];
+      const qualifier = optionalCall ? history[2] : history[1];
+
+      const isRequireCall = callee.kind !== undefined
+        && CALLEE_KINDS.has(callee.kind)
+        && (callee.text === 'require' || callee.text === 'import')
+        // A dot before the name means it is a property of something else, so this is that object's
+        // method and says nothing about module loading.
+        && !(qualifier.kind !== undefined && DOT_KINDS.has(qualifier.kind));
+
+      if (!isRequireCall) {
+        remember(token, text);
+        continue;
+      }
+
+      remember(token, text);
+
+      const argument = scanner.scan();
+      const argumentText = scanner.getTokenText();
+      remember(argument, argumentText);
+
+      const isLiteral = argument === ts.SyntaxKind.StringLiteral
+        || argument === ts.SyntaxKind.NoSubstitutionTemplateLiteral;
+
+      if (!isLiteral) {
+        // A template WITH substitutions (`require(\`./\${name}\`)`) lands here too, correctly: its
+        // value is not knowable statically either.
+        count++;
+        continue;
+      }
+
+      // Starting with a literal is not the same as BEING one: `require("node-" + pkg)` opens with a
+      // string and is still computed. The literal is the whole specifier only if the argument ends
+      // right here — a `)`, or a `,` for `import("./m", { with: … })`, where the literal is complete
+      // and only import attributes follow. Anything else continues the expression.
+      const following = scanner.scan();
+      remember(following, scanner.getTokenText());
+
+      const argumentEnded = following === ts.SyntaxKind.CloseParenToken
+        || following === ts.SyntaxKind.CommaToken;
+
+      if (!argumentEnded) count++;
+    }
+
+    // The loop exits on EOF without processing it, so a file ENDING in a bare `require`
+    // (`module.exports = require`) would otherwise escape unnoticed.
+    if (escapedLoaderReference(ts.SyntaxKind.EndOfFileToken)) count++;
+  } catch {
+    return count; // whatever was counted before the scanner gave up still clears the flag
+  }
+
+  return count;
+}
+
+/**
  * Aggregates per-file import edges into the per-package inventory. Order-independent: the output is
  * sorted, so two runs over the same tree produce byte-identical documents.
  */

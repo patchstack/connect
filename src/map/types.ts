@@ -332,6 +332,34 @@ export interface Coverage {
    * true, not merely that it isn't false.
    */
   importsComplete?: boolean;
+  /**
+   * WHY the inventory is incomplete, for a reader deciding what to do about it. Diagnostic only:
+   * `importsComplete` remains the single gate a consumer reads, and any non-zero count here makes it
+   * false — so this can be ignored entirely without ever licensing a wrong negative.
+   *
+   * The split that matters is durability. The first three are environmental: a permission, a broken
+   * link, a symlink out of the project — a re-run in a different context may resolve them.
+   * `unresolvableImports` is inherent: the application does not name the module in a way any static pass
+   * can resolve. Collapsed into one number, a reviewer re-runs the scan against a permanent property of
+   * the source and reads the identical result as a flake.
+   */
+  importCoverageGaps?: {
+    /** Files present but unreadable. */
+    unreadableFiles: number;
+    /** Files read but whose imports could not be scanned. */
+    unscannableFiles: number;
+    /** Paths that produced no file at all — the quietest gap, since no per-file counter moves. */
+    unwalkedPaths: number;
+    /**
+     * Imports whose module cannot be determined statically: a computed specifier (`require(expr)`,
+     * `import(expr)`) or an aliased loader (`const r = require`, `(require)(x)`).
+     *
+     * Counted conservatively — an aliased loader counts even when every call through it passes a
+     * literal, because following the alias needs dataflow this scan does not do. That biases toward a
+     * false "incomplete", which withholds a negative conclusion rather than granting a wrong one.
+     */
+    unresolvableImports: number;
+  };
   /** Source roots analyzed, repo-relative. */
   roots: string[];
   /** Honest notes on what static analysis could not resolve (dynamic dispatch, indirection, …). */

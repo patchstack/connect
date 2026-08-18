@@ -10,7 +10,7 @@ import { collectLocalSinks } from './sinks.js';
 import { createModuleGraph } from './module-graph.js';
 import { isProvenFlow } from './coordinates.js';
 import { extractFromFile } from './entries.js';
-import { collectFileImports, createImportInventory, readPathAliases, scanFileImports } from './imports.js';
+import { collectFileImports, countComputedSpecifiers, createImportInventory, readPathAliases, scanFileImports } from './imports.js';
 import { collectInvocations, createInvocationInventory } from './invocations.js';
 
 // Framework-AGNOSTIC input-flow extractor. It doesn't gate on a specific stack — it walks any JS/TS
@@ -45,6 +45,7 @@ export async function extractInputMap(cwd: string, ts: TsModule, options: Extrac
   let parsed = 0;
   let preFiltered = 0;
   let importScanFailures = 0;
+  let unresolvableImports = 0;
   let sourceBytes = 0;
   const calls = { total: 0, dependency: 0, local: 0, ambiguous: 0 };
   const startedAt = Date.now();
@@ -62,6 +63,7 @@ export async function extractInputMap(cwd: string, ts: TsModule, options: Extrac
         const scanned = scanFileImports(text, ts);
         if (scanned === null) importScanFailures++; // this file's imports are unknown, not empty
         else imports.add(relFile, scanned, false);
+        unresolvableImports += countComputedSpecifiers(text, ts);
         continue;
       }
       parsed++;
@@ -70,6 +72,10 @@ export async function extractInputMap(cwd: string, ts: TsModule, options: Extrac
       const sf = ts.createSourceFile(file, text, ts.ScriptTarget.Latest, true, guessScriptKind(ts, file));
       const bindings = buildModuleBindings(sf, ts);
       imports.add(relFile, collectFileImports(sf, ts), true);
+      // Counted on this path too. A parsed file is not a covered file: `collectFileImports` requires a
+      // string-literal specifier, so a computed require in an entry file is just as unattributable as
+      // one in a pre-filtered file — and this is the path where it is easiest to assume otherwise.
+      unresolvableImports += countComputedSpecifiers(text, ts);
       const ctx = { file, owner: relFile, graph };
       // The ctx reaches helper summaries too, so a same-file helper using an imported client resolves.
       // The invocation inventory rides the parse we already did for sinks — no second pass, which is what
@@ -131,11 +137,26 @@ export async function extractInputMap(cwd: string, ts: TsModule, options: Extrac
   // An unwalked subtree is the quietest gap of the three: it produces no file, so no counter moves and
   // the tree just looks smaller. It has to be part of this or the flag certifies an inventory with a
   // hole in it.
-  const importsComplete = importScanFailures === 0 && failed.length === 0 && stats.unwalked === 0;
+  // Two kinds of gap, one flag. ENVIRONMENTAL gaps (unread, unscanned, unwalked) might close on a
+  // re-run with different permissions; an INHERENT gap — a specifier computed at runtime — never will,
+  // because no static pass can resolve it. Both make the inventory incomplete, so both clear the flag;
+  // they are reported apart so a reviewer can tell "try again" from "this app cannot be answered
+  // statically" instead of re-running against a permanent property of the source.
+  const importCoverageGaps = {
+    unreadableFiles: failed.length,
+    unscannableFiles: importScanFailures,
+    unwalkedPaths: stats.unwalked,
+    unresolvableImports,
+  };
+  const environmentalGaps = failed.length + importScanFailures + stats.unwalked;
+  const importsComplete = environmentalGaps === 0 && unresolvableImports === 0;
   notes.push('`imports` lists every package the app imports, from ALL source files — not only files holding an entry point. Absence of a SINK for a package is never evidence; absence of the PACKAGE is evidence only when coverage.importsComplete is true.');
   notes.push(`${unmodelled} of ${importList.length} imported package(s) have no recognized sink family (recognizedSinkKinds: []). The extractor models a small set of API families, so for those packages it cannot tell whether input reaches them: a vulnerability in one must stay "needs review" and can never be closed as unreachable using this map.`);
-  if (!importsComplete) {
+  if (environmentalGaps > 0) {
     notes.push(`The import inventory is INCOMPLETE: ${failed.length} file(s) could not be read, ${importScanFailures} could not be scanned, and ${stats.unwalked} path(s) could not be walked at all (unreadable directory, broken link, or a symlink leaving the project). A package may therefore be imported without appearing in \`imports\`. Do not read a package's absence as "not imported" while coverage.importsComplete is false.`);
+  }
+  if (unresolvableImports > 0) {
+    notes.push(`The import inventory is INCOMPLETE for a reason no re-run can fix: ${unresolvableImports} import(s) do not name a resolvable module — either the specifier is computed at runtime (\`require(REGISTRY[kind])\`) or the loader itself was aliased (\`const r = require\`), so which package is loaded is not knowable from the source. Those imports appear NOWHERE in \`imports\` — not as an unresolved entry, simply absent — so a package's absence is not evidence of it being unused. This is a property of the application's code, not a scan failure. Reported conservatively: an aliased loader counts even if every call through it uses a literal.`);
   }
 
   const invocationList = invocations.list();
@@ -178,6 +199,7 @@ export async function extractInputMap(cwd: string, ts: TsModule, options: Extrac
       filesSkipped: failed.length,
       pathsUnwalked: stats.unwalked,
       importsComplete,
+      importCoverageGaps,
       apiInvocations: invocationList.length,
       callsTotal: calls.total,
       callsDependency: calls.dependency,
