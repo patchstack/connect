@@ -49,6 +49,9 @@ export async function extractInputMap(cwd: string, ts: TsModule, options: Extrac
   let sourceBytes = 0;
   const calls = { total: 0, dependency: 0, local: 0, ambiguous: 0 };
   const startedAt = Date.now();
+  // Local modules an entry file imports directly — parsed after the walk for their invocations (below).
+  const entryFiles = new Set<string>();
+  const hopTargets = new Set<string>();
 
   for (const file of files) {
     try {
@@ -67,10 +70,16 @@ export async function extractInputMap(cwd: string, ts: TsModule, options: Extrac
         continue;
       }
       parsed++;
+      entryFiles.add(file);
       // Coordinates are only valid for the exact file content they were derived from.
       const fingerprint = createHash('sha256').update(text).digest('hex').slice(0, 16);
       const sf = ts.createSourceFile(file, text, ts.ScriptTarget.Latest, true, guessScriptKind(ts, file));
       const bindings = buildModuleBindings(sf, ts);
+      for (const specifier of bindings.imports) {
+        if (!specifier.startsWith('.')) continue; // node_modules is not this app's surface
+        const target = graph.resolveLocal(file, specifier);
+        if (target !== undefined) hopTargets.add(target);
+      }
       imports.add(relFile, collectFileImports(sf, ts), true);
       // Counted on this path too. A parsed file is not a covered file: `collectFileImports` requires a
       // string-literal specifier, so a computed require in an entry file is just as unattributable as
@@ -109,6 +118,41 @@ export async function extractInputMap(cwd: string, ts: TsModule, options: Extrac
       if (typeof process !== 'undefined' && process.env?.PS_MAP_DEBUG) console.error('[patchstack] map error', file, e);
       // Fail-open: one unreadable/unparseable file must never kill the whole map.
       failed.push(relative(cwd, file));
+    }
+  }
+
+  // --- one hop: the local modules an entry file imports ----------------------
+  // An entry file's dependency calls are usually not written IN the entry file. `src/server.js` imports
+  // `loadConfig` from `./config`, and the `JSON5.parse(...)` call lives in config.js — a file with no entry
+  // signal, so the walk above only scanned its imports. Reading the call from the file it is written in is
+  // the difference between reporting the API an advisory names and reporting nothing about it.
+  //
+  // ONE hop, from entry files only, invocations only: no sinks, no endpoints, no recursion into what the
+  // hop file itself imports. The bound is structural — reachable from an entry by a relative import —
+  // rather than a file budget, so coverage is predictable from the app's shape instead of from its size.
+  let hopParsed = 0;
+  let hopFailures = 0;
+  for (const target of hopTargets) {
+    if (entryFiles.has(target)) continue; // already collected above, along with its endpoints
+    try {
+      const text = readFileSync(target, 'utf8');
+      const sf = ts.createSourceFile(target, text, ts.ScriptTarget.Latest, true, guessScriptKind(ts, target));
+      const bindings = buildModuleBindings(sf, ts);
+      // `owner` is the hop file, so a site points at the line that makes the call rather than at the
+      // entry file that reaches it. A coordinate naming the wrong file cannot be checked by hand.
+      const called = collectInvocations(sf, ts, bindings, { file: target, owner: relative(cwd, target), graph });
+      invocations.add(called.invocations);
+      calls.total += called.counts.total;
+      calls.dependency += called.counts.dependency;
+      calls.local += called.counts.local;
+      calls.ambiguous += called.counts.ambiguous;
+      hopParsed++;
+    } catch (e) {
+      if (typeof process !== 'undefined' && process.env?.PS_MAP_DEBUG) console.error('[patchstack] map hop error', target, e);
+      // Fail-open, and counted: these files were already read once for their imports, so they must NOT
+      // join `failed` (that would double-count the skip and flip the import-completeness flag over a
+      // gap that belongs to a different question).
+      hopFailures++;
     }
   }
 
@@ -161,7 +205,10 @@ export async function extractInputMap(cwd: string, ts: TsModule, options: Extrac
 
   const invocationList = invocations.list();
   if (invocationList.length > 0 || parsed > 0) {
-    notes.push(`\`apiInvocations\` records ${invocationList.length} dependency API call(s) resolved from the ${parsed} parsed file(s). POSITIVE EVIDENCE ONLY: a package missing from it may still have its API called — see coverage.apiInventoryLimitations.`);
+    notes.push(`\`apiInvocations\` records ${invocationList.length} dependency API call(s) resolved from ${parsed} entry file(s) plus ${hopParsed} local module(s) they import directly. POSITIVE EVIDENCE ONLY: a package missing from it may still have its API called — see coverage.apiInventoryLimitations.`);
+  }
+  if (hopFailures > 0) {
+    notes.push(`${hopFailures} local module(s) imported by an entry file could not be parsed, so any dependency call written in them is missing from \`apiInvocations\`.`);
   }
 
   // Node-only and best-effort: the map runs in a build, but the runtime this file belongs to must stay
@@ -196,6 +243,7 @@ export async function extractInputMap(cwd: string, ts: TsModule, options: Extrac
       filesDiscovered: stats.discovered,
       filesParsed: parsed,
       filesPreFiltered: preFiltered,
+      filesHopParsed: hopParsed,
       filesSkipped: failed.length,
       pathsUnwalked: stats.unwalked,
       importsComplete,
@@ -213,7 +261,7 @@ export async function extractInputMap(cwd: string, ts: TsModule, options: Extrac
       // every file would raise recall without removing any of these, so no parsing budget could make an
       // absent invocation mean "not called".
       apiInventoryLimitations: [
-        'only files carrying an entry-point signal are parsed, so a call in any other file is unseen',
+        'only files carrying an entry-point signal, and the local modules they import directly, are parsed — a call two hops away is unseen',
         'a computed callee or property (`client[name]()`) cannot be resolved to an API',
         'a dynamic import()/require() with a non-literal specifier is not traced',
         'reflection, generated code, and syntax that fails to parse are invisible',

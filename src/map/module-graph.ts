@@ -25,7 +25,7 @@ export function createModuleGraph(ts: TsModule, opts: { cwd: string; boundary: s
       const text = readFileSync(file, 'utf8');
       const sf = ts.createSourceFile(file, text, ts.ScriptTarget.Latest, true, guessScriptKind(ts, file));
       const bindings = buildModuleBindings(sf, ts);
-      // `bindings` is kept for `importedPackage`: the module's own view of what its exports came from.
+      // `bindings` is kept for `importedBinding`: the module's own view of what its exports came from.
       entry = { fnSinks: collectLocalSinks(sf, ts, bindings), calleesOf: collectCallees(sf, ts), bindings };
     } catch {
       entry = null; // fail-open: an unreadable dependency must not break the map
@@ -49,6 +49,8 @@ export function createModuleGraph(ts: TsModule, opts: { cwd: string; boundary: s
   };
 
   return {
+    resolveLocal: resolveInProject,
+
     importedSinks(fromFile, specifier, exportName) {
       const target = resolveInProject(fromFile, specifier);
       if (!target) return [];

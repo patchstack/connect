@@ -82,6 +82,13 @@ export interface ModuleGraph {
     specifier: string,
     exportName: string,
   ): { package: string; origin: 'direct' | 'factory'; name: string } | undefined;
+  /**
+   * The in-project file a RELATIVE specifier resolves to, or undefined — a bare package specifier, a path
+   * that resolves to nothing, or a target outside the project boundary. Exposed because a caller that
+   * wants to analyse the target itself (rather than ask this graph about it) still needs the same
+   * resolution and the same boundary refusal; re-deriving either would let them drift apart.
+   */
+  resolveLocal(fromFile: string, specifier: string): string | undefined;
 }
 
 export interface SinkContext {
