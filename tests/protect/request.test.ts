@@ -137,6 +137,26 @@ describe('RequestResolver', () => {
       assert.deepStrictEqual(resolver.resolve('server.HTTP_X_FORWARDED_FOR'), ['1.2.3.4']);
     });
 
+    it('should treat an empty header value as present, not absent', () => {
+      // A header sent with no value IS present, and some bypasses are carried by a header existing at
+      // all rather than by what it contains — so an `isset` rule authored against one must see it.
+      // Resolving by truthiness returned [] here, making the rule silently miss that shape.
+      const resolver = new RequestResolver(createReq({ headers: { 'x-internal-marker': '' } }));
+      assert.deepStrictEqual(resolver.resolve('server.HTTP_X_INTERNAL_MARKER'), ['']);
+    });
+
+    it('should still resolve an absent header to nothing', () => {
+      const resolver = new RequestResolver(createReq({ headers: {} }));
+      assert.deepStrictEqual(resolver.resolve('server.HTTP_X_INTERNAL_MARKER'), []);
+    });
+
+    it('should not treat an inherited property name as a header', () => {
+      // `headers.constructor` exists on every object; reading presence off the prototype chain would
+      // make every request appear to carry a `constructor` header.
+      const resolver = new RequestResolver(createReq({ headers: {} }));
+      assert.deepStrictEqual(resolver.resolve('server.HTTP_CONSTRUCTOR'), []);
+    });
+
     it('should resolve REMOTE_ADDR from ip', () => {
       const resolver = new RequestResolver(createReq({ ip: '10.0.0.1' }));
       assert.deepStrictEqual(resolver.resolve('server.REMOTE_ADDR'), ['10.0.0.1']);

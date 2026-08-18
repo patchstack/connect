@@ -253,7 +253,14 @@ export class RequestResolver {
       default: {
         if (key.startsWith('HTTP_')) {
           const headerName = key.substring(5).toLowerCase().replace(/_/g, '-');
-          return req.headers?.[headerName] ? [req.headers[headerName]] : [];
+          const headers = req.headers;
+          // Presence, not truthiness. A header sent with an empty value IS present, and an `isset`
+          // rule authored against it must see it — some bypasses are carried by the header existing
+          // at all, so treating `Header:` as absent would make the rule quietly miss the shape it
+          // was written for. (The named cases above keep value semantics: for host/origin/referer an
+          // empty string and an absent header mean the same thing to the matchers that read them.)
+          if (headers === null || typeof headers !== 'object') return [];
+          return Object.prototype.hasOwnProperty.call(headers, headerName) ? [headers[headerName]] : [];
         }
         return [];
       }
