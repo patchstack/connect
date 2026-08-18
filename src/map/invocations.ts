@@ -192,11 +192,15 @@ export function collectInvocations(
         const traced = root !== undefined ? traceRoot(root) : null;
         if (traced && root !== undefined) {
           counts.dependency++;
-          // A receiver name is only reported when the binding came STRAIGHT from the package. Anything
-          // else is the app's own name for a value: `pool` re-exported from `./lib`, or `Student` returned
-          // by `sequelize.define()`. Reporting those as part of the package's API would be inventing an
-          // API name — and the first version of this did exactly that, calling pg's method `pool.query`.
-          const receiver = traced.resolution === 'direct' ? bindings.exportNameOf(root) ?? root : undefined;
+          // A receiver name is only reported when the package itself supplies that name — a NAMED member
+          // binding (`import { promises as fsp } from 'node:fs'` → `promises`). Everything else is the
+          // app's own word for a value: `pool` re-exported from `./lib`, `Student` returned by
+          // `sequelize.define()`, and — the quiet one — `JSON5` in `const JSON5 = require('json5')`, where
+          // the module object's local name is pure convention. Reporting any of them makes `symbol` a
+          // string no advisory contains: `JSON5.parse` where the advisory says `parse`.
+          const receiver = traced.resolution === 'direct' && bindings.isPackageMember(root)
+            ? bindings.exportNameOf(root) ?? root
+            : undefined;
           push(traced, callee.name.text, receiver, 'member', node);
         } else if (root !== undefined && ts.isIdentifier(callee.expression) && isLocalName(root, node)) {
           // A method called DIRECTLY on a local binding or a handler parameter — `res.json()`,

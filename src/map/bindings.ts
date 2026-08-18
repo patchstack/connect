@@ -24,6 +24,16 @@ export interface Bindings {
    * and a consumer deciding what to act on needs to tell them apart.
    */
   originOf(name: string): 'direct' | 'factory' | undefined;
+  /**
+   * Whether the name is a NAMED MEMBER of its package (`import { Pool } from 'pg'`,
+   * `const { parse } = require('json5')`) rather than the module object itself (`import * as fs`,
+   * `import JSON5 from 'json5'`, `const JSON5 = require('json5')`).
+   *
+   * Both are `direct`, but only the member's name belongs to the package. A module object's local name is
+   * the app's invention — the same require is written `JSON5`, `J5`, or `json5` in three codebases — so it
+   * is not a name any advisory can be matched against.
+   */
+  isPackageMember(name: string): boolean;
   imports: Set<string>;
   locals: Set<string>;
 }
@@ -31,6 +41,7 @@ export function buildModuleBindings(sf: any, ts: TsModule): Bindings {
   const nameToModule = new Map<string, string>(); // local name → module specifier
   const declared = new Set<string>(); // every name declared in this file
   const exportNames = new Map<string, string>(); // local alias → exported name
+  const members = new Set<string>(); // names bound to a NAMED export, not to the module object
   const imports = new Set<string>();
   const origins = new Map<string, 'direct' | 'factory'>();
 
@@ -58,6 +69,7 @@ export function buildModuleBindings(sf: any, ts: TsModule): Bindings {
         if (ts.isNamespaceImport(nb)) record(nb.name.text, mod);
         else if (ts.isNamedImports(nb)) for (const el of nb.elements) {
           record(el.name.text, mod);
+          members.add(el.name.text);
           // `import { saveOrder as write }` — looking up `write` in the target module would miss.
           if (el.propertyName && ts.isIdentifier(el.propertyName)) exportNames.set(el.name.text, el.propertyName.text);
         }
@@ -75,6 +87,7 @@ export function buildModuleBindings(sf: any, ts: TsModule): Bindings {
           if (ts.isIdentifier(decl.name)) record(decl.name.text, reqMod);
           else if (ts.isObjectBindingPattern(decl.name)) for (const el of decl.name.elements) if (ts.isIdentifier(el.name)) {
             record(el.name.text, reqMod);
+            members.add(el.name.text);
             // `const { merge: deepMerge } = require("lodash")` — the CommonJS twin of an import alias.
             // Without this the local alias looks like the package's own export name, and reporting it as
             // one invents an API the package does not have.
@@ -125,6 +138,7 @@ export function buildModuleBindings(sf: any, ts: TsModule): Bindings {
     resolve: (name: string) => nameToModule.get(name),
     exportNameOf: (name: string) => exportNames.get(name),
     originOf: (name: string) => origins.get(name),
+    isPackageMember: (name: string) => members.has(name),
     imports,
     locals,
   };

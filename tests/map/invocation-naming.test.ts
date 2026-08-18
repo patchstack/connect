@@ -46,6 +46,8 @@ beforeAll(() => {
 
   writeFileSync(join(dir, 'src', 'server.js'), `
     const express = require("express");
+    const JSON5 = require("json5");
+    const { promises: fsp } = require("node:fs");
     const { createLogger } = require("winston");
     const { pick: choose } = require("lodash");
     const { loadConfig } = require("./config");
@@ -59,6 +61,10 @@ beforeAll(() => {
     app.post("/merge", (req, res) => { res.json(deepMerge({}, { ok: true })); });
     app.get("/log", (req, res) => { log("served"); res.end(); });
     app.get("/pick", (req, res) => { res.json(choose({ a: 1 }, ["a"])); });
+    app.get("/dump", async (req, res) => {
+      await fsp.readFile("./config.json5", "utf8");
+      res.type("text/plain").send(JSON5.stringify({ ok: true }));
+    });
 
     module.exports = app;
   `);
@@ -73,12 +79,14 @@ const symbols = (list: ApiInvocation[]): string[] => list.map((i) => `${i.packag
 
 describe('a name the app chose is not a package API', () => {
   it('does not record a local function as an API of the package its return value came from', async () => {
-    const found = symbols(await inventory());
+    const list = await inventory();
 
     // The defect this fixes: `json5.loadConfig`. json5's surface is `parse`/`stringify` — a consumer
     // checking whether the vulnerable function is called finds neither, and a name that is not json5's.
-    expect(found).not.toContain('json5.loadConfig');
-    expect(found.filter((s) => s.startsWith('json5.') && s !== 'json5.parse')).toEqual([]);
+    expect(symbols(list)).not.toContain('json5.loadConfig');
+    // Not just under json5, and not just as the whole symbol: the app's function name must not appear
+    // anywhere in the inventory, under any package or as any receiver.
+    expect(list.filter((i) => i.symbol.includes('loadConfig') || i.api === 'loadConfig')).toEqual([]);
   });
 
   it('does not record a factory result called directly under the app’s name for it', async () => {
@@ -117,6 +125,31 @@ describe('a name the app chose is not a package API', () => {
     // hop shorter. An advisory names `pick`; `choose` is this app's word for it.
     expect(found).toContain('lodash.pick');
     expect(found).not.toContain('lodash.choose');
+  });
+});
+
+describe('a receiver is reported only where the package supplies its name', () => {
+  it('does not put the app’s name for a module object in the symbol', async () => {
+    const list = await inventory();
+    const stringify = list.filter((i) => i.package === 'json5' && i.api === 'stringify');
+
+    // `const JSON5 = require("json5"); JSON5.stringify(...)`. `JSON5` is convention, not API: the same
+    // require is written `J5` or `json5` elsewhere, and an advisory naming `stringify` would match none
+    // of them. So the symbol is the method, and the receiver is omitted rather than invented.
+    expect(stringify).toHaveLength(1);
+    expect(stringify[0].symbol).toBe('stringify');
+    expect(stringify[0].receiver).toBeUndefined();
+  });
+
+  it('reports a receiver that IS one of the package’s exports, under the exported name', async () => {
+    const list = await inventory();
+    const readFile = list.find((i) => i.api === 'readFile');
+
+    // `const { promises: fsp } = require("node:fs")` — here the receiver is a real export of node:fs, so
+    // `promises.readFile` is the API's own spelling and dropping it would lose information. The alias the
+    // app chose (`fsp`) is still not what gets reported.
+    expect(readFile, 'a named member receiver is part of the surface').toBeDefined();
+    expect(readFile!.symbol).toBe('promises.readFile');
   });
 });
 
