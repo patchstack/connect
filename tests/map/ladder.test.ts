@@ -59,11 +59,17 @@ describe('every ladder case was actually analysed', () => {
   });
 
   it.each(LADDER_CASES.map((c) => [c.id, c] as const))('%s declares its dependency', (_id, c) => {
-    const declared = (map: InputMap) => ((map.imports ?? []) as Array<{ package: string }>).map((i) => i.package);
+    const declared = ((mapFor(c).imports ?? []) as Array<{ package: string }>).map((i) => i.package);
+
     // Declared in package.json regardless of whether the map can attribute a usage. For the
     // `unknown` case this is the whole point: the dependency is present and the usage is invisible.
     expect(c.packageJson.dependencies).toHaveProperty(c.pkg);
-    expect(declared(mapFor(c)).length + (mapFor(c).apiInvocations ?? []).length).toBeGreaterThanOrEqual(0);
+    // And the analysis attributed SOMETHING for this app. Every ladder app imports express — it is the
+    // shared control dependency for exactly this reason — so an inventory without it means the scan came
+    // back empty, and every assertion in this file would then pass over nothing. (The version this
+    // replaced summed two lengths and asserted `>= 0`, which is true of the empty map it existed to
+    // exclude.)
+    expect(declared, 'an empty inventory makes every assertion below vacuous').toContain('express');
   });
 });
 
