@@ -5,6 +5,7 @@ import type { SiteInputMap, Endpoint, TsModule } from './types.js';
 import { guessScriptKind } from './ast.js';
 import { buildModuleBindings } from './bindings.js';
 import { collectSources, detectDeploymentShapes, detectFramework, hasEntrySignal, type WalkStats } from './sources.js';
+import { classifyServerSurface, surfaceNote } from './surface.js';
 import { functionNameFromPath, routeFromFilePath } from './routes.js';
 import { collectLocalSinks } from './sinks.js';
 import { createModuleGraph } from './module-graph.js';
@@ -241,10 +242,17 @@ export async function extractInputMap(cwd: string, ts: TsModule, options: Extrac
     ? '`deploymentShapes` is EMPTY: no deployment artifact was recognized. That is not evidence the app has no server-side runtime — a serverless handler this analysis cannot parse produces no endpoint and looks identical to an app that has none, and entry-point recognition has no completeness flag (coverage.importsComplete covers the import inventory only). A definitive answer needs deployment or build attestation, which source analysis cannot supply.'
     : `\`deploymentShapes\` records ${deploymentShapes.length} deployment artifact(s) the project declares (${deploymentShapes.map((s) => s.shape).join(', ')}). POSITIVE EVIDENCE ONLY, and findings differ in strength: \`config\` and \`provider-directory\` show a deployment, while \`layout\` (a root \`api/\` or \`functions/\` folder) is an ordinary application folder that may hold no function at all — it must not on its own be read as a server runtime.`);
 
+  // Classified from what was positively found: the endpoints above, the deployment artifacts, and the
+  // manifest. Emitted with its evidence and its own caveat, in every state — the `unknown` and static
+  // states are the ones a consumer could over-read, so neither travels without the sentence that bounds it.
+  const serverSurface = classifyServerSurface(cwd, endpoints.length, deploymentShapes);
+  notes.push(surfaceNote(serverSurface));
+
   return {
     version: 3,
     framework: detectFramework(cwd),
     deploymentShapes,
+    serverSurface,
     endpoints,
     imports: importList,
     apiInvocations: invocationList,

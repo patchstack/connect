@@ -285,6 +285,40 @@ export interface DeploymentShape {
   evidence: DeploymentEvidence;
 }
 
+/** One reason behind a `serverSurface` state, so a consumer can explain the classification. */
+export interface SurfaceSignal {
+  /**
+   * What kind of signal this is:
+   *   `endpoint`              a recognized entry point was parsed
+   *   `deployment-artifact`   a `config` or `provider-directory` deployment shape
+   *   `ambiguous-layout`      a `layout` shape — present, and not sufficient for a runtime conclusion
+   *   `server-dependency`     a server framework in the manifest
+   *   `static-generator`      a static build tool positively identified
+   */
+  signal: 'endpoint' | 'deployment-artifact' | 'ambiguous-layout' | 'server-dependency' | 'static-generator';
+  /** The thing that produced the signal — a dependency name, a file, a count. */
+  source: string;
+}
+
+/**
+ * Whether this app appears to have a server side, from positive signals on both sides.
+ *
+ * Exists because the answer changes what protection means: an app with no server runtime cannot run a
+ * request guard, so its advisories are dependency and bundle hygiene rather than request-path risk.
+ *
+ * `static-build-detected` requires a static generator to be NAMED, and is blocked by any deployment shape
+ * (including an ambiguous `layout` one) or any server-framework dependency. It is still not deployment
+ * attestation: it describes the source, not what is deployed, and a function added at the platform level
+ * would not appear here. `unknown` is the honest answer for an unrecognised stack and must never be read as
+ * "no server side" — an unparsed framework produces no endpoints, and entry-point recognition has no
+ * completeness flag.
+ */
+export interface ServerSurface {
+  state: 'server-runtime-detected' | 'static-build-detected' | 'unknown';
+  /** Every signal that produced the state, so the classification can be shown rather than asserted. */
+  evidence: SurfaceSignal[];
+}
+
 export interface Coverage {
   /** Adapter that produced the map. */
   adapter: string;
@@ -433,6 +467,10 @@ export interface SiteInputMap {
    * Additive, so still version 3: a v3 reader that ignores it keeps behaving correctly.
    */
   deploymentShapes?: DeploymentShape[];
+  /**
+   * Whether this app appears to have a server side — see `ServerSurface`. Additive, so still version 3.
+   */
+  serverSurface?: ServerSurface;
   endpoints: Endpoint[];
   coverage: Coverage;
   /**
