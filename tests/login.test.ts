@@ -47,7 +47,12 @@ describe('login', () => {
       const result = await login(config(), onPrompt, { fetchImpl: fetchImpl as never, ...noSleep });
 
       expect(result.status).toBe('approved');
-      expect(onPrompt).toHaveBeenCalledWith('WDJB-MJHT', 'https://api.patchstack.com/activate');
+      // The API redirects this to the dashboard SPA; the code rides along so
+      // following the link is one confirmation rather than a retype.
+      expect(onPrompt).toHaveBeenCalledWith(
+        'WDJB-MJHT',
+        'https://api.patchstack.com/monitor/pulse/device?code=WDJB-MJHT',
+      );
 
       // Both fields: approving rotates the one secret block-logs use too, so
       // leaving apiKey behind would break block-log reporting.
