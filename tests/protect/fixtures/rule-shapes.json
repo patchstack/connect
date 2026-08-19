@@ -1,0 +1,169 @@
+{
+  "note": "Authored vPatch rule SHAPES, as the engine must execute them. Payload shapes only: no advisory identifiers, no affected version ranges, and no mapping from a shape to the advisories it covers.",
+  "shapes": {
+    "prototype-pollution-gadget": {
+      "title": "Prototype pollution — the gadget must appear literally in the request",
+      "category": "prototype-pollution",
+      "phase": "request",
+      "rule_v2": [
+        {
+          "parameter": "raw",
+          "mutations": [
+            "urldecode"
+          ],
+          "match": {
+            "type": "contains",
+            "value": "__proto__"
+          }
+        },
+        {
+          "parameter": "rules",
+          "rules": [
+            {
+              "parameter": "raw",
+              "mutations": [
+                "urldecode"
+              ],
+              "inclusive": true,
+              "match": {
+                "type": "contains",
+                "value": "constructor"
+              }
+            },
+            {
+              "parameter": "raw",
+              "mutations": [
+                "urldecode"
+              ],
+              "inclusive": true,
+              "match": {
+                "type": "contains",
+                "value": "prototype"
+              }
+            }
+          ]
+        },
+        {
+          "parameter": "all",
+          "mutations": [
+            "urldecode"
+          ],
+          "match": {
+            "type": "contains",
+            "value": "__proto__"
+          }
+        }
+      ],
+      "why": "Every one of these is a merge/assign that walks an attacker-controlled key. The gadget cannot be expressed without `__proto__`, or `constructor` together with `prototype`, so the payload shape is the anchor and no parameter name is needed. `raw` is matched because JSON.stringify drops a literal `__proto__` key; `all` catches the query-string and header carriers.",
+      "falsePositiveRisk": "A request legitimately carrying the word `constructor` AND `prototype` in free text (JS documentation, a code snippet) trips the second condition. Assessed only against sites on the vulnerable version."
+    },
+    "internal-subrequest-header": {
+      "title": "Next.js middleware authorization bypass via an internal-only header",
+      "category": "authorization-bypass",
+      "phase": "request",
+      "rule_v2": [
+        {
+          "parameter": "server.HTTP_X_MIDDLEWARE_SUBREQUEST",
+          "match": {
+            "type": "isset"
+          }
+        }
+      ],
+      "why": "Middleware is skipped when the request carries `x-middleware-subrequest`. That header is an internal marker the framework sets on its own subrequests; a client has no legitimate reason to send it, so its mere presence is the exploit. Presence, not a value pattern — any value bypasses.",
+      "falsePositiveRisk": "A proxy or test harness that forwards the header verbatim from an internal call would be blocked. Real, and preferable to leaving authorization bypassable."
+    },
+    "serialized-function-marker": {
+      "title": "node-serialize remote code execution via the function marker",
+      "category": "deserialization",
+      "phase": "request",
+      "rule_v2": [
+        {
+          "parameter": "raw",
+          "mutations": [
+            "urldecode"
+          ],
+          "match": {
+            "type": "contains",
+            "value": "_$$ND_FUNC$$_"
+          }
+        },
+        {
+          "parameter": "raw",
+          "mutations": [
+            "base64_decode"
+          ],
+          "match": {
+            "type": "contains",
+            "value": "_$$ND_FUNC$$_"
+          }
+        },
+        {
+          "parameter": "all",
+          "mutations": [
+            "urldecode"
+          ],
+          "match": {
+            "type": "contains",
+            "value": "_$$ND_FUNC$$_"
+          }
+        }
+      ],
+      "why": "The payload must carry the `_$$ND_FUNC$$_` marker for unserialize to evaluate a function, which makes this the rare deserialization case with a fixed, high-signal anchor. The base64 mutation is there because the payload is commonly transported encoded. The `all` condition is what reaches a cookie-borne payload: `raw` is the request body only, and a deserialized session value is commonly a cookie.",
+      "falsePositiveRisk": "None plausible: the marker is an internal token of one library and does not occur in ordinary data."
+    },
+    "template-option-injection": {
+      "title": "EJS server-side template injection via render-option keys in request data",
+      "category": "template-injection",
+      "phase": "request",
+      "rule_v2": [
+        {
+          "parameter": "all",
+          "mutations": [
+            "urldecode"
+          ],
+          "match": {
+            "type": "contains",
+            "value": "outputFunctionName"
+          }
+        },
+        {
+          "parameter": "all",
+          "mutations": [
+            "urldecode"
+          ],
+          "match": {
+            "type": "contains",
+            "value": "escapeFunction"
+          }
+        },
+        {
+          "parameter": "all",
+          "mutations": [
+            "urldecode"
+          ],
+          "match": {
+            "type": "contains",
+            "value": "localsName"
+          }
+        }
+      ],
+      "why": "The vector is request data flowing into ejs's render OPTIONS, where an option key is compiled into the generated function body. The option names are the anchor: they are ejs internals, not application field names, so their presence in request data is the attack rather than a heuristic for it.",
+      "falsePositiveRisk": "An app that legitimately accepts one of these names as a form field would be blocked. Implausible for the option names chosen, all of which are ejs-specific."
+    },
+    "internal-destination-egress": {
+      "title": "SSRF reaching an internal address through a redirect",
+      "category": "ssrf",
+      "phase": "egress",
+      "rule_v2": [
+        {
+          "parameter": "egress.host",
+          "match": {
+            "type": "internal_host"
+          }
+        }
+      ],
+      "why": "The request-side URL cannot be pinned without knowing the app's own field names, and a redirect changes the destination after any request-side check anyway. The outbound call is the only chokepoint, so the destination is what gets screened — which also covers the redirect target, since the runtime re-screens redirects.",
+      "falsePositiveRisk": "An app that legitimately calls an internal service is blocked. Deploy dry-run first and use allowHosts for the destinations a deployment genuinely needs."
+    }
+  }
+}
