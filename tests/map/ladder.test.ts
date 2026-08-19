@@ -118,6 +118,25 @@ describe('a proven flow is reported only where one exists', () => {
       expect(count, `${c.id} must not claim a flow it has no evidence for`).toBe(0);
     }
   });
+
+  it.each(
+    LADDER_CASES.filter((c) => c.expect.actionableFlow !== undefined).map((c) => [c.id, c] as const),
+  )('%s reports the tier a consumer may act on, or does not', (_id, c) => {
+    // `exact-local` + rule-generatable is the bar a rule generator pins on, so it is the bar a consumer's
+    // top verdict uses. Asserting the tier HERE keeps the platform-side assertion honest: if this app ever
+    // drifted from exact to transformed, the verdict test over there would start proving the weaker claim
+    // while still passing.
+    const actionable = flows(mapFor(c)).filter(
+      (f: any) => f.confidence === 'exact-local' && f.ruleGeneratable === true,
+    );
+
+    if (c.expect.actionableFlow) {
+      expect(actionable.length, `${c.id} must carry an actionable flow`).toBeGreaterThan(0);
+    } else {
+      expect(actionable, `${c.id} must not present a review-grade flow as actionable`).toEqual([]);
+      expect(flows(mapFor(c)).length, `${c.id} must still prove a flow`).toBeGreaterThan(0);
+    }
+  });
 });
 
 describe('the map declines to answer where it cannot see', () => {
@@ -160,12 +179,26 @@ describe('the map declines to answer where it cannot see', () => {
 });
 
 describe('the ladder cases stay distinguishable', () => {
-  it('covers all five rungs exactly once', () => {
-    const rungs = LADDER_CASES.map((c) => c.rung).sort();
+  it('covers every rung, and gives each case its own id', () => {
+    const rungs = new Set(LADDER_CASES.map((c) => c.rung));
+    const ids = LADDER_CASES.map((c) => c.id);
 
-    expect(rungs).toEqual(
+    // Every rung covered AT LEAST once, rather than exactly once: `reachable` needs two apps, because a
+    // proven flow and an ACTIONABLE proven flow are different claims and only the second exercises a
+    // consumer's top verdict. Ids stay unique so a case cannot be silently shadowed by a copy.
+    expect([...rungs].sort()).toEqual(
       ['api-called', 'imported', 'not-a-code-question', 'reachable', 'unknown'].sort(),
     );
+    expect(new Set(ids).size).toBe(ids.length);
+  });
+
+  it('covers both sides of the actionable boundary on the reachable rung', () => {
+    const reachable = LADDER_CASES.filter((c) => c.rung === 'reachable');
+
+    // The gap this closes: every case used to sit at or below the review-grade tier, so the actionable
+    // verdict was never reached by any app and the harness could not tell you that.
+    expect(reachable.some((c) => c.expect.actionableFlow === true), 'no app reaches the actionable tier').toBe(true);
+    expect(reachable.some((c) => c.expect.actionableFlow === false), 'nothing pins the review-grade tier').toBe(true);
   });
 
   it('pairs each case with a distinct fixture advisory', () => {

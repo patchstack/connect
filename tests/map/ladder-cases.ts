@@ -47,6 +47,15 @@ export interface LadderCase {
     absentInvocations?: string[];
     /** A flow from request input to a sink must exist (true) or must not (false). */
     provenFlow: boolean;
+    /**
+     * Whether that flow is at the tier a consumer may ACT on — `exact-local` and rule-generatable.
+     *
+     * Separate from `provenFlow` because the two came apart in practice, and the gap was invisible from
+     * here: a proven `transformed-local` flow is real evidence that a consumer's own top verdict
+     * deliberately refuses, since the transformation may be sanitising. Asserting only "a flow exists"
+     * let a rung claim the top of the ladder while grading one step below it everywhere downstream.
+     */
+    actionableFlow?: boolean;
     /** Substrings that must appear in `coverage.apiInventoryLimitations`. */
     limitations?: RegExp[];
   };
@@ -54,11 +63,16 @@ export interface LadderCase {
 
 export const LADDER_CASES: LadderCase[] = [
   {
-    id: 'ladder/reachable',
+    // TRANSFORMED, and kept for exactly that: the input is concatenated into the SQL, which is proven but
+    // review-grade — the tier a rule generator refuses to pin because the transformation may be
+    // sanitising. It is the only case pinning the boundary between "the map proved a flow" and "a consumer
+    // will act on it", which is where a false confirmation would come from. See `ladder/reachable-exact`
+    // for the actionable half; neither replaces the other.
+    id: 'ladder/reachable-transformed',
     rung: 'reachable',
     cve: 'CVE-2019-10752',
     pkg: 'sequelize',
-    name: 'request input flows into a sequelize query',
+    name: 'request input is concatenated into a sequelize query',
     packageJson: { dependencies: { express: '4', sequelize: '4.44.0' } },
     files: {
       'src/server.js': `
@@ -83,6 +97,45 @@ export const LADDER_CASES: LadderCase[] = [
       imports: ['sequelize'],
       invocations: ['sequelize.query'],
       provenFlow: true,
+      // Proven, and NOT actionable. Asserted rather than left implicit, because "a flow exists" reads as
+      // the top of the ladder while a consumer keying on the actionable tier grades this one step lower.
+      actionableFlow: false,
+    },
+  },
+
+  {
+    // The actionable half of the `reachable` rung: request input reaches the sink UNTRANSFORMED, which is
+    // the tier a rule generator will pin and therefore the only shape that exercises a consumer's top
+    // verdict end to end. Without it every ladder case graded at most one step below the top, and nothing
+    // said so — the harness looked complete because a rung named `reachable` existed.
+    id: 'ladder/reachable-exact',
+    rung: 'reachable',
+    cve: 'CVE-2020-28168',
+    pkg: 'axios',
+    name: 'request input reaches an axios request as the URL, untransformed',
+    packageJson: { dependencies: { express: '4', axios: '0.21.0' } },
+    files: {
+      'src/server.js': `
+        const express = require("express");
+        const axios = require("axios");
+        const app = express();
+
+        app.post("/preview", async (req, res) => {
+          // The whole request URL IS the input: no concatenation, no validation, nothing between the
+          // parameter and the outbound call. That is what makes the flow pinnable — a rule can screen
+          // \`post.target\` and know it is screening the value that reaches the sink.
+          const response = await axios.get(req.body.target);
+          res.json({ status: response.status });
+        });
+
+        module.exports = app;
+      `,
+    },
+    expect: {
+      imports: ['axios'],
+      invocations: ['axios.get'],
+      provenFlow: true,
+      actionableFlow: true,
     },
   },
 
