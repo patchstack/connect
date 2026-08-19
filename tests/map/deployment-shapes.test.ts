@@ -1,5 +1,22 @@
-import { describe, it, expect, afterEach } from 'vitest';
+import { describe, it, expect, afterEach, vi } from 'vitest';
 import { mkdtempSync, mkdirSync, writeFileSync, rmSync, symlinkSync } from 'node:fs';
+
+// Records every directory read, delegating to the real implementation so behaviour is unchanged. A spy on
+// the module namespace is not possible under ESM, and the property being asserted — that an escaping link is
+// never TRAVERSED, as opposed to traversed and discarded — is not observable from the return value.
+const { directoryReads } = vi.hoisted(() => ({ directoryReads: [] as string[] }));
+vi.mock('node:fs', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('node:fs')>();
+
+  return {
+    ...actual,
+    readdirSync: (path: unknown, options?: unknown) => {
+      directoryReads.push(String(path));
+
+      return (actual.readdirSync as (p: unknown, o?: unknown) => unknown)(path, options);
+    },
+  };
+});
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { detectDeploymentShapes } from '../../src/map/sources.js';
@@ -94,6 +111,37 @@ describe('what it refuses to claim', () => {
     expect(detectDeploymentShapes(dir)).toEqual([]);
   });
 
+  it('ignores Supabase shared code that no function deploys', () => {
+    // `supabase/functions/_shared/` is the platform's own convention for code shared BETWEEN functions,
+    // and it is not deployed. A project can have it full of TypeScript and serve nothing, so counting it
+    // would report a runtime — and this is the signal the product messaging leans on.
+    expect(shapesOf({
+      'supabase/functions/_shared/cors.ts': 'export const cors = {};',
+      'supabase/functions/_shared/db.ts': 'export const client = null;',
+    })).toEqual([]);
+
+    // The layout that makes the underscore rule matter: `_shared/index.ts` is an ordinary barrel file, and
+    // it satisfies the per-function entry test on name alone. Without the underscore skip, shared code with
+    // a barrel would report a deployed function. (My first version of this test used `_shared/cors.ts`,
+    // which the index check already rejected — so it passed without exercising the rule at all.)
+    expect(shapesOf({
+      'supabase/functions/_shared/index.ts': "export * from './cors.ts';",
+    })).toEqual([]);
+
+    // A real function alongside it is still found.
+    expect(shapesOf({
+      'supabase/functions/_shared/cors.ts': 'export const cors = {};',
+      'supabase/functions/notify/index.ts': 'Deno.serve(() => new Response("ok"))',
+    })).toContain('supabase-functions');
+  });
+
+  it('requires the per-function layout for Supabase, not just any source', () => {
+    // Supabase deploys `<name>/index.ts`. A loose file directly under `functions/` is not a deployable
+    // function, so it is not evidence of one.
+    expect(shapesOf({ 'supabase/functions/helpers.ts': 'export const x = 1;' })).toEqual([]);
+    expect(shapesOf({ 'supabase/functions/notify/handler.ts': 'export default () => {}' })).toEqual([]);
+  });
+
   it('ignores a directory holding no source file', () => {
     expect(shapesOf({ 'api/README.md': '# planned', 'api/notes.txt': 'later' })).toEqual([]);
   });
@@ -150,8 +198,9 @@ describe('the map carries the evidence, not just the label', () => {
     const byShape = Object.fromEntries((map!.deploymentShapes ?? []).map((s) => [s.shape, s.evidence]));
 
     // `api/client.ts` is an ordinary front-end folder. It is reported — a consumer may want to look —
-    // but as `layout`, so a classifier cannot read a server runtime out of it alone.
-    expect(byShape['cloudflare-workers']).toBe('config');
+    // but as `layout`, so a classifier cannot read a server runtime out of it alone. And `wrangler.toml`
+    // is `deployment-config`: the project deploys to a platform, which is not the same as serving.
+    expect(byShape['cloudflare-workers']).toBe('deployment-config');
     expect(byShape['root-api-directory']).toBe('layout');
   });
 
@@ -168,7 +217,7 @@ describe('the map carries the evidence, not just the label', () => {
     // The whole point of the field, written where a consumer reading the document will see it.
     expect(note, 'the map must say what the field does and does not mean').toBeDefined();
     expect(note).toContain('POSITIVE EVIDENCE ONLY');
-    expect(note).toContain('must not on its own be read as a server runtime');
+    expect(note).toContain('Neither may on its own be read as a server runtime');
   });
 
   it('refuses an artifact that resolves outside the project', () => {
@@ -183,6 +232,33 @@ describe('the map carries the evidence, not just the label', () => {
     // Opt in explicitly and it is evidence again — the boundary is a default, not a hard refusal.
     expect(detectDeploymentShapes(dir, { followOutside: true }).map((s) => s.shape))
       .toContain('root-api-directory');
+  });
+
+  it('never READS an escaping directory, not merely discards what it found there', () => {
+    // The distinction that matters: refusing to report a finding is not the same guarantee as refusing to
+    // look. Evaluating the contents check before the boundary check meant this analysis walked a tree
+    // outside the project on every scan and then threw the result away — invisible in the output, and
+    // exactly the behaviour the boundary exists to prevent.
+    const outside = project({ 'handler.ts': 'export default () => new Response("ok")' });
+    const dir = project({ 'package.json': '{}' });
+    symlinkSync(outside, join(dir, 'api'), 'dir');
+
+    // Asserted on the LINK path, which is what gets read: the code walks `<project>/api`, and the kernel
+    // resolves it to the external tree. A first version of this control filtered on the target path, which
+    // never appears in a read call — so it would have reported success against the unfixed code too.
+    const linkPath = join(dir, 'api');
+
+    directoryReads.length = 0;
+    expect(detectDeploymentShapes(dir)).toEqual([]);
+    expect(directoryReads.filter((target) => target.startsWith(linkPath)),
+      'an escaping directory must not be read at all').toEqual([]);
+
+    // With the opt-out it IS read. This half proves the control can see a read, so the empty list above
+    // means something — a control that cannot observe the behaviour it forbids is not a control.
+    directoryReads.length = 0;
+    expect(detectDeploymentShapes(dir, { followOutside: true }).map((s) => s.shape))
+      .toContain('root-api-directory');
+    expect(directoryReads.some((target) => target.startsWith(linkPath))).toBe(true);
   });
 
   it('refuses a config file that resolves outside the project', () => {

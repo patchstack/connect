@@ -258,13 +258,20 @@ export interface Flow {
 }
 
 /**
- * How strong a deployment finding is. Not all artifacts prove the same thing:
+ * What a deployment finding actually shows. Three levels, and the top one is narrower than it first looks:
  *
- *   `config`              the project DECLARES a deployment (`vercel.json`, `wrangler.toml`, `_worker.js`)
- *   `provider-directory`  a provider-specific function directory holding real source
+ *   `runtime-entry`       code that SERVES: a worker entry (`_worker.js`), or a provider function
+ *                         directory holding real source
+ *   `deployment-config`   the project deploys to a platform (`vercel.json`, `netlify.toml`,
+ *                         `wrangler.toml`) — which says nothing about whether anything serves requests.
+ *                         A static site on Netlify has a `netlify.toml` and no server at all.
  *   `layout`              an ordinary application folder that MIGHT hold functions (`api/`, `functions/`)
+ *
+ * Only `runtime-entry` supports concluding a server runtime exists. The other two are still reported and
+ * still rule out a confident "static" reading, because a project that deploys somewhere, or keeps an `api/`
+ * folder, is not one this analysis can call server-free.
  */
-export type DeploymentEvidence = 'config' | 'provider-directory' | 'layout';
+export type DeploymentEvidence = 'runtime-entry' | 'deployment-config' | 'layout';
 
 export interface DeploymentShape {
   /** Which shape was recognized, e.g. `netlify-functions`. */
@@ -272,17 +279,51 @@ export interface DeploymentShape {
   /** The artifact that proved it, repo-relative, so a consumer can show its evidence. */
   source: string;
   /**
-   * How strong the finding is. Not all artifacts prove the same thing:
-   *
-   *   `config`              the project DECLARES a deployment (`vercel.json`, `wrangler.toml`, `_worker.js`)
-   *   `provider-directory`  a provider-specific function directory holding real source
-   *   `layout`              an ordinary application folder that MIGHT hold functions (`api/`, `functions/`)
-   *
-   * `layout` is deliberately weaker: `api/client.ts` is a normal front-end folder and `api/handler.ts` is a
-   * platform function, and the directory name is the same either way. A consumer may use `layout` to stay
-   * undecided; it must not conclude a server runtime from `layout` alone.
+   * What the finding shows — see `DeploymentEvidence`. Only `runtime-entry` supports concluding that a
+   * server runtime exists; `deployment-config` and `layout` are reported, and rule out a confident
+   * "static" reading, without proving anything serves.
    */
   evidence: DeploymentEvidence;
+}
+
+/** One reason behind a `serverSurface` state, so a consumer can explain the classification. */
+export interface SurfaceSignal {
+  /**
+   * What kind of signal this is:
+   *   `endpoint`             a recognized entry point was parsed
+   *   `runtime-entry`        an artifact that serves: a worker entry, or a provider function directory
+   *   `deployment-config`    a platform config — the project deploys, which is not the same as serving
+   *   `ambiguous-layout`     a `layout` shape — present, and not sufficient for a runtime conclusion
+   *   `server-dependency`    a server framework, or an SSR companion, in the manifest
+   *   `static-generator`     a static build tool positively identified
+   *
+   * Only `endpoint` and `runtime-entry` support a server-runtime conclusion. `deployment-config` and
+   * `ambiguous-layout` rule out a confident static reading without proving anything serves.
+   */
+  signal: 'endpoint' | 'runtime-entry' | 'deployment-config' | 'ambiguous-layout' | 'server-dependency' | 'static-generator';
+  /** The thing that produced the signal — a dependency name, a file, a count. */
+  source: string;
+}
+
+/**
+ * Whether this app appears to have a server side, from positive signals on both sides.
+ *
+ * Exists because the answer changes what protection means: an app with no server runtime cannot run a
+ * request guard, so its advisories are dependency and bundle hygiene rather than request-path risk.
+ *
+ * `static-build-detected` requires a static generator to be NAMED, and is blocked by any deployment shape
+ * (a platform config or an ambiguous `layout` folder included) or any server-framework dependency. A
+ * deployment config never produces `server-runtime-detected` on its own: a static site on Netlify has a
+ * `netlify.toml` and no server at all. It is still not deployment
+ * attestation: it describes the source, not what is deployed, and a function added at the platform level
+ * would not appear here. `unknown` is the honest answer for an unrecognised stack and must never be read as
+ * "no server side" — an unparsed framework produces no endpoints, and entry-point recognition has no
+ * completeness flag.
+ */
+export interface ServerSurface {
+  state: 'server-runtime-detected' | 'static-build-detected' | 'unknown';
+  /** Every signal that produced the state, so the classification can be shown rather than asserted. */
+  evidence: SurfaceSignal[];
 }
 
 export interface Coverage {
@@ -433,6 +474,10 @@ export interface SiteInputMap {
    * Additive, so still version 3: a v3 reader that ignores it keeps behaving correctly.
    */
   deploymentShapes?: DeploymentShape[];
+  /**
+   * Whether this app appears to have a server side — see `ServerSurface`. Additive, so still version 3.
+   */
+  serverSurface?: ServerSurface;
   endpoints: Endpoint[];
   coverage: Coverage;
   /**
