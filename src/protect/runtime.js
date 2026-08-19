@@ -105,7 +105,10 @@ export async function createProtection(options = {}) {
   // check is slow, and the guard can always boot from last-known-good / the bundled fallback. Refreshes
   // keep the full budget. Override with { bootTimeoutMs }.
   const bootTimeoutMs = Number(options.bootTimeoutMs) > 0 ? Number(options.bootTimeoutMs) : 5_000;
-  const bundle = await resolveRules(options, store, { timeoutMs: bootTimeoutMs });
+  // Resolved once and threaded through ctx: reading it is a filesystem hit on
+  // runtimes that have one, and refreshes should not repeat it.
+  const pulseAuth = await resolvePulseAuth(options);
+  const bundle = await resolveRules(options, store, { timeoutMs: bootTimeoutMs, pulseAuth });
   // Mode is mutable so a Pulse refresh can flip dry-run ↔ block when SaaS enables production.
   // Precedence: PATCHSTACK_MODE env (local override) > API enforcement > options.mode > dry-run.
   let mode = resolveMode(options, bundle);
@@ -609,7 +612,7 @@ export async function createProtection(options = {}) {
         onError?.(err); // a failed report must not stop the rule refresh
       }
     }
-    const next = await resolveRules(options, store, { timeoutMs: options.refreshTimeoutMs });
+    const next = await resolveRules(options, store, { timeoutMs: options.refreshTimeoutMs, pulseAuth });
     mode = resolveMode(options, next);
     applyBundle(next);
   };
@@ -671,6 +674,34 @@ async function resolveApiKey(options) {
     /* missing, or no filesystem on this runtime — reporting stays off */
   }
   return undefined;
+}
+
+/**
+ * Credential for the authenticated rules lookup (ADR-0018). Same resolution
+ * order and the same edge-runtime caution as resolveApiKey, and falls back to
+ * it so guards installed before pulseAuth existed keep authenticating.
+ *
+ * Returning undefined is fine: the rules fetch then goes out unauthenticated,
+ * which the server still accepts.
+ */
+async function resolvePulseAuth(options) {
+  if (typeof options?.pulseAuth === 'string' && options.pulseAuth.length > 0) return options.pulseAuth;
+  if (typeof process !== 'undefined') {
+    const fromEnv = process.env?.PATCHSTACK_PULSE_AUTH;
+    if (typeof fromEnv === 'string' && fromEnv.length > 0) return fromEnv;
+  }
+  try {
+    if (typeof process === 'undefined' || typeof process.cwd !== 'function') return resolveApiKey(options);
+    const [{ readFileSync }, { join }] = await Promise.all([import('node:fs'), import('node:path')]);
+    const cwd = options?.cwd ?? process.cwd();
+    const raw = readFileSync(join(cwd, '.patchstackrc.json'), 'utf8');
+    const key = JSON.parse(raw)?.pulseAuth;
+    if (typeof key === 'string' && key.length > 0) return key;
+  } catch {
+    /* missing, or no filesystem here — fall through to the apiKey path */
+  }
+
+  return resolveApiKey(options);
 }
 
 // --- phase / response helpers -------------------------------------------

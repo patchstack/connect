@@ -11,6 +11,12 @@ interface ConfigFile {
   siteUuid?: string;
   /** WP-format `{secret}-{oauth.id}` for connector /api/logs/log. Server-only. */
   apiKey?: string;
+  /**
+   * Credential for the authenticated Pulse endpoints (ADR-0018). Same format as
+   * `apiKey` and today the same value, but kept as its own field so the Pulse
+   * and block-log paths can diverge without disturbing each other. Server-only.
+   */
+  pulseAuth?: string;
   endpoint?: string;
   timeoutMs?: number;
   environment?: string;
@@ -72,10 +78,14 @@ export async function resolveConfig(options: ResolveConfigOptions): Promise<Conf
   }
 
   const apiKeyRaw = fromEnv.apiKey ?? fromFile.apiKey ?? null;
+  // Falls back to apiKey so sites provisioned before ADR-0018 authenticate
+  // without re-provisioning: today both hold the same credential.
+  const pulseAuthRaw = fromEnv.pulseAuth ?? fromFile.pulseAuth ?? apiKeyRaw;
 
   return {
     siteUuid: siteUuid === null || siteUuid.length === 0 ? null : siteUuid,
     apiKey: apiKeyRaw === null || apiKeyRaw.length === 0 ? null : apiKeyRaw,
+    pulseAuth: pulseAuthRaw === null || pulseAuthRaw.length === 0 ? null : pulseAuthRaw,
     endpoint,
     timeoutMs,
     environment,
@@ -106,6 +116,15 @@ export async function persistSiteUuid(cwd: string, siteUuid: string): Promise<st
 export async function persistApiKey(cwd: string, apiKey: string): Promise<string> {
   const existing = await readConfigFile(cwd);
   return writeConfigFile(cwd, { ...existing, apiKey });
+}
+
+/**
+ * Persist the credential used for the authenticated Pulse endpoints.
+ * Kept separate from `apiKey` so block-log auth is never disturbed.
+ */
+export async function persistPulseAuth(cwd: string, pulseAuth: string): Promise<string> {
+  const existing = await readConfigFile(cwd);
+  return writeConfigFile(cwd, { ...existing, pulseAuth });
 }
 
 async function readConfigFile(cwd: string): Promise<ConfigFile> {
@@ -152,6 +171,7 @@ function readEnv(): ConfigFile {
   return {
     siteUuid: process.env.PATCHSTACK_SITE_UUID ?? undefined,
     apiKey: process.env.PATCHSTACK_API_KEY ?? undefined,
+    pulseAuth: process.env.PATCHSTACK_PULSE_AUTH ?? undefined,
     endpoint: process.env.PATCHSTACK_ENDPOINT ?? undefined,
     timeoutMs,
     environment:

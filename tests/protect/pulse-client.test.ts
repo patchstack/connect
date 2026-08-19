@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { PulseRuleClient } from '../../src/protect/engine/pulse-client.js';
+import { clearPulseToken } from '../../src/pulse-token.js';
 
 const RULES = { firewall: [{ id: 'rm-npm-0001', rule_v2: [{ parameter: 'post.title', match: { type: 'inline_xss' } }] }], whitelists: [], whitelist_keys: {} };
 
@@ -15,6 +16,57 @@ describe('PulseRuleClient', () => {
     expect(res.firewall[0].id).toBe('rm-npm-0001');
     expect(fetchMock.mock.calls[0][0]).toBe('https://x.test/monitor/pulse/rules/abc-123');
     expect(fetchMock.mock.calls[0][1].method).toBe('GET');
+  });
+
+  it('exchanges the credential and sends a bearer token', async () => {
+    clearPulseToken();
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(new Response(JSON.stringify({ access_token: 'tok', expires_in: 3600 }), { status: 200 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify(RULES), { status: 200, headers: { 'content-type': 'application/json' } }));
+    vi.stubGlobal('fetch', fetchMock);
+
+    const res = await new PulseRuleClient({
+      siteUuid: 'abc-123',
+      baseUrl: 'https://x.test/monitor/pulse',
+      pulseAuth: 'the-secret-987',
+    }).getRules();
+
+    expect(res.success).toBe(true);
+    // Exchanged on the same origin, then the rules request carried the token.
+    expect(fetchMock.mock.calls[0][0]).toBe('https://x.test/monitor/pulse/token');
+    expect(fetchMock.mock.calls[1][1].headers.Authorization).toBe('Bearer tok');
+  });
+
+  it('fetches unauthenticated when no credential is configured', async () => {
+    clearPulseToken();
+    const fetchMock = vi.fn(async () => new Response(JSON.stringify(RULES), { status: 200, headers: { 'content-type': 'application/json' } }));
+    vi.stubGlobal('fetch', fetchMock);
+
+    await new PulseRuleClient({ siteUuid: 'abc-123', baseUrl: 'https://x.test/monitor/pulse' }).getRules();
+
+    // One call: no exchange attempted, and no Authorization header.
+    expect(fetchMock).toHaveBeenCalledOnce();
+    expect(fetchMock.mock.calls[0][1].headers.Authorization).toBeUndefined();
+  });
+
+  it('still fetches rules when the credential exchange fails', async () => {
+    clearPulseToken();
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(new Response('nope', { status: 401 })) // exchange rejected
+      .mockResolvedValueOnce(new Response(JSON.stringify(RULES), { status: 200, headers: { 'content-type': 'application/json' } }));
+    vi.stubGlobal('fetch', fetchMock);
+
+    const res = await new PulseRuleClient({
+      siteUuid: 'abc-123',
+      baseUrl: 'https://x.test/monitor/pulse',
+      pulseAuth: 'the-secret-987',
+    }).getRules();
+
+    // Protection must never hinge on getting a token.
+    expect(res.success).toBe(true);
+    expect(fetchMock.mock.calls[1][1].headers.Authorization).toBeUndefined();
   });
 
   it('fails open (success:false, empty rules) on a non-200', async () => {

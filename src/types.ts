@@ -39,6 +39,12 @@ export interface Config {
    * on first provision. Prefer `PATCHSTACK_API_KEY` in production deploys.
    */
   apiKey: string | null;
+  /**
+   * Credential for the authenticated Pulse endpoints (ADR-0018). Exchanged for
+   * a short-lived bearer token at `monitor/pulse/token`; never sent directly.
+   * Falls back to `apiKey` when unset. Prefer `PATCHSTACK_PULSE_AUTH`.
+   */
+  pulseAuth: string | null;
   endpoint: string;
   timeoutMs: number;
   /** Environment to report the manifest under. Defaults to 'production'. */

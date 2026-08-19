@@ -118,13 +118,23 @@ Environment variables:
 ```json
 {
   "siteUuid": "550e8400-e29b-41d4-a716-446655440000",
+  "apiKey": "…",
+  "pulseAuth": "…",
   "widget": true
 }
 ```
 
 `"widget"` is optional and defaults to `true`; set it to `false` to stop the connector from managing the disclosure-widget tag (see *The disclosure widget*).
 
-The site UUID identifies the site; it is not a secret — the disclosure widget ships the same UUID in client-side HTML, and committing `.patchstackrc.json` is the intended workflow so every developer and CI run reports to the same site. Possession of the UUID lets someone submit dependency manifests for that site (noise, not data access). In CI setups where the file isn't committed, set `PATCHSTACK_SITE_UUID` instead.
+**You do not write `apiKey` or `pulseAuth` yourself.** The first `scan` provisions the site and the connector saves both, so setup needs no manual step. They hold the same value today and exist as separate fields so Pulse ingest and block-log reporting can diverge later.
+
+The site UUID identifies the site and is **not** a secret — the disclosure widget ships the same UUID in client-side HTML.
+
+`apiKey` and `pulseAuth` **are** secrets. `apiKey` authenticates block-log reporting; `pulseAuth` authenticates Pulse ingest (manifest, attack-surface map, package removal) and is exchanged for a short-lived token rather than sent directly. Keep both out of the widget tag, client bundles and public env vars (`NEXT_PUBLIC_*`). For deploys, prefer `PATCHSTACK_API_KEY` and `PATCHSTACK_PULSE_AUTH` in the platform's secret store over the committed file.
+
+If a credential is ever lost, `npx @patchstack/connect login` recovers it — approval happens in the dashboard and rotates the credential.
+
+In CI setups where the file isn't committed, set `PATCHSTACK_SITE_UUID` and `PATCHSTACK_PULSE_AUTH`. Precedence is CLI flag → env var → `.patchstackrc.json`.
 
 ### Sandbox and production manifests
 

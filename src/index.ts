@@ -1,13 +1,13 @@
 import { scanLockfile } from './parsers/index.js';
 import { buildWirePayload } from './normalize.js';
 import { postManifest } from './client.js';
-import { persistApiKey, persistSiteUuid, resolveConfig } from './config.js';
+import { persistApiKey, persistPulseAuth, persistSiteUuid, resolveConfig } from './config.js';
 import type { Config, Manifest, StoreManifestResponse } from './types.js';
 
 export { scanLockfile, detectLockfile } from './parsers/index.js';
 export { buildWirePayload, compareVersions } from './normalize.js';
 export { postManifest, buildClaimUrl, buildEndpointUrl, DEFAULT_ENDPOINT } from './client.js';
-export { persistApiKey, persistSiteUuid, resolveConfig, writeConfigFile } from './config.js';
+export { persistApiKey, persistPulseAuth, persistSiteUuid, resolveConfig, writeConfigFile } from './config.js';
 export {
   detectStack,
   collectHostingEnvKeys,
@@ -63,6 +63,7 @@ export async function scanAndReport(
   }
   if (typeof response.api_key === 'string' && response.api_key.length > 0) {
     await persistApiKey(cwd, response.api_key);
+    await persistPulseAuth(cwd, response.api_key);
   }
 
   return {

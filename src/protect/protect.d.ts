@@ -54,6 +54,13 @@ export interface CreateProtectionOptions {
    * `.patchstackrc.json` `apiKey`. Never put this in the public widget.
    */
   apiKey?: string;
+  /**
+   * Credential for the authenticated rules lookup. Falls back to `apiKey`, then
+   * `PATCHSTACK_PULSE_AUTH`, then `.patchstackrc.json` `pulseAuth`. Exchanged
+   * for a short-lived token; never sent directly. Never put this in the public
+   * widget.
+   */
+  pulseAuth?: string;
   /** Override the Pulse rules API base URL. */
   pulseRulesUrl?: string;
   /**

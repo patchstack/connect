@@ -1,4 +1,5 @@
 import { safeBaseUrl } from '../safe-origin.js';
+import { pulseAuthHeader } from '../../pulse-token.js';
 
 const DEFAULT_BASE_URL = 'https://api.patchstack.com/monitor/pulse';
 const DEFAULT_CACHE_TTL = 300_000;
@@ -24,8 +25,9 @@ export class PulseRuleClient {
   #cacheTime = null;
   #ttlEffective = 0;
   #etag;
+  #pulseAuth;
 
-  constructor({ siteUuid, baseUrl, cacheTtl, etag, timeoutMs } = {}) {
+  constructor({ siteUuid, baseUrl, cacheTtl, etag, timeoutMs, pulseAuth } = {}) {
     // Bounded so app STARTUP can't hang on a slow API: hosted platforms fail a deploy whose health
     // check is slow, and we always have a cache/bundled fallback to boot from.
     this.#timeoutMs = Number(timeoutMs) > 0 ? Number(timeoutMs) : 30_000;
@@ -34,6 +36,7 @@ export class PulseRuleClient {
     this.#baseUrl = safeBaseUrl(baseUrl ?? process.env.PATCHSTACK_PULSE_RULES_URL, DEFAULT_BASE_URL, 'rule endpoint');
     this.#cacheTtl = Number.isFinite(cacheTtl) && cacheTtl > 0 ? cacheTtl : DEFAULT_CACHE_TTL;
     this.#etag = etag ?? null;
+    this.#pulseAuth = pulseAuth ?? null;
     if (!this.#siteUuid) {
       throw new Error('Patchstack site UUID is required. Pass { siteUuid } or set PATCHSTACK_SITE_UUID.');
     }
@@ -46,7 +49,16 @@ export class PulseRuleClient {
     }
     const url = `${this.#baseUrl}/rules/${encodeURIComponent(this.#siteUuid)}`;
     try {
-      const headers = { Accept: 'application/json' };
+      // Unauthenticated when no credential resolved, or when the exchange
+      // fails — the server still accepts the UUID, and protection must never
+      // hinge on getting a token.
+      const headers = {
+        Accept: 'application/json',
+        ...(await pulseAuthHeader(
+          { pulseAuth: this.#pulseAuth, endpoint: this.#baseUrl, timeoutMs: this.#timeoutMs },
+          fetch,
+        )),
+      };
       if (this.#etag) headers['If-None-Match'] = this.#etag;
       const response = await fetch(url, { method: 'GET', headers, signal: AbortSignal.timeout(this.#timeoutMs) });
 

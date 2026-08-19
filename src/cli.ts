@@ -22,7 +22,7 @@ import {
   resolveDemoScenario,
   waitForDemoRule,
 } from './demo.js';
-import { persistApiKey, persistSiteUuid, resolveConfig, writeConfigFile } from './config.js';
+import { persistApiKey, persistPulseAuth, persistSiteUuid, resolveConfig, writeConfigFile } from './config.js';
 import {
   buildInjectionSnippet,
   findHtmlFiles,
@@ -36,6 +36,7 @@ import {
   installCommand,
   renderGuideChecklist,
 } from './guide.js';
+import { login } from './login.js';
 import { runProtect, runVerify } from './protect/install/index.js';
 import { buildInputMap } from './map/index.js';
 import { isProvenFlow } from './map/coordinates.js';
@@ -102,6 +103,11 @@ Usage:
                                                      what's missing, with tailored commands), then
                                                      print the full setup guide. --full prints the
                                                      guide even when setup is complete
+  patchstack-connect login  [options]                Recover this site's Patchstack credential when
+                                                     .patchstackrc.json has been lost. Prints a short
+                                                     code to approve in the dashboard; approving
+                                                     rotates the credential, so the old one stops
+                                                     working
   patchstack-connect help                            Print this message
 
 Options (for scan, setup, status, and uninstall):
@@ -120,6 +126,7 @@ Options (for demo and demo-guide):
 Environment:
   PATCHSTACK_SITE_UUID    Site UUID
   PATCHSTACK_API_KEY      WP-format site API key for block-log reporting (never put in the widget)
+  PATCHSTACK_PULSE_AUTH   Credential for authenticated Pulse ingest (defaults to PATCHSTACK_API_KEY)
   PATCHSTACK_TELEMETRY    Set to off to disable block-log reporting
   PATCHSTACK_API_BASE     API origin for /oauth/token and /api/logs/log (default: https://api.patchstack.com)
   PATCHSTACK_ENDPOINT     API endpoint (default: https://api.patchstack.com/monitor/pulse/manifest)
@@ -203,6 +210,37 @@ async function runInit(args: ParsedArgs): Promise<number> {
   console.log('');
   console.log('Next: run `npx @patchstack/connect scan` to send your first manifest.');
   return 0;
+}
+
+async function runLogin(args: ParsedArgs): Promise<number> {
+  // CI has no browser and no human; build agents must not print credentials
+  // into logs. Deploys use PATCHSTACK_PULSE_AUTH from the platform's secrets.
+  if (process.env.CI !== undefined && process.env.CI !== '' && process.env.CI !== 'false') {
+    console.error('`login` is interactive and cannot run in CI. Set PATCHSTACK_PULSE_AUTH instead.');
+    return 1;
+  }
+
+  const config = await resolveConfig({
+    cwd: process.cwd(),
+    cliSiteUuid: getStringFlag(args.flags, 'site-uuid'),
+    cliEndpoint: getStringFlag(args.flags, 'endpoint'),
+  });
+
+  const result = await login(config, (userCode, verificationUri) => {
+    console.log(`\n  Your code:  ${userCode}`);
+    console.log(`  Approve at: ${verificationUri}\n`);
+    console.log('  Waiting for approval…');
+  });
+
+  if (result.status === 'approved') {
+    // The value itself is never printed — only that it landed.
+    console.log('\n  ✓ Credential restored and saved to .patchstackrc.json.\n');
+    return 0;
+  }
+
+  console.error(`\n  ${result.message ?? 'Login failed.'}\n`);
+
+  return 1;
 }
 
 async function runMap(args: ParsedArgs): Promise<number> {
@@ -367,7 +405,10 @@ async function runScan(
   }
   if (typeof response.api_key === 'string' && response.api_key.length > 0) {
     const target = await persistApiKey(process.cwd(), response.api_key);
-    console.log(`Saved API key to ${target} (for block-log reporting via /api/logs/log; keep out of the public widget).`);
+    // Written to both fields so the Pulse and block-log paths can diverge later
+    // without a re-provision. Never printed — only the path it landed in.
+    await persistPulseAuth(process.cwd(), response.api_key);
+    console.log(`Saved API key to ${target} (authenticates Pulse ingest and block-log reporting; keep out of the public widget).`);
   }
 
   if (response.stored) {
@@ -880,6 +921,8 @@ async function main(): Promise<number> {
       return runSetup(args);
     case 'map':
       return runMap(args);
+    case 'login':
+      return runLogin(args);
     default:
       console.error(`Unknown command: ${args.command}\n`);
       console.error(HELP);
