@@ -76,7 +76,12 @@ This versioned reference ships inside `@patchstack/connect` and documents each s
    <script src="https://cdn.patchstack.com/patchstack-widget.js" data-site-uuid="<SITE_UUID>" defer></script>
    ```
 
-   Framework-specific placement patterns: https://cdn.patchstack.com/llm.html. The site UUID is public by design — it ships in client-side HTML and is not a secret. The `apiKey` (also `PATCHSTACK_API_KEY`, WP format `{secret}-{oauth.id}`) is the opposite: server-only, used to authenticate block-log reporting through the existing connector `POST /api/logs/log` so "Threats blocked" fills in the dashboard. Never put `apiKey` in the widget tag, client bundles, or public env vars (`NEXT_PUBLIC_*`, etc.). Prefer `PATCHSTACK_API_KEY` in production; `.patchstackrc.json` is fine for local DX. Opt out of reporting with `PATCHSTACK_TELEMETRY=off`. If the project must not carry the widget, persist `"widget": false` in `.patchstackrc.json`; otherwise the next scan re-adds it.
+   Framework-specific placement patterns: https://cdn.patchstack.com/llm.html. The site UUID is public by design — it ships in client-side HTML and is not a secret. The credentials are the opposite, and `scan` writes both of them for you — **there is no manual step, and you should never invent or ask the user for these values**:
+
+- `apiKey` (also `PATCHSTACK_API_KEY`, WP format `{secret}-{oauth.id}`) — authenticates block-log reporting through the connector `POST /api/logs/log`, so "Threats blocked" fills in the dashboard.
+- `pulseAuth` (also `PATCHSTACK_PULSE_AUTH`) — authenticates Pulse ingest: the manifest, the attack-surface map and package removal. Exchanged for a short-lived token rather than sent directly. Falls back to `apiKey` when absent, so older projects keep working.
+
+Both are server-only. Never put either in the widget tag, client bundles, or public env vars (`NEXT_PUBLIC_*`, etc.). Prefer `PATCHSTACK_API_KEY` / `PATCHSTACK_PULSE_AUTH` in production; `.patchstackrc.json` is fine for local DX. If a credential is lost, `npx @patchstack/connect login` recovers it via dashboard approval — do not delete the file and re-provision, which would create a second site. Opt out of reporting with `PATCHSTACK_TELEMETRY=off`. If the project must not carry the widget, persist `"widget": false` in `.patchstackrc.json`; otherwise the next scan re-adds it.
 
 4. **Install and verify runtime protection:**
 
@@ -97,7 +102,7 @@ This versioned reference ships inside `@patchstack/connect` and documents each s
 - The CLI never opens the dashboard link and never asks for Patchstack credentials.
 - Label hosted workspace scans with `PATCHSTACK_ENVIRONMENT=sandbox` in that process only. Leave production builds unset (the default is `production`) and never commit a sandbox label into files shared with production.
 - If a step fails, stop and report it. Don't proceed with placeholders.
-- In CI where `.patchstackrc.json` can't be committed, set `PATCHSTACK_SITE_UUID` as an env var instead. Precedence: CLI flag → env var → `.patchstackrc.json`.
+- In CI where `.patchstackrc.json` can't be committed, set `PATCHSTACK_SITE_UUID` and `PATCHSTACK_PULSE_AUTH` as env vars instead. Precedence: CLI flag → env var → `.patchstackrc.json`. `login` is interactive and refuses to run in CI, so CI always takes its credential from the environment.
 
 ## Verifying the install
 
