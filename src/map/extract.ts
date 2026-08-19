@@ -240,12 +240,12 @@ export async function extractInputMap(cwd: string, ts: TsModule, options: Extrac
   // everywhere except the case it warns about.
   notes.push(deploymentShapes.length === 0
     ? '`deploymentShapes` is EMPTY: no deployment artifact was recognized. That is not evidence the app has no server-side runtime — a serverless handler this analysis cannot parse produces no endpoint and looks identical to an app that has none, and entry-point recognition has no completeness flag (coverage.importsComplete covers the import inventory only). A definitive answer needs deployment or build attestation, which source analysis cannot supply.'
-    : `\`deploymentShapes\` records ${deploymentShapes.length} deployment artifact(s) the project declares (${deploymentShapes.map((s) => s.shape).join(', ')}). POSITIVE EVIDENCE ONLY, and findings differ in strength: \`config\` and \`provider-directory\` show a deployment, while \`layout\` (a root \`api/\` or \`functions/\` folder) is an ordinary application folder that may hold no function at all — it must not on its own be read as a server runtime.`);
+    : `\`deploymentShapes\` records ${deploymentShapes.length} deployment artifact(s) the project declares (${deploymentShapes.map((s) => s.shape).join(', ')}). POSITIVE EVIDENCE ONLY, and findings differ in strength: only \`runtime-entry\` (a worker entry, or a provider function directory with source) shows something that serves. \`deployment-config\` means the project deploys to a platform — a static site on Netlify has a \`netlify.toml\` — and \`layout\` (a root \`api/\` or \`functions/\` folder) is an ordinary application folder. Neither may on its own be read as a server runtime.`);
 
   // Classified from what was positively found: the endpoints above, the deployment artifacts, and the
   // manifest. Emitted with its evidence and its own caveat, in every state — the `unknown` and static
   // states are the ones a consumer could over-read, so neither travels without the sentence that bounds it.
-  const serverSurface = classifyServerSurface(cwd, endpoints.length, deploymentShapes);
+  const serverSurface = classifyServerSurface(cwd, endpoints.length, deploymentShapes, ts);
   notes.push(surfaceNote(serverSurface));
 
   return {

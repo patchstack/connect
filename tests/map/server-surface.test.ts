@@ -52,9 +52,9 @@ describe('a server runtime, when something positively shows one', () => {
     })).toBe('server-runtime-detected');
   });
 
-  it('reports a declared deployment even with no endpoint parsed', async () => {
-    // The case the evidence layer exists for: a handler this analysis cannot read still deploys. The
-    // artifact says so, and that outweighs an empty endpoint list.
+  it('reports function source with no endpoint parsed as a runtime', async () => {
+    // The case the evidence layer exists for: a handler this analysis cannot read still serves. The source
+    // in a provider function directory says so, and that outweighs an empty endpoint list.
     expect(await stateOf({
       ...VITE_APP,
       'netlify.toml': '[build]\n  publish = "dist"',
@@ -62,17 +62,24 @@ describe('a server runtime, when something positively shows one', () => {
     })).toBe('server-runtime-detected');
   });
 
+  it('reports a worker entry as a runtime, since that file IS the server', async () => {
+    expect(await stateOf({
+      ...VITE_APP,
+      '_worker.js': 'export default { fetch: () => new Response("ok") }',
+    })).toBe('server-runtime-detected');
+  });
+
   it('carries the evidence that produced the state', async () => {
     const map = await mapOf({
       ...VITE_APP,
-      'wrangler.toml': 'name = "app"',
+      'supabase/functions/notify/index.ts': 'Deno.serve(() => new Response("ok"))',
     });
 
     // A consumer has to be able to show WHY, not just display a badge.
     expect(map.serverSurface?.state).toBe('server-runtime-detected');
-    expect(map.serverSurface?.evidence.map((e) => e.signal)).toContain('deployment-artifact');
-    expect(map.serverSurface?.evidence.find((e) => e.signal === 'deployment-artifact')?.source)
-      .toContain('wrangler.toml');
+    expect(map.serverSurface?.evidence.map((e) => e.signal)).toContain('runtime-entry');
+    expect(map.serverSurface?.evidence.find((e) => e.signal === 'runtime-entry')?.source)
+      .toContain('supabase/functions');
   });
 });
 
@@ -86,8 +93,34 @@ describe('a static build, only when one is named', () => {
       .toBe('static-build-detected');
     expect(await stateOf({ 'package.json': JSON.stringify({ dependencies: { gatsby: '5' } }) }))
       .toBe('static-build-detected');
-    expect(await stateOf({ 'package.json': JSON.stringify({ devDependencies: { '@sveltejs/adapter-static': '3' } }) }))
-      .toBe('static-build-detected');
+  });
+
+  it('reads a real static SvelteKit project, which ships kit AND the adapter', async () => {
+    // The package set people actually have. Treating `@sveltejs/kit` as an unconditional server dependency
+    // made every genuine static SvelteKit app permanently `unknown`, and the test that appeared to cover
+    // this installed the adapter with no kit — a combination nobody ships.
+    expect(await stateOf({
+      'package.json': JSON.stringify({
+        devDependencies: { '@sveltejs/kit': '2', '@sveltejs/adapter-static': '3', vite: '5' },
+      }),
+    })).toBe('static-build-detected');
+
+    // And kit without the static adapter stays undecided, because then it is a server framework.
+    expect(await stateOf({
+      'package.json': JSON.stringify({ devDependencies: { '@sveltejs/kit': '2', '@sveltejs/adapter-node': '5', vite: '5' } }),
+    })).toBe('unknown');
+  });
+
+  it('does not read Vite as static when an SSR companion is installed', async () => {
+    // Vite builds client-only apps and underpins several server frameworks, so `vite` alone is not a
+    // static build. A companion that adds SSR vetoes the reading — conservative in the direction that
+    // matters, since this state means "no request-path protection needed".
+    expect(await stateOf({
+      'package.json': JSON.stringify({ dependencies: { vike: '0.4' }, devDependencies: { vite: '5' } }),
+    })).toBe('unknown');
+    expect(await stateOf({
+      'package.json': JSON.stringify({ devDependencies: { vite: '5', 'vite-plugin-ssr': '0.4' } }),
+    })).toBe('unknown');
   });
 
   it('reads a Next project as static only when it exports statically', async () => {
@@ -100,6 +133,47 @@ describe('a static build, only when one is named', () => {
     expect(await stateOf({
       'package.json': JSON.stringify({ dependencies: { next: '14' } }),
       'next.config.js': "module.exports = { output: 'export' };",
+    })).toBe('static-build-detected');
+  });
+
+  it('ignores output: export when it is only a comment, a string, or dead code', async () => {
+    // A regex over the config text accepted all three, and each would have reclassified an ordinary
+    // server-mode Next app as static — the direction that loses protection. The config is parsed instead:
+    // comments never reach the AST, a string literal is one token, and only a value reachable from the
+    // module's export counts.
+    const commented = await stateOf({
+      'package.json': JSON.stringify({ dependencies: { next: '14' } }),
+      'next.config.js': `
+        // output: 'export'   <- we tried this and reverted
+        /* const old = { output: 'export' }; */
+        module.exports = { reactStrictMode: true };
+      `,
+    });
+    expect(commented, 'a commented-out setting is not configuration').toBe('unknown');
+
+    const stringified = await stateOf({
+      'package.json': JSON.stringify({ dependencies: { next: '14' } }),
+      'next.config.js': `module.exports = { env: { NOTE: "output: 'export' is not set here" } };`,
+    });
+    expect(stringified, 'the words inside a string are not a setting').toBe('unknown');
+
+    const deadCode = await stateOf({
+      'package.json': JSON.stringify({ dependencies: { next: '14' } }),
+      'next.config.js': `
+        const staticExample = { output: 'export' };
+        module.exports = { reactStrictMode: true };
+      `,
+    });
+    expect(deadCode, 'an object nobody exports is not this project’s config').toBe('unknown');
+
+    // And the real thing still reads, including through a plugin wrapper and a named variable.
+    expect(await stateOf({
+      'package.json': JSON.stringify({ dependencies: { next: '14' } }),
+      'next.config.mjs': `const nextConfig = { output: 'export' };\nexport default nextConfig;`,
+    })).toBe('static-build-detected');
+    expect(await stateOf({
+      'package.json': JSON.stringify({ dependencies: { next: '14' } }),
+      'next.config.js': `module.exports = withPlugins({ output: 'export' });`,
     })).toBe('static-build-detected');
   });
 
@@ -145,6 +219,30 @@ describe('a static build, only when one is named', () => {
 });
 
 describe('unknown, which is most of the interesting cases', () => {
+  it('does not read a platform config alone as a server runtime', async () => {
+    // The common shape this gets wrong: a static site deployed to Netlify has a `netlify.toml` and no
+    // server whatsoever. Same for a static Vercel project and a Pages project serving only assets. The
+    // config establishes "deploys somewhere", which is not "serves requests".
+    for (const config of [
+      { 'netlify.toml': '[build]\n  publish = "dist"' },
+      { 'vercel.json': '{"cleanUrls": true}' },
+      { 'wrangler.toml': 'name = "app"\npages_build_output_dir = "dist"' },
+    ]) {
+      expect(await stateOf({ ...VITE_APP, ...config }), JSON.stringify(config)).toBe('unknown');
+    }
+  });
+
+  it('keeps the config visible as evidence, and still refuses the static claim', async () => {
+    // Both halves: the config is why this is not `static-build-detected`, and a consumer needs to see it —
+    // but it is not promoted to a runtime either. `unknown` with a stated reason.
+    const map = await mapOf({ ...VITE_APP, 'netlify.toml': '[build]\n  publish = "dist"' });
+    const signals = map.serverSurface?.evidence ?? [];
+
+    expect(map.serverSurface?.state).toBe('unknown');
+    expect(signals.map((e) => e.signal)).toContain('deployment-config');
+    expect(signals.map((e) => e.signal)).toContain('static-generator');
+  });
+
   it('refuses a static claim when a server framework is installed but no endpoint parsed', async () => {
     // The defect this rule prevents: an unparsed framework produces no endpoints, which looks exactly like
     // a static app. `express` in the manifest says otherwise, so the honest answer is that we do not know.

@@ -130,28 +130,34 @@ export function isInside(candidate: string, boundary: string): boolean {
 // Findings are not equally strong, and the difference is carried in the data rather than left for a
 // consumer to rediscover:
 //
-//   config              the project DECLARES a deployment (`vercel.json`, `wrangler.toml`, `_worker.js`)
-//   provider-directory  a provider-specific function directory holding real source
-//   layout              an ordinary application folder that MIGHT be functions (`api/`, `functions/`)
+//   runtime-entry      code that SERVES — a worker entry, or a provider function directory with source
+//   deployment-config  the project deploys to a platform, which says nothing about anything serving
+//   layout             an ordinary application folder that MIGHT be functions (`api/`, `functions/`)
+//
+// The `deployment-config` line is the one worth being careful about: a static site on Netlify has a
+// `netlify.toml`, a static Vercel project has a `vercel.json`, and a Pages project deploying only assets
+// has a `wrangler.toml`. Reading any of those as a server runtime would classify a large share of purely
+// static apps as having one — so they establish "deploys somewhere", nothing more.
 //
 // `layout` exists because `api/client.ts` is a perfectly normal front-end folder and `api/handler.ts` is a
-// Vercel function, and from the outside they are the same directory name. Treating that as proof of a
-// server runtime would classify a pile of client-only apps as having one. A classifier may use `layout` to
-// stay UNDECIDED; it must not use it alone to conclude a runtime exists.
+// Vercel function, and from the outside they are the same directory name.
+//
+// A classifier may use `deployment-config` and `layout` to stay UNDECIDED; neither may conclude a runtime.
 //
 // `DeploymentEvidence` and `DeploymentShape` are imported from `types.ts` rather than restated: they are the
 // document's contract, and two structural copies of a vocabulary is how the two drift apart later.
 const DEPLOYMENT_SHAPES: Array<{ shape: string; evidence: DeploymentEvidence; files?: string[]; dirs?: string[] }> = [
   // Config first: these are declarations by the project itself, and they survive a build output being
   // absent (a fresh clone has no `.vercel`/`.wrangler` directory).
-  { shape: 'vercel', evidence: 'config', files: ['vercel.json'] },
-  { shape: 'netlify', evidence: 'config', files: ['netlify.toml'] },
+  { shape: 'vercel', evidence: 'deployment-config', files: ['vercel.json'] },
+  { shape: 'netlify', evidence: 'deployment-config', files: ['netlify.toml'] },
   // Wrangler names a Workers/Pages deployment. `.jsonc` and `.json` are both current spellings.
-  { shape: 'cloudflare-workers', evidence: 'config', files: ['wrangler.toml', 'wrangler.jsonc', 'wrangler.json'] },
-  // Pages advanced mode: a single worker entry at the project root takes over routing entirely.
-  { shape: 'cloudflare-pages-advanced', evidence: 'config', files: ['_worker.js', '_worker.ts'] },
-  { shape: 'netlify-functions', evidence: 'provider-directory', dirs: ['netlify/functions', 'netlify/edge-functions'] },
-  { shape: 'supabase-functions', evidence: 'provider-directory', dirs: ['supabase/functions'] },
+  { shape: 'cloudflare-workers', evidence: 'deployment-config', files: ['wrangler.toml', 'wrangler.jsonc', 'wrangler.json'] },
+  // Pages advanced mode: a single worker entry at the project root takes over routing entirely. Unlike a
+  // wrangler config, this file IS the server — it is a runtime entry, not a deployment declaration.
+  { shape: 'cloudflare-pages-advanced', evidence: 'runtime-entry', files: ['_worker.js', '_worker.ts'] },
+  { shape: 'netlify-functions', evidence: 'runtime-entry', dirs: ['netlify/functions', 'netlify/edge-functions'] },
+  { shape: 'supabase-functions', evidence: 'runtime-entry', dirs: ['supabase/functions'] },
   // Ambiguous by nature and reported as one shape: a root `functions/` directory is Cloudflare Pages
   // Functions, Firebase functions, or a Deno layout depending on the platform, and nothing inside the
   // repository always distinguishes them. Naming it honestly is better than guessing a provider.

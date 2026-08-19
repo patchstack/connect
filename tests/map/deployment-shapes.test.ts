@@ -150,8 +150,9 @@ describe('the map carries the evidence, not just the label', () => {
     const byShape = Object.fromEntries((map!.deploymentShapes ?? []).map((s) => [s.shape, s.evidence]));
 
     // `api/client.ts` is an ordinary front-end folder. It is reported — a consumer may want to look —
-    // but as `layout`, so a classifier cannot read a server runtime out of it alone.
-    expect(byShape['cloudflare-workers']).toBe('config');
+    // but as `layout`, so a classifier cannot read a server runtime out of it alone. And `wrangler.toml`
+    // is `deployment-config`: the project deploys to a platform, which is not the same as serving.
+    expect(byShape['cloudflare-workers']).toBe('deployment-config');
     expect(byShape['root-api-directory']).toBe('layout');
   });
 
@@ -168,7 +169,7 @@ describe('the map carries the evidence, not just the label', () => {
     // The whole point of the field, written where a consumer reading the document will see it.
     expect(note, 'the map must say what the field does and does not mean').toBeDefined();
     expect(note).toContain('POSITIVE EVIDENCE ONLY');
-    expect(note).toContain('must not on its own be read as a server runtime');
+    expect(note).toContain('Neither may on its own be read as a server runtime');
   });
 
   it('refuses an artifact that resolves outside the project', () => {
