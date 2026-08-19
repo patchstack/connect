@@ -1,5 +1,5 @@
 import { describe, it, expect, afterEach } from 'vitest';
-import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, writeFileSync, rmSync, symlinkSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { detectDeploymentShapes } from '../../src/map/sources.js';
@@ -122,7 +122,40 @@ describe('the map carries the evidence, not just the label', () => {
     expect(shapes.map((s) => s.source)).toEqual(['netlify.toml', 'netlify/functions']);
   });
 
-  it('states in the notes that an empty list is not evidence of absence', async () => {
+  it('carries the caveat when the list is EMPTY, which is the case that needs it', async () => {
+    // The state a consumer could read as "static", and therefore the one state that must not rely on
+    // type documentation a JSON reader never sees. Attaching the caveat only to non-empty results put
+    // the warning everywhere except the case it warns about.
+    const { map } = await buildInputMap(project({
+      'package.json': JSON.stringify({ dependencies: { react: '18' }, devDependencies: { vite: '5' } }),
+      'src/main.tsx': 'export const App = () => null;',
+    }));
+
+    expect(map!.deploymentShapes).toEqual([]);
+
+    const note = map!.coverage.notes.find((n) => n.includes('deploymentShapes'));
+    expect(note, 'an empty list must still say what it does not mean').toBeDefined();
+    expect(note).toContain('EMPTY');
+    expect(note).toContain('not evidence the app has no server-side runtime');
+    // And it names why the absence is unreliable rather than leaving it as an assertion.
+    expect(note).toContain('cannot parse');
+  });
+
+  it('distinguishes a declared deployment from an ambiguous application folder', async () => {
+    const { map } = await buildInputMap(project({
+      'package.json': '{}',
+      'wrangler.toml': 'name = "app"',
+      'api/client.ts': 'export const get = () => fetch("/x");',
+    }));
+    const byShape = Object.fromEntries((map!.deploymentShapes ?? []).map((s) => [s.shape, s.evidence]));
+
+    // `api/client.ts` is an ordinary front-end folder. It is reported — a consumer may want to look —
+    // but as `layout`, so a classifier cannot read a server runtime out of it alone.
+    expect(byShape['cloudflare-workers']).toBe('config');
+    expect(byShape['root-api-directory']).toBe('layout');
+  });
+
+  it('states in the notes that a non-empty list differs in strength', async () => {
     const dir = project({
       'package.json': JSON.stringify({ dependencies: { react: '18' } }),
       'wrangler.toml': 'name = "app"',
@@ -135,7 +168,47 @@ describe('the map carries the evidence, not just the label', () => {
     // The whole point of the field, written where a consumer reading the document will see it.
     expect(note, 'the map must say what the field does and does not mean').toBeDefined();
     expect(note).toContain('POSITIVE EVIDENCE ONLY');
-    expect(note).toContain('never that the app has no server-side runtime');
+    expect(note).toContain('must not on its own be read as a server runtime');
+  });
+
+  it('refuses an artifact that resolves outside the project', () => {
+    // A symlinked `api/` pointing at a sibling workspace would otherwise become THIS project's
+    // deployment evidence, and the map would describe a runtime belonging to different code. Same rule
+    // the source walk applies, for the same reason.
+    const outside = project({ 'handler.ts': 'export default () => new Response("ok")' });
+    const dir = project({ 'package.json': '{}' });
+    symlinkSync(outside, join(dir, 'api'), 'dir');
+
+    expect(detectDeploymentShapes(dir)).toEqual([]);
+    // Opt in explicitly and it is evidence again — the boundary is a default, not a hard refusal.
+    expect(detectDeploymentShapes(dir, { followOutside: true }).map((s) => s.shape))
+      .toContain('root-api-directory');
+  });
+
+  it('refuses a config file that resolves outside the project', () => {
+    const outside = project({ 'vercel.json': '{}' });
+    const dir = project({ 'package.json': '{}' });
+    symlinkSync(join(outside, 'vercel.json'), join(dir, 'vercel.json'));
+
+    expect(detectDeploymentShapes(dir)).toEqual([]);
+  });
+
+  it('does not count a linked entry inside a provider directory as source', () => {
+    // A real property, stated for the reason it actually holds: `readdirSync(withFileTypes)` classifies a
+    // symlink as neither file nor directory, so a linked entry cannot satisfy the "holds real source"
+    // test — no boundary check needed at that hop, and adding one there was dead code.
+    //
+    // The cost is that a legitimate in-project link inside `netlify/functions` also does not count. That
+    // errs toward reporting no shape, which the map already says is not evidence of absence.
+    const outside = project({ 'index.ts': 'export default () => new Response("ok")' });
+    const dir = project({ 'package.json': '{}' });
+    mkdirSync(join(dir, 'netlify', 'functions'), { recursive: true });
+    symlinkSync(outside, join(dir, 'netlify', 'functions', 'hello'), 'dir');
+    symlinkSync(join(outside, 'index.ts'), join(dir, 'netlify', 'functions', 'linked.ts'));
+
+    expect(detectDeploymentShapes(dir)).toEqual([]);
+    // Even with the boundary opt-out, because the reason is the entry classification and not the boundary.
+    expect(detectDeploymentShapes(dir, { followOutside: true })).toEqual([]);
   });
 
   it('keeps the field additive, so a v3 reader is unaffected', async () => {

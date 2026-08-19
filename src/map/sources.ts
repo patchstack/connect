@@ -125,25 +125,39 @@ export function isInside(candidate: string, boundary: string): boolean {
 // So these are POSITIVE artifacts: a config file or a platform directory that exists. Each finding names
 // the thing that proved it, because a classification a consumer cannot explain is one it should not act
 // on — and the absence of every shape below is still not evidence of absence, only of "we found none".
-const DEPLOYMENT_SHAPES: Array<{ shape: string; files?: string[]; dirs?: string[] }> = [
+//
+// Findings are not equally strong, and the difference is carried in the data rather than left for a
+// consumer to rediscover:
+//
+//   config              the project DECLARES a deployment (`vercel.json`, `wrangler.toml`, `_worker.js`)
+//   provider-directory  a provider-specific function directory holding real source
+//   layout              an ordinary application folder that MIGHT be functions (`api/`, `functions/`)
+//
+// `layout` exists because `api/client.ts` is a perfectly normal front-end folder and `api/handler.ts` is a
+// Vercel function, and from the outside they are the same directory name. Treating that as proof of a
+// server runtime would classify a pile of client-only apps as having one. A classifier may use `layout` to
+// stay UNDECIDED; it must not use it alone to conclude a runtime exists.
+type ShapeEvidence = 'config' | 'provider-directory' | 'layout';
+
+const DEPLOYMENT_SHAPES: Array<{ shape: string; evidence: ShapeEvidence; files?: string[]; dirs?: string[] }> = [
   // Config first: these are declarations by the project itself, and they survive a build output being
   // absent (a fresh clone has no `.vercel`/`.wrangler` directory).
-  { shape: 'vercel', files: ['vercel.json'] },
-  { shape: 'netlify', files: ['netlify.toml'] },
+  { shape: 'vercel', evidence: 'config', files: ['vercel.json'] },
+  { shape: 'netlify', evidence: 'config', files: ['netlify.toml'] },
   // Wrangler names a Workers/Pages deployment. `.jsonc` and `.json` are both current spellings.
-  { shape: 'cloudflare-workers', files: ['wrangler.toml', 'wrangler.jsonc', 'wrangler.json'] },
+  { shape: 'cloudflare-workers', evidence: 'config', files: ['wrangler.toml', 'wrangler.jsonc', 'wrangler.json'] },
   // Pages advanced mode: a single worker entry at the project root takes over routing entirely.
-  { shape: 'cloudflare-pages-advanced', files: ['_worker.js', '_worker.ts'] },
-  { shape: 'netlify-functions', dirs: ['netlify/functions', 'netlify/edge-functions'] },
-  { shape: 'supabase-functions', dirs: ['supabase/functions'] },
+  { shape: 'cloudflare-pages-advanced', evidence: 'config', files: ['_worker.js', '_worker.ts'] },
+  { shape: 'netlify-functions', evidence: 'provider-directory', dirs: ['netlify/functions', 'netlify/edge-functions'] },
+  { shape: 'supabase-functions', evidence: 'provider-directory', dirs: ['supabase/functions'] },
   // Ambiguous by nature and reported as one shape: a root `functions/` directory is Cloudflare Pages
   // Functions, Firebase functions, or a Deno layout depending on the platform, and nothing inside the
   // repository always distinguishes them. Naming it honestly is better than guessing a provider.
-  { shape: 'root-functions-directory', dirs: ['functions'] },
+  { shape: 'root-functions-directory', evidence: 'layout', dirs: ['functions'] },
   // The bare-root Vercel convention: `api/handler.ts` with no framework router. Next owns `pages/api`
   // and `app/api` instead, which the endpoint walk already recognizes, so this is reported as its own
   // shape rather than folded into `vercel`.
-  { shape: 'root-api-directory', dirs: ['api'] },
+  { shape: 'root-api-directory', evidence: 'layout', dirs: ['api'] },
 ];
 
 export interface DeploymentShape {
@@ -151,6 +165,15 @@ export interface DeploymentShape {
   shape: string;
   /** The artifact that proved it, repo-relative — so a consumer can show its evidence. */
   source: string;
+  /** How strong the finding is — see the note above `DEPLOYMENT_SHAPES`. */
+  evidence: ShapeEvidence;
+}
+
+export interface DeploymentScanOptions {
+  /** Project boundary (a real path). Candidates resolving outside it are refused. */
+  boundary?: string;
+  /** Follow artifacts that resolve outside the project (off by default, like the source walk). */
+  followOutside?: boolean;
 }
 
 /**
@@ -158,26 +181,46 @@ export interface DeploymentShape {
  *
  * Cheap by construction: a handful of `statSync` calls at known paths, no walking. Never throws — an
  * unreadable project yields an empty list, which is a "found none" and must not be read as "has none".
+ *
+ * Symlinks are resolved and refused when they leave the project, the same rule the source walk applies. A
+ * symlinked `api/` pointing at a sibling workspace would otherwise become THIS project's deployment
+ * evidence — the analysis would describe a runtime that belongs to different code.
  */
-export function detectDeploymentShapes(cwd: string): DeploymentShape[] {
+export function detectDeploymentShapes(cwd: string, opts: DeploymentScanOptions = {}): DeploymentShape[] {
+  let boundary = opts.boundary ?? cwd;
+  try { boundary = realpathSync(boundary); } catch { /* use as given */ }
+
+  const inProject = (path: string): boolean => {
+    if (opts.followOutside) return true;
+    try {
+      return isInside(realpathSync(path), boundary);
+    } catch {
+      return false; // unresolvable is not in-project, and not evidence
+    }
+  };
+
   const found: DeploymentShape[] = [];
 
   for (const candidate of DEPLOYMENT_SHAPES) {
     for (const file of candidate.files ?? []) {
+      const full = join(cwd, file);
       try {
-        if (statSync(join(cwd, file)).isFile()) {
-          found.push({ shape: candidate.shape, source: file });
+        if (statSync(full).isFile() && inProject(full)) {
+          found.push({ shape: candidate.shape, source: file, evidence: candidate.evidence });
           break; // one spelling is enough; the shape is the claim, not the filename
         }
       } catch { /* not this one */ }
     }
 
     for (const dir of candidate.dirs ?? []) {
+      const full = join(cwd, dir);
       try {
         // A directory with no source file in it is scaffolding, not a deployment: an empty `api/`
         // would otherwise make every project that once considered serverless look like it ships it.
-        if (statSync(join(cwd, dir)).isDirectory() && holdsSourceFile(join(cwd, dir))) {
-          found.push({ shape: candidate.shape, source: dir });
+        // `statSync` FOLLOWS symlinks, which is what makes the boundary check here load-bearing: a
+        // linked `api/` reports as a directory and would otherwise be this project's evidence.
+        if (statSync(full).isDirectory() && inProject(full) && holdsSourceFile(full)) {
+          found.push({ shape: candidate.shape, source: dir, evidence: candidate.evidence });
           break;
         }
       } catch { /* not this one */ }
@@ -187,7 +230,20 @@ export function detectDeploymentShapes(cwd: string): DeploymentShape[] {
   return found;
 }
 
-/** Whether a directory holds at least one source file, one level down included. */
+/**
+ * Whether a directory holds at least one source file, one level down included.
+ *
+ * No boundary check here, and deliberately not: `readdirSync(withFileTypes)` classifies a symlink as
+ * neither a file nor a directory, so a linked entry can never satisfy either branch and cannot smuggle
+ * outside code into this test. Every entry that reaches a `return true` is a real file at a real path
+ * under `dir`, which the caller has already confirmed is in-project.
+ *
+ * (A first version did check the boundary at each hop. It was unreachable — verified by removing the
+ * top-level refusal, which failed the escaping-directory tests while the nested one stayed green.)
+ *
+ * The accepted cost is a legitimate in-project symlink inside a provider directory not counting as
+ * source. That errs toward reporting no shape, which the map already states is not evidence of absence.
+ */
 function holdsSourceFile(dir: string): boolean {
   try {
     for (const entry of readdirSync(dir, { withFileTypes: true })) {

@@ -232,10 +232,14 @@ export async function extractInputMap(cwd: string, ts: TsModule, options: Extrac
     }
   } catch { /* not available */ }
 
-  const deploymentShapes = detectDeploymentShapes(cwd);
-  if (deploymentShapes.length > 0) {
-    notes.push(`\`deploymentShapes\` records ${deploymentShapes.length} deployment artifact(s) the project declares (${deploymentShapes.map((s) => s.shape).join(', ')}). POSITIVE EVIDENCE ONLY: an empty list means none was recognized, never that the app has no server-side runtime — a serverless handler this analysis cannot parse produces no endpoint and looks identical to an app that has none.`);
-  }
+  const deploymentShapes = detectDeploymentShapes(cwd, { boundary, followOutside: options.followSymlinks });
+  // Emitted UNCONDITIONALLY, and the empty case is the one that needs it most: an empty list is the only
+  // state a consumer could read as "this app has no server", and a JSON reader sees none of the type
+  // documentation that says otherwise. Attaching the caveat only when something was found put the warning
+  // everywhere except the case it warns about.
+  notes.push(deploymentShapes.length === 0
+    ? '`deploymentShapes` is EMPTY: no deployment artifact was recognized. That is not evidence the app has no server-side runtime — a serverless handler this analysis cannot parse produces no endpoint and looks identical to an app that has none, and entry-point recognition has no completeness flag (coverage.importsComplete covers the import inventory only). A definitive answer needs deployment or build attestation, which source analysis cannot supply.'
+    : `\`deploymentShapes\` records ${deploymentShapes.length} deployment artifact(s) the project declares (${deploymentShapes.map((s) => s.shape).join(', ')}). POSITIVE EVIDENCE ONLY, and findings differ in strength: \`config\` and \`provider-directory\` show a deployment, while \`layout\` (a root \`api/\` or \`functions/\` folder) is an ordinary application folder that may hold no function at all — it must not on its own be read as a server runtime.`);
 
   return {
     version: 3,

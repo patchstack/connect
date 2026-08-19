@@ -262,6 +262,18 @@ export interface DeploymentShape {
   shape: string;
   /** The artifact that proved it, repo-relative, so a consumer can show its evidence. */
   source: string;
+  /**
+   * How strong the finding is. Not all artifacts prove the same thing:
+   *
+   *   `config`              the project DECLARES a deployment (`vercel.json`, `wrangler.toml`, `_worker.js`)
+   *   `provider-directory`  a provider-specific function directory holding real source
+   *   `layout`              an ordinary application folder that MIGHT hold functions (`api/`, `functions/`)
+   *
+   * `layout` is deliberately weaker: `api/client.ts` is a normal front-end folder and `api/handler.ts` is a
+   * platform function, and the directory name is the same either way. A consumer may use `layout` to stay
+   * undecided; it must not conclude a server runtime from `layout` alone.
+   */
+  evidence: 'config' | 'provider-directory' | 'layout';
 }
 
 export interface Coverage {
