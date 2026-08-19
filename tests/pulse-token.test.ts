@@ -5,6 +5,7 @@ import {
   getPulseToken,
   parsePulseAuth,
   pulseAuthHeader,
+  pulseFetch,
 } from '../src/pulse-token.js';
 import type { Config } from '../src/types.js';
 
@@ -94,6 +95,80 @@ describe('getPulseToken', () => {
     const fetchImpl = vi.fn().mockRejectedValue(new Error('offline'));
 
     expect(await getPulseToken(config(), fetchImpl as never)).toBeNull();
+  });
+});
+
+describe('pulseFetch', () => {
+  const okResponse = { ok: true, status: 200 } as unknown as Response;
+  const unauthorized = { ok: false, status: 401 } as unknown as Response;
+  const forbidden = { ok: false, status: 403 } as unknown as Response;
+  const token = (t: string) => tokenResponse({ access_token: t, expires_in: 3600 });
+
+  it('re-exchanges and retries once when the server rejects a cached token', async () => {
+    const fetchImpl = vi
+      .fn()
+      .mockResolvedValueOnce(token('stale')) // first exchange
+      .mockResolvedValueOnce(unauthorized) // request rejected
+      .mockResolvedValueOnce(token('fresh')) // re-exchange after invalidating
+      .mockResolvedValueOnce(okResponse); // retry succeeds
+
+    const response = await pulseFetch(config(), 'https://api.patchstack.com/x', {}, fetchImpl as never);
+
+    expect(response.status).toBe(200);
+    expect(fetchImpl).toHaveBeenCalledTimes(4);
+    expect(fetchImpl.mock.calls[3][1].headers.Authorization).toBe('Bearer fresh');
+  });
+
+  it('gives up after one retry rather than looping', async () => {
+    const fetchImpl = vi
+      .fn()
+      .mockResolvedValueOnce(token('a'))
+      .mockResolvedValueOnce(unauthorized)
+      .mockResolvedValueOnce(token('b'))
+      .mockResolvedValueOnce(unauthorized);
+
+    const response = await pulseFetch(config(), 'https://api.patchstack.com/x', {}, fetchImpl as never);
+
+    expect(response.status).toBe(401);
+    expect(fetchImpl).toHaveBeenCalledTimes(4);
+  });
+
+  it('does not retry a 403, which a fresh token would not fix', async () => {
+    const fetchImpl = vi.fn().mockResolvedValueOnce(token('a')).mockResolvedValueOnce(forbidden);
+
+    const response = await pulseFetch(config(), 'https://api.patchstack.com/x', {}, fetchImpl as never);
+
+    expect(response.status).toBe(403);
+    expect(fetchImpl).toHaveBeenCalledTimes(2);
+  });
+
+  it('does not retry when the request was unauthenticated to begin with', async () => {
+    const fetchImpl = vi.fn().mockResolvedValue(unauthorized);
+
+    const response = await pulseFetch(
+      config({ pulseAuth: null }),
+      'https://api.patchstack.com/x',
+      {},
+      fetchImpl as never,
+    );
+
+    expect(response.status).toBe(401);
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+  });
+
+  it('preserves the caller\'s headers alongside the bearer', async () => {
+    const fetchImpl = vi.fn().mockResolvedValueOnce(token('a')).mockResolvedValueOnce(okResponse);
+
+    await pulseFetch(
+      config(),
+      'https://api.patchstack.com/x',
+      { method: 'POST', headers: { Accept: 'application/json' } },
+      fetchImpl as never,
+    );
+
+    const sent = fetchImpl.mock.calls[1][1];
+    expect(sent.method).toBe('POST');
+    expect(sent.headers).toEqual({ Accept: 'application/json', Authorization: 'Bearer a' });
   });
 });
 

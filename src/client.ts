@@ -1,6 +1,6 @@
 import { PatchstackError, type Config, type StoreManifestResponse } from './types.js';
 import type { WirePayload } from './normalize.js';
-import { pulseAuthHeader } from './pulse-token.js';
+import { pulseFetch } from './pulse-token.js';
 
 export const DEFAULT_ENDPOINT = 'https://api.patchstack.com/monitor/pulse/manifest';
 export const DEFAULT_TIMEOUT_MS = 30_000;
@@ -96,13 +96,12 @@ export async function postInputMap(
 
   const url = buildInputMapUrl(config.endpoint, config.siteUuid);
   try {
-    const response = await fetch(url, {
+    const response = await pulseFetch(config, url, {
       method: 'POST',
       headers: {
         Accept: 'application/json',
         'Content-Type': 'application/json',
         'User-Agent': '@patchstack/connect',
-        ...(await pulseAuthHeader(config)),
       },
       body: JSON.stringify(map),
       signal: AbortSignal.timeout(config.timeoutMs),
@@ -157,12 +156,11 @@ export async function postPackageRemoved(config: Config): Promise<PackageRemoved
 
   const url = buildPackageRemovedUrl(config.endpoint, config.siteUuid);
   try {
-    const response = await fetch(url, {
+    const response = await pulseFetch(config, url, {
       method: 'POST',
       headers: {
         Accept: 'application/json',
         'User-Agent': '@patchstack/connect',
-        ...(await pulseAuthHeader(config)),
       },
       signal: AbortSignal.timeout(config.timeoutMs),
     });
@@ -230,15 +228,14 @@ export async function postManifest(
 
   let response: Response;
   try {
-    response = await fetch(url, {
+    // Unauthenticated on the bootstrap POST: there is no credential until this
+    // request issues one.
+    response = await pulseFetch(config, url, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
         Accept: 'application/json',
         'User-Agent': '@patchstack/connect',
-        // Empty on the bootstrap POST: there is no credential until this
-        // request issues one.
-        ...(await pulseAuthHeader(config)),
       },
       body: JSON.stringify({ ...payload, environment: config.environment }),
       signal: AbortSignal.timeout(timeoutMs),

@@ -112,3 +112,44 @@ export async function pulseAuthHeader(
   const token = await getPulseToken(config, fetchImpl);
   return token === null ? {} : { Authorization: `Bearer ${token}` };
 }
+
+/**
+ * Send a Pulse request, attaching the bearer token and retrying once if the
+ * server rejects it.
+ *
+ * A cached token can stop being valid before it expires — the credential may
+ * have been rotated or revoked meanwhile — so the server's 401 is authoritative
+ * over our own clock. Without this a long-running process would keep presenting
+ * a dead token until its local expiry.
+ *
+ * Only 401 retries: a 403 is a scope or site mismatch, which a fresh token
+ * would not fix.
+ */
+export async function pulseFetch(
+  config: Config,
+  url: string,
+  init: RequestInit,
+  fetchImpl: typeof fetch = fetch,
+): Promise<Response> {
+  const send = async () => {
+    const auth = await pulseAuthHeader(config, fetchImpl);
+    const response = await fetchImpl(url, {
+      ...init,
+      headers: { ...(init.headers as Record<string, string> | undefined), ...auth },
+    });
+
+    return { response, authenticated: auth.Authorization !== undefined };
+  };
+
+  const first = await send();
+
+  // Retrying an unauthenticated request would just repeat it: the 401 was
+  // about something other than our token.
+  if (first.response.status === 401 && first.authenticated) {
+    clearPulseToken();
+
+    return (await send()).response;
+  }
+
+  return first.response;
+}
