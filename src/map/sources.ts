@@ -112,3 +112,97 @@ export function isInside(candidate: string, boundary: string): boolean {
   const rel = relative(boundary, candidate);
   return rel !== '' && !rel.startsWith('..') && !isAbsolute(rel);
 }
+
+// --- deployment shapes ------------------------------------------------------
+// What the PROJECT says about where it runs, as opposed to what its source says it does.
+//
+// The two answers come apart in the direction that matters. A project can hold a serverless function
+// this extractor cannot parse — an unfamiliar handler signature, a runtime it does not model — and the
+// endpoint walk then reports nothing, which is indistinguishable from an app that has no server at all.
+// A consumer reading only `endpoints: []` would call that app static and tell its owner there is nothing
+// to protect.
+//
+// So these are POSITIVE artifacts: a config file or a platform directory that exists. Each finding names
+// the thing that proved it, because a classification a consumer cannot explain is one it should not act
+// on — and the absence of every shape below is still not evidence of absence, only of "we found none".
+const DEPLOYMENT_SHAPES: Array<{ shape: string; files?: string[]; dirs?: string[] }> = [
+  // Config first: these are declarations by the project itself, and they survive a build output being
+  // absent (a fresh clone has no `.vercel`/`.wrangler` directory).
+  { shape: 'vercel', files: ['vercel.json'] },
+  { shape: 'netlify', files: ['netlify.toml'] },
+  // Wrangler names a Workers/Pages deployment. `.jsonc` and `.json` are both current spellings.
+  { shape: 'cloudflare-workers', files: ['wrangler.toml', 'wrangler.jsonc', 'wrangler.json'] },
+  // Pages advanced mode: a single worker entry at the project root takes over routing entirely.
+  { shape: 'cloudflare-pages-advanced', files: ['_worker.js', '_worker.ts'] },
+  { shape: 'netlify-functions', dirs: ['netlify/functions', 'netlify/edge-functions'] },
+  { shape: 'supabase-functions', dirs: ['supabase/functions'] },
+  // Ambiguous by nature and reported as one shape: a root `functions/` directory is Cloudflare Pages
+  // Functions, Firebase functions, or a Deno layout depending on the platform, and nothing inside the
+  // repository always distinguishes them. Naming it honestly is better than guessing a provider.
+  { shape: 'root-functions-directory', dirs: ['functions'] },
+  // The bare-root Vercel convention: `api/handler.ts` with no framework router. Next owns `pages/api`
+  // and `app/api` instead, which the endpoint walk already recognizes, so this is reported as its own
+  // shape rather than folded into `vercel`.
+  { shape: 'root-api-directory', dirs: ['api'] },
+];
+
+export interface DeploymentShape {
+  /** Which shape was recognized. */
+  shape: string;
+  /** The artifact that proved it, repo-relative — so a consumer can show its evidence. */
+  source: string;
+}
+
+/**
+ * Deployment artifacts present in the project, each with the file or directory that evidenced it.
+ *
+ * Cheap by construction: a handful of `statSync` calls at known paths, no walking. Never throws — an
+ * unreadable project yields an empty list, which is a "found none" and must not be read as "has none".
+ */
+export function detectDeploymentShapes(cwd: string): DeploymentShape[] {
+  const found: DeploymentShape[] = [];
+
+  for (const candidate of DEPLOYMENT_SHAPES) {
+    for (const file of candidate.files ?? []) {
+      try {
+        if (statSync(join(cwd, file)).isFile()) {
+          found.push({ shape: candidate.shape, source: file });
+          break; // one spelling is enough; the shape is the claim, not the filename
+        }
+      } catch { /* not this one */ }
+    }
+
+    for (const dir of candidate.dirs ?? []) {
+      try {
+        // A directory with no source file in it is scaffolding, not a deployment: an empty `api/`
+        // would otherwise make every project that once considered serverless look like it ships it.
+        if (statSync(join(cwd, dir)).isDirectory() && holdsSourceFile(join(cwd, dir))) {
+          found.push({ shape: candidate.shape, source: dir });
+          break;
+        }
+      } catch { /* not this one */ }
+    }
+  }
+
+  return found;
+}
+
+/** Whether a directory holds at least one source file, one level down included. */
+function holdsSourceFile(dir: string): boolean {
+  try {
+    for (const entry of readdirSync(dir, { withFileTypes: true })) {
+      if (entry.isFile() && isSourceFile(entry.name)) return true;
+      // One level deeper covers the per-function layout (`netlify/functions/hello/index.ts`) without
+      // turning this into a walk.
+      if (entry.isDirectory()) {
+        try {
+          for (const nested of readdirSync(join(dir, entry.name), { withFileTypes: true })) {
+            if (nested.isFile() && isSourceFile(nested.name)) return true;
+          }
+        } catch { /* unreadable subdirectory */ }
+      }
+    }
+  } catch { /* unreadable */ }
+
+  return false;
+}

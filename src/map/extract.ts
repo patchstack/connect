@@ -4,7 +4,7 @@ import { relative } from 'node:path';
 import type { SiteInputMap, Endpoint, TsModule } from './types.js';
 import { guessScriptKind } from './ast.js';
 import { buildModuleBindings } from './bindings.js';
-import { collectSources, detectFramework, hasEntrySignal, type WalkStats } from './sources.js';
+import { collectSources, detectDeploymentShapes, detectFramework, hasEntrySignal, type WalkStats } from './sources.js';
 import { functionNameFromPath, routeFromFilePath } from './routes.js';
 import { collectLocalSinks } from './sinks.js';
 import { createModuleGraph } from './module-graph.js';
@@ -232,9 +232,15 @@ export async function extractInputMap(cwd: string, ts: TsModule, options: Extrac
     }
   } catch { /* not available */ }
 
+  const deploymentShapes = detectDeploymentShapes(cwd);
+  if (deploymentShapes.length > 0) {
+    notes.push(`\`deploymentShapes\` records ${deploymentShapes.length} deployment artifact(s) the project declares (${deploymentShapes.map((s) => s.shape).join(', ')}). POSITIVE EVIDENCE ONLY: an empty list means none was recognized, never that the app has no server-side runtime — a serverless handler this analysis cannot parse produces no endpoint and looks identical to an app that has none.`);
+  }
+
   return {
     version: 3,
     framework: detectFramework(cwd),
+    deploymentShapes,
     endpoints,
     imports: importList,
     apiInvocations: invocationList,
