@@ -1,6 +1,7 @@
 import { readFileSync, readdirSync, realpathSync, statSync } from 'node:fs';
 import { join, relative, isAbsolute } from 'node:path';
 import { ROUTE_CALL_RE } from './routes.js';
+import type { DeploymentEvidence, DeploymentShape } from './types.js';
 
 // Cheap textual pre-filter so we only parse files that could contain an entry point. Derived from the
 // same list as the AST recognizer (see ROUTE_REGISTER_NAMES).
@@ -137,9 +138,10 @@ export function isInside(candidate: string, boundary: string): boolean {
 // Vercel function, and from the outside they are the same directory name. Treating that as proof of a
 // server runtime would classify a pile of client-only apps as having one. A classifier may use `layout` to
 // stay UNDECIDED; it must not use it alone to conclude a runtime exists.
-type ShapeEvidence = 'config' | 'provider-directory' | 'layout';
-
-const DEPLOYMENT_SHAPES: Array<{ shape: string; evidence: ShapeEvidence; files?: string[]; dirs?: string[] }> = [
+//
+// `DeploymentEvidence` and `DeploymentShape` are imported from `types.ts` rather than restated: they are the
+// document's contract, and two structural copies of a vocabulary is how the two drift apart later.
+const DEPLOYMENT_SHAPES: Array<{ shape: string; evidence: DeploymentEvidence; files?: string[]; dirs?: string[] }> = [
   // Config first: these are declarations by the project itself, and they survive a build output being
   // absent (a fresh clone has no `.vercel`/`.wrangler` directory).
   { shape: 'vercel', evidence: 'config', files: ['vercel.json'] },
@@ -159,15 +161,6 @@ const DEPLOYMENT_SHAPES: Array<{ shape: string; evidence: ShapeEvidence; files?:
   // shape rather than folded into `vercel`.
   { shape: 'root-api-directory', evidence: 'layout', dirs: ['api'] },
 ];
-
-export interface DeploymentShape {
-  /** Which shape was recognized. */
-  shape: string;
-  /** The artifact that proved it, repo-relative — so a consumer can show its evidence. */
-  source: string;
-  /** How strong the finding is — see the note above `DEPLOYMENT_SHAPES`. */
-  evidence: ShapeEvidence;
-}
 
 export interface DeploymentScanOptions {
   /** Project boundary (a real path). Candidates resolving outside it are refused. */

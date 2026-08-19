@@ -257,6 +257,15 @@ export interface Flow {
   line?: number;
 }
 
+/**
+ * How strong a deployment finding is. Not all artifacts prove the same thing:
+ *
+ *   `config`              the project DECLARES a deployment (`vercel.json`, `wrangler.toml`, `_worker.js`)
+ *   `provider-directory`  a provider-specific function directory holding real source
+ *   `layout`              an ordinary application folder that MIGHT hold functions (`api/`, `functions/`)
+ */
+export type DeploymentEvidence = 'config' | 'provider-directory' | 'layout';
+
 export interface DeploymentShape {
   /** Which shape was recognized, e.g. `netlify-functions`. */
   shape: string;
@@ -273,7 +282,7 @@ export interface DeploymentShape {
    * platform function, and the directory name is the same either way. A consumer may use `layout` to stay
    * undecided; it must not conclude a server runtime from `layout` alone.
    */
-  evidence: 'config' | 'provider-directory' | 'layout';
+  evidence: DeploymentEvidence;
 }
 
 export interface Coverage {
