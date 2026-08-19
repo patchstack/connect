@@ -26,8 +26,12 @@ function sourceFiles(dir: string, out: string[] = []): string[] {
 const STATIC_NODE_IMPORT =
   /^\s*(?:import\s[^;]*?\sfrom\s*|import\s*)['"](?:node:[a-z_/]+|fs|path|os|crypto|dns|net|http|https|child_process|worker_threads)['"]/m;
 
+// Modules outside src/protect/ that the runtime graph nevertheless imports, and which therefore
+// have to obey the same rule. pulse-client.js imports pulse-token for the rules credential.
+const IMPORTED_FROM_OUTSIDE = [fileURLToPath(new URL('../../src/pulse-token.ts', import.meta.url))];
+
 describe('protect runtime stays edge-safe', () => {
-  const files = sourceFiles(PROTECT_DIR);
+  const files = [...sourceFiles(PROTECT_DIR), ...IMPORTED_FROM_OUTSIDE.filter((f) => existsSync(f))];
 
   it('has source files to check', () => {
     expect(files.length).toBeGreaterThan(5);
