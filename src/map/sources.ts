@@ -146,7 +146,23 @@ export function isInside(candidate: string, boundary: string): boolean {
 //
 // `DeploymentEvidence` and `DeploymentShape` are imported from `types.ts` rather than restated: they are the
 // document's contract, and two structural copies of a vocabulary is how the two drift apart later.
-const DEPLOYMENT_SHAPES: Array<{ shape: string; evidence: DeploymentEvidence; files?: string[]; dirs?: string[] }> = [
+interface ShapeCandidate {
+  shape: string;
+  evidence: DeploymentEvidence;
+  files?: string[];
+  dirs?: string[];
+  /**
+   * Require the per-function directory layout (`<name>/index.ts`) rather than any source underneath.
+   *
+   * Supabase needs this: the convention puts shared code in `supabase/functions/_shared/*.ts`, which the
+   * platform does not deploy and which exists in projects with no deployed function at all. Counting it
+   * would report a runtime for a project that serves nothing — and this signal is the one the product
+   * messaging leans on, so a false positive here is a wrong statement to a customer.
+   */
+  requiresFunctionEntry?: boolean;
+}
+
+const DEPLOYMENT_SHAPES: ShapeCandidate[] = [
   // Config first: these are declarations by the project itself, and they survive a build output being
   // absent (a fresh clone has no `.vercel`/`.wrangler` directory).
   { shape: 'vercel', evidence: 'deployment-config', files: ['vercel.json'] },
@@ -157,7 +173,7 @@ const DEPLOYMENT_SHAPES: Array<{ shape: string; evidence: DeploymentEvidence; fi
   // wrangler config, this file IS the server — it is a runtime entry, not a deployment declaration.
   { shape: 'cloudflare-pages-advanced', evidence: 'runtime-entry', files: ['_worker.js', '_worker.ts'] },
   { shape: 'netlify-functions', evidence: 'runtime-entry', dirs: ['netlify/functions', 'netlify/edge-functions'] },
-  { shape: 'supabase-functions', evidence: 'runtime-entry', dirs: ['supabase/functions'] },
+  { shape: 'supabase-functions', evidence: 'runtime-entry', dirs: ['supabase/functions'], requiresFunctionEntry: true },
   // Ambiguous by nature and reported as one shape: a root `functions/` directory is Cloudflare Pages
   // Functions, Firebase functions, or a Deno layout depending on the platform, and nothing inside the
   // repository always distinguishes them. Naming it honestly is better than guessing a provider.
@@ -218,7 +234,8 @@ export function detectDeploymentShapes(cwd: string, opts: DeploymentScanOptions 
         // would otherwise make every project that once considered serverless look like it ships it.
         // `statSync` FOLLOWS symlinks, which is what makes the boundary check here load-bearing: a
         // linked `api/` reports as a directory and would otherwise be this project's evidence.
-        if (statSync(full).isDirectory() && inProject(full) && holdsSourceFile(full)) {
+        const qualifies = candidate.requiresFunctionEntry ? holdsFunctionEntry(full) : holdsSourceFile(full);
+        if (statSync(full).isDirectory() && inProject(full) && qualifies) {
           found.push({ shape: candidate.shape, source: dir, evidence: candidate.evidence });
           break;
         }
@@ -227,6 +244,28 @@ export function detectDeploymentShapes(cwd: string, opts: DeploymentScanOptions 
   }
 
   return found;
+}
+
+/**
+ * Whether a directory holds at least one deployable FUNCTION, in the per-function layout: a child directory
+ * whose name does not start with `_`, containing an `index.*` source file.
+ *
+ * The underscore rule is the platform's own: Supabase treats `supabase/functions/_shared/` as shared code
+ * and does not deploy it, so a project can have that directory full of TypeScript and serve nothing.
+ */
+function holdsFunctionEntry(dir: string): boolean {
+  try {
+    for (const entry of readdirSync(dir, { withFileTypes: true })) {
+      if (!entry.isDirectory() || entry.name.startsWith('_')) continue;
+      try {
+        for (const nested of readdirSync(join(dir, entry.name), { withFileTypes: true })) {
+          if (nested.isFile() && /^index\.(ts|tsx|mts|cts|js|jsx|mjs|cjs)$/.test(nested.name)) return true;
+        }
+      } catch { /* unreadable candidate */ }
+    }
+  } catch { /* unreadable */ }
+
+  return false;
 }
 
 /**

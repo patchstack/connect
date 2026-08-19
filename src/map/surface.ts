@@ -143,9 +143,17 @@ function nextExportsStatically(cwd: string, manifest: Manifest, ts: TsModule | u
   return null;
 }
 
-/** `output: 'export'` on the object this module actually exports. */
+/**
+ * `output: 'export'` on the object this module actually exports.
+ *
+ * Alias following is cycle-safe by construction. `const a = b; const b = a; export default a` would
+ * otherwise recurse until the stack gave out, and while the surrounding catch turns that into a
+ * conservative `unknown`, a malformed config should be an ordinary answer rather than an exception used as
+ * control flow — a thrown RangeError also discards any signal found before it.
+ */
 function exportedConfigIsStatic(sf: any, ts: TsModule): boolean {
   const objects: any[] = [];
+  const followed = new Set<string>();
 
   const collectFrom = (expr: any): void => {
     if (!expr) return;
@@ -155,6 +163,8 @@ function exportedConfigIsStatic(sf: any, ts: TsModule): boolean {
     // `const nextConfig = {...}; export default nextConfig`
     if (ts.isIdentifier(expr)) {
       const name = expr.text;
+      if (followed.has(name)) return; // already resolved, or part of a cycle
+      followed.add(name);
       const visit = (node: any): void => {
         if (ts.isVariableDeclaration(node) && ts.isIdentifier(node.name) && node.name.text === name) {
           collectFrom(node.initializer);

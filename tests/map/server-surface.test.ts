@@ -177,6 +177,23 @@ describe('a static build, only when one is named', () => {
     })).toBe('static-build-detected');
   });
 
+  it('follows an alias chain to the real config, and survives a cyclic one', async () => {
+    // Chained aliases are ordinary in real configs, so the traversal has to follow them...
+    expect(await stateOf({
+      'package.json': JSON.stringify({ dependencies: { next: '14' } }),
+      'next.config.mjs': `const base = { output: 'export' };\nconst config = base;\nexport default config;`,
+    })).toBe('static-build-detected');
+
+    // ...and a malformed one must come back as an ordinary answer rather than an exception used as control
+    // flow. Recursing until the stack gives out also discards any signal found before it.
+    const cyclic = await mapOf({
+      'package.json': JSON.stringify({ dependencies: { next: '14' } }),
+      'next.config.js': `const a = b;\nconst b = a;\nmodule.exports = a;`,
+    });
+    expect(cyclic.serverSurface?.state).toBe('unknown');
+    expect(cyclic.coverage.notes.some((n) => n.includes('serverSurface'))).toBe(true);
+  });
+
   it('does not list a static generator for a Next app that serves', async () => {
     // Two independent rules keep plain `next` out of `static-build-detected`: it is not counted as a static
     // generator, and it IS counted as a server dependency. Only the second decides the state, so mutating

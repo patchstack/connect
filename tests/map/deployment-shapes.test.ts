@@ -94,6 +94,37 @@ describe('what it refuses to claim', () => {
     expect(detectDeploymentShapes(dir)).toEqual([]);
   });
 
+  it('ignores Supabase shared code that no function deploys', () => {
+    // `supabase/functions/_shared/` is the platform's own convention for code shared BETWEEN functions,
+    // and it is not deployed. A project can have it full of TypeScript and serve nothing, so counting it
+    // would report a runtime — and this is the signal the product messaging leans on.
+    expect(shapesOf({
+      'supabase/functions/_shared/cors.ts': 'export const cors = {};',
+      'supabase/functions/_shared/db.ts': 'export const client = null;',
+    })).toEqual([]);
+
+    // The layout that makes the underscore rule matter: `_shared/index.ts` is an ordinary barrel file, and
+    // it satisfies the per-function entry test on name alone. Without the underscore skip, shared code with
+    // a barrel would report a deployed function. (My first version of this test used `_shared/cors.ts`,
+    // which the index check already rejected — so it passed without exercising the rule at all.)
+    expect(shapesOf({
+      'supabase/functions/_shared/index.ts': "export * from './cors.ts';",
+    })).toEqual([]);
+
+    // A real function alongside it is still found.
+    expect(shapesOf({
+      'supabase/functions/_shared/cors.ts': 'export const cors = {};',
+      'supabase/functions/notify/index.ts': 'Deno.serve(() => new Response("ok"))',
+    })).toContain('supabase-functions');
+  });
+
+  it('requires the per-function layout for Supabase, not just any source', () => {
+    // Supabase deploys `<name>/index.ts`. A loose file directly under `functions/` is not a deployable
+    // function, so it is not evidence of one.
+    expect(shapesOf({ 'supabase/functions/helpers.ts': 'export const x = 1;' })).toEqual([]);
+    expect(shapesOf({ 'supabase/functions/notify/handler.ts': 'export default () => {}' })).toEqual([]);
+  });
+
   it('ignores a directory holding no source file', () => {
     expect(shapesOf({ 'api/README.md': '# planned', 'api/notes.txt': 'later' })).toEqual([]);
   });
