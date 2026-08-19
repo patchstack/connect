@@ -257,6 +257,34 @@ export interface Flow {
   line?: number;
 }
 
+/**
+ * How strong a deployment finding is. Not all artifacts prove the same thing:
+ *
+ *   `config`              the project DECLARES a deployment (`vercel.json`, `wrangler.toml`, `_worker.js`)
+ *   `provider-directory`  a provider-specific function directory holding real source
+ *   `layout`              an ordinary application folder that MIGHT hold functions (`api/`, `functions/`)
+ */
+export type DeploymentEvidence = 'config' | 'provider-directory' | 'layout';
+
+export interface DeploymentShape {
+  /** Which shape was recognized, e.g. `netlify-functions`. */
+  shape: string;
+  /** The artifact that proved it, repo-relative, so a consumer can show its evidence. */
+  source: string;
+  /**
+   * How strong the finding is. Not all artifacts prove the same thing:
+   *
+   *   `config`              the project DECLARES a deployment (`vercel.json`, `wrangler.toml`, `_worker.js`)
+   *   `provider-directory`  a provider-specific function directory holding real source
+   *   `layout`              an ordinary application folder that MIGHT hold functions (`api/`, `functions/`)
+   *
+   * `layout` is deliberately weaker: `api/client.ts` is a normal front-end folder and `api/handler.ts` is a
+   * platform function, and the directory name is the same either way. A consumer may use `layout` to stay
+   * undecided; it must not conclude a server runtime from `layout` alone.
+   */
+  evidence: DeploymentEvidence;
+}
+
 export interface Coverage {
   /** Adapter that produced the map. */
   adapter: string;
@@ -391,6 +419,20 @@ export interface SiteInputMap {
   version: 3;
   /** e.g. "tanstack-start". */
   framework: string;
+  /**
+   * Deployment artifacts the project itself declares — a `vercel.json`, a `netlify/functions` directory,
+   * a `wrangler.toml` — each with the file or directory that evidenced it.
+   *
+   * Positive evidence only, and it exists because the negative form is dangerous: a serverless function
+   * this extractor cannot parse produces no endpoint, which is indistinguishable from an app that has no
+   * server at all. A consumer reading only an empty `endpoints` list would call such an app static and
+   * tell its owner there is nothing to protect. An empty list here means "no known deployment artifact
+   * was found", never "this app has no server-side runtime" — that claim needs deployment or build
+   * attestation, which source analysis cannot supply.
+   *
+   * Additive, so still version 3: a v3 reader that ignores it keeps behaving correctly.
+   */
+  deploymentShapes?: DeploymentShape[];
   endpoints: Endpoint[];
   coverage: Coverage;
   /**
