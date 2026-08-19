@@ -48,7 +48,12 @@ describe('login', () => {
 
       expect(result.status).toBe('approved');
       expect(onPrompt).toHaveBeenCalledWith('WDJB-MJHT', 'https://api.patchstack.com/activate');
-      expect(JSON.parse(readFileSync('.patchstackrc.json', 'utf8')).pulseAuth).toBe('new-secret-987');
+
+      // Both fields: approving rotates the one secret block-logs use too, so
+      // leaving apiKey behind would break block-log reporting.
+      const written = JSON.parse(readFileSync('.patchstackrc.json', 'utf8'));
+      expect(written.pulseAuth).toBe('new-secret-987');
+      expect(written.apiKey).toBe('new-secret-987');
     } finally {
       process.chdir(original);
     }
