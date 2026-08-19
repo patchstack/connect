@@ -1,5 +1,6 @@
 import { PatchstackError, type Config, type StoreManifestResponse } from './types.js';
 import type { WirePayload } from './normalize.js';
+import { pulseAuthHeader } from './pulse-token.js';
 
 export const DEFAULT_ENDPOINT = 'https://api.patchstack.com/monitor/pulse/manifest';
 export const DEFAULT_TIMEOUT_MS = 30_000;
@@ -101,6 +102,7 @@ export async function postInputMap(
         Accept: 'application/json',
         'Content-Type': 'application/json',
         'User-Agent': '@patchstack/connect',
+        ...(await pulseAuthHeader(config)),
       },
       body: JSON.stringify(map),
       signal: AbortSignal.timeout(config.timeoutMs),
@@ -160,6 +162,7 @@ export async function postPackageRemoved(config: Config): Promise<PackageRemoved
       headers: {
         Accept: 'application/json',
         'User-Agent': '@patchstack/connect',
+        ...(await pulseAuthHeader(config)),
       },
       signal: AbortSignal.timeout(config.timeoutMs),
     });
@@ -233,6 +236,9 @@ export async function postManifest(
         'Content-Type': 'application/json',
         Accept: 'application/json',
         'User-Agent': '@patchstack/connect',
+        // Empty on the bootstrap POST: there is no credential until this
+        // request issues one.
+        ...(await pulseAuthHeader(config)),
       },
       body: JSON.stringify({ ...payload, environment: config.environment }),
       signal: AbortSignal.timeout(timeoutMs),

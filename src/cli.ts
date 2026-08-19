@@ -22,7 +22,7 @@ import {
   resolveDemoScenario,
   waitForDemoRule,
 } from './demo.js';
-import { persistApiKey, persistSiteUuid, resolveConfig, writeConfigFile } from './config.js';
+import { persistApiKey, persistPulseAuth, persistSiteUuid, resolveConfig, writeConfigFile } from './config.js';
 import {
   buildInjectionSnippet,
   findHtmlFiles,
@@ -120,6 +120,7 @@ Options (for demo and demo-guide):
 Environment:
   PATCHSTACK_SITE_UUID    Site UUID
   PATCHSTACK_API_KEY      WP-format site API key for block-log reporting (never put in the widget)
+  PATCHSTACK_PULSE_AUTH   Credential for authenticated Pulse ingest (defaults to PATCHSTACK_API_KEY)
   PATCHSTACK_TELEMETRY    Set to off to disable block-log reporting
   PATCHSTACK_API_BASE     API origin for /oauth/token and /api/logs/log (default: https://api.patchstack.com)
   PATCHSTACK_ENDPOINT     API endpoint (default: https://api.patchstack.com/monitor/pulse/manifest)
@@ -367,7 +368,10 @@ async function runScan(
   }
   if (typeof response.api_key === 'string' && response.api_key.length > 0) {
     const target = await persistApiKey(process.cwd(), response.api_key);
-    console.log(`Saved API key to ${target} (for block-log reporting via /api/logs/log; keep out of the public widget).`);
+    // Written to both fields so the Pulse and block-log paths can diverge later
+    // without a re-provision. Never printed — only the path it landed in.
+    await persistPulseAuth(process.cwd(), response.api_key);
+    console.log(`Saved API key to ${target} (authenticates Pulse ingest and block-log reporting; keep out of the public widget).`);
   }
 
   if (response.stored) {
