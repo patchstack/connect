@@ -229,17 +229,23 @@ export function detectDeploymentShapes(cwd: string, opts: DeploymentScanOptions 
 
     for (const dir of candidate.dirs ?? []) {
       const full = join(cwd, dir);
+
+      // Containment is settled BEFORE anything reads the directory. `statSync` follows symlinks, so a
+      // linked `api/` reports as a directory here — and inspecting its contents first would mean this
+      // analysis had already read a tree outside the project, whatever it then did with the result. The
+      // guarantee is "we do not look", not "we look and discard".
       try {
-        // A directory with no source file in it is scaffolding, not a deployment: an empty `api/`
-        // would otherwise make every project that once considered serverless look like it ships it.
-        // `statSync` FOLLOWS symlinks, which is what makes the boundary check here load-bearing: a
-        // linked `api/` reports as a directory and would otherwise be this project's evidence.
-        const qualifies = candidate.requiresFunctionEntry ? holdsFunctionEntry(full) : holdsSourceFile(full);
-        if (statSync(full).isDirectory() && inProject(full) && qualifies) {
-          found.push({ shape: candidate.shape, source: dir, evidence: candidate.evidence });
-          break;
-        }
-      } catch { /* not this one */ }
+        if (!statSync(full).isDirectory() || !inProject(full)) continue;
+      } catch {
+        continue; // missing, or unresolvable — either way not evidence
+      }
+
+      // A directory with no source file in it is scaffolding, not a deployment: an empty `api/` would
+      // otherwise make every project that once considered serverless look like it ships it.
+      if (candidate.requiresFunctionEntry ? holdsFunctionEntry(full) : holdsSourceFile(full)) {
+        found.push({ shape: candidate.shape, source: dir, evidence: candidate.evidence });
+        break;
+      }
     }
   }
 
@@ -249,6 +255,8 @@ export function detectDeploymentShapes(cwd: string, opts: DeploymentScanOptions 
 /**
  * Whether a directory holds at least one deployable FUNCTION, in the per-function layout: a child directory
  * whose name does not start with `_`, containing an `index.*` source file.
+ *
+ * Only ever called for a directory the caller has already confirmed is inside the project.
  *
  * The underscore rule is the platform's own: Supabase treats `supabase/functions/_shared/` as shared code
  * and does not deploy it, so a project can have that directory full of TypeScript and serve nothing.

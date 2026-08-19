@@ -1,5 +1,22 @@
-import { describe, it, expect, afterEach } from 'vitest';
+import { describe, it, expect, afterEach, vi } from 'vitest';
 import { mkdtempSync, mkdirSync, writeFileSync, rmSync, symlinkSync } from 'node:fs';
+
+// Records every directory read, delegating to the real implementation so behaviour is unchanged. A spy on
+// the module namespace is not possible under ESM, and the property being asserted — that an escaping link is
+// never TRAVERSED, as opposed to traversed and discarded — is not observable from the return value.
+const { directoryReads } = vi.hoisted(() => ({ directoryReads: [] as string[] }));
+vi.mock('node:fs', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('node:fs')>();
+
+  return {
+    ...actual,
+    readdirSync: (path: unknown, options?: unknown) => {
+      directoryReads.push(String(path));
+
+      return (actual.readdirSync as (p: unknown, o?: unknown) => unknown)(path, options);
+    },
+  };
+});
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { detectDeploymentShapes } from '../../src/map/sources.js';
@@ -215,6 +232,33 @@ describe('the map carries the evidence, not just the label', () => {
     // Opt in explicitly and it is evidence again — the boundary is a default, not a hard refusal.
     expect(detectDeploymentShapes(dir, { followOutside: true }).map((s) => s.shape))
       .toContain('root-api-directory');
+  });
+
+  it('never READS an escaping directory, not merely discards what it found there', () => {
+    // The distinction that matters: refusing to report a finding is not the same guarantee as refusing to
+    // look. Evaluating the contents check before the boundary check meant this analysis walked a tree
+    // outside the project on every scan and then threw the result away — invisible in the output, and
+    // exactly the behaviour the boundary exists to prevent.
+    const outside = project({ 'handler.ts': 'export default () => new Response("ok")' });
+    const dir = project({ 'package.json': '{}' });
+    symlinkSync(outside, join(dir, 'api'), 'dir');
+
+    // Asserted on the LINK path, which is what gets read: the code walks `<project>/api`, and the kernel
+    // resolves it to the external tree. A first version of this control filtered on the target path, which
+    // never appears in a read call — so it would have reported success against the unfixed code too.
+    const linkPath = join(dir, 'api');
+
+    directoryReads.length = 0;
+    expect(detectDeploymentShapes(dir)).toEqual([]);
+    expect(directoryReads.filter((target) => target.startsWith(linkPath)),
+      'an escaping directory must not be read at all').toEqual([]);
+
+    // With the opt-out it IS read. This half proves the control can see a read, so the empty list above
+    // means something — a control that cannot observe the behaviour it forbids is not a control.
+    directoryReads.length = 0;
+    expect(detectDeploymentShapes(dir, { followOutside: true }).map((s) => s.shape))
+      .toContain('root-api-directory');
+    expect(directoryReads.some((target) => target.startsWith(linkPath))).toBe(true);
   });
 
   it('refuses a config file that resolves outside the project', () => {
