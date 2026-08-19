@@ -25,7 +25,7 @@ export function createModuleGraph(ts: TsModule, opts: { cwd: string; boundary: s
       const text = readFileSync(file, 'utf8');
       const sf = ts.createSourceFile(file, text, ts.ScriptTarget.Latest, true, guessScriptKind(ts, file));
       const bindings = buildModuleBindings(sf, ts);
-      // `bindings` is kept for `importedPackage`: the module's own view of what its exports came from.
+      // `bindings` is kept for `importedBinding`: the module's own view of what its exports came from.
       entry = { fnSinks: collectLocalSinks(sf, ts, bindings), calleesOf: collectCallees(sf, ts), bindings };
     } catch {
       entry = null; // fail-open: an unreadable dependency must not break the map
@@ -49,6 +49,8 @@ export function createModuleGraph(ts: TsModule, opts: { cwd: string; boundary: s
   };
 
   return {
+    resolveLocal: resolveInProject,
+
     importedSinks(fromFile, specifier, exportName) {
       const target = resolveInProject(fromFile, specifier);
       if (!target) return [];
@@ -71,14 +73,22 @@ export function createModuleGraph(ts: TsModule, opts: { cwd: string; boundary: s
     // `db.from('orders').insert(...)` resolves to a relative specifier and nothing else. Refusing it (as
     // an unattributable receiver) is right for app code but wrong here: one hop away it is a real
     // dependency, and that chain is import-to-import, fully static — evidence, not inference.
-    importedPackage(fromFile, specifier, exportName) {
+    importedBinding(fromFile, specifier, exportName) {
       const target = resolveInProject(fromFile, specifier);
       if (!target) return undefined;
       const mod = load(target);
       if (!mod) return undefined;
       // The target module's own bindings answer it: `db` there resolves through
       // `const db = createClient(...)` back to the package `createClient` was imported from.
-      return npmPackageOf(mod.bindings.resolve(exportName));
+      const pkg = npmPackageOf(mod.bindings.resolve(exportName));
+      if (pkg === undefined) return undefined;
+      // `origin` and `name` come from the SAME module as the package, which is the point: a consumer
+      // one hop away can see neither how the value was produced there nor what the package calls it.
+      return {
+        package: pkg,
+        origin: mod.bindings.originOf(exportName) ?? 'direct',
+        name: mod.bindings.exportNameOf(exportName) ?? exportName,
+      };
     },
   };
 }

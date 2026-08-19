@@ -65,11 +65,30 @@ export interface ModuleGraph {
   /** Sinks of `exportName` in the module `specifier` resolves to, relative to `fromFile`. */
   importedSinks(fromFile: string, specifier: string, exportName: string): Sink[];
   /**
-   * The npm package `exportName` traces to inside the module `specifier` resolves to — for a client
-   * instance re-exported from a local module (`export const db = createClient(...)`). ONE hop: a
-   * re-export chain (`export { db } from './client'`) is not followed.
+   * What `exportName` traces to inside the module `specifier` resolves to — for a client instance
+   * re-exported from a local module (`export const db = createClient(...)`). ONE hop: a re-export
+   * chain (`export { db } from './client'`) is not followed.
+   *
+   * Three parts, because the package alone cannot answer whether the NAME belongs to that package:
+   *   package  the npm package the value came from
+   *   origin   `direct` — the target module imported this very binding from the package;
+   *            `factory` — the target module DERIVED it (a call result, or its own function)
+   *   name     what the target module knows the binding as inside the package, i.e. its import
+   *            alias resolved back (`import { merge as deepMerge }` → `merge`). The consumer's
+   *            local name is the app's choice and is not part of the package's surface.
    */
-  importedPackage(fromFile: string, specifier: string, exportName: string): string | undefined;
+  importedBinding(
+    fromFile: string,
+    specifier: string,
+    exportName: string,
+  ): { package: string; origin: 'direct' | 'factory'; name: string } | undefined;
+  /**
+   * The in-project file a RELATIVE specifier resolves to, or undefined — a bare package specifier, a path
+   * that resolves to nothing, or a target outside the project boundary. Exposed because a caller that
+   * wants to analyse the target itself (rather than ask this graph about it) still needs the same
+   * resolution and the same boundary refusal; re-deriving either would let them drift apart.
+   */
+  resolveLocal(fromFile: string, specifier: string): string | undefined;
 }
 
 export interface SinkContext {
@@ -167,8 +186,8 @@ function directSinks(node: any, ts: TsModule, bindings: Bindings, ctx?: SinkCont
     // chain, so `attribution: 'import'`), and NO package means it stays app code — which is what keeps
     // `import * as helper from './util'; helper.exec(x)` correctly sink-free.
     if (relative && ctx && spec) {
-      const viaModule = ctx.graph.importedPackage(ctx.file, spec, bindings.exportNameOf(root) ?? root);
-      if (viaModule) return { pkg: viaModule, root, spec };
+      const viaModule = ctx.graph.importedBinding(ctx.file, spec, bindings.exportNameOf(root) ?? root);
+      if (viaModule) return { pkg: viaModule.package, root, spec };
     }
     return { local: bindings.locals.has(root), root, spec, relative };
   };

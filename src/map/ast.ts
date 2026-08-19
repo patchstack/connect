@@ -3,11 +3,14 @@ import type { TsModule } from './types.js';
 // Dependency-free AST helpers shared by every recognizer in this directory.
 
 // Leftmost identifier of a member/call chain (`supabase.from(x).insert` → "supabase", `fs.writeFile` → "fs").
+// `new` is part of a chain like any other link: `new Pool().query` roots at `Pool`, and so does
+// `function getDb() { return new Pool() }` — the shape a generated app uses for a database client. Omitting
+// it dropped the receiver entirely, which reads as "not a dependency" rather than "not followed".
 export function rootIdentifier(node: any, ts: TsModule): string | undefined {
   let cur = node;
   while (cur) {
     if (ts.isIdentifier(cur)) return cur.text;
-    if (ts.isPropertyAccessExpression(cur) || ts.isElementAccessExpression(cur) || ts.isCallExpression(cur) || ts.isNonNullExpression(cur) || ts.isParenthesizedExpression(cur) || ts.isAwaitExpression(cur)) {
+    if (ts.isPropertyAccessExpression(cur) || ts.isElementAccessExpression(cur) || ts.isCallExpression(cur) || ts.isNewExpression(cur) || ts.isNonNullExpression(cur) || ts.isParenthesizedExpression(cur) || ts.isAwaitExpression(cur)) {
       cur = cur.expression;
     } else return undefined;
   }

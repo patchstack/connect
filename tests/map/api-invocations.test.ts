@@ -107,6 +107,33 @@ describe('the invocation inventory answers what sinks cannot', () => {
     expect(find(list, 'sequelize', 'define')!.resolution).toBe('factory');
   });
 
+  it('records a method on a client a local getter constructs', async () => {
+    // `function getDb() { return new Pool() }` in a sibling module, called as `getDb().query(...)`. The
+    // receiver chain runs through a `new` expression, and a chain link the root walk does not know about
+    // is indistinguishable from app code: the sink and the call both vanish, silently.
+    const d = mkdtempSync(join(tmpdir(), 'ps-inv-new-'));
+    mkdirSync(join(d, 'src'), { recursive: true });
+    writeFileSync(join(d, 'package.json'), JSON.stringify({ dependencies: { express: '4', pg: '8' } }));
+    writeFileSync(join(d, 'src', 'db.js'), `
+      const { Pool } = require("pg");
+      function getDb() { return new Pool(); }
+      module.exports = { getDb };
+    `);
+    writeFileSync(join(d, 'src', 'server.js'), `
+      const express = require("express");
+      const { getDb } = require("./db");
+      const app = express();
+      app.get("/rows", async (req, res) => { res.json(await getDb().query("select 1")); });
+      module.exports = app;
+    `);
+    const { map } = await buildInputMap(d);
+    const query = (map!.apiInvocations ?? []).find((i) => i.package === 'pg' && i.symbol === 'query');
+
+    expect(query, 'a method on a constructed client belongs to the constructor’s package').toBeDefined();
+    expect(query!.kind).toBe('member');
+    rmSync(d, { recursive: true, force: true });
+  });
+
   it('marks a dependency re-exported from a local module as a reexport', async () => {
     const list = await inventory();
     const query = find(list, 'pg', 'query');

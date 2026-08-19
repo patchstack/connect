@@ -270,6 +270,13 @@ export interface Coverage {
    * it by subtracting, which reads as "91% unanalysed".
    */
   filesPreFiltered: number;
+  /**
+   * Local modules parsed ONE hop from an entry file (a relative import), for their invocations only — no
+   * endpoints and no sinks are taken from them. Counted apart from `filesParsed` because these files were
+   * already reported under `filesPreFiltered`, and because the two answer different questions: how much of
+   * the app was analysed for entry points, versus how far the invocation inventory reached.
+   */
+  filesHopParsed?: number;
   /** Files skipped because they could not be read/parsed (fail-open). */
   filesSkipped: number;
   /**
