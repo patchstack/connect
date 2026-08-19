@@ -313,7 +313,12 @@ export function classifyServerSurface(
 /** The sentence that goes with each state, so a consumer states the same limits the analysis does. */
 export function surfaceNote(surface: ServerSurface): string {
   if (surface.state === 'server-runtime-detected') {
-    return 'serverSurface: a server runtime was recognized in the analysed source (see its evidence). Request-path protection applies to this app.';
+    // "Applicable", not "applies". Recognizing code that serves requests establishes which KIND of
+    // protection is relevant to these paths; it establishes nothing about whether a guard is installed,
+    // fetching rules or enforcing them — none of which a build-time map can see. The previous wording
+    // ("Request-path protection applies to this app") read as a protection status, and since this note is
+    // rendered verbatim by consumers, it put that claim on a dashboard.
+    return 'serverSurface: a server runtime was recognized in the analysed source (see its evidence). Request-path shielding is APPLICABLE to these paths — this is not a statement that a guard is installed, fetching rules, or enforcing them.';
   }
 
   if (surface.state === 'static-build-detected') {

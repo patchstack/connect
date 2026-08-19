@@ -328,3 +328,44 @@ describe('the field stays safe to consume', () => {
     }
   });
 });
+
+// ── the sentence a consumer renders verbatim ───────────────────────────────────────────────────────
+// `surfaceNote` is copied into `coverage.notes`, and every consumer of this map shows those notes as written.
+// So the note is not internal prose: it is product copy, and until this suite pinned it, nothing did.
+describe('the note each state carries', () => {
+  /** Words that turn an analysis result into a claim about the app's security posture. */
+  const POSTURE_CLAIMS = ['protection applies', 'is protected', 'unprotected', 'is safe', 'is secure', 'not vulnerable'];
+
+  const noteFor = async (files: Record<string, string>): Promise<string> => {
+    const map = await mapOf(files);
+    const note = (map.coverage.notes ?? []).find((n) => n.startsWith('serverSurface'));
+    expect(note, 'every map must carry a serverSurface note').toBeDefined();
+    return note!.toLowerCase();
+  };
+
+  it('says request-path shielding is APPLICABLE, never that it is in place', async () => {
+    // The distinction: this analysis sees source, so it can say which kind of protection is relevant to these
+    // paths. Whether a guard is installed, fetching rules or enforcing them is invisible to it, and the
+    // earlier wording asserted exactly that — on a dashboard, verbatim.
+    const note = await noteFor({
+      'package.json': JSON.stringify({ dependencies: { express: '4.18.2' } }),
+      'server.js': "const express = require('express');\nconst app = express();\napp.get('/api/items', (req, res) => res.json([]));\n",
+    });
+
+    expect(note).toContain('applicable');
+    expect(note).toContain('not a statement that a guard is installed');
+    for (const claim of POSTURE_CLAIMS) expect(note, `note must not claim ${claim}`).not.toContain(claim);
+  });
+
+  it('keeps the static note a description of the source, not of the deployment', async () => {
+    const note = await noteFor(VITE_APP);
+    expect(note).toContain('not deployment attestation');
+    for (const claim of POSTURE_CLAIMS) expect(note, `note must not claim ${claim}`).not.toContain(claim);
+  });
+
+  it('keeps the unknown note from reading as "no server side"', async () => {
+    const note = await noteFor({ 'package.json': JSON.stringify({ dependencies: { express: '4' } }) });
+    expect(note).toContain('must not be read as "no server side"');
+    for (const claim of POSTURE_CLAIMS) expect(note, `note must not claim ${claim}`).not.toContain(claim);
+  });
+});
