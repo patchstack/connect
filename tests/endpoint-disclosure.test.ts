@@ -27,36 +27,83 @@ import { fileURLToPath } from 'node:url';
  */
 const root = join(dirname(fileURLToPath(import.meta.url)), '..');
 
-/** Endpoints the package can reach, and the wording that counts as describing each one. */
-const DISCLOSED_AS: Record<string, RegExp> = {
-  'monitor/pulse/manifest': /manifest/i,
-  'monitor/pulse/rules': /monitor\/pulse\/rules|pulse rules/i,
-  'monitor/pulse/input-map': /input-map/i,
-  // Built from the resolved Pulse base rather than a literal path, which is why it needs the second
-  // extraction pattern below — and why the first version of this file could not see it.
-  detections: /monitor\/pulse\/detections/i,
-  'monitor/pulse/package-removed': /package-removed|package removal/i,
-  'monitor/pulse/token': /short-lived token|pulse\/token/i,
-  'monitor/widget/settings': /monitor\/widget\/settings/i,
-  'monitor/claim': /claim/i,
-  'oauth/token': /oauth\/token/i,
-  // The RFC 8628 login flow. Documented by showing the approval URL the command prints, which is the
-  // form a reader actually needs: it is where they are sent.
-  device: /monitor\/pulse\/device/i,
-  'api/logs/log': /logs\/log/i,
-  'api/get-rules/3': /get-rules/i,
+/**
+ * Endpoints the package can reach, and the wording that counts as describing each one.
+ *
+ * `files` is required for any key that is a BARE SEGMENT rather than a rooted path, and there is a
+ * meta-assertion below enforcing that. A bare segment is ambiguous by construction — `detections` is an
+ * endpoint here and could be a filename somewhere else — so it may only be recognised where it was
+ * actually established, never globally.
+ */
+const DISCLOSED_AS: Record<string, { doc: RegExp; files?: string[] }> = {
+  'monitor/pulse/manifest': { doc: /manifest/i },
+  'monitor/pulse/rules': { doc: /monitor\/pulse\/rules|pulse rules/i },
+  'monitor/pulse/input-map': { doc: /input-map/i },
+  // Built from the resolved Pulse base rather than a literal path, which is why the second extraction
+  // pattern exists — and why the first version of this file could not see it.
+  detections: { doc: /monitor\/pulse\/detections/i, files: ['src/protect/detections.js'] },
+  'monitor/pulse/package-removed': { doc: /package-removed|package removal/i },
+  'monitor/pulse/token': { doc: /short-lived token|pulse\/token/i },
+  'monitor/widget/settings': { doc: /monitor\/widget\/settings/i },
+  'monitor/claim': { doc: /claim/i },
+  'oauth/token': { doc: /oauth\/token/i },
+  'api/logs/log': { doc: /logs\/log/i },
+  'api/get-rules/3': { doc: /get-rules/i },
+  // The RFC 8628 login flow, documented by showing the approval URL the command prints.
+  device: { doc: /monitor\/pulse\/device/i, files: ['src/login.ts'] },
+
+  // The same endpoints again, reached through an interpolated base rather than a literal path. Listing
+  // them as bare segments is not duplication: it is the second identity each one has in the source, and
+  // the classification has to hold for both or the check is only as good as the spelling it happened to
+  // meet first.
+  'input-map': { doc: /input-map/i, files: ['src/client.ts'] },
+  'package-removed': { doc: /package-removed|package removal/i, files: ['src/client.ts'] },
+  // `rules` is BOTH: an endpoint here, and a file the scaffolder writes (see NOT_AN_ENDPOINT). Exactly
+  // the collision that makes global classification unsafe — and both readings are correct, because each
+  // is tied to the files that establish it.
+  rules: {
+    doc: /monitor\/pulse\/rules|pulse rules/i,
+    files: ['src/client.ts', 'src/protect/engine/pulse-client.js'],
+  },
+  token: { doc: /short-lived token|pulse\/token/i, files: ['src/pulse-token.ts'] },
 };
 
-/** Path-shaped strings that are not endpoints of ours. Each needs a reason, not just an entry. */
-const NOT_AN_ENDPOINT: Record<string, string> = {
-  'monitor/pulse': 'the base path the per-site endpoints are built on, not an endpoint itself',
-  'api/tasks': "a route in the demo's own throwaway app on localhost, used as the default exploit target",
-  // Paths INSIDE the target project, written by the scaffolder. They match the same shape as a URL
-  // segment appended to a base, and are classified rather than filtered out by a heuristic: a rule that
-  // guessed which template literals were URLs is what let three real endpoints through last time.
-  patchstack: 'a directory in the target app that the scaffolder writes the guard into',
-  rules: 'a file the scaffolder writes beside the guard in the target app',
-  guard: 'the guard file the scaffolder writes into the target app',
+/**
+ * Path-shaped strings that are not endpoints of ours, scoped to the files that establish them.
+ *
+ * Scoped, because the justification is about a call site and not about a word. `rules` is a file the
+ * scaffolder writes — in the scaffolder. A future `${pulseBase}/rules/${uuid}` request would produce the
+ * same candidate from a different file, and a globally-keyed exemption would wave a real endpoint through
+ * as "not an endpoint". That is this file's own original mistake repeated one level up: an exemption
+ * answering beyond the evidence that earned it.
+ *
+ * The granularity is the FILE, not the call site, and that is the remaining limit: an outbound request
+ * added to a file that already exempts the same word would still be missed. Narrowing further needs real
+ * parsing rather than patterns. What makes the residue small is that these exemptions live in scaffolder
+ * modules, which write files and make no requests — an outbound call appearing in one is odd enough to
+ * notice in review, which is the check this backstops rather than replaces.
+ */
+const NOT_AN_ENDPOINT: Record<string, { why: string; files: string[] }> = {
+  'monitor/pulse': {
+    why: 'the base path the per-site endpoints are built on, not an endpoint itself',
+    files: ['src/login.ts', 'src/protect/detections.js', 'src/protect/engine/pulse-client.js'],
+  },
+  'api/tasks': {
+    why: "a route in the demo's own throwaway app on localhost, used as the default exploit target",
+    files: ['src/cli.ts', 'src/demo.ts'],
+  },
+  patchstack: {
+    why: 'a directory in the target app that the scaffolder writes the guard into',
+    files: ['src/protect/install/adapters/next.ts', 'src/protect/install/seam.ts'],
+  },
+  rules: {
+    why: 'a file the scaffolder writes beside the guard in the target app',
+    files: ['src/protect/install/generic.ts'],
+  },
+  guard: {
+    why: 'the guard file the scaffolder writes into the target app',
+    files: ['src/protect/install/generic.ts'],
+  },
 };
 
 function sourceFiles(dir: string): string[] {
@@ -99,7 +146,11 @@ function candidates(): Map<string, Set<string>> {
       add(`${m[1]}/${m[2]}`.replace(/\/$/, ''), name);
     }
     // A segment appended to an already-resolved base URL, where the root is not in the literal at all.
-    for (const m of text.matchAll(/\$\{[A-Za-z_$][\w$]*\}\/([a-z][a-z0-9-]*)/g)) {
+    // The interpolation is matched as ANY expression, not an identifier: the rules client builds its URL
+    // from `${this.#baseUrl}`, and an identifier-only pattern silently skipped it — so a real endpoint
+    // was invisible here for the same reason the earlier version missed the OAuth exchange. Recognising
+    // one spelling of "a base URL" is not the same as recognising a base URL.
+    for (const m of text.matchAll(/\$\{[^}]*\}\/([a-z][a-z0-9-]*)/g)) {
       if (!API_ROOTS.includes(m[1])) add(m[1], name);
     }
   }
@@ -110,18 +161,38 @@ function candidates(): Map<string, Set<string>> {
 describe('shipped docs disclose every endpoint the package calls', () => {
   const agentInstall = readFileSync(join(root, 'AGENT-INSTALL.md'), 'utf8');
 
-  it('classifies every path-shaped candidate it finds', () => {
-    // The completeness assertion. An unclassified candidate is not skipped — it fails, because the only
-    // honest way to claim every endpoint is disclosed is to have accounted for everything found.
-    const unclassified = [...candidates().entries()]
-      .filter(([path]) => !(path in DISCLOSED_AS) && !(path in NOT_AN_ENDPOINT))
-      .map(([path, files]) => `${path} (in ${[...files].sort().join(', ')})`);
+  it('classifies every path-shaped candidate, at every call site it appears in', () => {
+    // Per OCCURRENCE, not per path. A classification earned in one file says nothing about the same
+    // string appearing in another, and treating it as though it did is how a real endpoint would inherit
+    // an unrelated template-path exemption.
+    const unclassified: string[] = [];
+    for (const [path, files] of candidates()) {
+      for (const file of files) {
+        const exempt = NOT_AN_ENDPOINT[path];
+        if (exempt && exempt.files.includes(file)) continue;
+        const disclosed = DISCLOSED_AS[path];
+        if (disclosed && (disclosed.files === undefined || disclosed.files.includes(file))) continue;
+        unclassified.push(`${path} (in ${file})`);
+      }
+    }
 
     expect(
-      unclassified,
-      'Unclassified path(s). If the package can call it, describe it in AGENT-INSTALL.md and add it to ' +
-        'DISCLOSED_AS; if it is not an endpoint of ours, add it to NOT_AN_ENDPOINT with the reason.',
+      unclassified.sort(),
+      'Unclassified occurrence(s). If the package can call it, describe it in AGENT-INSTALL.md and add ' +
+        'the file to DISCLOSED_AS; if it is not an endpoint of ours, add the file to NOT_AN_ENDPOINT ' +
+        'with the reason. An entry for the same string in another file does not cover this one.',
     ).toEqual([]);
+  });
+
+  it('requires a bare segment to name the files that establish it', () => {
+    // The meta-assertion that keeps the scoping honest: a rooted path like `monitor/pulse/rules` cannot
+    // collide with a scaffolder filename, but a bare `detections` or `rules` can. Any bare-segment entry
+    // recognised globally would reopen exactly the hole this scoping closes.
+    const unscoped = Object.entries(DISCLOSED_AS)
+      .filter(([path, entry]) => !path.includes('/') && entry.files === undefined)
+      .map(([path]) => path);
+
+    expect(unscoped, 'bare-segment endpoints must declare `files`').toEqual([]);
   });
 
   it('finds the endpoints at all', () => {
@@ -136,8 +207,8 @@ describe('shipped docs disclose every endpoint the package calls', () => {
   });
 
   it('names each endpoint in AGENT-INSTALL.md', () => {
-    for (const [path, pattern] of Object.entries(DISCLOSED_AS)) {
-      expect(agentInstall, `AGENT-INSTALL.md must describe ${path}`).toMatch(pattern);
+    for (const [path, { doc }] of Object.entries(DISCLOSED_AS)) {
+      expect(agentInstall, `AGENT-INSTALL.md must describe ${path}`).toMatch(doc);
     }
   });
 
