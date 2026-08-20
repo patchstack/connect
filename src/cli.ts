@@ -36,7 +36,7 @@ import {
   installCommand,
   renderGuideChecklist,
 } from './guide.js';
-import { login } from './login.js';
+import { login, readPendingLogin, startLogin, waitForApproval } from './login.js';
 import { runProtect, runVerify } from './protect/install/index.js';
 import { buildInputMap } from './map/index.js';
 import { isProvenFlow } from './map/coordinates.js';
@@ -103,10 +103,14 @@ Usage:
                                                      what's missing, with tailored commands), then
                                                      print the full setup guide. --full prints the
                                                      guide even when setup is complete
-  patchstack-connect login  [options]                Recover this site's credential when
+  patchstack-connect login  [--wait]                 Recover this site's credential when
                                                      .patchstackrc.json has been lost. Prints a link
-                                                     for the site's OWNER to approve in the dashboard,
-                                                     then waits (10 min). Use this instead of deleting
+                                                     for the site's OWNER to approve in the dashboard.
+                                                     In a terminal it then waits. When the output is
+                                                     piped or captured — an assistant running it — it
+                                                     prints the link and EXITS, so the link is visible
+                                                     immediately; call again with --wait once the user
+                                                     has approved. Use this instead of deleting
                                                      .patchstackrc.json and re-scanning, which would
                                                      provision a second site. Approving ROTATES the
                                                      credential: CI, deploys and other machines using
@@ -229,7 +233,31 @@ async function runLogin(args: ParsedArgs): Promise<number> {
     cliEndpoint: getStringFlag(args.flags, 'endpoint'),
   });
 
-  const result = await login(config, (userCode, verificationUri) => {
+  const approved = () => {
+    // The value itself is never printed — only that it landed.
+    console.log('\n  ✓ Credential restored and saved to .patchstackrc.json.');
+    console.log('    The previous credential no longer works. Update it anywhere else it was set:');
+    console.log('    CI secrets, hosting env vars, preview environments, other checkouts.\n');
+    return 0;
+  };
+
+  // Resuming a request whose link has already been handed to the user.
+  if (args.flags.has('wait')) {
+    const pending = config.siteUuid === null ? null : readPendingLogin(config.siteUuid);
+
+    if (pending === null) {
+      console.error('\n  No login is waiting for approval. Run `patchstack-connect login` first.\n');
+      return 1;
+    }
+
+    const resumed = await waitForApproval(config, pending);
+    if (resumed.status === 'approved') return approved();
+
+    console.error(`\n  ${resumed.message ?? 'Login failed.'}\n`);
+    return 1;
+  }
+
+  const prompt = (userCode: string, verificationUri: string) => {
     console.log(`\n  Your code:  ${userCode}`);
     console.log(`  Approve at: ${verificationUri}\n`);
     // Said before approval, not after: the person deciding needs to know it is
@@ -237,16 +265,32 @@ async function runLogin(args: ParsedArgs): Promise<number> {
     console.log("  Open that link and approve it as the site's owner. Approving issues a new");
     console.log('  credential and stops the current one working — CI, deploys and any other');
     console.log('  machine using it will need the new value.\n');
+  };
+
+  // Nobody is watching this stream. Blocking here would hide the link until the
+  // command exits — by which time the code has expired — so hand it over and
+  // let the caller decide when to wait.
+  if (process.stdout.isTTY !== true) {
+    const started = await startLogin(config);
+
+    if (started.status !== 'started' || started.pending === undefined) {
+      console.error(`\n  ${started.message ?? 'Login failed.'}\n`);
+      return 1;
+    }
+
+    prompt(started.pending.userCode, started.pending.verificationUri);
+    console.log('  Give that link to the user. Once they have approved it, run:');
+    console.log('    npx @patchstack/connect login --wait\n');
+
+    return 0;
+  }
+
+  const result = await login(config, (userCode, verificationUri) => {
+    prompt(userCode, verificationUri);
     console.log('  Waiting for approval (the code expires in 10 minutes)…');
   });
 
-  if (result.status === 'approved') {
-    // The value itself is never printed — only that it landed.
-    console.log('\n  ✓ Credential restored and saved to .patchstackrc.json.');
-    console.log('    The previous credential no longer works. Update it anywhere else it was set:');
-    console.log('    CI secrets, hosting env vars, preview environments, other checkouts.\n');
-    return 0;
-  }
+  if (result.status === 'approved') return approved();
 
   console.error(`\n  ${result.message ?? 'Login failed.'}\n`);
 

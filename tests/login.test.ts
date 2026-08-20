@@ -3,7 +3,13 @@ import { mkdtemp } from 'node:fs/promises';
 import { readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
-import { login } from '../src/login.js';
+import {
+  clearPendingLogin,
+  login,
+  readPendingLogin,
+  startLogin,
+  waitForApproval,
+} from '../src/login.js';
 import type { Config } from '../src/types.js';
 
 function config(overrides: Partial<Config> = {}): Config {
@@ -130,5 +136,73 @@ describe('login', () => {
     });
 
     expect(result.status).toBe('expired');
+  });
+});
+
+/**
+ * The two-step shape exists for assistants: they run a command, wait for it to
+ * exit, and only then read stdout. A command that blocks for ten minutes shows
+ * them nothing until the code has already expired.
+ */
+describe('start and resume', () => {
+  it('returns the link without waiting for approval', async () => {
+    const fetchImpl = vi.fn().mockResolvedValueOnce(json(started));
+
+    const result = await startLogin(config(), { fetchImpl: fetchImpl as never, ...noSleep });
+
+    expect(result.status).toBe('started');
+    expect(result.pending?.userCode).toBe('WDJB-MJHT');
+    expect(result.pending?.verificationUri).toBe(
+      'https://api.patchstack.com/monitor/pulse/device?code=WDJB-MJHT',
+    );
+    // One call: the code endpoint. Nothing polled.
+    expect(fetchImpl).toHaveBeenCalledOnce();
+  });
+
+  it('hands the pending request to a later invocation', async () => {
+    const fetchImpl = vi.fn().mockResolvedValueOnce(json(started));
+    const cfg = config({ siteUuid: 'resume-uuid' });
+
+    await startLogin(cfg, { fetchImpl: fetchImpl as never, ...noSleep });
+
+    const pending = readPendingLogin('resume-uuid');
+    expect(pending?.deviceCode).toBe('device-code');
+
+    clearPendingLogin('resume-uuid');
+    expect(readPendingLogin('resume-uuid')).toBeNull();
+  });
+
+  it('resumes and persists the credential once approved', async () => {
+    const cwd = await mkdtemp(path.join(tmpdir(), 'ps-resume-'));
+    const original = process.cwd();
+    process.chdir(cwd);
+
+    try {
+      const start = vi.fn().mockResolvedValueOnce(json(started));
+      const cfg = config({ siteUuid: 'resume-2' });
+      const begun = await startLogin(cfg, { fetchImpl: start as never, ...noSleep });
+
+      const poll = vi.fn().mockResolvedValueOnce(json({ api_key: 'rotated-987' }));
+      const result = await waitForApproval(cfg, begun.pending!, { fetchImpl: poll as never, ...noSleep });
+
+      expect(result.status).toBe('approved');
+      expect(JSON.parse(readFileSync('.patchstackrc.json', 'utf8')).apiKey).toBe('rotated-987');
+      // The pending request is consumed, so a stale --wait cannot re-redeem it.
+      expect(readPendingLogin('resume-2')).toBeNull();
+    } finally {
+      process.chdir(original);
+    }
+  });
+
+  it('reports an unclaimed site without leaving anything pending', async () => {
+    const fetchImpl = vi.fn().mockResolvedValue(json({ error: '…' }, 409));
+
+    const result = await startLogin(config({ siteUuid: 'unclaimed-1' }), {
+      fetchImpl: fetchImpl as never,
+      ...noSleep,
+    });
+
+    expect(result.status).toBe('unclaimed');
+    expect(readPendingLogin('unclaimed-1')).toBeNull();
   });
 });

@@ -139,13 +139,25 @@ npx @patchstack/connect login
 
 The command asks Patchstack for a short code, prints a link, and polls until the site's **owner approves it in the dashboard**. On approval it writes the new credential into `.patchstackrc.json` and exits. The link opens the approval page with the code already filled in, so the person only has to confirm.
 
-### What you must do, as the agent
+### What you must do, as the agent — two commands, not one
 
-1. **Run the command and surface the link and code to the user verbatim.** They must open it themselves — approval requires their signed-in Patchstack account, which you do not have and must not ask for.
-2. **Leave the command running.** It polls until approved or the code expires (10 minutes). Do not kill it and retry; each run issues a different code and invalidates the one already on screen.
-3. **Report the outcome.** On success, tell them the credential was restored *and* that the previous one no longer works — see the warning below.
+**The command exits immediately when you run it.** It detects that its output is being captured rather than watched by a person, prints the link, and returns. It does **not** block waiting for approval, because you would not see the link until it exited — by which time the code would have expired, and it would look like the command had hung.
+
+```
+1.  npx @patchstack/connect login          → prints the link, exits straight away
+2.  give the user the link, verbatim       → they approve it in the browser
+3.  npx @patchstack/connect login --wait   → run AFTER they confirm; exits when approved
+```
+
+- **Never wrap step 1 in a timeout or kill it** — it returns on its own. If you find yourself waiting on it, something else is wrong.
+- **Do not re-run step 1** to "retry". Each run issues a new code and invalidates the link the user is already looking at. Use `--wait` to resume the request you started.
+- **Only run step 3 once the user says they have approved.** It blocks until approval or expiry, so running it too early is what actually hangs you.
+- **Surface the link verbatim.** Approval requires the user's signed-in Patchstack account, which you do not have and must never ask for.
+- **Report the outcome.** On success, say the credential was restored *and* that the previous one no longer works — see the warning below.
 
 You cannot complete this alone. It is deliberately a human-in-the-loop step: starting the flow proves nothing about who is running it, so the only authorisation is an owner approving in the browser.
+
+(In an interactive terminal the same command prints the link and then waits, since a person can watch it stream. You get the two-step form; a human at a shell gets the one-step form.)
 
 ### Consequences to tell the user about
 
@@ -158,7 +170,8 @@ You cannot complete this alone. It is deliberately a human-in-the-loop step: sta
 | Site was never claimed | `409` — no owner exists to approve | Ask the user to claim the site in the dashboard first, or, if the site is disposable, delete `.patchstackrc.json` and `scan` to provision a fresh one |
 | Running in CI | Refuses to start | CI takes its credential from `PATCHSTACK_PULSE_AUTH`; `login` is for a developer machine |
 | No `siteUuid` configured | Refuses to start | There is no site to recover — run `scan` |
-| Code expired | Poll ends after 10 minutes | Run the command again for a new code |
+| Code expired | `--wait` ends after 10 minutes | Start again from step 1 for a new code |
+| `--wait` with nothing pending | "No login is waiting for approval" | Run step 1 first; `--wait` resumes a request, it does not start one |
 
 ## Uninstalling
 
