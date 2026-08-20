@@ -220,7 +220,12 @@ describe('declaring the capability', () => {
     // with a header: no new outbound path, no request data, and no client timestamp (the server records
     // when IT saw this, because "alive as of" is the claim a wrong clock would fake).
     const seen: Array<Record<string, string>> = [];
-    const fetchMock = vi.fn(async (_url: string, init?: RequestInit) => {
+    const fetchMock = vi.fn(async (url: string, init?: RequestInit) => {
+      if (String(url).includes('token')) {
+        return new Response(JSON.stringify({ access_token: 'jwt-abc', expires_in: 3600 }), {
+          status: 200, headers: { 'Content-Type': 'application/json' },
+        });
+      }
       seen.push((init?.headers ?? {}) as Record<string, string>);
 
       return new Response(JSON.stringify({ firewall: [], whitelists: [], enforcement: 'dry-run' }), {
@@ -232,10 +237,16 @@ describe('declaring the capability', () => {
     const p: any = await createProtection({
       siteUuid: 'site-1',
       pulseRulesUrl: 'https://x.test/monitor/pulse',
+      pulseAuth: 'the-secret-40-chars-long-ish-value-here-987',
       reportDetections: true,
     });
 
-    expect(seen.some((h) => h['X-Patchstack-Detections'] === 'enabled')).toBe(true);
+    // Authenticated, so the claim carries weight and is made.
+    const claimed = seen.filter((h) => h['X-Patchstack-Detections'] === 'enabled');
+    expect(claimed.length).toBeGreaterThan(0);
+    for (const headers of claimed) {
+      expect(headers.Authorization, 'the claim only travels on an authenticated request').toContain('Bearer');
+    }
     p.stopRefresh?.();
   });
 
@@ -292,5 +303,40 @@ describe('the wiring actually runs', () => {
     await new Promise((resolve) => setTimeout(resolve, 5));
 
     expect(posted.some((url) => url.includes('/detections/site-1'))).toBe(true);
+  });
+});
+
+describe('the capability claim is only made when it carries weight', () => {
+  it('stays silent on an unauthenticated rules fetch', async () => {
+    // The rules endpoint still accepts a bare UUID, so on that path this header is an assertion anyone
+    // holding the UUID could make — and it asserts the reassuring thing, that reporting is on. A dashboard
+    // would then report a site as covered because a stranger said so. Fetching rules must not hinge on a
+    // token; claiming a capability must.
+    const seen: Array<Record<string, string>> = [];
+    const fetchMock = vi.fn(async (_url: string, init?: RequestInit) => {
+      seen.push((init?.headers ?? {}) as Record<string, string>);
+
+      return new Response(JSON.stringify({ firewall: [], whitelists: [], enforcement: 'dry-run' }), {
+        status: 200, headers: { 'Content-Type': 'application/json' },
+      });
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    // No credential anywhere: no `pulseAuth`, and nothing for the token exchange to find.
+    const p: any = await createProtection({
+      siteUuid: 'site-1',
+      pulseRulesUrl: 'https://x.test/monitor/pulse',
+      reportDetections: true,
+    });
+
+    const rulesRequests = seen.filter((h) => h.Accept === 'application/json');
+    expect(rulesRequests.length).toBeGreaterThan(0);
+    for (const headers of rulesRequests) {
+      expect(headers.Authorization).toBeUndefined();
+      expect(headers['X-Patchstack-Detections'], 'an unauthenticated request may not claim the capability')
+        .toBeUndefined();
+    }
+
+    p.stopRefresh?.();
   });
 });

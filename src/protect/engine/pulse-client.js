@@ -64,14 +64,23 @@ export class PulseRuleClient {
       // Unauthenticated when no credential resolved, or when the exchange
       // fails — the server still accepts the UUID, and protection must never
       // hinge on getting a token.
-      const headers = {
-        Accept: 'application/json',
-        ...(await pulseAuthHeader(
-          { pulseAuth: this.#pulseAuth, endpoint: this.#baseUrl, timeoutMs: this.#timeoutMs },
-          fetch,
-        )),
-      };
-      if (this.#reportsDetections) headers['X-Patchstack-Detections'] = 'enabled';
+      const auth = await pulseAuthHeader(
+        { pulseAuth: this.#pulseAuth, endpoint: this.#baseUrl, timeoutMs: this.#timeoutMs },
+        fetch,
+      );
+      const headers = { Accept: 'application/json', ...auth };
+      // Claimed only on an authenticated request. The rules endpoint still accepts a bare UUID, so on that
+      // path this header would be an assertion anyone holding the UUID could make — and it asserts the
+      // reassuring thing: that reporting is on. A dashboard would then say a site is covered because a
+      // stranger said so.
+      //
+      // Fetching rules must never hinge on getting a token (protection comes first), but CLAIMING a
+      // capability may: an unauthenticated request is one whose statements about this site carry no weight.
+      // The server gates on a verified token as well — a client-side check only removes the accidental
+      // case, since the forgeable one is not the client's to prevent.
+      if (this.#reportsDetections && typeof auth.Authorization === 'string') {
+        headers['X-Patchstack-Detections'] = 'enabled';
+      }
       if (this.#etag) headers['If-None-Match'] = this.#etag;
       const response = await fetch(url, { method: 'GET', headers, signal: AbortSignal.timeout(this.#timeoutMs) });
 
