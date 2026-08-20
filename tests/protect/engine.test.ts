@@ -123,6 +123,52 @@ describe('RuleEngine', () => {
       }
     });
 
+    it('should match internal_host when the value is a URL, not a bare host', () => {
+      // The gap this closes: `internal_host` was written for the egress phase, where the value IS the
+      // destination host. On the request phase the same question arrives as an application parameter and
+      // the value is a full URL — so a served, correctly-pinned SSRF rule matched nothing at all.
+      for (const value of [
+        'http://169.254.169.254/latest/meta-data/',
+        'http://localhost:3000/admin',
+        'https://127.0.0.1/x',
+        'http://[::1]/x',
+        'http://metadata.google.internal/computeMetadata/v1/',
+        '//10.0.0.5/x',
+        '169.254.169.254:80',
+        '[::1]:8080',
+      ]) {
+        assert.strictEqual(matchValue('internal_host', value, null), true, `${value} should be internal`);
+      }
+
+      for (const value of [
+        'https://api.stripe.example/v1/charges',
+        'http://8.8.8.8/resolve',
+        'how to use localhost in docker',
+        'https://example.com/?next=/admin',
+      ]) {
+        assert.strictEqual(matchValue('internal_host', value, null), false, `${value} should be external`);
+      }
+    });
+
+    it('should read the host a URL actually contacts, not the one it advertises', () => {
+      // Why the host is parsed rather than sliced out of the string. Userinfo puts a trusted-looking name
+      // before the real host, and a fragment puts one after it; a substring check reads the wrong one in
+      // both directions, which is a bypass in the first case and a false positive in the second.
+      assert.strictEqual(matchValue('internal_host', 'http://api.stripe.example@169.254.169.254/', null), true);
+      assert.strictEqual(matchValue('internal_host', 'http://evil.example/#@127.0.0.1', null), false);
+      assert.strictEqual(matchValue('internal_host', 'http://evil.example/?next=http://127.0.0.1/', null), false);
+    });
+
+    it('should leave a bare host classified exactly as before', () => {
+      // The egress path and the built-in default rule pass `egress.host`, which is already a hostname.
+      // Extraction must be a no-op for those, or this change would alter what a live guard blocks today.
+      assert.strictEqual(matchValue('internal_host', '169.254.169.254', null), true);
+      assert.strictEqual(matchValue('internal_host', '::1', null), true);
+      assert.strictEqual(matchValue('internal_host', '2130706433', null), true); // decimal 127.0.0.1
+      assert.strictEqual(matchValue('internal_host', 'example.com', null), false);
+      assert.strictEqual(matchValue('internal_host', '', null), false);
+    });
+
     it('should match quotes (and the inline_js_xss alias)', () => {
       assert.strictEqual(matchValue('quotes', `x' OR 1=1`, null), true);
       assert.strictEqual(matchValue('quotes', 'no quotes here', null), false);
