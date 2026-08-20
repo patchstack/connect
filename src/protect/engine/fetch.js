@@ -7,6 +7,7 @@
 // shape from a `Request`, so no engine changes are needed beyond keeping the hot path
 // free of Node-only APIs.
 import { RuleEngine } from './engine.js';
+import { notify } from '../notify.js';
 
 // Cap how much request body we buffer for inspection. A larger body is left UNSCANNED
 // (fail-open) rather than buffered into memory — matches the node adapter's maxBodyBytes.
@@ -243,9 +244,7 @@ export function createFetchMiddleware(rulesData, options = {}) {
       req = await fromFetchRequest(request); // shaping inside the try — a bad/relative request.url must fail open
       result = engine.evaluate(req);
     } catch (err) {
-      if (options.onError) {
-        options.onError(err);
-      }
+      notify(options.onError, err, 'onError');
       return null; // fail open
     }
 

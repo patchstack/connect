@@ -5,6 +5,7 @@
 import { PatchstackRuleClient } from '../engine/index.js';
 import { PulseRuleClient } from '../engine/pulse-client.js';
 import { validateBundle } from './validate.js';
+import { notify } from '../notify.js';
 
 // A LIVE update is accepted ATOMICALLY. Dropping individual invalid rules is fine for a bundle we
 // already trust (a cache entry, a bundled fallback), but for a fresh remote response it would let a
@@ -29,10 +30,10 @@ function reportRejections(rejected, options, label) {
     }
   }
   const sample = rejected.slice(0, 3).map((r) => `${r.id} (${r.reason})`).join('; ');
-  options.onError?.(new Error(
+  notify(options.onError, new Error(
     `${label}: rejected the entire update because ${rejected.length} rule(s) failed validation — ` +
     `keeping the previous ruleset and NOT caching this response: ${sample}${rejected.length > 3 ? ', …' : ''}`,
-  ));
+  ), 'onError');
 }
 
 export async function resolveRules(options, store, ctx = {}) {
@@ -58,14 +59,14 @@ export async function resolveRules(options, store, ctx = {}) {
       return bundle;
     }
     if (prior?.bundle) {
-      options.onError?.(new Error(`pulse rule fetch failed (${res.error ?? 'no usable response'}); using cached bundle`));
+      notify(options.onError, new Error(`pulse rule fetch failed (${res.error ?? 'no usable response'}); using cached bundle`), 'onError');
       return normalizeBundle(prior.bundle, options);
     }
     if (options.rules) {
-      options.onError?.(new Error(`pulse rule fetch failed (${res.error ?? 'no usable response'}); using bundled fallback`));
+      notify(options.onError, new Error(`pulse rule fetch failed (${res.error ?? 'no usable response'}); using bundled fallback`), 'onError');
       return normalizeBundle(options.rules, options);
     }
-    options.onError?.(new Error(`pulse rule fetch failed (${res.error ?? 'no usable response'}); no cache — running with no rules`));
+    notify(options.onError, new Error(`pulse rule fetch failed (${res.error ?? 'no usable response'}); no cache — running with no rules`), 'onError');
     return emptyBundle();
   }
 
@@ -87,10 +88,10 @@ export async function resolveRules(options, store, ctx = {}) {
       return bundle;
     }
     if (prior?.bundle) {
-      options.onError?.(new Error(`rule fetch failed (${res.error ?? 'no usable response'}); using cached bundle`));
+      notify(options.onError, new Error(`rule fetch failed (${res.error ?? 'no usable response'}); using cached bundle`), 'onError');
       return normalizeBundle(prior.bundle, options);
     }
-    options.onError?.(new Error(`rule fetch failed (${res.error ?? 'no usable response'}); no cache — running with no rules`));
+    notify(options.onError, new Error(`rule fetch failed (${res.error ?? 'no usable response'}); no cache — running with no rules`), 'onError');
     return emptyBundle();
   }
 

@@ -7,6 +7,8 @@
 //   - makeRefreshHandler: a PUSH endpoint — an authenticated fetch handler the platform/SaaS hits
 //     for an immediate refresh (zero-day fast lane) instead of waiting for the next poll.
 
+import { notify } from '../notify.js';
+
 const JITTER_FRACTION = 0.1;
 const MAX_BACKOFF_MULTIPLIER = 8; // cap consecutive-failure backoff at 8× the base interval
 
@@ -31,7 +33,7 @@ export function startRefresh(tick, { refreshMs, onError } = {}) {
       failures = 0;
     } catch (err) {
       failures++;
-      onError?.(err);
+      notify(onError, err, 'onError');
     }
     schedule();
   };

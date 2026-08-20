@@ -1,3 +1,4 @@
+import { notify } from '../notify.js';
 import { PatchstackRuleClient } from './client.js';
 import { RuleEngine } from './engine.js';
 
@@ -167,9 +168,7 @@ export function protectSync(options = {}) {
           initError = err;
           console.warn(`[patchstack] WAF lazy init failed: ${err.message}. Passing through.`);
 
-          if (options.onError) {
-            options.onError(err);
-          }
+          notify(options.onError, err, 'onError');
         });
     }
 

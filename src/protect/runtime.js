@@ -29,6 +29,7 @@ import { makeStore } from './rules/store.js';
 import { resolveRules } from './rules/source.js';
 import { startRefresh, makeRefreshHandler } from './rules/refresh.js';
 import { createDetectionReporter } from './detections.js';
+import { notify } from './notify.js';
 import { createFirewallLogReporter, resolveApiBase, telemetryEnabled } from './firewall-log.js';
 
 // Supabase-tunnel guard for AI-builder apps (Lovable / TanStack Start + Supabase).
@@ -94,7 +95,7 @@ export async function createProtection(options = {}) {
   let detections = null;
 
   const onDetect = (detection) => {
-    userOnDetect(detection);
+    notify(userOnDetect, detection, 'onDetect');
     if (detections) detections.record(detection);
     if (firewallLog && detection?.mode === 'block') {
       firewallLog.record({
@@ -136,7 +137,7 @@ export async function createProtection(options = {}) {
       options.siteUuid +
       '. Rule updates may be rejected and this guard would keep running on its cached rules. ' +
       'Set PATCHSTACK_API_KEY (or pass { pulseAuth }) — required on runtimes without a filesystem.';
-    onError?.(new Error(message));
+    notify(onError, new Error(message), 'onError');
     console.warn(message);
   }
   const bundle = await resolveRules(options, store, { timeoutMs: bootTimeoutMs, pulseAuth });
@@ -285,7 +286,7 @@ export async function createProtection(options = {}) {
         // the response phase used to build (which made `when` on a response rule inert).
         result = re.evaluate({ ...(reqCtx || {}), _response: { ...meta, body: text } });
       } catch (err) {
-        onError?.(err);
+        notify(onError, err, 'onError');
         continue;
       }
       if (!result.blocked) continue;
@@ -426,7 +427,7 @@ export async function createProtection(options = {}) {
       try {
         r = screenText(text, { status: res.statusCode, headers: res.getHeaders ? res.getHeaders() : {} }, reqCtx);
       } catch (err) {
-        onError?.(err);
+        notify(onError, err, 'onError');
         for (const c of chunks) origWrite(c);
         return origEnd(cb);
       }
@@ -467,7 +468,7 @@ export async function createProtection(options = {}) {
     try {
       result = egressEngine.evaluate({ _egress: { url, host, method } });
     } catch (err) {
-      onError?.(err);
+      notify(onError, err, 'onError');
       return false;
     }
     if (!result.blocked) return false;
@@ -507,7 +508,7 @@ export async function createProtection(options = {}) {
         try {
           result = engine.evaluate(await fromFetchRequest(request));
         } catch (err) {
-          onError?.(err);
+          notify(onError, err, 'onError');
           return null; // fail open
         }
         return decide('request', result, () => blockResponse(result, request), () => null, fetchRequestMeta(request));
@@ -533,7 +534,7 @@ export async function createProtection(options = {}) {
         try {
           result = engine.evaluate(req);
         } catch (err) {
-          onError?.(err);
+          notify(onError, err, 'onError');
           if (exprOptions.screenResponses) wrapNodeResponse(res, reqContextFromNode(req));
           return next();
         }
@@ -573,7 +574,7 @@ export async function createProtection(options = {}) {
           chunks.push(chunk);
         });
         req.on('error', (err) => {
-          onError?.(err);
+          notify(onError, err, 'onError');
           next();
         });
         req.on('end', () => {
@@ -585,7 +586,7 @@ export async function createProtection(options = {}) {
             shaped = fromNodeRequest(req, rawBody);
             result = engine.evaluate(shaped);
           } catch (err) {
-            onError?.(err);
+            notify(onError, err, 'onError');
             return next();
           }
           decide(
@@ -648,7 +649,7 @@ export async function createProtection(options = {}) {
     try {
       ({ reportManifest: reporter } = await import('./refresh-manifest.js'));
     } catch (err) {
-      onError?.(err); // scan pipeline unavailable (e.g. an edge runtime) — rules still refresh
+      notify(onError, err, 'onError'); // scan pipeline unavailable (e.g. an edge runtime) — rules still refresh
     }
   }
 
@@ -657,7 +658,7 @@ export async function createProtection(options = {}) {
       try {
         await reporter(cwd);
       } catch (err) {
-        onError?.(err); // a failed report must not stop the rule refresh
+        notify(onError, err, 'onError'); // a failed report must not stop the rule refresh
       }
     }
     const next = await resolveRules(options, store, { timeoutMs: options.refreshTimeoutMs, pulseAuth });

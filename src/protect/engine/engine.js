@@ -1,4 +1,5 @@
 import { RequestResolver } from './request.js';
+import { notify } from '../notify.js';
 import { normalizeRequest } from './normalizer.js';
 
 // Catastrophic-backtracking shapes. Broad on purpose: a group whose inner content is quantified
@@ -640,8 +641,9 @@ export class RuleEngine {
   // evaluating a rule is reported and the request is allowed through (fail open). A
   // malformed rule is skipped without aborting the rest of the ruleset.
   #reportError(err) {
-    if (this.#onError) {
-      this.#onError(err);
+    // A host handler that runs takes over reporting. One that THROWS does not: fall through to the
+    // built-in logging below, or a rule error would disappear into a broken reporter.
+    if (notify(this.#onError, err, 'onError')) {
       return;
     }
     // Default: log once per distinct message so a persistently-broken rule doesn't

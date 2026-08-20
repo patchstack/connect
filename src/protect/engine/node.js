@@ -8,6 +8,7 @@
 // any body-parser — it consumes the stream and exposes the parsed body as `req.body`.
 import { RuleEngine } from './engine.js';
 import { parseBody } from './fetch.js';
+import { notify } from '../notify.js';
 
 // Build the engine's request shape from a Node IncomingMessage + its raw body text.
 export function fromNodeRequest(req, rawBody = '') {
@@ -133,9 +134,7 @@ export function createNodeMiddleware(rulesData, options = {}) {
         shaped = fromNodeRequest(req, rawBody); // shaping is inside the try too — never crash
         result = engine.evaluate(shaped);
       } catch (err) {
-        if (options.onError) {
-          options.onError(err);
-        }
+        notify(options.onError, err, 'onError');
         return next(); // fail open
       }
 
