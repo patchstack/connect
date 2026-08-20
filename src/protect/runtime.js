@@ -115,6 +115,29 @@ export async function createProtection(options = {}) {
   // Resolved once and threaded through ctx: reading it is a filesystem hit on
   // runtimes that have one, and refreshes should not repeat it.
   const pulseAuth = await resolvePulseAuth(options);
+  // A site UUID with no credential behind it, said out loud ONCE at boot.
+  //
+  // Resolution reads `.patchstackrc.json`, so it needs a filesystem and a working directory. The
+  // runtimes this guard is built for do not all have one: on a Worker or an edge function the file is
+  // absent and only `PATCHSTACK_PULSE_AUTH` / `PATCHSTACK_API_KEY` can carry the credential.
+  //
+  // Unauthenticated rule fetches are accepted today, so the failure is currently invisible — and it
+  // stays invisible once they are not, because a rejected fetch fails open onto the cached or bundled
+  // bundle. The guard then screens every request, reports healthy, and never receives another rule.
+  // That silence is the whole problem: an app protected by rules frozen at install time looks exactly
+  // like an app protected by current ones.
+  //
+  // A warning, not a throw. Booting is protection; refusing to boot over a missing credential would
+  // trade a stale rule set for no rule set at all.
+  if (options.siteUuid && !pulseAuth) {
+    const message =
+      'Patchstack: no API credential resolved for site ' +
+      options.siteUuid +
+      '. Rule updates may be rejected and this guard would keep running on its cached rules. ' +
+      'Set PATCHSTACK_API_KEY (or pass { pulseAuth }) — required on runtimes without a filesystem.';
+    onError?.(new Error(message));
+    console.warn(message);
+  }
   const bundle = await resolveRules(options, store, { timeoutMs: bootTimeoutMs, pulseAuth });
   // OPT-IN, deliberately. Two reasons, and the first is not about privacy: switching it on adds an
   // outbound POST to every guard that has a site UUID, which is a change in what an installed app does
