@@ -110,17 +110,25 @@ export async function persistSiteUuid(cwd: string, siteUuid: string): Promise<st
 }
 
 /**
- * Persist the WP-format api_key issued at provision (for connector log auth).
- * Never embed this value in the public disclosure widget.
+ * Persist the WP-format api_key issued at provision. Authenticates both the
+ * Pulse endpoints and connector log reporting. Never embed it in the public
+ * disclosure widget.
+ *
+ * Drops any `pulseAuth` written by an earlier version. That field resolves
+ * ahead of `apiKey`, so leaving a copy behind after the credential changes
+ * would leave Pulse authenticating with the value the server just replaced.
  */
 export async function persistApiKey(cwd: string, apiKey: string): Promise<string> {
-  const existing = await readConfigFile(cwd);
+  const { pulseAuth: _dropped, ...existing } = await readConfigFile(cwd);
   return writeConfigFile(cwd, { ...existing, apiKey });
 }
 
 /**
- * Persist the credential used for the authenticated Pulse endpoints.
- * Kept separate from `apiKey` so block-log auth is never disturbed.
+ * Persist a Pulse-specific credential.
+ *
+ * Only needed when Pulse ingest and block-log reporting must use *different*
+ * credentials; they share one today, so `persistApiKey` covers both. Retained
+ * for callers that separate them.
  */
 export async function persistPulseAuth(cwd: string, pulseAuth: string): Promise<string> {
   const existing = await readConfigFile(cwd);

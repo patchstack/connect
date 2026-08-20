@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
-import { persistSiteUuid, resolveConfig, writeConfigFile } from '../src/config.js';
+import { persistApiKey, persistSiteUuid, resolveConfig, writeConfigFile } from '../src/config.js';
 import { readFile } from 'node:fs/promises';
 import { DEFAULT_ENDPOINT, DEFAULT_TIMEOUT_MS } from '../src/client.js';
 import { PatchstackError } from '../src/types.js';
@@ -123,5 +123,56 @@ describe('resolveConfig', () => {
     await expect(resolveConfig({ cwd, cliSiteUuid: VALID_UUID })).rejects.toMatchObject({
       code: 'CONFIG_INVALID',
     });
+  });
+});
+
+/**
+ * One credential authenticates Pulse ingest and block-log reporting. These pin
+ * the two things that must stay true for configs written by earlier versions.
+ */
+describe('credential resolution', () => {
+  let cwd: string;
+
+  beforeEach(async () => {
+    cwd = await mkdtemp(path.join(tmpdir(), 'patchstack-connect-'));
+    delete process.env.PATCHSTACK_API_KEY;
+    delete process.env.PATCHSTACK_PULSE_AUTH;
+  });
+
+  afterEach(() => rm(cwd, { recursive: true, force: true }));
+
+  it('uses apiKey for Pulse when no pulseAuth is present', async () => {
+    await writeConfigFile(cwd, { siteUuid: VALID_UUID, apiKey: 'secret-987' });
+
+    const config = await resolveConfig({ cwd });
+
+    expect(config.apiKey).toBe('secret-987');
+    expect(config.pulseAuth).toBe('secret-987');
+  });
+
+  it('still honours a pulseAuth written by an earlier version', async () => {
+    await writeConfigFile(cwd, { siteUuid: VALID_UUID, apiKey: 'a-1', pulseAuth: 'b-2' });
+
+    expect((await resolveConfig({ cwd })).pulseAuth).toBe('b-2');
+  });
+
+  it('drops a stale pulseAuth when the credential is replaced', async () => {
+    // pulseAuth resolves ahead of apiKey, so a leftover copy would keep
+    // authenticating Pulse with the value the server just replaced.
+    await writeConfigFile(cwd, { siteUuid: VALID_UUID, apiKey: 'old-1', pulseAuth: 'old-1' });
+
+    await persistApiKey(cwd, 'rotated-2');
+
+    const config = await resolveConfig({ cwd });
+    expect(config.apiKey).toBe('rotated-2');
+    expect(config.pulseAuth).toBe('rotated-2');
+    expect(JSON.parse(await readFile(path.join(cwd, '.patchstackrc.json'), 'utf8')).pulseAuth).toBeUndefined();
+  });
+
+  it('lets PATCHSTACK_PULSE_AUTH override the file', async () => {
+    await writeConfigFile(cwd, { siteUuid: VALID_UUID, apiKey: 'file-1' });
+    process.env.PATCHSTACK_PULSE_AUTH = 'env-2';
+
+    expect((await resolveConfig({ cwd })).pulseAuth).toBe('env-2');
   });
 });

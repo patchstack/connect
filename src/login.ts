@@ -1,4 +1,4 @@
-import { persistApiKey, persistPulseAuth } from './config.js';
+import { persistApiKey } from './config.js';
 import type { Config } from './types.js';
 
 /**
@@ -104,11 +104,10 @@ export async function login(
       return { status: 'failed', message: 'Patchstack approved the request but returned no credential.' };
     }
 
-    // Approving rotates the site's single OAuth secret, which block-log
-    // reporting also authenticates with. Both fields must therefore be
-    // refreshed — writing only pulseAuth would leave apiKey holding a secret
-    // the server has just invalidated, silently breaking block-logs.
-    await persistPulseAuth(process.cwd(), apiKey);
+    // Approving rotates the site's single OAuth secret, which Pulse ingest and
+    // block-log reporting both authenticate with. persistApiKey also clears any
+    // pulseAuth an earlier version wrote, so nothing is left holding the value
+    // the server has just replaced.
     await persistApiKey(process.cwd(), apiKey);
 
     return { status: 'approved', userCode, verificationUri };

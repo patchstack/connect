@@ -54,11 +54,11 @@ describe('login', () => {
         'https://api.patchstack.com/monitor/pulse/device?code=WDJB-MJHT',
       );
 
-      // Both fields: approving rotates the one secret block-logs use too, so
-      // leaving apiKey behind would break block-log reporting.
+      // One credential for both paths. Pulse resolution falls back to apiKey,
+      // so a second copy is not written.
       const written = JSON.parse(readFileSync('.patchstackrc.json', 'utf8'));
-      expect(written.pulseAuth).toBe('new-secret-987');
       expect(written.apiKey).toBe('new-secret-987');
+      expect(written.pulseAuth).toBeUndefined();
     } finally {
       process.chdir(original);
     }
