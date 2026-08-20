@@ -112,12 +112,14 @@ would have stopped while it is still in dry-run. Two separate paths, with differ
 
 - **Blocked requests** go to the connector `POST /api/logs/log`, the same path the WordPress plugin uses,
   and fill in "Threats blocked". This runs when the guard is holding an `apiKey` and a rule blocked a
-  request. Disable with `PATCHSTACK_TELEMETRY=off`, or `reportFirewallLog: false` in `createProtection`.
-- **Detections that did not block** go to `monitor/pulse/detections/<your site uuid>`. This is **off
-  unless you pass `reportDetections: true`** to `createProtection`; the scaffolded guard does not pass it.
-  It also requires a provisioned site UUID and is disabled by `PATCHSTACK_TELEMETRY=off`. It exists
-  because a rule carrying `dry-run` blocks nothing, so nothing else distinguishes a rule that is
-  protecting from one that is quietly wrong.
+  request. The credential is first exchanged at `POST /oauth/token` (client credentials) for a bearer
+  token; the `apiKey` itself is not sent to the log endpoint. Disable with `PATCHSTACK_TELEMETRY=off`, or
+  `reportFirewallLog: false` in `createProtection`.
+- **Every rule that matched** goes to `monitor/pulse/detections/<your site uuid>` — including matches that
+  blocked, which are reported on both paths. This is **off unless you pass `reportDetections: true`** to
+  `createProtection`; the scaffolded guard does not pass it. It also requires a provisioned site UUID and
+  is disabled by `PATCHSTACK_TELEMETRY=off`. It exists because a rule carrying `dry-run` blocks nothing,
+  so without it nothing distinguishes a rule that is protecting from one that is quietly wrong.
 
 What a detection report contains, per matched rule: the rule id, the request path **with any query string
 removed**, the parameter names that rule reads (from the rule's own definition), which phase matched,
@@ -128,6 +130,15 @@ complete one.
 What it does not contain: **the matched value, the request body, headers, cookies, or query-string
 values.** Reports are batched, capped in memory, and dropped rather than retried if Patchstack cannot be
 reached — a reporting failure never delays or fails a request.
+
+Two more endpoints the package can call, for completeness:
+
+- `GET monitor/widget/settings/<your site uuid>` — how `status` tells "this site was deleted on
+  Patchstack" apart from "still active". It sends no credential and nothing about your project; the site
+  UUID in the path is the whole request.
+- `GET api/get-rules/3` — the older rules path, used only when the guard is configured with a `token`
+  instead of a site UUID. The zero-configuration flow provisions a site UUID and uses
+  `monitor/pulse/rules/<uuid>` instead, so this is unreachable unless you pass `token` yourself.
 
 ## Verifying the install
 
