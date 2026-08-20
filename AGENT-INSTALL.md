@@ -119,6 +119,46 @@ These are **two independent states** — never conflate them:
 
 Local files alone cannot tell you whether the site was removed from Patchstack. Run `npx @patchstack/connect status` and read the `Site status` line, then answer with both states. For example, when the site was removed but the local files remain, say: *"The site itself was removed from Patchstack — reporting has stopped and the widget no longer renders. The local integration code (widget tag, `.patchstackrc.json`, the dependency) is still in the project; want me to remove it?"* — not "Patchstack is still installed."
 
+## Recovering a lost credential — `login`
+
+Use this when the project **already has a site** but its credential is gone or rejected: `.patchstackrc.json` was deleted or never committed, the repo was cloned without it, a container was recycled, or ingest started failing with 401.
+
+> **Do not "fix" a missing credential by deleting `.patchstackrc.json` and running `scan` again.** That provisions a **second site**, and the original — with all its history and its widget tag already live on the deployed page — is orphaned. `login` recovers the existing one.
+
+### What it does
+
+```
+npx @patchstack/connect login
+
+  Your code:  WDJB-MJHT
+  Approve at: https://api.patchstack.com/monitor/pulse/device?code=WDJB-MJHT
+
+  Waiting for approval…  ✓ Credential restored
+```
+
+The command asks Patchstack for a short code, prints a link, and polls until the site's **owner approves it in the dashboard**. On approval it writes the new credential into `.patchstackrc.json` and exits. The link opens the approval page with the code already filled in, so the person only has to confirm.
+
+### What you must do, as the agent
+
+1. **Run the command and surface the link and code to the user verbatim.** They must open it themselves — approval requires their signed-in Patchstack account, which you do not have and must not ask for.
+2. **Leave the command running.** It polls until approved or the code expires (10 minutes). Do not kill it and retry; each run issues a different code and invalidates the one already on screen.
+3. **Report the outcome.** On success, tell them the credential was restored *and* that the previous one no longer works — see the warning below.
+
+You cannot complete this alone. It is deliberately a human-in-the-loop step: starting the flow proves nothing about who is running it, so the only authorisation is an owner approving in the browser.
+
+### Consequences to tell the user about
+
+**Approving rotates the credential — the old one stops working immediately.** Anywhere it was configured needs the new value: CI secrets, hosting-platform env vars, preview environments, other developers' checkouts. Say this before they approve, not after.
+
+### When it will not work
+
+| Situation | What happens | What to do |
+|---|---|---|
+| Site was never claimed | `409` — no owner exists to approve | Ask the user to claim the site in the dashboard first, or, if the site is disposable, delete `.patchstackrc.json` and `scan` to provision a fresh one |
+| Running in CI | Refuses to start | CI takes its credential from `PATCHSTACK_PULSE_AUTH`; `login` is for a developer machine |
+| No `siteUuid` configured | Refuses to start | There is no site to recover — run `scan` |
+| Code expired | Poll ends after 10 minutes | Run the command again for a new code |
+
 ## Uninstalling
 
 Remove only the pieces that are actually present — check for each first. If none are present, Patchstack isn't installed; report that and stop. If the user asked to remove only one piece (e.g. "just the widget"), remove only that piece.
