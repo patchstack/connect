@@ -85,6 +85,7 @@ export class PatchstackError extends Error {
       | 'NETWORK_ERROR'
       | 'NETWORK_TIMEOUT'
       | 'SITE_NOT_FOUND'
+      | 'UNAUTHORIZED'
       | 'VALIDATION_ERROR'
       | 'SERVER_ERROR',
     public readonly cause?: unknown,
