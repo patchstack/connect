@@ -76,8 +76,9 @@ export class PulseRuleClient {
       //
       // Fetching rules must never hinge on getting a token (protection comes first), but CLAIMING a
       // capability may: an unauthenticated request is one whose statements about this site carry no weight.
-      // The server gates on a verified token as well — a client-side check only removes the accidental
-      // case, since the forgeable one is not the client's to prevent.
+      // This check only removes the ACCIDENTAL case. The forgeable one is not the client's to prevent, so
+      // anything acting on this header has to require a verified token itself before believing it — a
+      // client-side gate is a courtesy, never the guarantee.
       if (this.#reportsDetections && typeof auth.Authorization === 'string') {
         headers['X-Patchstack-Detections'] = 'enabled';
       }
