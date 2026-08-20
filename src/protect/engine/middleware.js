@@ -9,17 +9,17 @@ export function createMiddleware(rulesData, options = {}) {
     const result = engine.evaluate(req);
 
     if (result.blocked) {
-      if (options.onBlock) {
-        options.onBlock({
-          rule: result.rule,
-          message: result.message,
-          request: {
-            method: req.method,
-            url: req.url,
-            ip: req.ip ?? req.socket?.remoteAddress
-          }
-        });
-      }
+      // Contained: a throw here would replace the 403 below with the callback's exception, which for
+      // Express means the error handler decides what a blocked request returns.
+      notify(options.onBlock, {
+        rule: result.rule,
+        message: result.message,
+        request: {
+          method: req.method,
+          url: req.url,
+          ip: req.ip ?? req.socket?.remoteAddress
+        }
+      }, 'onBlock');
 
       return res.status(403).json({
         error: 'Blocked by Patchstack WAF',
@@ -111,9 +111,9 @@ export async function protect(options = {}) {
       return passThrough();
     }
 
-    if (options.onScan) {
-      options.onScan(rulesData);
-    }
+    // Contained too: a throw here aborted lazy init, so the WAF never installed and every later
+    // request went unscreened — a reporting hook silently costing protection outright.
+    notify(options.onScan, rulesData, 'onScan');
 
     const wafMiddleware = createMiddleware(rulesData, options);
 

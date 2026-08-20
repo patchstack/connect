@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { createProtection } from '../../src/protect/runtime.js';
 import { notify, resetNotifyWarnings } from '../../src/protect/notify.js';
+import { createFetchMiddleware } from '../../src/protect/engine/fetch.js';
 
 /**
  * A callback the host passed in must never break the guard that calls it.
@@ -25,6 +26,26 @@ const miss = () => new Request('https://x.test/?q=fine');
 const boom = () => {
   throw new Error('host callback is broken');
 };
+/** The shape a try/catch cannot contain: it returns a rejected promise instead of throwing. */
+const asyncBoom = async () => {
+  throw new Error('host callback rejected');
+};
+
+/** Unhandled rejections during `fn`, which on Node terminate the process by default. */
+async function unhandledDuring(fn: () => Promise<unknown>): Promise<unknown[]> {
+  const seen: unknown[] = [];
+  const onUnhandled = (err: unknown) => seen.push(err);
+  process.on('unhandledRejection', onUnhandled);
+  try {
+    await fn();
+    // Rejections surface a macrotask later than the code that caused them.
+    await new Promise((resolve) => setTimeout(resolve, 50));
+  } finally {
+    process.off('unhandledRejection', onUnhandled);
+  }
+
+  return seen;
+}
 
 describe('a throwing host callback cannot break the guard', () => {
   beforeEach(() => {
@@ -144,5 +165,130 @@ describe('notify', () => {
     } finally {
       globalThis.console = original;
     }
+  });
+});
+
+
+describe('an async callback is contained too', () => {
+  beforeEach(() => {
+    resetNotifyWarnings();
+    vi.spyOn(console, 'warn').mockImplementation(() => {});
+  });
+  afterEach(() => {
+    delete process.env.PATCHSTACK_MODE;
+    vi.restoreAllMocks();
+  });
+
+  it('produces no unhandled rejection when onDetect is async and rejects', async () => {
+    // `async () => { throw }` does not throw — it returns a rejected promise, so a try/catch around the
+    // call sees nothing and the rejection lands after containment has already returned. On Node an
+    // unhandled rejection terminates the process by default, which trades the throw we contained for
+    // something worse: the app dying, on the requests where a rule matched.
+    const p = await createProtection({ rules: RULES, onDetect: asyncBoom });
+
+    const unhandled = await unhandledDuring(async () => {
+      expect((await p.fetch(app)(hit())).status).toBe(200);
+    });
+
+    expect(unhandled).toEqual([]);
+  });
+
+  it('still enforces when an async onDetect rejects', async () => {
+    process.env.PATCHSTACK_MODE = 'block';
+    const p = await createProtection({ rules: RULES, onDetect: asyncBoom });
+
+    const unhandled = await unhandledDuring(async () => {
+      expect((await p.fetch(app)(hit())).status).toBe(403);
+    });
+
+    expect(unhandled).toEqual([]);
+  });
+
+  it('boots with no unhandled rejection when onError is async and rejects', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => {
+      throw new Error('offline');
+    }));
+
+    const unhandled = await unhandledDuring(async () => {
+      const p = await createProtection({ siteUuid: 'site-1', rules: RULES, onError: asyncBoom, cwd: '/nonexistent' });
+      expect(p.mode).toBeDefined();
+    });
+
+    expect(unhandled).toEqual([]);
+  });
+
+  it('awaits nothing and reports the failure once', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+    const unhandled = await unhandledDuring(async () => {
+      for (let i = 0; i < 4; i++) notify(asyncBoom, 'x', 'onDetect');
+    });
+
+    expect(unhandled).toEqual([]);
+    expect(warn).toHaveBeenCalledTimes(1);
+  });
+
+  it('leaves a resolving async callback alone', async () => {
+    // The control: containment must not have become "never call it", and a callback that works must not
+    // be reported as broken.
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const seen: unknown[] = [];
+
+    const unhandled = await unhandledDuring(async () => {
+      const p = await createProtection({
+        rules: RULES,
+        onDetect: async (d: unknown) => {
+          seen.push(d);
+        },
+      });
+      await p.fetch(app)(hit());
+    });
+
+    expect(seen).toHaveLength(1);
+    expect(unhandled).toEqual([]);
+    expect(warn).not.toHaveBeenCalled();
+  });
+});
+
+describe('a throwing onBlock cannot decide the enforcement outcome', () => {
+  beforeEach(() => {
+    resetNotifyWarnings();
+    vi.spyOn(console, 'warn').mockImplementation(() => {});
+  });
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it('still returns the block response on the fetch adapter', async () => {
+    // This callback runs after the decision to block and before the 403 is built. An escaping throw did
+    // not let the request through — it replaced the block with the callback's exception, so untrusted
+    // reporting code chose what a blocked request returned. Availability aside, that is enforcement
+    // integrity: the outcome of a block must come from the rule, never from the reporting hook.
+    const guard = createFetchMiddleware(RULES, { onBlock: boom });
+
+    const res = await guard(hit());
+
+    expect(res).not.toBeNull();
+    expect(res?.status).toBe(403);
+  });
+
+  it('still returns the block response when onBlock rejects asynchronously', async () => {
+    const guard = createFetchMiddleware(RULES, { onBlock: asyncBoom });
+
+    const unhandled = await unhandledDuring(async () => {
+      expect((await guard(hit()))?.status).toBe(403);
+    });
+
+    expect(unhandled).toEqual([]);
+  });
+
+  it('still calls an onBlock that works, with the rule that fired', async () => {
+    const seen: Array<{ rule?: { id?: string } }> = [];
+    const guard = createFetchMiddleware(RULES, { onBlock: (info: { rule?: { id?: string } }) => seen.push(info) });
+
+    await guard(hit());
+
+    expect(seen).toHaveLength(1);
+    expect(seen[0]?.rule?.id).toBe('r1');
   });
 });

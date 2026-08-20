@@ -221,13 +221,9 @@ export async function createProtection(options = {}) {
   const recordSkip = (phase, reason, detail) => {
     const key = `${phase}:${reason}`;
     skipCounts[key] = (skipCounts[key] ?? 0) + 1;
-    if (onSkip) {
-      try {
-        onSkip({ phase, reason, detail, count: skipCounts[key] });
-      } catch {
-        /* a reporting callback must never affect request handling */
-      }
-    }
+    // A reporting callback must never affect request handling — including an async one, whose rejection
+    // lands after a try/catch here would have returned.
+    notify(onSkip, { phase, reason, detail, count: skipCounts[key] }, 'onSkip');
   };
 
   const maskFn =

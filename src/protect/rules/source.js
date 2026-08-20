@@ -26,7 +26,7 @@ function reportRejections(rejected, options, label) {
   const report = options.onRuleRejected;
   for (const r of rejected) {
     if (typeof report === 'function') {
-      try { report({ ...r, accepted: false }); } catch { /* reporting must never break rule loading */ }
+      notify(report, { ...r, accepted: false }, 'onRuleRejected');
     }
   }
   const sample = rejected.slice(0, 3).map((r) => `${r.id} (${r.reason})`).join('; ');
@@ -119,7 +119,7 @@ export function normalizeBundle(b, options = {}) {
     const report = options.onRuleRejected;
     if (typeof report === 'function') {
       for (const r of rejected) {
-        try { report(r); } catch { /* reporting must never break rule loading */ }
+        notify(report, r, 'onRuleRejected');
       }
     } else {
       const sample = rejected.slice(0, 3).map((r) => `${r.id} (${r.reason})`).join('; ');

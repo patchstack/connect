@@ -139,13 +139,13 @@ export function createNodeMiddleware(rulesData, options = {}) {
       }
 
       if (result.blocked) {
-        if (options.onBlock) {
-          options.onBlock({
-            rule: result.rule,
-            message: result.message,
-            request: { method: shaped.method, url: shaped.url, ip: shaped.ip }
-          });
-        }
+        // Contained, as on the fetch path: a throw here would replace the block response with the
+        // callback's exception.
+        notify(options.onBlock, {
+          rule: result.rule,
+          message: result.message,
+          request: { method: shaped.method, url: shaped.url, ip: shaped.ip }
+        }, 'onBlock');
         return (options.response || defaultBlock)(res, result);
       }
 

@@ -249,13 +249,14 @@ export function createFetchMiddleware(rulesData, options = {}) {
     }
 
     if (result.blocked) {
-      if (options.onBlock) {
-        options.onBlock({
-          rule: result.rule,
-          message: result.message,
-          request: { method: req.method, url: req.url, ip: req.ip }
-        });
-      }
+      // Contained: this runs after the block decision and before the block response is built, so an
+      // escaping throw would replace the 403 with the callback's exception — reporting code deciding
+      // the enforcement outcome.
+      notify(options.onBlock, {
+        rule: result.rule,
+        message: result.message,
+        request: { method: req.method, url: req.url, ip: req.ip }
+      }, 'onBlock');
       return (options.response || defaultBlockResponse)(result);
     }
 
