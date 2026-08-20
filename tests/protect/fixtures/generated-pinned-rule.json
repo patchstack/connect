@@ -1,0 +1,44 @@
+{
+  "note": "Captured from a platform `GET pulse/rules/{uuid}` response for an app whose attack-surface map proved request input reaching an HTTP client. This is the SHAPE a coordinate-pinned rule arrives in — the parameter and route are the app's own, bound from a template at generation time. No advisory identifier: which advisories are shielded is not a public list.",
+  "shape": {
+    "routeScopedInRuleV2": "The platform scopes the route with an ANDed `server.REQUEST_URI contains` condition rather than a `when` block. Both forms are exercised by the suite, because the scope moving into `when` must not silently drop the scope.",
+    "enforcement": "A generated rule arrives dry-run regardless of the site's mode, and only promotion flips it. The per-rule value overriding a site-wide `block` is the safety property that keeps an unproven pinned rule from blocking traffic.",
+    "boundPlaceholders": "`<param>` and `<route>` are substituted before serving. A rule that reached an app with them intact would load and never match — `<param>` is not a parameter source — which is indistinguishable from protection until someone fires an exploit at it."
+  },
+  "served": {
+    "id": "pulse-1",
+    "title": "Block internal-host URLs reaching the vulnerable HTTP client",
+    "rule_v2": [
+      {
+        "match": { "type": "contains", "value": "/api/preview" },
+        "inclusive": true,
+        "mutations": ["urldecode"],
+        "parameter": "server.REQUEST_URI"
+      },
+      {
+        "match": { "type": "internal_host" },
+        "inclusive": true,
+        "mutations": ["urldecode"],
+        "parameter": "get.url"
+      }
+    ],
+    "enforcement": "dry-run"
+  },
+  "template": {
+    "note": "The same rule before binding, as authored. Kept beside the served copy so the substitution is visible rather than described, and so a test can prove the unbound form is inert.",
+    "rule_v2": [
+      {
+        "match": { "type": "contains", "value": "<route>" },
+        "inclusive": true,
+        "mutations": ["urldecode"],
+        "parameter": "server.REQUEST_URI"
+      },
+      {
+        "match": { "type": "internal_host" },
+        "inclusive": true,
+        "mutations": ["urldecode"],
+        "parameter": "<param>"
+      }
+    ]
+  }
+}
