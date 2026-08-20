@@ -103,11 +103,14 @@ Usage:
                                                      what's missing, with tailored commands), then
                                                      print the full setup guide. --full prints the
                                                      guide even when setup is complete
-  patchstack-connect login  [options]                Recover this site's Patchstack credential when
-                                                     .patchstackrc.json has been lost. Prints a short
-                                                     code to approve in the dashboard; approving
-                                                     rotates the credential, so the old one stops
-                                                     working
+  patchstack-connect login  [options]                Recover this site's credential when
+                                                     .patchstackrc.json has been lost. Prints a link
+                                                     for the site's OWNER to approve in the dashboard,
+                                                     then waits (10 min). Use this instead of deleting
+                                                     .patchstackrc.json and re-scanning, which would
+                                                     provision a second site. Approving ROTATES the
+                                                     credential: CI, deploys and other machines using
+                                                     the old one must be updated. Not usable in CI
   patchstack-connect help                            Print this message
 
 Options (for scan, setup, status, and uninstall):
@@ -229,12 +232,19 @@ async function runLogin(args: ParsedArgs): Promise<number> {
   const result = await login(config, (userCode, verificationUri) => {
     console.log(`\n  Your code:  ${userCode}`);
     console.log(`  Approve at: ${verificationUri}\n`);
-    console.log('  Waiting for approval…');
+    // Said before approval, not after: the person deciding needs to know it is
+    // a rotation, and an assistant relaying this has to pass the warning on.
+    console.log("  Open that link and approve it as the site's owner. Approving issues a new");
+    console.log('  credential and stops the current one working — CI, deploys and any other');
+    console.log('  machine using it will need the new value.\n');
+    console.log('  Waiting for approval (the code expires in 10 minutes)…');
   });
 
   if (result.status === 'approved') {
     // The value itself is never printed — only that it landed.
-    console.log('\n  ✓ Credential restored and saved to .patchstackrc.json.\n');
+    console.log('\n  ✓ Credential restored and saved to .patchstackrc.json.');
+    console.log('    The previous credential no longer works. Update it anywhere else it was set:');
+    console.log('    CI secrets, hosting env vars, preview environments, other checkouts.\n');
     return 0;
   }
 
