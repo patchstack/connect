@@ -76,12 +76,13 @@ This versioned reference ships inside `@patchstack/connect` and documents each s
    <script src="https://cdn.patchstack.com/patchstack-widget.js" data-site-uuid="<SITE_UUID>" defer></script>
    ```
 
-   Framework-specific placement patterns: https://cdn.patchstack.com/llm.html. The site UUID is public by design — it ships in client-side HTML and is not a secret. The credentials are the opposite, and `scan` writes both of them for you — **there is no manual step, and you should never invent or ask the user for these values**:
+   Framework-specific placement patterns: https://cdn.patchstack.com/llm.html. The site UUID is public by design — it ships in client-side HTML and is not a secret. The credential is the opposite, and `scan` writes it for you — **there is no manual step, and you should never invent or ask the user for this value**:
 
-- `apiKey` (also `PATCHSTACK_API_KEY`, WP format `{secret}-{oauth.id}`) — authenticates block-log reporting through the connector `POST /api/logs/log`, so "Threats blocked" fills in the dashboard.
-- `pulseAuth` (also `PATCHSTACK_PULSE_AUTH`) — authenticates Pulse ingest: the manifest, the attack-surface map and package removal. Exchanged for a short-lived token rather than sent directly. Falls back to `apiKey` when absent, so older projects keep working.
+- `apiKey` (also `PATCHSTACK_API_KEY`, WP format `{secret}-{oauth.id}`) — one credential for both paths. It authenticates **Pulse ingest** (manifest, attack-surface map, package removal), where it is exchanged for a short-lived token rather than sent directly, and **block-log reporting** through the connector `POST /api/logs/log`, so "Threats blocked" fills in the dashboard.
 
-Both are server-only. Never put either in the widget tag, client bundles, or public env vars (`NEXT_PUBLIC_*`, etc.). Prefer `PATCHSTACK_API_KEY` / `PATCHSTACK_PULSE_AUTH` in production; `.patchstackrc.json` is fine for local DX. If a credential is lost, `npx @patchstack/connect login` recovers it via dashboard approval — do not delete the file and re-provision, which would create a second site. Opt out of reporting with `PATCHSTACK_TELEMETRY=off`. If the project must not carry the widget, persist `"widget": false` in `.patchstackrc.json`; otherwise the next scan re-adds it.
+It is server-only. Never put it in the widget tag, client bundles, or public env vars (`NEXT_PUBLIC_*`, etc.). Prefer `PATCHSTACK_API_KEY` in production; `.patchstackrc.json` is fine for local DX. If it is lost, `npx @patchstack/connect login` recovers it via dashboard approval — do not delete the file and re-provision, which would create a second site. Opt out of reporting with `PATCHSTACK_TELEMETRY=off`. If the project must not carry the widget, persist `"widget": false` in `.patchstackrc.json`; otherwise the next scan re-adds it.
+
+   A `pulseAuth` field is still honoured if a project has one, and `PATCHSTACK_PULSE_AUTH` still overrides it, for deployments that authenticate Pulse ingest with a different credential from block-logs. Do not add either yourself: they are unnecessary when the two share one credential, which is the default.
 
 4. **Install and verify runtime protection:**
 
@@ -102,7 +103,7 @@ Both are server-only. Never put either in the widget tag, client bundles, or pub
 - The CLI never opens the dashboard link and never asks for Patchstack credentials.
 - Label hosted workspace scans with `PATCHSTACK_ENVIRONMENT=sandbox` in that process only. Leave production builds unset (the default is `production`) and never commit a sandbox label into files shared with production.
 - If a step fails, stop and report it. Don't proceed with placeholders.
-- In CI where `.patchstackrc.json` can't be committed, set `PATCHSTACK_SITE_UUID` and `PATCHSTACK_PULSE_AUTH` as env vars instead. Precedence: CLI flag → env var → `.patchstackrc.json`. `login` is interactive and refuses to run in CI, so CI always takes its credential from the environment.
+- In CI where `.patchstackrc.json` can't be committed, set `PATCHSTACK_SITE_UUID` and `PATCHSTACK_API_KEY` as env vars instead. Precedence: CLI flag → env var → `.patchstackrc.json`. `login` is interactive and refuses to run in CI, so CI always takes its credential from the environment.
 
 ## Verifying the install
 
