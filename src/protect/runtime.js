@@ -86,8 +86,15 @@ export async function createProtection(options = {}) {
         })
       : null;
 
+  // Every detection, enforced or not, to the Pulse detections endpoint. Distinct from the block log
+  // above: that records what was STOPPED, in the WordPress-compatible shape; this records what a rule
+  // WOULD have stopped, which is otherwise unobservable for a rule carrying `enforcement: dry-run`.
+  // Minimal payload by design; see `detections.js`.
+  let detections = null;
+
   const onDetect = (detection) => {
     userOnDetect(detection);
+    if (detections) detections.record(detection);
     if (firewallLog && detection?.mode === 'block') {
       firewallLog.record({
         rule: detection.rule,
@@ -109,6 +116,23 @@ export async function createProtection(options = {}) {
   // runtimes that have one, and refreshes should not repeat it.
   const pulseAuth = await resolvePulseAuth(options);
   const bundle = await resolveRules(options, store, { timeoutMs: bootTimeoutMs, pulseAuth });
+  // OPT-IN, deliberately. Two reasons, and the first is not about privacy: switching it on adds an
+  // outbound POST to every guard that has a site UUID, which is a change in what an installed app does
+  // on the network — the kind of thing that must be disclosed in the shipped docs before it is a default,
+  // not after. The second is that the default belongs to whoever owns that disclosure, so the capability
+  // lands here and the flip is a separate, deliberate change.
+  if (options.reportDetections === true && options.siteUuid && telemetryEnabled()) {
+    detections = createDetectionReporter({
+      siteUuid: options.siteUuid,
+      baseUrl: options.pulseRulesUrl,
+      pulseAuth,
+      // The bundle the guard is actually running, so a hit can be attributed to the rules that produced
+      // it rather than to whatever is current when the report is read.
+      rulesEtag: (await store.read())?.etag ?? null,
+      fetchImpl: options.fetchImpl,
+      flushMs: options.detectionFlushMs,
+    });
+  }
   // Mode is mutable so a Pulse refresh can flip dry-run ↔ block when SaaS enables production.
   // Precedence: PATCHSTACK_MODE env (local override) > API enforcement > options.mode > dry-run.
   let mode = resolveMode(options, bundle);
@@ -630,9 +654,13 @@ export async function createProtection(options = {}) {
     protection.stopRefresh = () => {
       loop.stop();
       firewallLog?.stop();
+      detections?.stop();
     };
   } else if (firewallLog) {
-    protection.stopRefresh = () => firewallLog.stop();
+    protection.stopRefresh = () => {
+      firewallLog.stop();
+      detections?.stop();
+    };
   }
 
   return protection;
