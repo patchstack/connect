@@ -329,10 +329,28 @@ function expandIPv6(host) {
   return out;
 }
 
+// Report a `when` block that names nothing this engine understands. Fail-open is correct for a scope that
+// cannot be EVALUATED, but a scope that cannot be UNDERSTOOD is an authoring mistake with the opposite
+// consequence: the rule silently applies to every request instead of one route, which for a blocking rule
+// is a false-positive surface across the whole app. Warned once so it is discoverable in a log.
+const warnedScopes = new Set();
+function warnUnrecognisedScope(when) {
+  const key = Object.keys(when).sort().join(',');
+  if (warnedScopes.has(key)) return;
+  warnedScopes.add(key);
+  console.warn(
+    `[patchstack] Rule scope \`when: { ${key} }\` names no supported key — the engine understands ` +
+      `\`method\` and \`path\`. The scope is IGNORED and the rule applies to every request.`
+  );
+}
+
 // Route/method scope for a rule's optional `when: { method, path }`. Fail-open: if the scope can't
 // be evaluated, the rule still applies (never silently suppress a rule).
 function ruleAppliesTo(when, resolver) {
   try {
+    if (when.method === undefined && when.path === undefined && Object.keys(when).length > 0) {
+      warnUnrecognisedScope(when);
+    }
     if (when.method) {
       const methods = (Array.isArray(when.method) ? when.method : [when.method]).map((m) => String(m).toUpperCase());
       const actual = String(resolver.resolve('server.REQUEST_METHOD')[0] ?? 'GET').toUpperCase();
