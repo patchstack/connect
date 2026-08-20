@@ -212,3 +212,85 @@ describe('wiring', () => {
     p.stopRefresh?.();
   });
 });
+
+describe('declaring the capability', () => {
+  it('tells the server reporting is on, on a request it already makes', async () => {
+    // Detections are sent only when a rule fires, so silence at the server means nothing matched, or
+    // reporting is off, or reports are not arriving — and nothing tells those apart. The rules fetch does,
+    // with a header: no new outbound path, no request data, and no client timestamp (the server records
+    // when IT saw this, because "alive as of" is the claim a wrong clock would fake).
+    const seen: Array<Record<string, string>> = [];
+    const fetchMock = vi.fn(async (_url: string, init?: RequestInit) => {
+      seen.push((init?.headers ?? {}) as Record<string, string>);
+
+      return new Response(JSON.stringify({ firewall: [], whitelists: [], enforcement: 'dry-run' }), {
+        status: 200, headers: { 'Content-Type': 'application/json' },
+      });
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    const p: any = await createProtection({
+      siteUuid: 'site-1',
+      pulseRulesUrl: 'https://x.test/monitor/pulse',
+      reportDetections: true,
+    });
+
+    expect(seen.some((h) => h['X-Patchstack-Detections'] === 'enabled')).toBe(true);
+    p.stopRefresh?.();
+  });
+
+  it('says nothing when reporting is off', async () => {
+    // The declaration has to mean something: a guard that is not reporting must not claim it is, or the
+    // server cannot tell a configured site from an unconfigured one — which is the whole point.
+    const seen: Array<Record<string, string>> = [];
+    const fetchMock = vi.fn(async (_url: string, init?: RequestInit) => {
+      seen.push((init?.headers ?? {}) as Record<string, string>);
+
+      return new Response(JSON.stringify({ firewall: [], whitelists: [], enforcement: 'dry-run' }), {
+        status: 200, headers: { 'Content-Type': 'application/json' },
+      });
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    const p: any = await createProtection({ siteUuid: 'site-1', pulseRulesUrl: 'https://x.test/monitor/pulse' });
+
+    expect(seen.every((h) => h['X-Patchstack-Detections'] === undefined)).toBe(true);
+    p.stopRefresh?.();
+  });
+});
+
+describe('the wiring actually runs', () => {
+  it('posts a detection when reporting is switched on', async () => {
+    // The gap that let a broken build merge: every other test here either exercised the reporter directly
+    // or asserted that NOTHING is posted when the feature is off. Neither enters the branch that builds the
+    // reporter, so an unresolved import in it threw only for someone who turned the feature on — which,
+    // being opt-in, was nobody. This test is the one that fails if the wiring is broken.
+    const posted: string[] = [];
+    const fetchMock = vi.fn(async (url: string) => {
+      posted.push(String(url));
+      if (String(url).includes('/detections/')) return new Response('{}', { status: 202 });
+
+      return new Response(
+        JSON.stringify({
+          firewall: [{ id: 'r1', title: 'boom', rule_v2: [{ parameter: 'get.q', match: { type: 'contains', value: 'boom' } }] }],
+          whitelists: [], enforcement: 'dry-run',
+        }),
+        { status: 200, headers: { 'Content-Type': 'application/json' } },
+      );
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    const p: any = await createProtection({
+      siteUuid: 'site-1',
+      pulseRulesUrl: 'https://x.test/monitor/pulse',
+      reportDetections: true,
+      detectionFlushMs: 1,
+    });
+
+    await p.fetchGuard()(new Request('https://app.test/api/x?q=boom'));
+    p.stopRefresh?.();
+    await new Promise((resolve) => setTimeout(resolve, 5));
+
+    expect(posted.some((url) => url.includes('/detections/site-1'))).toBe(true);
+  });
+});

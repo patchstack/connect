@@ -27,7 +27,9 @@ export class PulseRuleClient {
   #etag;
   #pulseAuth;
 
-  constructor({ siteUuid, baseUrl, cacheTtl, etag, timeoutMs, pulseAuth } = {}) {
+  #reportsDetections;
+
+  constructor({ siteUuid, baseUrl, cacheTtl, etag, timeoutMs, pulseAuth, reportsDetections } = {}) {
     // Bounded so app STARTUP can't hang on a slow API: hosted platforms fail a deploy whose health
     // check is slow, and we always have a cache/bundled fallback to boot from.
     this.#timeoutMs = Number(timeoutMs) > 0 ? Number(timeoutMs) : 30_000;
@@ -37,6 +39,16 @@ export class PulseRuleClient {
     this.#cacheTtl = Number.isFinite(cacheTtl) && cacheTtl > 0 ? cacheTtl : DEFAULT_CACHE_TTL;
     this.#etag = etag ?? null;
     this.#pulseAuth = pulseAuth ?? null;
+    // Whether this guard reports detections, declared on a request it already makes.
+    //
+    // Detections are only sent when a rule fires, so silence at the server means one of three things —
+    // nothing matched, reporting is off, or reports are not arriving — and nothing distinguishes them.
+    // Saying "reporting is on" on the rules fetch does, without a new outbound path or any request data:
+    // the fetch is already periodic, already authenticated, and already carries this site's identity.
+    //
+    // A capability, not a timestamp: the server records when IT saw this, because a client clock is a
+    // value from outside and "alive as of" is exactly the claim a stale or wrong clock would fake.
+    this.#reportsDetections = reportsDetections === true;
     if (!this.#siteUuid) {
       throw new Error('Patchstack site UUID is required. Pass { siteUuid } or set PATCHSTACK_SITE_UUID.');
     }
@@ -59,6 +71,7 @@ export class PulseRuleClient {
           fetch,
         )),
       };
+      if (this.#reportsDetections) headers['X-Patchstack-Detections'] = 'enabled';
       if (this.#etag) headers['If-None-Match'] = this.#etag;
       const response = await fetch(url, { method: 'GET', headers, signal: AbortSignal.timeout(this.#timeoutMs) });
 
