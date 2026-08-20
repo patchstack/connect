@@ -141,6 +141,41 @@ export async function startLogin(config: Config, deps: LoginDeps = {}): Promise<
   return { status: 'started', pending };
 }
 
+/**
+ * Redeem a pending request if the owner has already approved it, without
+ * waiting. Lets a second `login` finish a flow the first one started, so an
+ * assistant that comes back after the user approves does the right thing
+ * whether or not it remembers the `--wait` flag.
+ */
+export async function redeemIfApproved(
+  config: Config,
+  pending: PendingLogin,
+  deps: LoginDeps = {},
+): Promise<'approved' | 'pending' | 'expired'> {
+  const fetchImpl = deps.fetchImpl ?? fetch;
+
+  const polled = await fetchImpl(`${baseFrom(config.endpoint)}/device/token`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
+    body: JSON.stringify({ device_code: pending.deviceCode }),
+  });
+
+  if (polled.status === 428) return 'pending';
+
+  if (!polled.ok) {
+    if (config.siteUuid !== null) clearPendingLogin(config.siteUuid);
+    return 'expired';
+  }
+
+  const { api_key: apiKey } = (await polled.json()) as { api_key?: string };
+  if (typeof apiKey !== 'string' || apiKey.length === 0) return 'expired';
+
+  await persistApiKey(process.cwd(), apiKey);
+  if (config.siteUuid !== null) clearPendingLogin(config.siteUuid);
+
+  return 'approved';
+}
+
 /** Poll until the owner approves, the code expires, or `until` passes. */
 export async function waitForApproval(
   config: Config,

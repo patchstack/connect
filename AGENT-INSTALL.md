@@ -144,16 +144,19 @@ The command asks Patchstack for a short code, prints a link, and polls until the
 **The command exits immediately when you run it.** It detects that its output is being captured rather than watched by a person, prints the link, and returns. It does **not** block waiting for approval, because you would not see the link until it exited — by which time the code would have expired, and it would look like the command had hung.
 
 ```
-1.  npx @patchstack/connect login          → prints the link, exits straight away
-2.  give the user the link, verbatim       → they approve it in the browser
-3.  npx @patchstack/connect login --wait   → run AFTER they confirm; exits when approved
+1.  npx @patchstack/connect login     → prints the link, exits straight away
+2.  give the user the link, verbatim  → they approve it in the browser
+3.  npx @patchstack/connect login     → the SAME command again, after they confirm.
+                                        It resumes the request and finishes the flow
 ```
 
 - **Never wrap step 1 in a timeout or kill it** — it returns on its own. If you find yourself waiting on it, something else is wrong.
-- **Do not re-run step 1** to "retry". Each run issues a new code and invalidates the link the user is already looking at. Use `--wait` to resume the request you started.
-- **Only run step 3 once the user says they have approved.** It blocks until approval or expiry, so running it too early is what actually hangs you.
+- **Step 3 is the same command.** While a request is still valid it resumes rather than restarting, so running `login` again never invalidates the link the user is looking at. If they have not approved yet it tells you so, with the time remaining, and exits.
+- **Nothing changes until step 3 runs.** Approving only marks the request; the credential is rotated and written when the CLI redeems it. So an abandoned flow is harmless — the site keeps working — but the credential is not restored until you come back.
 - **Surface the link verbatim.** Approval requires the user's signed-in Patchstack account, which you do not have and must never ask for.
 - **Report the outcome.** On success, say the credential was restored *and* that the previous one no longer works — see the warning below.
+
+`login --wait` is the blocking variant: it polls until approved instead of returning. Prefer the plain re-run — it keeps each command short, which is what fits a conversation.
 
 You cannot complete this alone. It is deliberately a human-in-the-loop step: starting the flow proves nothing about who is running it, so the only authorisation is an owner approving in the browser.
 

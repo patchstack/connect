@@ -36,7 +36,7 @@ import {
   installCommand,
   renderGuideChecklist,
 } from './guide.js';
-import { login, readPendingLogin, startLogin, waitForApproval } from './login.js';
+import { login, readPendingLogin, redeemIfApproved, startLogin, waitForApproval } from './login.js';
 import { runProtect, runVerify } from './protect/install/index.js';
 import { buildInputMap } from './map/index.js';
 import { isProvenFlow } from './map/coordinates.js';
@@ -109,8 +109,11 @@ Usage:
                                                      In a terminal it then waits. When the output is
                                                      piped or captured — an assistant running it — it
                                                      prints the link and EXITS, so the link is visible
-                                                     immediately; call again with --wait once the user
-                                                     has approved. Use this instead of deleting
+                                                     immediately. Run it AGAIN once the user confirms
+                                                     they approved: it resumes the same request rather
+                                                     than starting a new one, and finishes the flow.
+                                                     --wait blocks instead of returning. Use this
+                                                     instead of deleting
                                                      .patchstackrc.json and re-scanning, which would
                                                      provision a second site. Approving ROTATES the
                                                      credential: CI, deploys and other machines using
@@ -271,6 +274,27 @@ async function runLogin(args: ParsedArgs): Promise<number> {
   // command exits — by which time the code has expired — so hand it over and
   // let the caller decide when to wait.
   if (process.stdout.isTTY !== true) {
+    // Running it again resumes rather than restarts. An assistant that comes
+    // back after the user approves finishes the flow whether or not it
+    // remembered --wait, and re-running never invalidates a link the user is
+    // still looking at.
+    const existing = config.siteUuid === null ? null : readPendingLogin(config.siteUuid);
+
+    if (existing !== null && Date.now() < existing.expiresAt) {
+      const outcome = await redeemIfApproved(config, existing);
+
+      if (outcome === 'approved') return approved();
+
+      if (outcome === 'pending') {
+        const secondsLeft = Math.round((existing.expiresAt - Date.now()) / 1000);
+        console.log(`\n  Still waiting for approval of code ${existing.userCode}.`);
+        console.log(`  Approve at: ${existing.verificationUri}`);
+        console.log(`  (valid for another ${secondsLeft}s — run this again once the user confirms)\n`);
+        return 0;
+      }
+      // 'expired' falls through and starts a fresh request below.
+    }
+
     const started = await startLogin(config);
 
     if (started.status !== 'started' || started.pending === undefined) {
@@ -279,8 +303,8 @@ async function runLogin(args: ParsedArgs): Promise<number> {
     }
 
     prompt(started.pending.userCode, started.pending.verificationUri);
-    console.log('  Give that link to the user. Once they have approved it, run:');
-    console.log('    npx @patchstack/connect login --wait\n');
+    console.log('  Give that link to the user. When they confirm they have approved it, run');
+    console.log('  this same command again (or `login --wait` to block until they do).\n');
 
     return 0;
   }

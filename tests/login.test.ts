@@ -7,6 +7,7 @@ import {
   clearPendingLogin,
   login,
   readPendingLogin,
+  redeemIfApproved,
   startLogin,
   waitForApproval,
 } from '../src/login.js';
@@ -204,5 +205,61 @@ describe('start and resume', () => {
 
     expect(result.status).toBe('unclaimed');
     expect(readPendingLogin('unclaimed-1')).toBeNull();
+  });
+});
+
+describe('redeemIfApproved', () => {
+  it('finishes the flow when the owner has approved', async () => {
+    const cwd = await mkdtemp(path.join(tmpdir(), 'ps-redeem-'));
+    const original = process.cwd();
+    process.chdir(cwd);
+
+    try {
+      const cfg = config({ siteUuid: 'redeem-1' });
+      const begun = await startLogin(cfg, {
+        fetchImpl: vi.fn().mockResolvedValueOnce(json(started)) as never,
+        ...noSleep,
+      });
+
+      const outcome = await redeemIfApproved(cfg, begun.pending!, {
+        fetchImpl: vi.fn().mockResolvedValueOnce(json({ api_key: 'restored-42' })) as never,
+      });
+
+      expect(outcome).toBe('approved');
+      expect(JSON.parse(readFileSync('.patchstackrc.json', 'utf8')).apiKey).toBe('restored-42');
+    } finally {
+      process.chdir(original);
+    }
+  });
+
+  it('reports pending without consuming the request, so the link stays valid', async () => {
+    const cfg = config({ siteUuid: 'redeem-2' });
+    const begun = await startLogin(cfg, {
+      fetchImpl: vi.fn().mockResolvedValueOnce(json(started)) as never,
+      ...noSleep,
+    });
+
+    const outcome = await redeemIfApproved(cfg, begun.pending!, {
+      fetchImpl: vi.fn().mockResolvedValueOnce(json({ error: 'authorization_pending' }, 428)) as never,
+    });
+
+    expect(outcome).toBe('pending');
+    expect(readPendingLogin('redeem-2')).not.toBeNull();
+    clearPendingLogin('redeem-2');
+  });
+
+  it('clears an expired request so the next run starts a fresh one', async () => {
+    const cfg = config({ siteUuid: 'redeem-3' });
+    const begun = await startLogin(cfg, {
+      fetchImpl: vi.fn().mockResolvedValueOnce(json(started)) as never,
+      ...noSleep,
+    });
+
+    const outcome = await redeemIfApproved(cfg, begun.pending!, {
+      fetchImpl: vi.fn().mockResolvedValueOnce(json({ error: 'expired_token' }, 400)) as never,
+    });
+
+    expect(outcome).toBe('expired');
+    expect(readPendingLogin('redeem-3')).toBeNull();
   });
 });
