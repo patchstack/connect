@@ -68,6 +68,23 @@ export interface CreateProtectionOptions {
    * Also disabled when `PATCHSTACK_TELEMETRY=off` or when no apiKey is available.
    */
   reportFirewallLog?: boolean;
+  /**
+   * Report EVERY rule that fired — including one in `dry-run` that did not block — to the Pulse
+   * detections endpoint. Off unless explicitly `true`.
+   *
+   * Why it exists: a rule that blocks nothing reports nothing, so a rule that is quietly wrong and a
+   * rule that is protecting look identical from the outside.
+   *
+   * What it sends, per detection: the rule id, the request PATH with the query string removed, the
+   * parameters the rule reads, the phase, whether it was enforced, the rule-bundle ETag, and a
+   * timestamp. It does NOT send the matched value, the request body, headers, or query-string values —
+   * this is a counting channel, not a copy of your traffic.
+   *
+   * Off by default because switching it on adds an outbound request to every guard with a site UUID.
+   */
+  reportDetections?: boolean;
+  /** How long to buffer detections before posting a batch. Default 5000ms. */
+  detectionFlushMs?: number;
   /** Optional Source-Host header for connector hostname checks. */
   sourceHost?: string;
   /** Optional fetch override (tests). */
