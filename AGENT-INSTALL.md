@@ -127,9 +127,16 @@ whether it was enforced, the identifier of the rule bundle in use, and a timesta
 carries a count of reports dropped when traffic outran the flush, so a partial sample is not read as a
 complete one.
 
-What it does not contain: **the matched value, the request body, headers, cookies, or query-string
-values.** Reports are batched, capped in memory, and dropped rather than retried if Patchstack cannot be
-reached — a reporting failure never delays or fails a request.
+The parameter names are **identifiers, and they name the request region they refer to** — `post.title`,
+`get.redirect_to`, `cookie.session`, `server.HTTP_AUTHORIZATION`. So a rule that inspects a cookie or an
+`Authorization` header sends that cookie's or header's **name**. They are read from the rule's own
+definition, not from your traffic, so they describe what is being screened rather than what any request
+contained.
+
+What it does not contain: **no values of any kind.** Not the value that matched, not the request body,
+and not the value of any header, cookie or query-string parameter — including those of the parameters
+named above. Reports are batched, capped in memory, and dropped rather than retried if Patchstack cannot
+be reached — a reporting failure never delays or fails a request.
 
 Two more endpoints the package can call, for completeness:
 

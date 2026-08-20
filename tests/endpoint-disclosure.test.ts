@@ -143,9 +143,28 @@ describe('shipped docs disclose every endpoint the package calls', () => {
 
   it('says what a detection report carries, and what it does not', () => {
     expect(agentInstall).toMatch(/reportDetections/);
-    for (const claim of [/query string/i, /matched value/i, /request body/i]) {
+    // Phrasing-tolerant, substance-strict: the claim has to be there, not any particular sentence.
+    for (const claim of [/query string|query-string/i, /matched value|value that matched/i, /request body/i]) {
       expect(agentInstall, `the payload description must address ${claim}`).toMatch(claim);
     }
+  });
+
+  it('separates parameter identifiers from values, and does not exclude what it sends', () => {
+    // `ruleParameters` returns each condition's `parameter` verbatim, and those name a request region:
+    // `cookie.session`, `server.HTTP_AUTHORIZATION`. So a rule inspecting a cookie or an Authorization
+    // header sends that name. The exclusion list previously read "the matched value, the request body,
+    // headers, cookies, or query-string values", which scans as "headers and cookies are not sent" —
+    // true of their values, false of their names, and wrong in the direction that flatters us.
+    expect(agentInstall, 'must say the identifiers carry their request region').toMatch(/request region/i);
+    expect(agentInstall, 'must show a region-qualified example').toMatch(/cookie\.session/);
+    expect(agentInstall, 'must show a header example, since that is the sensitive case').toMatch(/server\.HTTP_/);
+    expect(agentInstall, 'the exclusion must be about values').toMatch(/no values of any kind/i);
+
+    // The regression itself: an exclusion clause that names headers or cookies without scoping to their
+    // values. Asserted as an absence because the overclaim is a sentence someone would write again while
+    // tightening the prose.
+    const exclusion = /does not contain[^.]*?\b(headers|cookies)\b(?![^.]*\bvalue)/i;
+    expect(agentInstall, 'headers/cookies may only be excluded as VALUES').not.toMatch(exclusion);
   });
 
   it('does not describe detection reporting as limited to non-blocking matches', () => {
