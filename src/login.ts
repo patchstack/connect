@@ -78,7 +78,10 @@ export async function login(
       interval: number;
     };
 
-  const verificationUri = `${new URL(base).origin}/activate`;
+  // Points at the API, which redirects to the dashboard SPA — the CLI only
+  // knows the API origin, and the approval page lives on the app. The code
+  // travels in the link so following it is a single confirmation.
+  const verificationUri = `${base}/device?code=${encodeURIComponent(userCode)}`;
   onPrompt(userCode, verificationUri);
 
   const deadline = now() + expiresIn * 1000;
