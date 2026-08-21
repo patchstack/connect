@@ -2,6 +2,27 @@
 
 This versioned reference ships inside `@patchstack/connect` and documents each setup command and its project changes.
 
+## Command reference
+
+Every command at a glance — what it does, whether it reads your source, what it writes, and what leaves your machine. Full behavior, flags, and edge cases follow in the sections below.
+
+| Command | What it does | Reads your source? | Writes to your project | Sends over the network |
+|---|---|---|---|---|
+| `scan` | Provision (or reuse) the site and POST the dependency list for vulnerability matching. Also runs automatically via `setup` and the install/build hooks. | No — lockfile only (bun: enumerates `node_modules/`) | `.patchstackrc.json`; the widget `<script>` tag in the root HTML shell — only after a successful post | Package names + versions |
+| `setup` | One bounded command: `scan` → manage the widget → install + verify `protect` → wire the install/build scans. Never runs the project build. | No | Config, widget tag, guard files, `package.json` scripts | Package names + versions (via `scan`) |
+| `map` | Local, read-only attack-surface analysis (entry points → inputs → sinks → evidence-backed flows). Never run by another command. | **Yes** — via the app's own TypeScript | Nothing (only the file named by `--out`) | Nothing — **unless `--upload`**: structure only (routes, parameter names, the package behind each sink, file:line). Never source code or env values |
+| `protect` | Install the always-on runtime guard; auto-wire known stacks, or scaffold a generic guard + print a wiring plan. `--check` verifies the guard is wired (exit 1 if not); `--demo` seeds a broad sample rule set. Runs automatically **only** via `setup` — never by `scan`, `guide`, `status`, or `mark-build`. | No — writes guard files, does not analyze your code | Guard/framework files (e.g. `middleware.ts`, `src/patchstack/`) | Nothing |
+| `demo node-serialize` | Production-backed walkthrough: confirm the vulnerable package is present, scan, wait for live rule `18843`, install + verify the guard, print test requests. Does not install the package or start/restart the app. | No | Same files as `scan` + `protect` | `scan` payload; polls the public Pulse rules endpoint (never the printed test requests) |
+| `demo-guide node-serialize` | Read-only companion: explains the prepare/run/prove/cleanup sequence and prints the next command. | No | Nothing | Nothing |
+| `guide` | Print this project's live setup status (done/missing, with tailored commands), then the full guide. `--full` prints it even when setup is complete. | No | Nothing | Nothing |
+| `status` | Re-print the site UUID + dashboard URL and check whether the site still exists (active / removed / could not verify). | No | Nothing | Site-existence check |
+| `init <site-uuid>` | Optional: pre-seed `.patchstackrc.json` with an existing UUID. | No | `.patchstackrc.json` only | Nothing |
+| `mark-build` | Stamp built HTML with a production flag + build fingerprint and ensure the widget tag in built pages. Run as a `postbuild` step. | No | Build output only (`dist/ build/ out/ .output/public`) — never source | Nothing |
+| `login` | Recover a lost credential for an existing site: print an owner-approval link and poll (10 min). Approving **rotates** the credential. Not usable in CI. | No | New credential into `.patchstackrc.json` on approval | Device-code request + approval poll |
+| `uninstall` | Signal Patchstack that the package is being removed: an unclaimed record is deleted, a claimed one is flagged. Does **not** touch local files. | No | Nothing local | Removal signal |
+
+Only `map` reads your source, and only `map --upload` sends anything derived from it. `scan` transmits nothing but package names + versions — never source code, env var values, file paths, or git history.
+
 ## Package and command behavior
 
 - Package: [`@patchstack/connect`](https://www.npmjs.com/package/@patchstack/connect), MIT-licensed, source at https://github.com/patchstack/connect. `npm view @patchstack/connect` shows the live registry metadata.
