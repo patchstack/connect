@@ -17,7 +17,7 @@ import { createProtection } from '../../src/protect/runtime.js';
 const drain = () => new Promise((resolve) => setTimeout(resolve, 0));
 
 /** Everything the payload is allowed to carry, and nothing else. */
-const ALLOWED_KEYS = ['rule_id', 'route', 'parameters', 'phase', 'enforced', 'rules_etag', 'detected_at'];
+const ALLOWED_KEYS = ['rule_id', 'route', 'parameters', 'phase', 'enforced', 'rules_etag', 'rule_revision', 'detected_at'];
 
 const pinnedRule = {
   id: 'pulse-1',
@@ -614,5 +614,62 @@ describe('delivery health', () => {
     reporter.flush();
     await drain();
     expect(reporter.health().dropped).toBe(3);
+  });
+});
+
+describe('the rule revision travels with the detection', () => {
+  it('reports the revision the bundle served for that rule', async () => {
+    // The bundle identity says WHICH BUNDLE; it changes whenever anything in the bundle changes, so it
+    // cannot say whether one rule's counts describe the document that rule has now. The rule's own revision
+    // can, and the side that served it is the side that knows it.
+    const { reporter, posts } = reporterWith();
+
+    reporter.record({
+      rule: { ...pinnedRule, source_revision: 'sha256:abcdef' },
+      phase: 'request',
+      mode: 'dry-run',
+      path: '/api/preview',
+    });
+    reporter.flush();
+    await drain();
+
+    expect(posts[0].body.detections[0].rule_revision).toBe('sha256:abcdef');
+  });
+
+  it('reports a numeric revision as the string it was served as', async () => {
+    // A generated rule numbers its revisions; a curated one hashes its document. Both are identifiers, and
+    // the reporter forwards rather than interprets.
+    const { reporter, posts } = reporterWith();
+
+    reporter.record({ rule: { ...pinnedRule, source_revision: 13 }, phase: 'request', mode: 'dry-run', path: '/a' });
+    reporter.flush();
+    await drain();
+
+    expect(posts[0].body.detections[0].rule_revision).toBe('13');
+  });
+
+  it('reports null when the bundle carried no revision for the rule', async () => {
+    // A customer's own rule has none. Null is "cannot say", which the consumer has to be able to tell apart
+    // from a revision that no longer matches.
+    const { reporter, posts } = reporterWith();
+
+    reporter.record({ rule: pinnedRule, phase: 'request', mode: 'dry-run', path: '/a' });
+    reporter.flush();
+    await drain();
+
+    expect(posts[0].body.detections[0].rule_revision).toBeNull();
+  });
+
+  it('reports no revision for a value that is not one', async () => {
+    // An object or a boolean in that field is a served rule this client cannot read, and forwarding it
+    // would put an uninterpretable value where a consumer expects an identifier.
+    const { reporter, posts } = reporterWith();
+
+    reporter.record({ rule: { ...pinnedRule, source_revision: { v: 1 } }, phase: 'request', mode: 'dry-run', path: '/a' });
+    reporter.record({ rule: { ...pinnedRule, source_revision: '' }, phase: 'request', mode: 'dry-run', path: '/a' });
+    reporter.flush();
+    await drain();
+
+    for (const event of posts[0].body.detections) expect(event.rule_revision).toBeNull();
   });
 });

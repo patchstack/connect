@@ -145,7 +145,8 @@ would have stopped while it is still in dry-run. Two separate paths, with differ
 
 What a detection report contains, per matched rule: the rule id, the request path **with any query string
 removed**, the parameter names that rule reads (from the rule's own definition), which phase matched,
-whether it was enforced, the identifier of the rule bundle in use, and a timestamp. Each batch also
+whether it was enforced, the identifier of the rule bundle in use, the revision of the rule itself when the
+bundle carried one, and a timestamp. Each batch also
 carries a count of reports dropped when traffic outran the flush, so a partial sample is not read as a
 complete one.
 

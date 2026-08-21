@@ -15,8 +15,8 @@ import { isSafeOrigin } from './safe-origin.js';
  * ## The payload is deliberately small
  *
  * `rule_id`, route PATH, the parameters the rule reads, a timestamp, whether it was enforced, the phase,
- * and the bundle identity. That is enough to count hits per rule, compare them against traffic, and
- * decide whether a rule is wrong.
+ * the bundle identity, and the rule's own revision where the bundle carried one. That is enough to count
+ * hits per rule, compare them against traffic, and decide whether a rule is wrong.
  *
  * What it never carries: **the matched value, the request body, headers, or query-string values**. A
  * channel that counts detections is a different thing from a copy of an application's traffic, and once
@@ -59,6 +59,24 @@ export function ruleParameters(rule) {
   walk(rule?.rule_v2);
 
   return [...out];
+}
+
+/**
+ * The rule's own revision, from the served rule.
+ *
+ * Read off the delivered rule rather than derived: whoever served it knows what document this is, and a
+ * value computed here would be this client's opinion of it. Accepts a string or a number, because the two
+ * kinds of rule that carry one number their revisions differently.
+ *
+ * @param {any} rule
+ * @returns {string | null}
+ */
+export function revisionOf(rule) {
+  const revision = rule?.source_revision;
+  if (typeof revision === 'string' && revision !== '') return revision;
+  if (typeof revision === 'number' && Number.isFinite(revision)) return String(revision);
+
+  return null;
 }
 
 /**
@@ -206,6 +224,11 @@ export function createDetectionReporter(opts) {
         // saw traffic it would have stopped.
         enforced: detection.mode === 'block',
         rules_etag: rulesEtag,
+        // The revision of THIS rule, as the bundle delivered it. The bundle identity above answers "which
+        // bundle", which changes whenever anything in it changes — so it cannot say whether the counts for
+        // one rule describe the document that rule has now. Passed through untouched, and null when the
+        // bundle carried none.
+        rule_revision: revisionOf(detection.rule),
         detected_at: new Date().toISOString(),
       });
 
