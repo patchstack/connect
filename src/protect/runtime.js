@@ -28,6 +28,8 @@ import { renderBlockPage } from './block-page.js';
 import { makeStore } from './rules/store.js';
 import { resolveRules } from './rules/source.js';
 import { startRefresh, makeRefreshHandler } from './rules/refresh.js';
+import { createDetectionReporter } from './detections.js';
+import { notify } from './notify.js';
 import { createFirewallLogReporter, resolveApiBase, telemetryEnabled } from './firewall-log.js';
 
 // Supabase-tunnel guard for AI-builder apps (Lovable / TanStack Start + Supabase).
@@ -86,8 +88,15 @@ export async function createProtection(options = {}) {
         })
       : null;
 
+  // Every detection, enforced or not, to the Pulse detections endpoint. Distinct from the block log
+  // above: that records what was STOPPED, in the WordPress-compatible shape; this records what a rule
+  // WOULD have stopped, which is otherwise unobservable for a rule carrying `enforcement: dry-run`.
+  // Minimal payload by design; see `detections.js`.
+  let detections = null;
+
   const onDetect = (detection) => {
-    userOnDetect(detection);
+    notify(userOnDetect, detection, 'onDetect');
+    if (detections) detections.record(detection);
     if (firewallLog && detection?.mode === 'block') {
       firewallLog.record({
         rule: detection.rule,
@@ -108,7 +117,47 @@ export async function createProtection(options = {}) {
   // Resolved once and threaded through ctx: reading it is a filesystem hit on
   // runtimes that have one, and refreshes should not repeat it.
   const pulseAuth = await resolvePulseAuth(options);
+  // A site UUID with no credential behind it, said out loud ONCE at boot.
+  //
+  // Resolution reads `.patchstackrc.json`, so it needs a filesystem and a working directory. The
+  // runtimes this guard is built for do not all have one: on a Worker or an edge function the file is
+  // absent and only `PATCHSTACK_PULSE_AUTH` / `PATCHSTACK_API_KEY` can carry the credential.
+  //
+  // Unauthenticated rule fetches are accepted today, so the failure is currently invisible — and it
+  // stays invisible once they are not, because a rejected fetch fails open onto the cached or bundled
+  // bundle. The guard then screens every request, reports healthy, and never receives another rule.
+  // That silence is the whole problem: an app protected by rules frozen at install time looks exactly
+  // like an app protected by current ones.
+  //
+  // A warning, not a throw. Booting is protection; refusing to boot over a missing credential would
+  // trade a stale rule set for no rule set at all.
+  if (options.siteUuid && !pulseAuth) {
+    const message =
+      'Patchstack: no API credential resolved for site ' +
+      options.siteUuid +
+      '. Rule updates may be rejected and this guard would keep running on its cached rules. ' +
+      'Set PATCHSTACK_API_KEY (or pass { pulseAuth }) — required on runtimes without a filesystem.';
+    notify(onError, new Error(message), 'onError');
+    console.warn(message);
+  }
   const bundle = await resolveRules(options, store, { timeoutMs: bootTimeoutMs, pulseAuth });
+  // OPT-IN, deliberately. Two reasons, and the first is not about privacy: switching it on adds an
+  // outbound POST to every guard that has a site UUID, which is a change in what an installed app does
+  // on the network — the kind of thing that must be disclosed in the shipped docs before it is a default,
+  // not after. The second is that the default belongs to whoever owns that disclosure, so the capability
+  // lands here and the flip is a separate, deliberate change.
+  if (options.reportDetections === true && options.siteUuid && telemetryEnabled()) {
+    detections = createDetectionReporter({
+      siteUuid: options.siteUuid,
+      baseUrl: options.pulseRulesUrl,
+      pulseAuth,
+      // The bundle the guard is actually running, so a hit can be attributed to the rules that produced
+      // it rather than to whatever is current when the report is read.
+      rulesEtag: (await store.read())?.etag ?? null,
+      fetchImpl: options.fetchImpl,
+      flushMs: options.detectionFlushMs,
+    });
+  }
   // Mode is mutable so a Pulse refresh can flip dry-run ↔ block when SaaS enables production.
   // Precedence: PATCHSTACK_MODE env (local override) > API enforcement > options.mode > dry-run.
   let mode = resolveMode(options, bundle);
@@ -172,13 +221,9 @@ export async function createProtection(options = {}) {
   const recordSkip = (phase, reason, detail) => {
     const key = `${phase}:${reason}`;
     skipCounts[key] = (skipCounts[key] ?? 0) + 1;
-    if (onSkip) {
-      try {
-        onSkip({ phase, reason, detail, count: skipCounts[key] });
-      } catch {
-        /* a reporting callback must never affect request handling */
-      }
-    }
+    // A reporting callback must never affect request handling — including an async one, whose rejection
+    // lands after a try/catch here would have returned.
+    notify(onSkip, { phase, reason, detail, count: skipCounts[key] }, 'onSkip');
   };
 
   const maskFn =
@@ -237,7 +282,7 @@ export async function createProtection(options = {}) {
         // the response phase used to build (which made `when` on a response rule inert).
         result = re.evaluate({ ...(reqCtx || {}), _response: { ...meta, body: text } });
       } catch (err) {
-        onError?.(err);
+        notify(onError, err, 'onError');
         continue;
       }
       if (!result.blocked) continue;
@@ -378,7 +423,7 @@ export async function createProtection(options = {}) {
       try {
         r = screenText(text, { status: res.statusCode, headers: res.getHeaders ? res.getHeaders() : {} }, reqCtx);
       } catch (err) {
-        onError?.(err);
+        notify(onError, err, 'onError');
         for (const c of chunks) origWrite(c);
         return origEnd(cb);
       }
@@ -419,7 +464,7 @@ export async function createProtection(options = {}) {
     try {
       result = egressEngine.evaluate({ _egress: { url, host, method } });
     } catch (err) {
-      onError?.(err);
+      notify(onError, err, 'onError');
       return false;
     }
     if (!result.blocked) return false;
@@ -459,7 +504,7 @@ export async function createProtection(options = {}) {
         try {
           result = engine.evaluate(await fromFetchRequest(request));
         } catch (err) {
-          onError?.(err);
+          notify(onError, err, 'onError');
           return null; // fail open
         }
         return decide('request', result, () => blockResponse(result, request), () => null, fetchRequestMeta(request));
@@ -485,7 +530,7 @@ export async function createProtection(options = {}) {
         try {
           result = engine.evaluate(req);
         } catch (err) {
-          onError?.(err);
+          notify(onError, err, 'onError');
           if (exprOptions.screenResponses) wrapNodeResponse(res, reqContextFromNode(req));
           return next();
         }
@@ -525,7 +570,7 @@ export async function createProtection(options = {}) {
           chunks.push(chunk);
         });
         req.on('error', (err) => {
-          onError?.(err);
+          notify(onError, err, 'onError');
           next();
         });
         req.on('end', () => {
@@ -537,7 +582,7 @@ export async function createProtection(options = {}) {
             shaped = fromNodeRequest(req, rawBody);
             result = engine.evaluate(shaped);
           } catch (err) {
-            onError?.(err);
+            notify(onError, err, 'onError');
             return next();
           }
           decide(
@@ -600,7 +645,7 @@ export async function createProtection(options = {}) {
     try {
       ({ reportManifest: reporter } = await import('./refresh-manifest.js'));
     } catch (err) {
-      onError?.(err); // scan pipeline unavailable (e.g. an edge runtime) — rules still refresh
+      notify(onError, err, 'onError'); // scan pipeline unavailable (e.g. an edge runtime) — rules still refresh
     }
   }
 
@@ -609,7 +654,7 @@ export async function createProtection(options = {}) {
       try {
         await reporter(cwd);
       } catch (err) {
-        onError?.(err); // a failed report must not stop the rule refresh
+        notify(onError, err, 'onError'); // a failed report must not stop the rule refresh
       }
     }
     const next = await resolveRules(options, store, { timeoutMs: options.refreshTimeoutMs, pulseAuth });
@@ -630,9 +675,13 @@ export async function createProtection(options = {}) {
     protection.stopRefresh = () => {
       loop.stop();
       firewallLog?.stop();
+      detections?.stop();
     };
   } else if (firewallLog) {
-    protection.stopRefresh = () => firewallLog.stop();
+    protection.stopRefresh = () => {
+      firewallLog.stop();
+      detections?.stop();
+    };
   }
 
   return protection;

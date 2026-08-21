@@ -12,6 +12,8 @@
  *           lookup?: Function }} opts
  * @returns {Promise<() => void>} uninstall (restores every patched surface)
  */
+import { notify } from './notify.js';
+
 export async function installEgressGuard({ shouldBlock, onBlock, onSkip, dnsScreen = true, lookup, allowHosts } = {}) {
   const restores = [];
   if (typeof shouldBlock !== 'function') return () => {};
@@ -19,7 +21,10 @@ export async function installEgressGuard({ shouldBlock, onBlock, onSkip, dnsScre
 
   const block = (url, host, method) => {
     if (!shouldBlock(url, host, method)) return false;
-    onBlock?.({ url, host, method });
+    // Reported AFTER the decision and contained, because this call sits between deciding to block and
+    // saying so. An escaping throw would replace a controlled block with the callback's exception, which
+    // hands the enforcement outcome to reporting code — the inverse of what a block is for.
+    notify(onBlock, { url, host, method }, 'onEgressBlock');
     return true;
   };
 
@@ -44,7 +49,7 @@ export async function installEgressGuard({ shouldBlock, onBlock, onSkip, dnsScre
   // A resolver failure means the destination was NOT screened by IP — the hostname check alone let it
   // through. That's a real (if rare) coverage hole, so report it via onSkip instead of failing open
   // silently. Still fail-open: a broken resolver must not take the app's outbound traffic down.
-  const skip = (reason, detail) => { try { onSkip?.({ phase: 'egress', reason, detail }); } catch { /* never affect traffic */ } };
+  const skip = (reason, detail) => notify(onSkip, { phase: 'egress', reason, detail }, 'onSkip');
 
   // True when a hostname resolves to a disallowed address. Fail-open: any resolver error → false.
   const resolvesToDisallowed = (url, host, method) =>

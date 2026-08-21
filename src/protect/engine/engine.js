@@ -1,4 +1,5 @@
 import { RequestResolver } from './request.js';
+import { notify } from '../notify.js';
 import { normalizeRequest } from './normalizer.js';
 
 // Catastrophic-backtracking shapes. Broad on purpose: a group whose inner content is quantified
@@ -171,11 +172,58 @@ function warnUnsupportedMatchType(type) {
   );
 }
 
-// Internal / private / loopback / link-local / cloud-metadata host check, used by the
-// `internal_host` match type for SSRF egress rules. It CANONICALIZES the host before classifying —
+// Internal / private / loopback / link-local / cloud-metadata host check behind the `internal_host`
+// match type. It CANONICALIZES the host before classifying —
 // a textual/prefix check is bypassable by alternate encodings (decimal/hex/octal IPv4, expanded or
 // IPv4-mapped IPv6), which is a classic SSRF evasion. Handles localhost / *.local / GCP metadata
 // names, every IPv4 spelling inet_aton accepts, and IPv6 loopback/link-local/unique-local/mapped.
+/**
+ * The host to classify out of a rule parameter's value.
+ *
+ * `internal_host` was written for the egress phase, where the value IS the destination host. On the
+ * request phase the same question arrives as an application parameter, and there the value is almost
+ * always a full URL (`?url=http://169.254.169.254/latest/meta-data/`) or a `host:port` pair — neither of
+ * which is a hostname, so classifying the raw string answered "not internal" for every one of them. A
+ * request-phase SSRF rule was therefore expressible, servable and permanently inert: the exact failure
+ * this engine has been repeatedly hardened against, in the one match type meant to prevent it.
+ *
+ * Only the host is extracted; the classification itself is unchanged, so every canonicalization defence
+ * (decimal/hex IPv4, expanded and IPv4-mapped IPv6, trailing dots) still applies to what comes out. A
+ * value that is already a bare host passes through untouched, which is what keeps the egress path and
+ * the built-in default rule behaving exactly as before.
+ */
+function hostFromValue(value) {
+  const raw = String(value ?? '').trim();
+  if (raw === '') return '';
+
+  // A scheme (`http://`, and deliberately any other) or a protocol-relative URL. Parsing rather than
+  // string-slicing is what makes the userinfo evasion (`http://trusted@169.254.169.254/`) resolve to the
+  // host actually contacted, and keeps `http://evil.com#@127.0.0.1` resolving to evil.com.
+  if (/^[a-z][a-z0-9+.-]*:\/\//i.test(raw) || raw.startsWith('//')) {
+    try {
+      return new URL(raw.startsWith('//') ? `http:${raw}` : raw).hostname;
+    } catch {
+      // Unparseable: hand the raw value on, where the host check rejects it rather than guessing.
+      return raw;
+    }
+  }
+
+  // `[::1]:8080` — bracketed IPv6 with or without a port.
+  if (raw.startsWith('[')) {
+    const end = raw.indexOf(']');
+    if (end > 0) return raw.slice(1, end);
+  }
+
+  // `169.254.169.254:80`. Only a single colon followed by digits: a bare IPv6 address has several, and
+  // must not have its last group mistaken for a port.
+  const colon = raw.indexOf(':');
+  if (colon > 0 && raw.indexOf(':', colon + 1) === -1 && /^\d+$/.test(raw.slice(colon + 1))) {
+    return raw.slice(0, colon);
+  }
+
+  return raw;
+}
+
 function isInternalHost(hostname) {
   if (!hostname) return false;
   let host = String(hostname).toLowerCase().replace(/^\[|\]$/g, '');
@@ -282,10 +330,28 @@ function expandIPv6(host) {
   return out;
 }
 
+// Report a `when` block that names nothing this engine understands. Fail-open is correct for a scope that
+// cannot be EVALUATED, but a scope that cannot be UNDERSTOOD is an authoring mistake with the opposite
+// consequence: the rule silently applies to every request instead of one route, which for a blocking rule
+// is a false-positive surface across the whole app. Warned once so it is discoverable in a log.
+const warnedScopes = new Set();
+function warnUnrecognisedScope(when) {
+  const key = Object.keys(when).sort().join(',');
+  if (warnedScopes.has(key)) return;
+  warnedScopes.add(key);
+  console.warn(
+    `[patchstack] Rule scope \`when: { ${key} }\` names no supported key — the engine understands ` +
+      `\`method\` and \`path\`. The scope is IGNORED and the rule applies to every request.`
+  );
+}
+
 // Route/method scope for a rule's optional `when: { method, path }`. Fail-open: if the scope can't
 // be evaluated, the rule still applies (never silently suppress a rule).
 function ruleAppliesTo(when, resolver) {
   try {
+    if (when.method === undefined && when.path === undefined && Object.keys(when).length > 0) {
+      warnUnrecognisedScope(when);
+    }
     if (when.method) {
       const methods = (Array.isArray(when.method) ? when.method : [when.method]).map((m) => String(m).toUpperCase());
       const actual = String(resolver.resolve('server.REQUEST_METHOD')[0] ?? 'GET').toUpperCase();
@@ -502,8 +568,9 @@ export function matchValue(type, value, matchVal, matchObj) {
     }
 
     case 'internal_host':
-      // SSRF egress: private / loopback / link-local / cloud-metadata destinations.
-      return isInternalHost(strValue);
+      // SSRF: private / loopback / link-local / cloud-metadata destinations. The value may be a bare
+      // host (egress) or a URL / host:port in an application parameter (request) — see `hostFromValue`.
+      return isInternalHost(hostFromValue(strValue));
 
     case 'quotes':
     // engine-php exposes `inline_js_xss` as an alias of `quotes`.
@@ -574,8 +641,9 @@ export class RuleEngine {
   // evaluating a rule is reported and the request is allowed through (fail open). A
   // malformed rule is skipped without aborting the rest of the ruleset.
   #reportError(err) {
-    if (this.#onError) {
-      this.#onError(err);
+    // A host handler that runs takes over reporting. One that THROWS does not: fall through to the
+    // built-in logging below, or a rule error would disappear into a broken reporter.
+    if (notify(this.#onError, err, 'onError')) {
       return;
     }
     // Default: log once per distinct message so a persistently-broken rule doesn't

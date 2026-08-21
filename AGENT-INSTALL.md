@@ -33,7 +33,7 @@ Only `map` reads your source, and only `map --upload` sends anything derived fro
 - The package also exposes **`protect`** directly (runtime exploit guard; its templates live under `dist/protect/`). `setup` invokes it automatically; `scan`, `guide`, `status`, and `mark-build` do not. It writes only local files and auto-wires known stacks — **TanStack Start + Supabase** (patches the Supabase client + `src/start.ts`), **Next.js** (scaffolds `middleware.ts`), **SvelteKit** (`src/hooks.server.ts`), **Astro** (`src/middleware.ts`), **Nuxt** (`server/middleware/`), **NestJS** (`app.use(patchstackMiddleware)` in the bootstrap), **Fastify** (`app.register(patchstackFastify)`), and **Express** (`app.use(patchstackMiddleware)`). On **any other stack** it scaffolds a framework-agnostic guard under `src/patchstack/` and prints a wiring plan — then you finish the install by importing that guard into your server entry (`protectFetch(handler)` for a Web-Fetch server, or `app.use(patchstackMiddleware)` for Node/Express) and running `patchstack-connect protect --check` to confirm it is wired (exit 1 until it is). Passing `--demo` seeds a broad sample rule set (for demonstrations, not production).
 - **`demo node-serialize` is an explicit production-backed walkthrough.** It requires `node-serialize@0.0.4` to already be present in the lockfile; it does not install the vulnerable dependency. It runs the same production `scan`, polls the configured site's public Pulse rules endpoint until rule `18843` is served, runs `protect`, verifies the generated guard, and prints exploit/benign test requests. It writes the same manifest/widget and guard files as those underlying commands. It does not start/restart the app and does not send the printed requests.
 - **`map` is a local, read-only analysis command.** It walks the project's server source (skipping `node_modules`, build output and dot-directories; it does not follow symlinks out of the project unless you pass `--follow-symlinks`), parses it with the project's **own** `typescript`, and prints JSON describing the attack surface: entry points, the inputs each reads, the sinks they can reach (database / file system / process / outbound HTTP) with the npm package behind each, and evidence-backed input→sink flows, each labelled with how the link was established — from an exact read at the sink's own call site, through a transformed or cross-module link, down to the two being present together with no proven link. Static analysis is best-effort, so the output reports the *detected* surface with coverage counters — not a completeness guarantee. It writes nothing (except the file you name with `--out`) and is never invoked by `scan`, `setup`, `guide`, `protect`, or `mark-build`.
-- **`map --upload` is the one opt-in that sends anything derived from your source.** It POSTs the same JSON document to `monitor/pulse/input-map/<your site uuid>` so Patchstack can pin protection rules to your app's own parameter names instead of guessing them. What is sent is exactly what `map` prints — a structural description: route paths, parameter/field names, the dependency behind each sink, and file paths with line numbers. **No source code, no file contents, no environment variable values.** It never runs without the flag, it is skipped when no entry points are detected, and a failure to reach Patchstack is reported and ignored rather than failing your build. Omit the flag and the command stays entirely local.
+- **`map --upload` is the only command that sends a description of your source.** (The runtime guard can also report rule detections, which carry route paths and parameter names — see "Runtime guard reporting" below.) It POSTs the same JSON document to `monitor/pulse/input-map/<your site uuid>` so Patchstack can pin protection rules to your app's own parameter names instead of guessing them. What is sent is exactly what `map` prints — a structural description: route paths, parameter/field names, the dependency behind each sink, and file paths with line numbers. **No source code, no file contents, no environment variable values.** It never runs without the flag, it is skipped when no entry points are detected, and a failure to reach Patchstack is reported and ignored rather than failing your build. Omit the flag and the command stays entirely local.
 - **`demo-guide node-serialize` is the read-only companion.** It checks the Host-created site configuration and vulnerable lockfile entry, explains the complete local prepare/run/restart/prove/cleanup sequence, and prints the next exact command. It does not require a deployment and does not change files or contact Patchstack.
 - Patchstack is not WordPress-only. This connector monitors any JS/Node project — Vite, Next.js, plain vanilla JS, anything with a lockfile.
 
@@ -99,7 +99,7 @@ Only `map` reads your source, and only `map --upload` sends anything derived fro
 
    Framework-specific placement patterns: https://cdn.patchstack.com/llm.html. The site UUID is public by design — it ships in client-side HTML and is not a secret. The credential is the opposite, and `scan` writes it for you — **there is no manual step, and you should never invent or ask the user for this value**:
 
-- `apiKey` (also `PATCHSTACK_API_KEY`, WP format `{secret}-{oauth.id}`) — one credential for both paths. It authenticates **Pulse ingest** (manifest, attack-surface map, package removal), where it is exchanged for a short-lived token rather than sent directly, and **block-log reporting** through the connector `POST /api/logs/log`, so "Threats blocked" fills in the dashboard.
+- `apiKey` (also `PATCHSTACK_API_KEY`, WP format `{secret}-{oauth.id}`) — one credential for both paths. It authenticates **Pulse ingest** (manifest, attack-surface map, package removal, rule detections), where it is exchanged for a short-lived token rather than sent directly, and **block-log reporting** through the connector `POST /api/logs/log`, so "Threats blocked" fills in the dashboard.
 
 It is server-only. Never put it in the widget tag, client bundles, or public env vars (`NEXT_PUBLIC_*`, etc.). Prefer `PATCHSTACK_API_KEY` in production; `.patchstackrc.json` is fine for local DX. If it is lost, `npx @patchstack/connect login` recovers it via dashboard approval — do not delete the file and re-provision, which would create a second site. Opt out of reporting with `PATCHSTACK_TELEMETRY=off`. If the project must not carry the widget, persist `"widget": false` in `.patchstackrc.json`; otherwise the next scan re-adds it.
 
@@ -125,6 +125,48 @@ It is server-only. Never put it in the widget tag, client bundles, or public env
 - Label hosted workspace scans with `PATCHSTACK_ENVIRONMENT=sandbox` in that process only. Leave production builds unset (the default is `production`) and never commit a sandbox label into files shared with production.
 - If a step fails, stop and report it. Don't proceed with placeholders.
 - In CI where `.patchstackrc.json` can't be committed, set `PATCHSTACK_SITE_UUID` and `PATCHSTACK_API_KEY` as env vars instead. Precedence: CLI flag → env var → `.patchstackrc.json`. `login` is interactive and refuses to run in CI, so CI always takes its credential from the environment.
+
+## Runtime guard reporting
+
+The runtime guard (`protect`) can report the rules that matched, so the dashboard can show what a rule
+would have stopped while it is still in dry-run. Two separate paths, with different triggers:
+
+- **Blocked requests** go to the connector `POST /api/logs/log`, the same path the WordPress plugin uses,
+  and fill in "Threats blocked". This runs when the guard is holding an `apiKey` and a rule blocked a
+  request. The credential is first exchanged at `POST /oauth/token` (client credentials) for a bearer
+  token; the `apiKey` itself is not sent to the log endpoint. Disable with `PATCHSTACK_TELEMETRY=off`, or
+  `reportFirewallLog: false` in `createProtection`.
+- **Every rule that matched** goes to `monitor/pulse/detections/<your site uuid>` — including matches that
+  blocked, which are reported on both paths. This is **off unless you pass `reportDetections: true`** to
+  `createProtection`; the scaffolded guard does not pass it. It also requires a provisioned site UUID and
+  is disabled by `PATCHSTACK_TELEMETRY=off`. It exists because a rule carrying `dry-run` blocks nothing,
+  so without it nothing distinguishes a rule that is protecting from one that is quietly wrong.
+
+What a detection report contains, per matched rule: the rule id, the request path **with any query string
+removed**, the parameter names that rule reads (from the rule's own definition), which phase matched,
+whether it was enforced, the identifier of the rule bundle in use, and a timestamp. Each batch also
+carries a count of reports dropped when traffic outran the flush, so a partial sample is not read as a
+complete one.
+
+The parameter names are **identifiers, and they name the request region they refer to** — `post.title`,
+`get.redirect_to`, `cookie.session`, `server.HTTP_AUTHORIZATION`. So a rule that inspects a cookie or an
+`Authorization` header sends that cookie's or header's **name**. They are read from the rule's own
+definition, not from your traffic, so they describe what is being screened rather than what any request
+contained.
+
+What it does not contain: **no values of any kind.** Not the value that matched, not the request body,
+and not the value of any header, cookie or query-string parameter — including those of the parameters
+named above. Reports are batched, capped in memory, and dropped rather than retried if Patchstack cannot
+be reached — a reporting failure never delays or fails a request.
+
+Two more endpoints the package can call, for completeness:
+
+- `GET monitor/widget/settings/<your site uuid>` — how `status` tells "this site was deleted on
+  Patchstack" apart from "still active". It sends no credential and nothing about your project; the site
+  UUID in the path is the whole request.
+- `GET api/get-rules/3` — the older rules path, used only when the guard is configured with a `token`
+  instead of a site UUID. The zero-configuration flow provisions a site UUID and uses
+  `monitor/pulse/rules/<uuid>` instead, so this is unreachable unless you pass `token` yourself.
 
 ## Verifying the install
 
@@ -160,13 +202,28 @@ npx @patchstack/connect login
 
 The command asks Patchstack for a short code, prints a link, and polls until the site's **owner approves it in the dashboard**. On approval it writes the new credential into `.patchstackrc.json` and exits. The link opens the approval page with the code already filled in, so the person only has to confirm.
 
-### What you must do, as the agent
+### What you must do, as the agent — two commands, not one
 
-1. **Run the command and surface the link and code to the user verbatim.** They must open it themselves — approval requires their signed-in Patchstack account, which you do not have and must not ask for.
-2. **Leave the command running.** It polls until approved or the code expires (10 minutes). Do not kill it and retry; each run issues a different code and invalidates the one already on screen.
-3. **Report the outcome.** On success, tell them the credential was restored *and* that the previous one no longer works — see the warning below.
+**The command exits immediately when you run it.** It detects that its output is being captured rather than watched by a person, prints the link, and returns. It does **not** block waiting for approval, because you would not see the link until it exited — by which time the code would have expired, and it would look like the command had hung.
+
+```
+1.  npx @patchstack/connect login     → prints the link, exits straight away
+2.  give the user the link, verbatim  → they approve it in the browser
+3.  npx @patchstack/connect login     → the SAME command again, after they confirm.
+                                        It resumes the request and finishes the flow
+```
+
+- **Never wrap step 1 in a timeout or kill it** — it returns on its own. If you find yourself waiting on it, something else is wrong.
+- **Step 3 is the same command.** While a request is still valid it resumes rather than restarting, so running `login` again never invalidates the link the user is looking at. If they have not approved yet it tells you so, with the time remaining, and exits.
+- **Nothing changes until step 3 runs.** Approving only marks the request; the credential is rotated and written when the CLI redeems it. So an abandoned flow is harmless — the site keeps working — but the credential is not restored until you come back.
+- **Surface the link verbatim.** Approval requires the user's signed-in Patchstack account, which you do not have and must never ask for.
+- **Report the outcome.** On success, say the credential was restored *and* that the previous one no longer works — see the warning below.
+
+`login --wait` is the blocking variant: it polls until approved instead of returning. Prefer the plain re-run — it keeps each command short, which is what fits a conversation.
 
 You cannot complete this alone. It is deliberately a human-in-the-loop step: starting the flow proves nothing about who is running it, so the only authorisation is an owner approving in the browser.
+
+(In an interactive terminal the same command prints the link and then waits, since a person can watch it stream. You get the two-step form; a human at a shell gets the one-step form.)
 
 ### Consequences to tell the user about
 
@@ -179,7 +236,8 @@ You cannot complete this alone. It is deliberately a human-in-the-loop step: sta
 | Site was never claimed | `409` — no owner exists to approve | Ask the user to claim the site in the dashboard first, or, if the site is disposable, delete `.patchstackrc.json` and `scan` to provision a fresh one |
 | Running in CI | Refuses to start | CI takes its credential from `PATCHSTACK_PULSE_AUTH`; `login` is for a developer machine |
 | No `siteUuid` configured | Refuses to start | There is no site to recover — run `scan` |
-| Code expired | Poll ends after 10 minutes | Run the command again for a new code |
+| Code expired | `--wait` ends after 10 minutes | Start again from step 1 for a new code |
+| `--wait` with nothing pending | "No login is waiting for approval" | Run step 1 first; `--wait` resumes a request, it does not start one |
 
 ## Uninstalling
 

@@ -7,6 +7,7 @@
 // shape from a `Request`, so no engine changes are needed beyond keeping the hot path
 // free of Node-only APIs.
 import { RuleEngine } from './engine.js';
+import { notify } from '../notify.js';
 
 // Cap how much request body we buffer for inspection. A larger body is left UNSCANNED
 // (fail-open) rather than buffered into memory — matches the node adapter's maxBodyBytes.
@@ -243,20 +244,19 @@ export function createFetchMiddleware(rulesData, options = {}) {
       req = await fromFetchRequest(request); // shaping inside the try — a bad/relative request.url must fail open
       result = engine.evaluate(req);
     } catch (err) {
-      if (options.onError) {
-        options.onError(err);
-      }
+      notify(options.onError, err, 'onError');
       return null; // fail open
     }
 
     if (result.blocked) {
-      if (options.onBlock) {
-        options.onBlock({
-          rule: result.rule,
-          message: result.message,
-          request: { method: req.method, url: req.url, ip: req.ip }
-        });
-      }
+      // Contained: this runs after the block decision and before the block response is built, so an
+      // escaping throw would replace the 403 with the callback's exception — reporting code deciding
+      // the enforcement outcome.
+      notify(options.onBlock, {
+        rule: result.rule,
+        message: result.message,
+        request: { method: req.method, url: req.url, ip: req.ip }
+      }, 'onBlock');
       return (options.response || defaultBlockResponse)(result);
     }
 

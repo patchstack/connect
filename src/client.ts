@@ -12,6 +12,37 @@ export function buildEndpointUrl(base: string, siteUuid?: string | null): string
     : trimmed;
 }
 
+/**
+ * What a refusal means, in terms someone can act on.
+ *
+ * Every Pulse route that addresses an existing site requires a credential, so a rejection is now the
+ * most likely failure a misconfigured project hits — and the three causes have three different fixes.
+ * Reporting them as `Patchstack returned 401` names none of them, and this output is frequently read by
+ * an AI agent that has no other way to find out what to do next.
+ *
+ * The distinction 401 cannot make on its own is whether we HELD a credential. Having none is a setup
+ * step that was never run; having one rejected is a credential that has expired, been revoked, or whose
+ * site no longer exists. A 403 is different again: the credential is valid and simply is not for this
+ * site, which usually means a `.patchstackrc.json` carrying someone else's UUID.
+ *
+ * @returns the message, or null when the status is not an authentication failure
+ */
+export function authFailureMessage(status: number, config: Config): string | null {
+  const hasCredential = typeof config.pulseAuth === 'string' && config.pulseAuth.length > 0;
+
+  if (status === 401 && !hasCredential) {
+    return 'Patchstack requires an API credential for this site and none is configured. Run `npx patchstack-connect login`, or set PATCHSTACK_API_KEY.';
+  }
+  if (status === 401) {
+    return 'Patchstack rejected this API credential. It may have expired, been revoked, or the site may no longer exist. Run `npx patchstack-connect login` to issue a new one.';
+  }
+  if (status === 403) {
+    return 'This API credential is not permitted to act on this site. Check that siteUuid in .patchstackrc.json matches the credential (a credential is issued for one site).';
+  }
+
+  return null;
+}
+
 /** Build the live Pulse rules URL corresponding to a manifest endpoint override. */
 export function buildRulesUrl(manifestEndpoint: string, siteUuid: string): string {
   const url = new URL(manifestEndpoint);
@@ -114,6 +145,10 @@ export async function postInputMap(
       // one side is out of date, and guessing at compatibility is how a consumer misreads a document.
       return { result: 'failed', message: `Patchstack does not accept this map schema (version ${map.version}). Update @patchstack/connect.` };
     }
+    const refused = authFailureMessage(response.status, config);
+    if (refused !== null) {
+      return { result: 'failed', message: refused };
+    }
     if (!response.ok) {
       return { result: 'failed', message: `Patchstack returned ${response.status}.` };
     }
@@ -166,6 +201,18 @@ export async function postPackageRemoved(config: Config): Promise<PackageRemoved
     });
     if (response.status === 404) {
       return { result: 'gone', message: null };
+    }
+    // A site that has been deleted answers 401 here, not 404: this route resolves the site FROM the
+    // credential, so once the site record is gone the credential resolves to nothing. Reporting that as
+    // an auth failure would tell someone to re-run `login` over a site that no longer exists, so the
+    // question is put to the endpoint that can still answer it — widget settings, which needs no
+    // credential and 404s for a removed site.
+    if (response.status === 401 && (await fetchSiteStatus(config)) === 'removed') {
+      return { result: 'gone', message: null };
+    }
+    const refused = authFailureMessage(response.status, config);
+    if (refused !== null) {
+      return { result: 'failed', message: refused };
     }
     if (!response.ok) {
       return { result: 'failed', message: `Patchstack returned ${response.status}.` };
@@ -275,6 +322,11 @@ export async function postManifest(
       body?.message ?? 'Patchstack rejected the manifest payload (validation failed).',
       'VALIDATION_ERROR',
     );
+  }
+
+  const refused = authFailureMessage(response.status, config);
+  if (refused !== null) {
+    throw new PatchstackError(refused, 'UNAUTHORIZED');
   }
 
   if (response.status < 200 || response.status >= 300) {
