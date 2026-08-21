@@ -123,11 +123,12 @@ export async function createProtection(options = {}) {
   // runtimes this guard is built for do not all have one: on a Worker or an edge function the file is
   // absent and only `PATCHSTACK_PULSE_AUTH` / `PATCHSTACK_API_KEY` can carry the credential.
   //
-  // Unauthenticated rule fetches are accepted today, so the failure is currently invisible — and it
-  // stays invisible once they are not, because a rejected fetch fails open onto the cached or bundled
-  // bundle. The guard then screens every request, reports healthy, and never receives another rule.
-  // That silence is the whole problem: an app protected by rules frozen at install time looks exactly
-  // like an app protected by current ones.
+  // Every site-addressed Pulse endpoint requires a verified, site-bound credential; only a first-time
+  // provisioning call is anonymous. So a missing credential is not a future problem — the rules fetch is
+  // refused now. And the refusal is invisible, because a failed fetch fails open onto the cached or
+  // bundled bundle: the guard then screens every request, reports healthy, and never receives another
+  // rule. That silence is the whole problem — an app protected by rules frozen at install time looks
+  // exactly like an app protected by current ones.
   //
   // A warning, not a throw. Booting is protection; refusing to boot over a missing credential would
   // trade a stale rule set for no rule set at all.
@@ -135,7 +136,7 @@ export async function createProtection(options = {}) {
     const message =
       'Patchstack: no API credential resolved for site ' +
       options.siteUuid +
-      '. Rule updates may be rejected and this guard would keep running on its cached rules. ' +
+      '. Rule updates will be rejected and this guard would keep running on its cached rules. ' +
       'Set PATCHSTACK_API_KEY (or pass { pulseAuth }) — required on runtimes without a filesystem.';
     notify(onError, new Error(message), 'onError');
     console.warn(message);
@@ -146,17 +147,35 @@ export async function createProtection(options = {}) {
   // on the network — the kind of thing that must be disclosed in the shipped docs before it is a default,
   // not after. The second is that the default belongs to whoever owns that disclosure, so the capability
   // lands here and the flip is a separate, deliberate change.
+  //
+  // And it needs a credential. The detections endpoint is site-addressed and site-bound-token-only, so a
+  // reporter built without one queues events, posts them, and is refused — spending an outbound request
+  // per batch to accomplish nothing, while `reportDetections: true` in the config says reporting is on.
+  // Refusing to build it is the honest outcome; `protection.detectionReporting` says which it is.
+  let detectionReporting = 'off';
   if (options.reportDetections === true && options.siteUuid && telemetryEnabled()) {
-    detections = createDetectionReporter({
-      siteUuid: options.siteUuid,
-      baseUrl: options.pulseRulesUrl,
-      pulseAuth,
-      // The bundle the guard is actually running, so a hit can be attributed to the rules that produced
-      // it rather than to whatever is current when the report is read.
-      rulesEtag: (await store.read())?.etag ?? null,
-      fetchImpl: options.fetchImpl,
-      flushMs: options.detectionFlushMs,
-    });
+    if (!pulseAuth) {
+      detectionReporting = 'unavailable-no-credential';
+      const message =
+        'Patchstack: detection reporting is enabled for site ' +
+        options.siteUuid +
+        ' but no API credential resolved, so no report could be delivered. Reporting is off.';
+      notify(onError, new Error(message), 'onError');
+      console.warn(message);
+    } else {
+      detectionReporting = 'on';
+      detections = createDetectionReporter({
+        siteUuid: options.siteUuid,
+        baseUrl: options.pulseRulesUrl,
+        pulseAuth,
+        // The bundle the guard is actually running, so a hit can be attributed to the rules that produced
+        // it rather than to whatever is current when the report is read. Kept current across refreshes —
+        // see the refresh tick below.
+        rulesEtag: (await store.read())?.etag ?? null,
+        fetchImpl: options.fetchImpl,
+        flushMs: options.detectionFlushMs,
+      });
+    }
   }
   // Mode is mutable so a Pulse refresh can flip dry-run ↔ block when SaaS enables production.
   // Precedence: PATCHSTACK_MODE env (local override) > API enforcement > options.mode > dry-run.
@@ -660,6 +679,17 @@ export async function createProtection(options = {}) {
     const next = await resolveRules(options, store, { timeoutMs: options.refreshTimeoutMs, pulseAuth });
     mode = resolveMode(options, next);
     applyBundle(next);
+    // After the swap, and only after it: later detections belong to the bundle now running. A refresh
+    // that fell back to the cached or bundled ruleset kept the previous rules, and `store.read()` then
+    // still holds the previous identity — which is exactly the answer that stays true.
+    if (detections) detections.setRulesEtag((await store.read())?.etag ?? null);
+
+    // The tick's own outcome, separate from the guard's. `resolveRules` deliberately absorbs an API or
+    // network failure and returns usable rules, which is right for protection and wrong for a poller:
+    // a scheduler that only counts THROWN errors reads a fleet-wide outage as a healthy poll and keeps
+    // knocking at the normal interval. Reported, not thrown — a caller's manual `refresh()` must not
+    // start failing because the platform is down and the cached rules held.
+    return next.source ?? { ok: true };
   };
 
   if (live) {
@@ -670,19 +700,26 @@ export async function createProtection(options = {}) {
     protection.refreshHandler = () => makeRefreshHandler(runRefreshTick, refreshSecret);
   }
 
-  if (options.refreshMs > 0 && live) {
-    const loop = startRefresh(runRefreshTick, { refreshMs: options.refreshMs, onError });
-    protection.stopRefresh = () => {
-      loop.stop();
-      firewallLog?.stop();
-      detections?.stop();
-    };
-  } else if (firewallLog) {
-    protection.stopRefresh = () => {
-      firewallLog.stop();
-      detections?.stop();
-    };
-  }
+  const loop = options.refreshMs > 0 && live
+    ? startRefresh(runRefreshTick, { refreshMs: options.refreshMs, onError })
+    : null;
+
+  // One method, always present, that reaches everything holding a timer or a buffer: the refresh loop,
+  // the block log, the detection reporter. Always present because a lifecycle method that exists only
+  // for some configurations is one a caller cannot rely on — and each of these components can be the
+  // only one installed, so any of them can be the one left running.
+  protection.stop = () => {
+    loop?.stop();
+    firewallLog?.stop();
+    detections?.stop();
+  };
+  // The name callers already have, kept as an alias for it.
+  protection.stopRefresh = protection.stop;
+  // Which of the three states reporting is in: requested and running, requested but undeliverable, or
+  // not requested. A boolean would collapse the middle one into "off", which is the reassuring reading.
+  protection.detectionReporting = detectionReporting;
+  // Delivery health, when there is a reporter: what was attempted, acknowledged, refused, and dropped.
+  if (detections) protection.detectionHealth = () => detections.health();
 
   return protection;
 }
@@ -730,8 +767,9 @@ async function resolveApiKey(options) {
  * order and the same edge-runtime caution as resolveApiKey, and falls back to
  * it so guards installed before pulseAuth existed keep authenticating.
  *
- * Returning undefined is fine: the rules fetch then goes out unauthenticated,
- * which the server still accepts.
+ * Returning undefined does not fail the boot — protection still runs on the cached or bundled rules —
+ * but the fetch then goes out unauthenticated and the platform refuses it, so the guard stops receiving
+ * rules. That is why the caller warns about it at boot rather than treating it as a normal state.
  */
 async function resolvePulseAuth(options) {
   if (typeof options?.pulseAuth === 'string' && options.pulseAuth.length > 0) return options.pulseAuth;

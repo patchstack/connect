@@ -138,9 +138,10 @@ would have stopped while it is still in dry-run. Two separate paths, with differ
   `reportFirewallLog: false` in `createProtection`.
 - **Every rule that matched** goes to `monitor/pulse/detections/<your site uuid>` — including matches that
   blocked, which are reported on both paths. This is **off unless you pass `reportDetections: true`** to
-  `createProtection`; the scaffolded guard does not pass it. It also requires a provisioned site UUID and
-  is disabled by `PATCHSTACK_TELEMETRY=off`. It exists because a rule carrying `dry-run` blocks nothing,
-  so without it nothing distinguishes a rule that is protecting from one that is quietly wrong.
+  `createProtection`; the scaffolded guard does not pass it. It also requires a provisioned site UUID, a
+  resolvable credential, and is disabled by `PATCHSTACK_TELEMETRY=off`. It exists because a rule carrying
+  `dry-run` blocks nothing, so without it nothing distinguishes a rule that is protecting from one that is
+  quietly wrong.
 
 What a detection report contains, per matched rule: the rule id, the request path **with any query string
 removed**, the parameter names that rule reads (from the rule's own definition), which phase matched,
@@ -158,6 +159,16 @@ What it does not contain: **no values of any kind.** Not the value that matched,
 and not the value of any header, cookie or query-string parameter — including those of the parameters
 named above. Reports are batched, capped in memory, and dropped rather than retried if Patchstack cannot
 be reached — a reporting failure never delays or fails a request.
+
+The endpoint needs a credential, so `reportDetections: true` with none resolved starts nothing: the guard
+warns once at boot and `protection.detectionReporting` reads `unavailable-no-credential` instead of `on`.
+When reporting is on, `protection.detectionHealth()` returns local counts — detections attempted,
+acknowledged, refused or unreachable, dropped for queue pressure — and the time of the last
+acknowledgement. Those counts stay in your process; nothing extra is sent to report them.
+
+`protection.stop()` stops everything the guard has running in the background — the rule-refresh loop, the
+block-log reporter, the detection reporter — and flushes what is buffered. `protection.stopRefresh()` is
+the same method under its older name. Call it on shutdown; it is safe to call twice.
 
 Two more endpoints the package can call, for completeness:
 
