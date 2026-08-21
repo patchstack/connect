@@ -23,6 +23,29 @@ Invariants when touching it:
 - A new real-world refusal report becomes a persona in `field-test/personas/` so the regression stays covered.
 - The fixture installs the *published* package, so an unpublished `guide`/CLI change can't be exercised end-to-end — publish first, or accept the run validates only the prompt shape.
 
+## Comments and Explanations
+
+**Keep ticket references out of the code.** No `ENG-1234`, `LAB-567` or `Nightwatch #12`
+anywhere in the tree — not in comments, docblocks, test names, config files or strings.
+The ID goes in the PR title (`[ENG-1234] …`) and the PR description (`Closes ENG-1234`),
+and nowhere else. That is where someone looks for the backstory, and `git blame` takes them
+there from any line. In the code it is dead weight: it means nothing without Linear open,
+and nothing at all once the ticket is archived.
+
+**Comments describe the code that is there, not the code that used to be.** Don't narrate
+the old behaviour, the bug, or how the fix was reasoned about — that is the PR's job. A
+comment earns its place by telling the reader something the code cannot: a non-local
+constraint, an invariant, why an unusual choice was made. If it restates the signature or
+the line below it, delete it.
+
+**Explain things plainly.** In PR descriptions, review comments and replies: short
+sentences, ordinary words, no jargon where a plain word works. Lead with what changed and
+why it matters, then the detail. Assume the reader is capable but has not seen this code
+today.
+
+This repo is public. Nothing committed here — code, comments, docs or commit messages — may
+contain customer names, internal URLs or internal hostnames.
+
 ## Releasing
 
 The git tag is the source of truth (`gh release create vX.Y.Z`); `package.json`'s version is a placeholder. See `RELEASING.md`.
