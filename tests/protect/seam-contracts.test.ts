@@ -125,9 +125,16 @@ describe('the request a response seam passes on', () => {
 });
 
 describe('what counts as the generic guard being wired', () => {
-  function scaffolded(files: Record<string, string> = {}): string {
-    const cwd = project({ 'package.json': JSON.stringify({ name: 'fixture' }), ...files });
-    scaffoldGeneric(cwd, { cwd, force: false } as never, 'generic-guard.ts');
+  /**
+   * A project with the generic guard scaffolded the way `protect` would scaffold it.
+   *
+   * `tsconfig.json` by default, because most of these fixtures are `.ts` entries importing the guard with a
+   * bare specifier — which is what a compiler resolves, and only a compiler. A fixture that needs a
+   * different module format says so, and gets the guard file that format can load.
+   */
+  function scaffolded(files: Record<string, string> = {}, config: Record<string, string> = { 'tsconfig.json': '{}' }): string {
+    const cwd = project({ 'package.json': JSON.stringify({ name: 'fixture' }), ...config, ...files });
+    scaffoldGeneric(cwd, { cwd, force: false } as never);
 
     return cwd;
   }
@@ -176,15 +183,38 @@ describe('what counts as the generic guard being wired', () => {
   });
 
   it('is satisfied through a require, too', () => {
-    const cwd = scaffolded({
-      'server.cjs': [
-        'const { patchstackMiddleware } = require("./patchstack/guard");',
-        'app.use(patchstackMiddleware);',
-        '',
-      ].join('\n'),
-    });
+    // A CommonJS project, so the scaffold is `guard.cjs` and the specifier says `.cjs` — `require()` guesses
+    // `.js`, `.json` and `.node`, never `.cjs`, so the bare form would not load.
+    const cwd = scaffolded(
+      {
+        'server.cjs': [
+          'const { patchstackMiddleware } = require("./patchstack/guard.cjs");',
+          'app.use(patchstackMiddleware);',
+          '',
+        ].join('\n'),
+      },
+      {},
+    );
 
     expect(genericVerify(cwd).wired).toBe(true);
+  });
+
+  it('is not satisfied by a specifier a CommonJS project cannot load', () => {
+    // The other half of the scaffold matching the project: the guard is `guard.cjs` here, and the bare
+    // specifier resolves to nothing. It used to verify green, which is a wired report on an app that throws
+    // at boot.
+    const cwd = scaffolded(
+      {
+        'server.cjs': [
+          'const { patchstackMiddleware } = require("./patchstack/guard");',
+          'app.use(patchstackMiddleware);',
+          '',
+        ].join('\n'),
+      },
+      {},
+    );
+
+    expect(genericVerify(cwd).wired).toBe(false);
   });
 
   it('is not satisfied by two names in one import clause', () => {
@@ -230,13 +260,16 @@ describe('what counts as the generic guard being wired', () => {
   });
 
   it('accepts a renamed destructured require', () => {
-    const cwd = scaffolded({
-      'server.cjs': [
-        'const { patchstackMiddleware: shield } = require("./patchstack/guard");',
-        'app.use(shield);',
-        '',
-      ].join('\n'),
-    });
+    const cwd = scaffolded(
+      {
+        'server.cjs': [
+          'const { patchstackMiddleware: shield } = require("./patchstack/guard.cjs");',
+          'app.use(shield);',
+          '',
+        ].join('\n'),
+      },
+      {},
+    );
 
     expect(genericVerify(cwd).wired).toBe(true);
   });
@@ -488,7 +521,7 @@ describe('a check this machine cannot answer', () => {
       'src/server.ts':
         'import { protectFetch } from "./patchstack/guard";\nexport default { fetch: protectFetch(async () => new Response("ok")) };\n',
     });
-    scaffoldGeneric(cwd, { cwd, force: false } as never, 'generic-guard.ts');
+    scaffoldGeneric(cwd, { cwd, force: false } as never);
 
     const report = runVerify(cwd);
     const note = report.checks.find((c) => c.unverifiable);

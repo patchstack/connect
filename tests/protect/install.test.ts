@@ -195,7 +195,9 @@ export const startInstance = createStart(() => ({
     const res: any = runProtect(plain);
     expect(res.status).toBe('scaffolded'); // generic fallback, not silent skip
     expect(existsSync(path.join(plain, 'src/integrations/patchstack/guard.ts'))).toBe(false); // not the tanstack path
-    expect(existsSync(path.join(plain, 'patchstack/guard.ts'))).toBe(true); // generic guard scaffolded
+    // A package with no TypeScript and no `type: module` is CommonJS, and `require()` cannot load a `.ts`
+    // guard — so the generic scaffold writes the one this project can actually load.
+    expect(existsSync(path.join(plain, 'patchstack/guard.cjs'))).toBe(true); // generic guard scaffolded
     rmSync(plain, { recursive: true, force: true });
   });
 

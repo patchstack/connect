@@ -31,9 +31,11 @@ describe('runtime guard site UUID propagation', () => {
     guard: string;
   }> = [
     {
+      // No TypeScript and no `type: module`, so the guard this project can load is the CommonJS one — and
+      // the UUID has to be baked into whichever file the scaffolder actually wrote.
       name: 'generic fallback',
       pkg: { name: 'generic-app' },
-      guard: 'patchstack/guard.ts',
+      guard: 'patchstack/guard.cjs',
     },
     {
       name: 'Express',

@@ -13,6 +13,7 @@ import {
   maskStringContents,
   moduleKindOf,
   resolvesToGuardModule,
+  GUARD_FILENAMES,
 } from './source-scope.js';
 
 /** Does this package's `type` make an extensionless `.js` file an ES module? */
@@ -28,12 +29,59 @@ function genericDir(cwd: string): string {
   return existsSync(join(cwd, 'src')) ? 'src/patchstack' : 'patchstack';
 }
 
+/**
+ * Which guard file this project can actually load, and how to name it.
+ *
+ * The scaffold used to be `guard.ts` for everybody. A plain CommonJS project got a TypeScript file it
+ * cannot require and a printed plan telling it to import from `<dir>/guard` — two specifiers that both
+ * fail, and a check that called the second one wired. So the format follows the project:
+ *
+ * - a `tsconfig.json` means a compiler or bundler is in the picture, so the TypeScript guard is loadable and
+ *   the bare specifier is the right thing to write;
+ * - `"type": "module"` means Node ESM, which resolves no extensions, so the guard is `.js` and the specifier
+ *   has to say so;
+ * - anything else is CommonJS, where `require()` never guesses `.cjs`, so the guard is `.cjs` and the
+ *   specifier has to say so.
+ */
+/**
+ * Does a compiler or bundler read this project's sources?
+ *
+ * A `tsconfig.json` says so outright. So does a `.ts` entry without one — plenty of projects rely on a
+ * framework's own config — and either way nothing but a compiler can load the TypeScript guard.
+ */
+function hasTypeScript(cwd: string): boolean {
+  return existsSync(join(cwd, 'tsconfig.json')) || candidateEntries(cwd).some((entry) => /\.tsx?$/.test(entry));
+}
+
+export interface GenericGuardTarget {
+  template: string;
+  file: string;
+  /** What to write in an import, relative to the guard's directory. */
+  specifier: string;
+}
+
+export function genericGuardTarget(cwd: string): GenericGuardTarget {
+  if (hasTypeScript(cwd)) {
+    return { template: 'generic-guard.ts', file: 'guard.ts', specifier: 'guard' };
+  }
+  if (packageIsEsm(cwd)) {
+    return { template: 'generic-guard.js', file: 'guard.js', specifier: 'guard.js' };
+  }
+
+  return { template: 'generic-guard.cjs', file: 'guard.cjs', specifier: 'guard.cjs' };
+}
+
 export function scaffoldGeneric(
   cwd: string,
   opts: WireOptions,
-  guardTemplate = 'generic-guard.ts',
-  guardFile = 'guard.ts',
+  guardTemplate?: string,
+  guardFile?: string,
 ): { changed: string[]; dir: string } {
+  // The register-based adapters name the file themselves, from the entry they are patching. With no entry
+  // to read — which is why the generic scaffold exists — the project's own configuration decides.
+  const target = genericGuardTarget(cwd);
+  guardTemplate ??= target.template;
+  guardFile ??= target.file;
   const templates = templatesDir();
   const dir = genericDir(cwd);
   const dst = join(cwd, dir);
@@ -78,10 +126,13 @@ function usesExpress(cwd: string): boolean {
 export function wiringPlan(cwd: string, dir: string): string {
   const entries = candidateEntries(cwd);
   const express = usesExpress(cwd);
+  const target = genericGuardTarget(cwd);
   const lines = [
-    `no built-in adapter matched this stack — scaffolded a generic guard at ${dir}/guard.ts + ${dir}/rules.json.`,
+    `no built-in adapter matched this stack — scaffolded a generic guard at ${dir}/${target.file} + ${dir}/rules.json.`,
     'Finish by wiring it into your server (pick the one that fits):',
-    `  • Web-Fetch entry:  export default { fetch: protectFetch(yourHandler) }   // import from "${dir}/guard"`,
+    // The specifier is the one this project's loader resolves — a bare path is right for a compiler and
+    // wrong for `require()`, which never guesses `.cjs`.
+    `  • Web-Fetch entry:  export default { fetch: protectFetch(yourHandler) }   // import from "${dir}/${target.specifier}"`,
     `  • Node / Connect:   app.use(patchstackMiddleware)                          // before any body parser`,
     entries.length
       ? `Likely server ${entries.length === 1 ? 'entry' : 'entries'}: ${entries.join(', ')}${express ? '  (Express detected)' : ''}.`
@@ -124,9 +175,10 @@ function importsAndUsesGuard(source: string, sourcePath: string, guardDir: strin
     fromFile: sourcePath,
     guardDir,
     kind: moduleKindOf(sourcePath, packageIsModule),
-    // The printed plan tells people to import from `<dir>/guard` with no extension whatever their stack
-    // is, so the extension is left open here and only the module's identity is checked.
-    strictExtensions: false,
+    // The scaffold now matches the project's module format and the printed plan names the specifier that
+    // format resolves, so there is nothing left to excuse: a specifier this file's loader would not find is
+    // not a wired guard here either.
+    strictExtensions: true,
   });
   if (declarations.length === 0) return false;
 
@@ -252,8 +304,12 @@ function escapeForRegExp(value: string): string {
 
 export function genericVerify(cwd: string): VerifyResult {
   const dir = genericDir(cwd);
-  const scaffolded = existsSync(join(cwd, dir, 'guard.ts'));
-  const imported = scaffolded && guardIsImported(cwd, join(cwd, dir, 'guard.ts'));
+  const target = genericGuardTarget(cwd);
+  // Whichever guard file is on disk, not the one this project would be given today: a project that gained a
+  // `tsconfig.json` after setup ran still has the guard it was scaffolded.
+  const present = GUARD_FILENAMES.find((name) => existsSync(join(cwd, dir, name)));
+  const scaffolded = present !== undefined;
+  const imported = scaffolded && guardIsImported(cwd, join(cwd, dir, present));
   return {
     wired: scaffolded && imported,
     checks: [
@@ -261,7 +317,7 @@ export function genericVerify(cwd: string): VerifyResult {
       {
         label: 'guard imported and called in a server entry',
         ok: imported,
-        hint: `import { protectFetch } (or patchstackMiddleware) from "${dir}/guard" and wire it into your request path — an import that is never called screens nothing`,
+        hint: `import { protectFetch } (or patchstackMiddleware) from "${dir}/${present ?? target.specifier}" and wire it into your request path — an import that is never called screens nothing`,
       },
     ],
   };
