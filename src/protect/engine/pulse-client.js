@@ -7,8 +7,9 @@ const DEFAULT_CACHE_TTL = 300_000;
 // revalidate on the same tick (spreads load / avoids a thundering herd against the rules API).
 const JITTER_FRACTION = 0.1;
 
-// Per-site rules client for Pulse (npm/JS) apps. Public endpoint — the site UUID is the only
-// credential, passed in the path. Fail-open: any error returns success:false + empty rules so
+// Per-site rules client for Pulse (npm/JS) apps. The site UUID addresses the site in the path; it is
+// not a credential — the endpoint requires a verified token bound to that same site, so a fetch without
+// one is refused. Fail-open regardless: any error returns success:false + empty rules so
 // createProtection falls back to the disk cache or the bundled rules.
 //
 // Conditional fetch: pass a prior `etag` (persisted with the last cached bundle) and the client
@@ -61,24 +62,22 @@ export class PulseRuleClient {
     }
     const url = `${this.#baseUrl}/rules/${encodeURIComponent(this.#siteUuid)}`;
     try {
-      // Unauthenticated when no credential resolved, or when the exchange
-      // fails — the server still accepts the UUID, and protection must never
-      // hinge on getting a token.
+      // Sent without an `Authorization` header when no credential resolved or the exchange failed.
+      // The server refuses that, and the refusal is handled the same way as any other failure: fall
+      // back to cached or bundled rules. Attempting it anyway is deliberate — protection must never
+      // hinge on the token path, and the runtime warns at boot when no credential resolves.
       const auth = await pulseAuthHeader(
         { pulseAuth: this.#pulseAuth, endpoint: this.#baseUrl, timeoutMs: this.#timeoutMs },
         fetch,
       );
       const headers = { Accept: 'application/json', ...auth };
-      // Claimed only on an authenticated request. The rules endpoint still accepts a bare UUID, so on that
-      // path this header would be an assertion anyone holding the UUID could make — and it asserts the
-      // reassuring thing: that reporting is on. A dashboard would then say a site is covered because a
-      // stranger said so.
+      // Claimed only on an authenticated request. Fetching rules must never hinge on getting a token
+      // (protection comes first), but CLAIMING a capability may: an unauthenticated request is one whose
+      // statements about this site carry no weight, and this header asserts the reassuring thing — that
+      // reporting is on.
       //
-      // Fetching rules must never hinge on getting a token (protection comes first), but CLAIMING a
-      // capability may: an unauthenticated request is one whose statements about this site carry no weight.
-      // This check only removes the ACCIDENTAL case. The forgeable one is not the client's to prevent, so
-      // anything acting on this header has to require a verified token itself before believing it — a
-      // client-side gate is a courtesy, never the guarantee.
+      // A courtesy, never the guarantee: a client-side gate only removes the accidental case. Anything
+      // acting on this header has to require a verified token itself before believing it.
       if (this.#reportsDetections && typeof auth.Authorization === 'string') {
         headers['X-Patchstack-Detections'] = 'enabled';
       }

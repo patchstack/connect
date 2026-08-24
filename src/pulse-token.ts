@@ -46,7 +46,9 @@ export function clearPulseToken(): void {
  *
  * Returns null whenever a token cannot be obtained — no credential, a rejected
  * exchange, a network failure. Callers then send the request unauthenticated,
- * which the server still accepts while it runs dual-accept.
+ * and every site-addressed Pulse endpoint refuses it: only a first-time
+ * provisioning call is anonymous. Returning null rather than throwing keeps that
+ * refusal on the caller's own error path, where it can fall back or report.
  */
 export async function getPulseToken(
   config: Config,

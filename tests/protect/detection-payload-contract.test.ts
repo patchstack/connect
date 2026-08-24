@@ -35,6 +35,7 @@ const FIELD_DISCLOSURE: Record<string, RegExp> = {
   phase: /which phase matched/i,
   enforced: /whether it was enforced/i,
   rules_etag: /identifier of the rule bundle/i,
+  rule_revision: /revision of the rule/i,
   detected_at: /timestamp/i,
 };
 

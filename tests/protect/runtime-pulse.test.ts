@@ -207,7 +207,6 @@ describe('createProtection live rule refresh (refreshMs)', () => {
     vi.stubGlobal('fetch', fetchMock);
 
     const protection = await createProtection({ siteUuid: 'site-1', pulseRulesUrl: 'https://x.test/monitor/pulse', mode: 'block' });
-    expect(protection.stopRefresh).toBeUndefined();
 
     await vi.advanceTimersByTimeAsync(60_000);
     expect(fetchMock).toHaveBeenCalledTimes(1); // only the boot fetch — no interval re-fetches
@@ -217,7 +216,10 @@ describe('createProtection live rule refresh (refreshMs)', () => {
   });
 
   it('does not schedule a refresh without a live source, even with refreshMs set', async () => {
+    // A bundle is not a source: there is nothing to re-fetch, so neither trigger is offered. Asserted on
+    // `refresh`/`refreshHandler` rather than on the stop method, which exists for every configuration.
     const protection = await createProtection({ rules, mode: 'block', refreshMs: 1000 });
-    expect(protection.stopRefresh).toBeUndefined();
+    expect(protection.refresh).toBeUndefined();
+    expect(protection.refreshHandler).toBeUndefined();
   });
 });

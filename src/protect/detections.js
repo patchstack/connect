@@ -15,8 +15,8 @@ import { isSafeOrigin } from './safe-origin.js';
  * ## The payload is deliberately small
  *
  * `rule_id`, route PATH, the parameters the rule reads, a timestamp, whether it was enforced, the phase,
- * and the bundle identity. That is enough to count hits per rule, compare them against traffic, and
- * decide whether a rule is wrong.
+ * the bundle identity, and the rule's own revision where the bundle carried one. That is enough to count
+ * hits per rule, compare them against traffic, and decide whether a rule is wrong.
  *
  * What it never carries: **the matched value, the request body, headers, or query-string values**. A
  * channel that counts detections is a different thing from a copy of an application's traffic, and once
@@ -62,6 +62,24 @@ export function ruleParameters(rule) {
 }
 
 /**
+ * The rule's own revision, from the served rule.
+ *
+ * Read off the delivered rule rather than derived: whoever served it knows what document this is, and a
+ * value computed here would be this client's opinion of it. Accepts a string or a number, because the two
+ * kinds of rule that carry one number their revisions differently.
+ *
+ * @param {any} rule
+ * @returns {string | null}
+ */
+export function revisionOf(rule) {
+  const revision = rule?.source_revision;
+  if (typeof revision === 'string' && revision !== '') return revision;
+  if (typeof revision === 'number' && Number.isFinite(revision)) return String(revision);
+
+  return null;
+}
+
+/**
  * The request path with the query string removed.
  *
  * A path is a route; a query string is data. `/api/preview?url=http://169.254.169.254/` names both the
@@ -92,7 +110,11 @@ export function createDetectionReporter(opts) {
   const siteUuid = opts.siteUuid ?? process.env?.PATCHSTACK_SITE_UUID;
   if (!siteUuid) {
     // Nothing to report against. A no-op rather than a throw: reporting is never worth failing a boot.
-    return { record() {}, flush() {}, stop() {}, dropped: () => 0 };
+    // It answers the whole interface, so a caller never has to know which kind it holds.
+    return {
+      record() {}, flush() {}, stop() {}, setRulesEtag() {}, dropped: () => 0,
+      health: () => ({ sent: 0, delivered: 0, failed: 0, dropped: 0, lastDeliveredAt: null }),
+    };
   }
 
   const configured = opts.baseUrl ?? process.env?.PATCHSTACK_PULSE_RULES_URL;
@@ -102,6 +124,22 @@ export function createDetectionReporter(opts) {
   const fetchImpl = opts.fetchImpl ?? globalThis.fetch;
   const flushMs = Number.isFinite(opts.flushMs) && opts.flushMs > 0 ? opts.flushMs : DEFAULT_FLUSH_MS;
   const maxQueue = Number.isFinite(opts.maxQueue) && opts.maxQueue > 0 ? opts.maxQueue : MAX_QUEUE;
+
+  // The bundle identity stamped onto each event. MUTABLE, because the guard's rules are: a refresh
+  // hot-swaps the ruleset in place, and a reporter holding the boot-time value would attribute a hit
+  // produced by the new bundle to the old one — sending a reviewer to a rule document that is not the
+  // one that fired. Updated by the runtime only after an accepted swap (see `setRulesEtag`).
+  let rulesEtag = opts.rulesEtag ?? null;
+
+  // Delivery health. The capability declaration says a guard INTENDS to report; these say whether
+  // anything arrived. Counts and one timestamp only — a clean app and a broken delivery path are
+  // otherwise indistinguishable, and distinguishing them needs no request data at all.
+  let sent = 0;
+  let delivered = 0;
+  let failed = 0;
+  let droppedTotal = 0;
+  /** @type {string | null} */
+  let lastDeliveredAt = null;
 
   /** @type {Array<Record<string, unknown>>} */
   let queue = [];
@@ -123,6 +161,8 @@ export function createDetectionReporter(opts) {
     // would make a truncated sample look like a complete one.
     const droppedWith = dropped;
     dropped = 0;
+    droppedTotal += droppedWith;
+    sent += batch.length;
 
     void (async () => {
       try {
@@ -132,17 +172,26 @@ export function createDetectionReporter(opts) {
             'Content-Type': 'application/json',
             Accept: 'application/json',
             'User-Agent': '@patchstack/connect',
-            // Same credential path as the rules fetch, and unauthenticated when none resolves: the
-            // server accepts the UUID, and reporting must never hinge on getting a token.
+            // Same credential path as the rules fetch. The detections endpoint is site-addressed and
+            // requires a verified, site-bound token, so a batch sent without one is refused — which is
+            // why the runtime does not build a reporter when no credential resolves, rather than
+            // posting into a 401.
             ...(await pulseAuthHeader({ pulseAuth: opts.pulseAuth, endpoint: baseUrl }, fetchImpl)),
           },
           body: JSON.stringify({ detections: batch, dropped: droppedWith }),
         });
-        // Fail-open and silent: a rejected or unreachable endpoint must not disturb the app, and must
-        // not retry into a loop either. The next flush carries whatever arrives next.
-        if (res && typeof res.then === 'function') res.catch(() => {});
+        // Fail-open and no retry: a rejected or unreachable endpoint must not disturb the app, and a
+        // retry loop over a refusing endpoint is worse than the lost batch. The outcome is counted, so
+        // that a delivery path which refuses everything is distinguishable from an app where no rule
+        // fired — both are silence at the server otherwise.
+        if (res && res.ok) {
+          delivered += batch.length;
+          lastDeliveredAt = new Date().toISOString();
+        } else {
+          failed += batch.length;
+        }
       } catch {
-        /* ignore */
+        failed += batch.length;
       }
     })();
   };
@@ -174,7 +223,12 @@ export function createDetectionReporter(opts) {
         // The state this detection was handled under, which is the whole point: `false` is a rule that
         // saw traffic it would have stopped.
         enforced: detection.mode === 'block',
-        rules_etag: opts.rulesEtag ?? null,
+        rules_etag: rulesEtag,
+        // The revision of THIS rule, as the bundle delivered it. The bundle identity above answers "which
+        // bundle", which changes whenever anything in it changes — so it cannot say whether the counts for
+        // one rule describe the document that rule has now. Passed through untouched, and null when the
+        // bundle carried none.
+        rule_revision: revisionOf(detection.rule),
         detected_at: new Date().toISOString(),
       });
 
@@ -190,6 +244,23 @@ export function createDetectionReporter(opts) {
       stopped = true;
       flush();
     },
+    /**
+     * Point later events at the bundle now running. Called after an ACCEPTED swap only — a rejected
+     * or failed refresh keeps the previous rules, so it must keep the previous identity too.
+     *
+     * Already-queued events are not rewritten: the stamp is taken when an event is recorded, which is
+     * the only moment the two are known to agree.
+     *
+     * @param {string | null | undefined} next
+     */
+    setRulesEtag(next) {
+      rulesEtag = next ?? null;
+    },
     dropped: () => dropped,
+    /**
+     * Delivery health, counted in events: attempted, acknowledged, refused or unreachable, and dropped
+     * for queue pressure — plus when a batch was last acknowledged. No request data of any kind.
+     */
+    health: () => ({ sent, delivered, failed, dropped: droppedTotal + dropped, lastDeliveredAt }),
   };
 }

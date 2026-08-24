@@ -25,13 +25,31 @@ export interface Protection {
   node(options?: { maxBodyBytes?: number; screenResponses?: boolean }): (req: unknown, res: unknown, next: () => void) => void;
   /** Present when `egress: true` — restores the original global fetch. */
   uninstallEgress?: () => void;
-  /** Present with a live source — re-fetch + hot-swap the rules once (used by the loop + push). */
-  refresh?: () => Promise<void>;
+  /** Present with a live source — re-fetch + hot-swap the rules once (used by the loop + push).
+   *  Resolves with the outcome of the attempt: `ok: false` means the rules in force came from the
+   *  cache or the bundled fallback, not from the source. It does not reject on a source failure. */
+  refresh?: () => Promise<{ ok: boolean; reason?: string }>;
   /** Present with a live source — a fetch handler that runs `refresh()` when the request carries
    *  the configured refresh secret (a push/zero-day trigger). No secret set → the handler 404s. */
   refreshHandler?: () => (request: Request) => Promise<Response>;
-  /** Present when `refreshMs > 0` — stops the live rule-refresh loop. */
-  stopRefresh?: () => void;
+  /** Stops everything with a timer or a buffer behind it: the refresh loop, the block log, the
+   *  detection reporter (flushing what it holds). Always present, and safe to call twice. */
+  stop: () => void;
+  /** Alias of `stop`, under the name callers already have. */
+  stopRefresh: () => void;
+  /** Whether detection reporting is running, requested but undeliverable, or not requested.
+   *  `unavailable-no-credential` means `reportDetections` was set but no credential resolved, so
+   *  nothing is being sent. */
+  detectionReporting: "on" | "off" | "unavailable-no-credential";
+  /** Present when detection reporting is on — delivery counts (in events) and the last acknowledgement.
+   *  Carries no request data. */
+  detectionHealth?: () => {
+    sent: number;
+    delivered: number;
+    failed: number;
+    dropped: number;
+    lastDeliveredAt: string | null;
+  };
 }
 
 export interface CreateProtectionOptions {
@@ -81,6 +99,8 @@ export interface CreateProtectionOptions {
    * this is a counting channel, not a copy of your traffic.
    *
    * Off by default because switching it on adds an outbound request to every guard with a site UUID.
+   * Needs a resolvable API credential: the endpoint requires a verified, site-bound token, so with no
+   * credential no reporter is created and `detectionReporting` reads `unavailable-no-credential`.
    */
   reportDetections?: boolean;
   /** How long to buffer detections before posting a batch. Default 5000ms. */
