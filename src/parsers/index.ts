@@ -90,7 +90,11 @@ export async function scanLockfile(cwd: string): Promise<Manifest> {
   const declared = await readDeclaredDependencyNames(cwd);
   const warnings: string[] = [];
   let firstParsed: { packages: PackageEntry[]; filename: string } | null = null;
-  let walkTried = false;
+  // The installed tree, if some lockfile already routed us to it (a `bun.lockb` cannot be read, so it
+  // does). Kept rather than just remembered as "tried": on a version conflict the installed tree is what
+  // decides, and a flag meant that decision fell back to the lockfile it had just been overruled by.
+  let walked: PackageEntry[] | null = null;
+  let walkWasCandidate = false;
 
   // Every source is parsed before one is chosen, so a disagreement between two of them can be seen at all.
   // Taking the first source that merely lists the right NAMES is what let a stale lockfile decide the
@@ -108,7 +112,10 @@ export async function scanLockfile(cwd: string): Promise<Manifest> {
     }
     const unreadable = unreadableWarning(candidate.filename, report);
     if (unreadable !== null) warnings.push(unreadable);
-    walkTried ||= candidate.strategy === 'node-modules-walk';
+    if (candidate.strategy === 'node-modules-walk') {
+      walked = packages;
+      walkWasCandidate = true;
+    }
     firstParsed ??= { packages, filename: candidate.filename };
     parsedSources.push({ packages, filename: candidate.filename });
   }
@@ -138,18 +145,26 @@ export async function scanLockfile(cwd: string): Promise<Manifest> {
 
   // Last resort: the installed truth. node_modules reflects what the build
   // actually compiles against, whichever package manager wrote it.
-  if (!walkTried) {
+  if (walked === null) {
     try {
-      const packages = await walkNodeModules(cwd);
-      const missing = missingDependencies(declared, packages);
-      if (missing.length > 0) {
-        warnings.push(staleWarning('node_modules/', missing));
-      }
-      warnings.push('Scanned node_modules/ instead. Delete the stale lockfile to silence this warning.');
-      return manifestWith(packages, warnings);
+      walked = await walkNodeModules(cwd);
     } catch {
-      // fall through to the best lockfile we managed to parse
+      walked = null; // no installed tree either — fall through to the best lockfile we parsed
     }
+  }
+
+  if (walked !== null) {
+    const missing = missingDependencies(declared, walked);
+    if (missing.length > 0) {
+      warnings.push(staleWarning('node_modules/', missing));
+    }
+    warnings.push(
+      walkWasCandidate
+        ? 'Reporting node_modules/, which is what the build loads.'
+        : 'Scanned node_modules/ instead. Delete the stale lockfile to silence this warning.',
+    );
+
+    return manifestWith(walked, warnings);
   }
 
   if (firstParsed === null) {
@@ -228,9 +243,9 @@ async function runStrategy(
     case 'npm-lockfile':
       return parseNpmLockfile(detected.filePath);
     case 'bun-lockfile':
-      return parseBunLockfile(detected.filePath);
-    // The two hand-written scanners. Both meet entries they were not written for, and both are asked to say
-    // how many they dropped, because a manifest short a package reads exactly like a project without it.
+      return parseBunLockfile(detected.filePath, report);
+    // The hand-written scanners. Each meets entries it was not written for, and each is asked to say how
+    // many it dropped, because a manifest short a package reads exactly like a project without it.
     case 'pnpm-lockfile':
       return parsePnpmLockfile(detected.filePath, report);
     case 'yarn-lockfile':

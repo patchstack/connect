@@ -125,7 +125,7 @@ Two files, because one value is public and the other is not.
 }
 ```
 
-`.patchstackrc.local.json` — the credential. `scan` writes it and adds it to your `.gitignore`:
+`.patchstackrc.local.json` — the credential. `scan` writes it owner-only and adds it to your `.gitignore`, and says so if it could not:
 
 ```json
 {

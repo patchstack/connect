@@ -8,7 +8,13 @@ import { join } from 'node:path';
 import { read, log } from './util.js';
 import { scaffoldGeneric } from './generic.js';
 import { findAppInstance, importSpecifier } from './find-app.js';
-import { lastTopLevelImportLine, isTopLevelLine, inSameBlockAfter, parses } from './source-scope.js';
+import {
+  lastTopLevelImportLine,
+  isTopLevelLine,
+  inSameBlockAfter,
+  parses,
+  stripComments,
+} from './source-scope.js';
 import type { WireOptions, WireResult, VerifyResult } from './types.js';
 
 /**
@@ -102,6 +108,53 @@ function packageType(cwd: string): string | undefined {
   }
 }
 
+/**
+ * Whether this entry file really has the guard wired, and which half is missing if not.
+ *
+ * Answered on comment-stripped source, because a comment is the cheapest way to put a name in a file
+ * without running anything — and the name being present is what made an unwired file read as wired, both
+ * to the installer (which then declined to edit it) and to `--check` (which then reported protection).
+ *
+ * The two halves have different scope rules. The IMPORT must be at module scope, or the name is undefined
+ * where the registration runs. The REGISTRATION must be in the same block as the app instance — not at
+ * module scope, because some frameworks only have an app inside an async bootstrap function.
+ */
+interface WiringState {
+  importAtTopLevel: boolean;
+  callInAppScope: boolean;
+  /** The registration is after the anchor the guard needs (a body parser), when the spec names one. */
+  ordered: boolean;
+  callIndex: number;
+  appIndex: number;
+}
+
+function wiringState(source: string, spec: RegisterSpec, appVar: string): WiringState {
+  const code = stripComments(source); // newline-preserving, so these indices are the file's own
+  const lines = code.split('\n');
+  const call = spec.call(appVar);
+
+  const callIndex = lines.findIndex((line) => line.includes(call));
+  const importIndex = lines.findIndex((line) => importsGuardBinding(line, spec.importName, call));
+  const appIndex = lines.findIndex((line) => spec.appRe.test(line));
+  const anchor = spec.callAfter ? spec.callAfter(appVar) : null;
+  const anchorIndex = anchor ? lines.findIndex((line) => anchor.test(line)) : -1;
+
+  return {
+    importAtTopLevel: importIndex !== -1 && isTopLevelLine(code, importIndex),
+    callInAppScope: callIndex !== -1 && inSameBlockAfter(code, appIndex, callIndex),
+    ordered: anchor ? anchorIndex !== -1 && callIndex > anchorIndex : callIndex !== -1,
+    callIndex,
+    appIndex,
+  };
+}
+
+/** A line that BINDS the guard name — an import or a require — rather than one that merely mentions it. */
+function importsGuardBinding(line: string, importName: string, call: string): boolean {
+  if (!line.includes(importName) || line.includes(call)) return false;
+
+  return /^\s*(?:import\b|export\s+(?:\*|\{)|(?:const|let|var)\s+[^=]+=\s*require\()/.test(line);
+}
+
 export function wireRegister(cwd: string, opts: WireOptions, spec: RegisterSpec): WireResult {
   const entry = findAppInstance(cwd, spec.appRe);
   if (!entry) {
@@ -121,9 +174,18 @@ export function wireRegister(cwd: string, opts: WireOptions, spec: RegisterSpec)
 
   const p = join(cwd, entry.relPath);
   const s = read(p);
-  if (s.includes(spec.importName)) {
+  const state = wiringState(s, spec, entry.appVar);
+  if (state.importAtTopLevel && state.callInAppScope) {
     log(`${entry.relPath} already wired`);
     return { ok: true, changed };
+  }
+  // Half of the wiring present is not wiring. It happens: an interrupted install, a hand-edit that moved
+  // one line, a merge that kept one side. Treating the name as proof of the whole thing is what let setup
+  // decline to finish the job while reporting success, so the missing half is added and the other left alone.
+  if (state.importAtTopLevel || state.callInAppScope) {
+    log(
+      `${entry.relPath} has the guard ${state.importAtTopLevel ? 'imported but not registered' : 'registered but not imported'} — completing it`,
+    );
   }
 
   const sourceLines = s.split('\n');
@@ -147,13 +209,15 @@ export function wireRegister(cwd: string, opts: WireOptions, spec: RegisterSpec)
   // The guard binding has to land at MODULE scope. A `require()` inside a helper reads the same as one at
   // the top of the file, and a binding placed after it exists only inside that helper — while the
   // registration statement below stays top level and refers to a name that is not there.
-  const lastImport = lastTopLevelImportLine(s);
-  const importIdx = lastImport === -1 ? firstStatementLine(lines) : lastImport + 1;
-  lines.splice(importIdx, 0, importLine);
+  if (!state.importAtTopLevel) {
+    const lastImport = lastTopLevelImportLine(s);
+    const importIdx = lastImport === -1 ? firstStatementLine(lines) : lastImport + 1;
+    lines.splice(importIdx, 0, importLine);
+  }
 
   // Recomputed after the insert, because the import line shifted everything below it.
   const appIdx = lines.findIndex((l) => spec.appRe.test(l));
-  if (appIdx !== -1) {
+  if (appIdx !== -1 && !state.callInAppScope) {
     const preferred = spec.callAfter?.(entry.appVar);
     const preferredIdx = preferred
       ? lines.findIndex((line, index) => index > appIdx && preferred.test(line))
@@ -210,42 +274,33 @@ function firstStatementLine(lines: string[]): number {
   return i;
 }
 
+/** Does this file bind the guard at all? Used for the other servers, where the app variable is unknown. */
+function hasGuardBinding(source: string, spec: RegisterSpec): boolean {
+  return stripComments(source)
+    .split('\n')
+    .some((line) => importsGuardBinding(line, spec.importName, '\u0000'));
+}
+
 export function verifyRegister(cwd: string, spec: RegisterSpec): VerifyResult {
   const dir = existsSync(join(cwd, 'src')) ? 'src/patchstack' : 'patchstack';
   const entry = findAppInstance(cwd, spec.appRe);
   const target = entry ? guardTarget(cwd, entry.relPath, spec) : null;
   const scaffolded = target ? existsSync(join(cwd, dir, target.file)) : false;
   const entrySource = entry ? read(join(cwd, entry.relPath)) : '';
-  const entryLines = entrySource.split('\n');
-  const anchor = entry && spec.callAfter ? spec.callAfter(entry.appVar) : null;
-  const anchorIndex = anchor ? entryLines.findIndex((line) => anchor.test(line)) : -1;
-  const callIndex = entry ? entryLines.findIndex((line) => line.includes(spec.call(entry.appVar))) : -1;
-  const ordered = anchor ? anchorIndex !== -1 && callIndex > anchorIndex : callIndex !== -1;
-
-  // Two scope questions, and they have different answers.
-  //
-  // The IMPORT must be at module scope. Checking only that the name appears in the file is what let a
-  // binding nested inside a helper verify green: the symbol is there, in the text, and undefined where the
-  // registration runs.
-  //
-  // The REGISTRATION must be in the same block as the app instance — not at module scope, because some
-  // frameworks only have an app inside an async bootstrap function, and that is where it belongs. What it
-  // must not be is in a different function from the instance it registers on.
-  const importIndex = entryLines.findIndex((line) => line.includes(spec.importName) && !line.includes(spec.call(entry?.appVar ?? '')));
-  const importAtTopLevel = importIndex !== -1 && isTopLevelLine(entrySource, importIndex);
-  const appIndex = entry ? entryLines.findIndex((line) => spec.appRe.test(line)) : -1;
-  const callInAppScope = callIndex !== -1 && inSameBlockAfter(entrySource, appIndex, callIndex);
-  const wired = importAtTopLevel && callInAppScope && ordered;
+  const state = entry
+    ? wiringState(entrySource, spec, entry.appVar)
+    : { importAtTopLevel: false, callInAppScope: false, ordered: false, callIndex: -1, appIndex: -1 };
+  const wired = state.importAtTopLevel && state.callInAppScope && state.ordered;
 
   // "After the parser" was the only ordering checked, and it is only half the question. A route registered
   // above the guard is served without it, so reporting the app fully wired would name protection that this
   // route does not have.
-  const early = spec.callAfter && entry ? routesBefore(entrySource, entry.appVar, callIndex) : [];
+  const early = spec.callAfter && entry ? routesBefore(entrySource, entry.appVar, state.callIndex) : [];
   const noEarlyRoutes = early.length === 0;
 
   // A project can start more than one server, and a guard on one is not a guard on the other. Only the ones
   // that have no guard of their own are named: a second server somebody wired by hand is wired.
-  const unguarded = (entry?.others ?? []).filter((rel) => !read(join(cwd, rel)).includes(spec.importName));
+  const unguarded = (entry?.others ?? []).filter((rel) => !hasGuardBinding(read(join(cwd, rel)), spec));
 
   return {
     wired: scaffolded && wired && noEarlyRoutes && unguarded.length === 0,

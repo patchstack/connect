@@ -7,6 +7,7 @@ import { readFileSync, existsSync, mkdirSync, copyFileSync, readdirSync, lstatSy
 import { join } from 'node:path';
 import { bakeSiteUuid, read, templatesDir } from './util.js';
 import type { WireOptions, VerifyResult } from './types.js';
+import { stripComments } from './source-scope.js';
 
 const GUARD_MARKER = 'patchstack/guard';
 
@@ -89,76 +90,77 @@ const GUARD_EXPORTS = ['protectFetch', 'patchstackMiddleware', 'screenResponse']
  */
 function importsAndUsesGuard(source: string): boolean {
   const stripped = stripComments(source);
-  const marker = GUARD_MARKER.replace(/[/]/g, '\\/');
-  const importsGuard = new RegExp(
-    `(?:import[^;]*from\\s*['"\`][^'"\`]*${marker}[^'"\`]*['"\`]|require\\(\\s*['"\`][^'"\`]*${marker}[^'"\`]*['"\`]\\s*\\))`,
-  ).test(stripped);
-  if (!importsGuard) return false;
+  const declarations = guardImportDeclarations(stripped);
+  if (declarations.length === 0) return false;
 
-  return GUARD_EXPORTS.some((name) => new RegExp(`\\b${name}\\s*[(),]`).test(stripped));
+  const bound = new Set<string>();
+  for (const declaration of declarations) for (const name of boundNames(declaration)) bound.add(name);
+  if (bound.size === 0) return false;
+
+  // The declarations themselves are removed before looking for a use. Inside an import clause a name is
+  // followed by a comma, which is what let `import { protectFetch, screenResponse } from "./guard"` count
+  // as using both of them while calling neither.
+  let body = stripped;
+  for (const declaration of declarations) body = body.split(declaration).join(' ');
+
+  // A use is a call, or being passed somewhere, or a property read off a namespace import — all three put
+  // the guard in the request path; none of them is the import line.
+  return [...bound].some((name) => new RegExp(`\\b${escapeForRegExp(name)}\\s*[(),.]`).test(body));
 }
 
 /**
- * Source with comments removed, so a commented-out import cannot satisfy the check.
+ * The import or require statements that bring in the guard module, verbatim.
  *
- * String-aware: a `//` inside a URL literal is not a comment, and treating it as one would blank the rest
- * of a line that might hold the real import.
+ * Matched on a real import or require of the guard path, not on the path appearing anywhere — a comment
+ * mentioning it is not an import, and neither is a string that happens to contain it.
  */
-function stripComments(source: string): string {
-  let out = '';
-  let quote: string | null = null;
-  let inLine = false;
-  let inBlock = false;
+function guardImportDeclarations(stripped: string): string[] {
+  const marker = escapeForRegExp(GUARD_MARKER);
+  const pattern = new RegExp(
+    `import\\s+[^;]*?from\\s*['"\`][^'"\`]*${marker}[^'"\`]*['"\`]` +
+      `|(?:const|let|var)\\s+[^;=]+=\\s*require\\(\\s*['"\`][^'"\`]*${marker}[^'"\`]*['"\`]\\s*\\)`,
+    'g',
+  );
 
-  for (let i = 0; i < source.length; i++) {
-    const ch = source[i] as string;
-    const next = source[i + 1];
+  return stripped.match(pattern) ?? [];
+}
 
-    if (inLine) {
-      if (ch === '\n') {
-        inLine = false;
-        out += ch;
-      }
-      continue;
+/**
+ * The LOCAL names a guard import declaration binds.
+ *
+ * Local, because that is the name the code below has to call. An alias (`protectFetch as guard`) binds
+ * `guard`, and looking for the exported name instead would refuse a correctly wired app.
+ */
+function boundNames(declaration: string): string[] {
+  const names: string[] = [];
+  const clause = /^import\s+([^]*?)\s+from\b/.exec(declaration)?.[1]
+    ?? /^(?:const|let|var)\s+([^]*?)=\s*require\b/.exec(declaration)?.[1]
+    ?? '';
+
+  const braced = /\{([^}]*)\}/.exec(clause)?.[1];
+  if (braced !== undefined) {
+    for (const part of braced.split(',')) {
+      const local = part.includes(' as ')
+        ? part.split(' as ').pop()
+        : part.includes(':')
+          ? part.split(':').pop()
+          : part;
+      const name = (local ?? '').trim();
+      if (/^[A-Za-z_$][\w$]*$/.test(name)) names.push(name);
     }
-    if (inBlock) {
-      if (ch === '*' && next === '/') {
-        inBlock = false;
-        i++;
-      }
-      continue;
-    }
-    if (quote !== null) {
-      out += ch;
-      if (ch === '\\') {
-        if (next !== undefined) {
-          out += next;
-          i++;
-        }
-      } else if (ch === quote) {
-        quote = null;
-      }
-      continue;
-    }
-    if (ch === '"' || ch === "'" || ch === '`') {
-      quote = ch;
-      out += ch;
-      continue;
-    }
-    if (ch === '/' && next === '/') {
-      inLine = true;
-      i++;
-      continue;
-    }
-    if (ch === '/' && next === '*') {
-      inBlock = true;
-      i++;
-      continue;
-    }
-    out += ch;
   }
 
-  return out;
+  // A default or namespace binding: `import guard from`, `import * as guard from`, `const guard = require`.
+  const bare = clause.replace(/\{[^}]*\}/g, '').replace(/^\*\s*as\s*/, '').replace(/,/g, ' ').trim();
+  for (const token of bare.split(/\s+/)) {
+    if (/^[A-Za-z_$][\w$]*$/.test(token) && token !== 'as') names.push(token);
+  }
+
+  return names;
+}
+
+function escapeForRegExp(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\/]/g, '\\$&');
 }
 
 export function genericVerify(cwd: string): VerifyResult {

@@ -75,7 +75,7 @@ export async function createProtection(options = {}) {
   const userOnDetect = options.onDetect ?? defaultOnDetect;
 
   // Report enforced blocks via existing connector POST /api/logs/log (WP path).
-  // Needs api_key from provision / PATCHSTACK_API_KEY / .patchstackrc.json.
+  // Needs api_key from provision / PATCHSTACK_API_KEY / the config files.
   // Opt out: PATCHSTACK_TELEMETRY=off. Never embed api_key in the public widget.
   const apiKey = await resolveApiKey(options);
   const firewallLog =
@@ -119,7 +119,7 @@ export async function createProtection(options = {}) {
   const pulseAuth = await resolvePulseAuth(options);
   // A site UUID with no credential behind it, said out loud ONCE at boot.
   //
-  // Resolution reads `.patchstackrc.json`, so it needs a filesystem and a working directory. The
+  // Resolution reads the config files, so it needs a filesystem and a working directory. The
   // runtimes this guard is built for do not all have one: on a Worker or an edge function the file is
   // absent and only `PATCHSTACK_PULSE_AUTH` / `PATCHSTACK_API_KEY` can carry the credential.
   //
@@ -756,28 +756,57 @@ function resolveMode(options, bundle) {
 }
 
 /**
- * WP-format api_key for connector /api/logs/log. Never use the public site UUID.
- * The `.patchstackrc.json` fallback reads the filesystem, so fs/path are imported LAZILY — this
- * module must stay loadable on edge runtimes (Next edge middleware, Workers, Deno, Supabase
- * Functions), where a static `node:fs` import fails to resolve and would take the guard down.
+ * The two files a credential can live in, in the order they are read.
+ *
+ * Setup writes the credential to the local file and the public identity to the other one, because the
+ * public file is meant to be committed. The committed file is still read second: installs that predate
+ * the split keep their credential there, and a guard that stopped authenticating on upgrade would lose
+ * live rules and reporting on every one of them.
  */
+const CREDENTIAL_FILES = ['.patchstackrc.local.json', '.patchstackrc.json'];
+
+/**
+ * A credential field from the config files, or undefined.
+ *
+ * fs/path are imported LAZILY — this module must stay loadable on edge runtimes (Next edge middleware,
+ * Workers, Deno, Supabase Functions), where a static `node:fs` import fails to resolve and would take the
+ * guard down.
+ */
+async function readCredentialField(options, field) {
+  if (typeof process === 'undefined' || typeof process.cwd !== 'function') return undefined;
+
+  let readFileSync;
+  let join;
+  try {
+    const [fs, pathMod] = await Promise.all([import('node:fs'), import('node:path')]);
+    readFileSync = fs.readFileSync;
+    join = pathMod.join;
+  } catch {
+    return undefined; // no filesystem on this runtime
+  }
+
+  const cwd = options?.cwd ?? process.cwd();
+  for (const filename of CREDENTIAL_FILES) {
+    try {
+      const value = JSON.parse(readFileSync(join(cwd, filename), 'utf8'))?.[field];
+      if (typeof value === 'string' && value.length > 0) return value;
+    } catch {
+      /* missing or unparseable — try the next one */
+    }
+  }
+
+  return undefined;
+}
+
+/** WP-format api_key for connector /api/logs/log. Never use the public site UUID. */
 async function resolveApiKey(options) {
   if (typeof options?.apiKey === 'string' && options.apiKey.length > 0) return options.apiKey;
   if (typeof process !== 'undefined') {
     const fromEnv = process.env?.PATCHSTACK_API_KEY;
     if (typeof fromEnv === 'string' && fromEnv.length > 0) return fromEnv;
   }
-  try {
-    if (typeof process === 'undefined' || typeof process.cwd !== 'function') return undefined;
-    const [{ readFileSync }, { join }] = await Promise.all([import('node:fs'), import('node:path')]);
-    const cwd = options?.cwd ?? process.cwd();
-    const raw = readFileSync(join(cwd, '.patchstackrc.json'), 'utf8');
-    const key = JSON.parse(raw)?.apiKey;
-    if (typeof key === 'string' && key.length > 0) return key;
-  } catch {
-    /* missing, or no filesystem on this runtime — reporting stays off */
-  }
-  return undefined;
+
+  return readCredentialField(options, 'apiKey');
 }
 
 /**
@@ -795,16 +824,8 @@ async function resolvePulseAuth(options) {
     const fromEnv = process.env?.PATCHSTACK_PULSE_AUTH;
     if (typeof fromEnv === 'string' && fromEnv.length > 0) return fromEnv;
   }
-  try {
-    if (typeof process === 'undefined' || typeof process.cwd !== 'function') return resolveApiKey(options);
-    const [{ readFileSync }, { join }] = await Promise.all([import('node:fs'), import('node:path')]);
-    const cwd = options?.cwd ?? process.cwd();
-    const raw = readFileSync(join(cwd, '.patchstackrc.json'), 'utf8');
-    const key = JSON.parse(raw)?.pulseAuth;
-    if (typeof key === 'string' && key.length > 0) return key;
-  } catch {
-    /* missing, or no filesystem here — fall through to the apiKey path */
-  }
+  const fromFile = await readCredentialField(options, 'pulseAuth');
+  if (fromFile !== undefined) return fromFile;
 
   return resolveApiKey(options);
 }

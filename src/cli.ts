@@ -26,6 +26,7 @@ import {
   SECRET_CONFIG_FILENAME,
   credentialInCommittedConfig,
   persistApiKey,
+  secretFileIgnored,
   persistSiteUuid,
   resolveConfig,
   writeConfigFile,
@@ -248,9 +249,17 @@ async function runLogin(args: ParsedArgs): Promise<number> {
     cliEndpoint: getStringFlag(args.flags, 'endpoint'),
   });
 
-  const approved = () => {
-    // The value itself is never printed — only that it landed.
-    console.log(`\n  ✓ Credential restored and saved to ${SECRET_CONFIG_FILENAME} — added to .gitignore.`);
+  // Checked here rather than carried up from the write: the rotation happens several layers down, and the
+  // claim belongs to the line that prints it.
+  const approved = async () => {
+    const ignore = await secretFileIgnored(process.cwd());
+    // The value itself is never printed — only that it landed, and only that it is ignored when it is.
+    console.log(`\n  ✓ Credential restored and saved to ${SECRET_CONFIG_FILENAME}.`);
+    console.log(
+      ignore.ignored
+        ? '    Added to .gitignore.'
+        : `    NOT ignored by git — ${ignore.reason ?? 'unknown reason'}. Add it to .gitignore yourself before committing.`,
+    );
     console.log('    The previous credential no longer works. Update it anywhere else it was set:');
     console.log('    CI secrets, hosting env vars, preview environments, other checkouts.\n');
     return 0;
@@ -266,7 +275,7 @@ async function runLogin(args: ParsedArgs): Promise<number> {
     }
 
     const resumed = await waitForApproval(config, pending);
-    if (resumed.status === 'approved') return approved();
+    if (resumed.status === 'approved') return await approved();
 
     console.error(`\n  ${resumed.message ?? 'Login failed.'}\n`);
     return 1;
@@ -295,7 +304,7 @@ async function runLogin(args: ParsedArgs): Promise<number> {
     if (existing !== null && Date.now() < existing.expiresAt) {
       const outcome = await redeemIfApproved(config, existing);
 
-      if (outcome === 'approved') return approved();
+      if (outcome === 'approved') return await approved();
 
       if (outcome === 'pending') {
         const secondsLeft = Math.round((existing.expiresAt - Date.now()) / 1000);
@@ -326,7 +335,7 @@ async function runLogin(args: ParsedArgs): Promise<number> {
     console.log('  Waiting for approval (the code expires in 10 minutes)…');
   });
 
-  if (result.status === 'approved') return approved();
+  if (result.status === 'approved') return await approved();
 
   console.error(`\n  ${result.message ?? 'Login failed.'}\n`);
 
@@ -506,8 +515,15 @@ async function runScan(
     // a second copy under pulseAuth bought nothing except an obligation to keep
     // the two in step. Never printed — only the path it landed in.
     const hadCredentialInConfig = await credentialInCommittedConfig(process.cwd());
-    const target = await persistApiKey(process.cwd(), response.api_key);
-    console.log(`Saved API key to ${target} — added to .gitignore. Do not commit it.`);
+    const saved = await persistApiKey(process.cwd(), response.api_key);
+    console.log(`Saved API key to ${saved.path}. Do not commit it.`);
+    // Only claimed when the ignore file was read back and really covers it. An assurance that turns out to
+    // be false is worse than none: it is the reason somebody stops checking.
+    console.log(
+      saved.ignored
+        ? '  Added to .gitignore.'
+        : `  NOT ignored by git — ${saved.reason ?? 'unknown reason'}. Add \`${SECRET_CONFIG_FILENAME}\` to .gitignore yourself before committing.`,
+    );
     if (hadCredentialInConfig) {
       // Said out loud, because moving the file does not undo a commit: if it was ever pushed, the value is
       // in the history and only a new credential ends that.

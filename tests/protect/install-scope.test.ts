@@ -352,3 +352,193 @@ describe('choosing between candidate entries', () => {
     expect(readFileSync(join(cwd, 'src/boot.js'), 'utf8')).toContain('boot.use(patchstackMiddleware)');
   });
 });
+
+describe('a name in a comment is not wiring', () => {
+  it('does not stop the installer from wiring the file', () => {
+    // Reported. A mention of the guard's name was read as "already wired", so setup declined to edit a
+    // file with no guard in it and reported success.
+    const cwd = project({
+      'package.json': PACKAGE_JSON,
+      'src/server.js': [
+        "const express = require('express');",
+        'const app = express();',
+        '// TODO: app.use(patchstackMiddleware) once we have decided about the guard',
+        'app.use(express.json());',
+        'app.listen(3000);',
+        '',
+      ].join('\n'),
+    });
+
+    expressAdapter.wire(cwd, { cwd, force: false } as never);
+
+    const source = readFileSync(join(cwd, 'src/server.js'), 'utf8');
+    expect(source).toContain('#region patchstack');
+    expect(expressAdapter.verify(cwd).wired).toBe(true);
+  });
+
+  it('does not verify a file whose only guard lines are commented out', () => {
+    const cwd = project({
+      'package.json': PACKAGE_JSON,
+      'src/server.js': [
+        "const express = require('express');",
+        'const app = express();',
+        '// const { patchstackMiddleware } = require("./patchstack/guard.cjs");',
+        'app.use(express.json());',
+        '// app.use(patchstackMiddleware);',
+        'app.listen(3000);',
+        '',
+      ].join('\n'),
+    });
+
+    mkdirSync(join(cwd, 'src/patchstack'), { recursive: true });
+    writeFileSync(join(cwd, 'src/patchstack/guard.cjs'), 'module.exports = { patchstackMiddleware: () => {} };\n');
+
+    expect(expressAdapter.verify(cwd).wired).toBe(false);
+  });
+
+  it('does not verify a block comment holding both halves', () => {
+    // Block comments have to keep their line count when stripped, or every index taken afterwards points
+    // at the wrong line and the scope answers stop meaning anything.
+    const cwd = project({
+      'package.json': PACKAGE_JSON,
+      'src/server.js': [
+        "const express = require('express');",
+        '/*',
+        ' * const { patchstackMiddleware } = require("./patchstack/guard.cjs");',
+        ' */',
+        'const app = express();',
+        'app.use(express.json());',
+        '/* app.use(patchstackMiddleware); */',
+        'app.listen(3000);',
+        '',
+      ].join('\n'),
+    });
+
+    mkdirSync(join(cwd, 'src/patchstack'), { recursive: true });
+    writeFileSync(join(cwd, 'src/patchstack/guard.cjs'), 'module.exports = { patchstackMiddleware: () => {} };\n');
+
+    expect(expressAdapter.verify(cwd).wired).toBe(false);
+  });
+
+  it('finishes a file that has the import but no registration', () => {
+    // Half the wiring is not wiring, and it happens — an interrupted install, a merge that kept one side.
+    const cwd = project({
+      'package.json': PACKAGE_JSON,
+      'src/server.js': [
+        "const express = require('express');",
+        'const { patchstackMiddleware } = require("./patchstack/guard.cjs");',
+        'const app = express();',
+        'app.use(express.json());',
+        'app.listen(3000);',
+        '',
+      ].join('\n'),
+    });
+
+    expressAdapter.wire(cwd, { cwd, force: false } as never);
+
+    const source = readFileSync(join(cwd, 'src/server.js'), 'utf8');
+    // The registration was added, and the import it already had was not duplicated.
+    expect(source).toContain('app.use(patchstackMiddleware);');
+    expect(source.match(/require\("\.\/patchstack\/guard\.cjs"\)/g)).toHaveLength(1);
+    expect(expressAdapter.verify(cwd).wired).toBe(true);
+  });
+
+  it('does not count another server as guarded because it mentions the name', () => {
+    const cwd = project({
+      'package.json': PACKAGE_JSON,
+      'src/server.js': [
+        "const express = require('express');",
+        'const app = express();',
+        'app.use(express.json());',
+        'app.listen(3000);',
+        '',
+      ].join('\n'),
+      'src/admin.js': [
+        "const express = require('express');",
+        'const admin = express();',
+        '// patchstackMiddleware belongs here too',
+        'admin.use(express.json());',
+        'admin.listen(4000);',
+        '',
+      ].join('\n'),
+    });
+
+    expressAdapter.wire(cwd, { cwd, force: false } as never);
+
+    expect(expressAdapter.verify(cwd).wired).toBe(false);
+  });
+  it('does not verify a real import beside a commented-out registration', () => {
+    // The half that only a comment supplies. The import is real and at module scope; the registration
+    // exists only in a comment, so no guard runs — and the name being in the file is exactly what made
+    // this read as wired.
+    const cwd = project({
+      'package.json': PACKAGE_JSON,
+      'src/server.js': [
+        "const express = require('express');",
+        'const { patchstackMiddleware } = require("./patchstack/guard.cjs");',
+        'const app = express();',
+        'app.use(express.json());',
+        '// app.use(patchstackMiddleware);',
+        'app.listen(3000);',
+        '',
+      ].join('\n'),
+    });
+
+    mkdirSync(join(cwd, 'src/patchstack'), { recursive: true });
+    writeFileSync(join(cwd, 'src/patchstack/guard.cjs'), 'module.exports = { patchstackMiddleware: () => {} };\n');
+
+    expect(expressAdapter.verify(cwd).wired).toBe(false);
+  });
+
+  it('replaces a commented-out registration with a real one', () => {
+    // And the installer must not stop at it either: a comment is where somebody meant to wire the guard,
+    // not where they did.
+    const cwd = project({
+      'package.json': PACKAGE_JSON,
+      'src/server.js': [
+        "const express = require('express');",
+        'const { patchstackMiddleware } = require("./patchstack/guard.cjs");',
+        'const app = express();',
+        'app.use(express.json());',
+        '// app.use(patchstackMiddleware);',
+        'app.listen(3000);',
+        '',
+      ].join('\n'),
+    });
+
+    expressAdapter.wire(cwd, { cwd, force: false } as never);
+
+    const lines = readFileSync(join(cwd, 'src/server.js'), 'utf8').split('\n');
+    expect(lines.some((line) => line.trim() === 'app.use(patchstackMiddleware);')).toBe(true);
+    expect(expressAdapter.verify(cwd).wired).toBe(true);
+  });
+
+  it('reports an early route at its real line number below a block comment', () => {
+    // Comment stripping has to keep the file's line count. Every index taken afterwards — which route is
+    // above the guard, and which line to tell somebody to move — is a line number in the real file.
+    const cwd = project({
+      'package.json': PACKAGE_JSON,
+      'src/server.js': [
+        '/*',
+        ' * Server entry.',
+        ' * Two more lines of preamble.',
+        ' */',
+        "const express = require('express');",
+        'const app = express();',
+        "app.get('/early', (req, res) => res.send('early'));",
+        'app.use(express.json());',
+        'app.listen(3000);',
+        '',
+      ].join('\n'),
+    });
+
+    expressAdapter.wire(cwd, { cwd, force: false } as never);
+    const report = expressAdapter.verify(cwd);
+    const check = report.checks.find((c) => c.label.includes('every route registered after the guard'));
+
+    expect(report.wired).toBe(false);
+    const source = readFileSync(join(cwd, 'src/server.js'), 'utf8').split('\n');
+    const actual = source.findIndex((line) => line.includes("app.get('/early'")) + 1;
+    expect(check?.hint).toContain(`line ${actual}`);
+  });
+});

@@ -35,6 +35,15 @@ function project(files: Record<string, string>): string {
   return dir;
 }
 
+/** A hoisted `node_modules` holding exactly these packages, as the installed tree. */
+function installed(cwd: string, packages: Record<string, string>): void {
+  for (const [name, version] of Object.entries(packages)) {
+    const dir = join(cwd, 'node_modules', name);
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(join(dir, 'package.json'), JSON.stringify({ name, version }));
+  }
+}
+
 /** A `bun.lock` as Bun writes it: JSON with trailing commas. */
 const BUN_LOCK = `{
   "lockfileVersion": 1,
@@ -313,5 +322,48 @@ describe('reading a Yarn Berry descriptor', () => {
   it('keeps the name when npm: carries only a version', () => {
     // The control for the alias branch: `npm:1.2.3` is a plain version for this package, not a rename.
     expect(extractName('axios@npm:1.6.0')).toBe('axios');
+  });
+});
+
+describe('a bun.lockb project whose npm lock disagrees', () => {
+  it('reports the installed tree, not the lockfile it was overruled by', async () => {
+    // `bun.lockb` is binary, so the only way to read that project is the installed tree — which means the
+    // tree was already walked by the time a conflict is found. Remembering only that a walk had happened
+    // made the conflict fall back to the very lockfile the tree contradicts, while the warning said
+    // node_modules had been used.
+    const dir = project({
+      'package.json': JSON.stringify({ name: 'fixture', dependencies: { lodash: '^4.17.21' } }),
+      'package-lock.json': JSON.stringify({
+        lockfileVersion: 3,
+        packages: { 'node_modules/lodash': { version: '4.17.15' } },
+      }),
+      'bun.lockb': 'binary-placeholder',
+    });
+    installed(dir, { lodash: '4.17.21' });
+
+    const manifest = await scanLockfile(dir);
+
+    expect(manifest.packages.find((p) => p.name === 'lodash')?.version).toBe('4.17.21');
+    expect(manifest.warnings?.join(' ')).toContain('4.17.15');
+    expect(manifest.warnings?.join(' ')).toContain('node_modules/');
+  });
+
+  it('still reports the lockfile when the two agree', async () => {
+    // The control. Without it the fix would be satisfied by always preferring node_modules, which is a
+    // slower scan and a different answer on a project that is simply consistent.
+    const dir = project({
+      'package.json': JSON.stringify({ name: 'fixture', dependencies: { lodash: '^4.17.21' } }),
+      'package-lock.json': JSON.stringify({
+        lockfileVersion: 3,
+        packages: { 'node_modules/lodash': { version: '4.17.21' } },
+      }),
+      'bun.lockb': 'binary-placeholder',
+    });
+    installed(dir, { lodash: '4.17.21' });
+
+    const manifest = await scanLockfile(dir);
+
+    expect(manifest.packages.find((p) => p.name === 'lodash')?.version).toBe('4.17.21');
+    expect(manifest.warnings).toBeUndefined();
   });
 });

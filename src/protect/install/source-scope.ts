@@ -169,3 +169,72 @@ function isSyntaxError(error: unknown): boolean {
 
   return typeof status === 'number' && status !== 0;
 }
+
+/**
+ * Source with comments blanked out, line numbering intact.
+ *
+ * Every question this module answers is about code that RUNS, and a comment is the cheapest way to put a
+ * name in a file without running anything. Newlines are kept — including those inside a block comment — so
+ * a line index taken from the stripped text still points at the same line of the original.
+ *
+ * String-aware: a `//` inside a URL literal is not a comment, and treating it as one would blank the rest
+ * of a line that might hold the real import.
+ */
+export function stripComments(source: string): string {
+  let out = '';
+  let quote: string | null = null;
+  let inLine = false;
+  let inBlock = false;
+
+  for (let i = 0; i < source.length; i++) {
+    const ch = source[i] as string;
+    const next = source[i + 1];
+
+    if (inLine) {
+      if (ch === '\n') {
+        inLine = false;
+        out += ch;
+      }
+      continue;
+    }
+    if (inBlock) {
+      if (ch === '*' && next === '/') {
+        inBlock = false;
+        i++;
+      } else if (ch === '\n') {
+        out += ch;
+      }
+      continue;
+    }
+    if (quote !== null) {
+      out += ch;
+      if (ch === '\\') {
+        if (next !== undefined) {
+          out += next;
+          i++;
+        }
+      } else if (ch === quote) {
+        quote = null;
+      }
+      continue;
+    }
+    if (ch === '"' || ch === "'" || ch === '`') {
+      quote = ch;
+      out += ch;
+      continue;
+    }
+    if (ch === '/' && next === '/') {
+      inLine = true;
+      i++;
+      continue;
+    }
+    if (ch === '/' && next === '*') {
+      inBlock = true;
+      i++;
+      continue;
+    }
+    out += ch;
+  }
+
+  return out;
+}

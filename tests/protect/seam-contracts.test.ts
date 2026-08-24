@@ -187,6 +187,76 @@ describe('what counts as the generic guard being wired', () => {
     expect(genericVerify(cwd).wired).toBe(true);
   });
 
+  it('is not satisfied by two names in one import clause', () => {
+    // Reported. Inside an import clause a name is followed by a comma, and the use test accepted a comma
+    // as use — so importing two exports counted as using them both while calling neither.
+    const cwd = scaffolded({
+      'src/server.ts': [
+        'import { protectFetch, screenResponse } from "./patchstack/guard";',
+        'export default {};',
+        '',
+      ].join('\n'),
+    });
+
+    expect(genericVerify(cwd).wired).toBe(false);
+  });
+
+  it('accepts a guard imported under another name and called', () => {
+    // The alias control. The exported name is not necessarily the name the code calls, and refusing an
+    // aliased binding would fail a correctly wired app — which is the other half of this check being usable.
+    const cwd = scaffolded({
+      'src/server.ts': [
+        'import { protectFetch as shield } from "./patchstack/guard";',
+        '',
+        'export default { fetch: shield(async () => new Response("ok")) };',
+        '',
+      ].join('\n'),
+    });
+
+    expect(genericVerify(cwd).wired).toBe(true);
+  });
+
+  it('accepts a namespace import whose member is called', () => {
+    const cwd = scaffolded({
+      'src/server.ts': [
+        'import * as guard from "./patchstack/guard";',
+        '',
+        'export default { fetch: guard.protectFetch(async () => new Response("ok")) };',
+        '',
+      ].join('\n'),
+    });
+
+    expect(genericVerify(cwd).wired).toBe(true);
+  });
+
+  it('accepts a renamed destructured require', () => {
+    const cwd = scaffolded({
+      'server.cjs': [
+        'const { patchstackMiddleware: shield } = require("./patchstack/guard");',
+        'app.use(shield);',
+        '',
+      ].join('\n'),
+    });
+
+    expect(genericVerify(cwd).wired).toBe(true);
+  });
+
+  it('is not satisfied by a guard export name that came from somewhere else', () => {
+    // The binding has to be the imported one. A local function that happens to share a name with a guard
+    // export is not the guard, and counting it would make the check satisfiable without the guard at all.
+    const cwd = scaffolded({
+      'src/server.ts': [
+        'import { screenResponse } from "./patchstack/guard";',
+        '',
+        'function protectFetch(handler) { return handler; }',
+        'export default { fetch: protectFetch(async () => new Response("ok")) };',
+        '',
+      ].join('\n'),
+    });
+
+    expect(genericVerify(cwd).wired).toBe(false);
+  });
+
   it('is not fooled by a commented-out import beside a real mention', () => {
     // Comment stripping has to be string-aware: a `//` inside a URL is not a comment, and blanking the rest
     // of that line could hide a real import — or reveal a commented one.

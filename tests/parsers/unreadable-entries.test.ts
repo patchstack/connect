@@ -5,6 +5,7 @@ import { join } from 'node:path';
 import { scanLockfile } from '../../src/parsers/index.js';
 import { parseYarnLockfile } from '../../src/parsers/yarn.js';
 import { parsePnpmLockfile } from '../../src/parsers/pnpm.js';
+import { parseBunLockfile } from '../../src/parsers/bun.js';
 import { newReport } from '../../src/parsers/report.js';
 
 /**
@@ -137,5 +138,70 @@ describe('a pnpm-lock.yaml key this scanner does not read', () => {
     expect(packages.map((p) => p.name)).toEqual(['lodash']);
     expect(report.unreadable).toBe(1);
     expect(report.samples).toEqual(['keywithnoversion']);
+  });
+});
+
+describe('a bun.lock entry this scanner does not read', () => {
+  it('is counted rather than dropped in silence', async () => {
+    const report = newReport();
+    const dir = project({
+      'package.json': PACKAGE_JSON,
+      'bun.lock': `{
+  "lockfileVersion": 1,
+  "packages": {
+    "lodash": ["lodash@4.17.21", "", {}, "sha512-x"],
+    "mystery": ["mystery-with-no-version", "", {}, "sha512-y"],
+  },
+}
+`,
+    });
+
+    const packages = await parseBunLockfile(join(dir, 'bun.lock'), report);
+
+    expect(packages.map((p) => p.name)).toEqual(['lodash']);
+    expect(report.unreadable).toBe(1);
+    expect(report.samples).toEqual(['mystery']);
+  });
+
+  it('does not count a workspace or a local path', async () => {
+    // Left out on purpose: installed, but not a published release, so no advisory can be about it.
+    // Counted as unreadable they would put a warning on every monorepo.
+    const report = newReport();
+    const dir = project({
+      'package.json': PACKAGE_JSON,
+      'bun.lock': `{
+  "lockfileVersion": 1,
+  "packages": {
+    "lodash": ["lodash@4.17.21", "", {}, "sha512-x"],
+    "apps/api": ["api@workspace:apps/api", "", {}, ""],
+    "vendored": ["vendored@file:./vendor/vendored", "", {}, ""],
+    "forked": ["forked@github:acme/forked#abc123", "", {}, ""],
+  },
+}
+`,
+    });
+
+    await parseBunLockfile(join(dir, 'bun.lock'), report);
+
+    expect(report.unreadable).toBe(0);
+  });
+
+  it('reaches the manifest as a warning', async () => {
+    const dir = project({
+      'package.json': PACKAGE_JSON,
+      'bun.lock': `{
+  "lockfileVersion": 1,
+  "packages": {
+    "lodash": ["lodash@4.17.21", "", {}, "sha512-x"],
+    "mystery": ["mystery-with-no-version", "", {}, "sha512-y"],
+  },
+}
+`,
+    });
+
+    const manifest = await scanLockfile(dir);
+
+    expect(manifest.warnings?.join(' ')).toContain('mystery');
+    expect(manifest.warnings?.join(' ')).toContain('not being checked');
   });
 });

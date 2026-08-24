@@ -1,5 +1,6 @@
 import { readFile } from 'node:fs/promises';
 import { PatchstackError, type PackageEntry } from '../types.js';
+import { recordUnreadable, type ParseReport } from './report.js';
 
 /**
  * Parses `bun.lock` — Bun's text lockfile — without a JSON5 dependency.
@@ -27,7 +28,7 @@ import { PatchstackError, type PackageEntry } from '../types.js';
  * `workspace:`, `file:`, a git URL — are skipped: they are not registry packages, and inventing a version
  * for them would put something in a vulnerability inventory that no advisory can ever match.
  */
-export async function parseBunLockfile(lockfilePath: string): Promise<PackageEntry[]> {
+export async function parseBunLockfile(lockfilePath: string, report?: ParseReport): Promise<PackageEntry[]> {
   let raw: string;
   try {
     raw = await readFile(lockfilePath, 'utf8');
@@ -55,12 +56,18 @@ export async function parseBunLockfile(lockfilePath: string): Promise<PackageEnt
     const descriptor = Array.isArray(value) ? value[0] : value;
     if (typeof descriptor !== 'string') {
       skipped++;
+      // Not a shape this scanner reads. Counted out loud, because a manifest short a package reads exactly
+      // like a project that does not have it.
+      recordUnreadable(report, key);
       continue;
     }
 
     const split = splitDescriptor(descriptor);
     if (split === null) {
       skipped++;
+      // Only the ones this scanner did not UNDERSTAND. A workspace, a `file:` entry or a git URL resolved
+      // to no version on purpose, and reporting those would put a warning on every monorepo.
+      if (!isDeliberatelyExcluded(descriptor)) recordUnreadable(report, key);
       continue;
     }
 
@@ -98,10 +105,26 @@ function splitDescriptor(descriptor: string): { name: string; version: string } 
   const name = descriptor.slice(0, at);
   const version = descriptor.slice(at + 1);
   if (name === '' || version === '') return null;
-  if (/^[a-z][a-z0-9+.-]*:/i.test(version)) return null; // a protocol, not a version
-  if (version.includes('/')) return null; // a URL or path
+  if (NON_REGISTRY_VERSION.test(version)) return null;
 
   return { name, version };
+}
+
+/** A protocol instead of a version, or a URL or path — installed, but not a published release. */
+const NON_REGISTRY_VERSION = /^[a-z][a-z0-9+.-]*:|\//i;
+
+/**
+ * Was this descriptor left out on purpose?
+ *
+ * A workspace, a local path, a git URL: all resolve to something installed that no advisory can be about,
+ * so excluding it is correct and silent. Anything else that failed to split is a shape this scanner does
+ * not read, which is a package that may be installed and missing from the inventory.
+ */
+function isDeliberatelyExcluded(descriptor: string): boolean {
+  const at = descriptor.lastIndexOf('@');
+  if (at <= 0) return false;
+
+  return NON_REGISTRY_VERSION.test(descriptor.slice(at + 1));
 }
 
 /**

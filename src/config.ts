@@ -1,4 +1,4 @@
-import { readFile, writeFile } from 'node:fs/promises';
+import { readFile, writeFile, chmod } from 'node:fs/promises';
 import path from 'node:path';
 import { PatchstackError, type Config, type Environment } from './types.js';
 import { DEFAULT_ENDPOINT, DEFAULT_TIMEOUT_MS } from './client.js';
@@ -122,47 +122,135 @@ export async function writeConfigFile(cwd: string, config: ConfigFile): Promise<
 export const SECRET_CONFIG_FILENAME = SECRET_FILENAME;
 
 /**
- * Write the credential file, and make sure the project ignores it.
+ * What happened to the credential file, so a caller can say only what is true.
  *
- * The ignore entry is added here rather than left to the user, because the failure it prevents is silent
- * and permanent: a credential committed once is in the history whether or not the file is removed later.
+ * `ignored` is the OUTCOME of the ignore entry, verified by reading the file back — not the fact that a
+ * write was attempted. Telling somebody their credential is ignored when it is not is worse than telling
+ * them nothing: they stop looking, and a credential committed once is in the history whether or not the
+ * file is removed afterwards.
  */
-export async function writeSecretFile(cwd: string, secrets: SecretFile): Promise<string> {
-  const target = path.join(cwd, SECRET_FILENAME);
-  await writeFile(target, JSON.stringify(secrets, null, 2) + '\n', 'utf8');
-  await ensureIgnored(cwd, SECRET_FILENAME);
-
-  return target;
+export interface SecretFileResult {
+  /** Absolute path of the credential file. */
+  path: string;
+  /** True only when `.gitignore` was read back and really covers it. */
+  ignored: boolean;
+  /** Why not, when it is not — for the caller to print instead of a false assurance. */
+  reason?: string;
 }
 
 /**
- * Add a line to the project's `.gitignore` if it is not already covered.
+ * Write the credential file, and make sure the project ignores it.
  *
- * Deliberately conservative: it appends one entry and never rewrites or reorders what is there. A missing
- * `.gitignore` is created, because a project without one is exactly the project that would commit this.
+ * The ignore entry is added here rather than left to the user, because the failure it prevents is silent
+ * and permanent. The file is created owner-only: it holds a credential, and the default mode on a shared
+ * machine is readable by everybody.
  */
-async function ensureIgnored(cwd: string, entry: string): Promise<void> {
+export async function writeSecretFile(cwd: string, secrets: SecretFile): Promise<SecretFileResult> {
+  const target = path.join(cwd, SECRET_FILENAME);
+  await writeFile(target, JSON.stringify(secrets, null, 2) + '\n', { encoding: 'utf8', mode: 0o600 });
+  // Explicit chmod as well as the create mode: an existing file keeps its old permissions, and a rotation
+  // writes over one that may predate this.
+  try {
+    await chmod(target, 0o600);
+  } catch {
+    // Windows and some mounted filesystems have no POSIX mode. Not a reason to fail the write.
+  }
+
+  const ignore = await ensureIgnored(cwd, SECRET_FILENAME);
+
+  return { path: target, ...ignore };
+}
+
+/**
+ * Add a line to the project's `.gitignore` if it is not already covered, and report whether it now is.
+ *
+ * Deliberately conservative about the file: it appends one entry and never rewrites or reorders what is
+ * there. A missing `.gitignore` is created, because a project without one is exactly the project that
+ * would commit this.
+ *
+ * Not conservative about the ANSWER. Every failure — unreadable file, unwritable file, an entry that is
+ * there but negated further down — comes back as `ignored: false` with a reason, because the caller's next
+ * line is either an assurance or a warning and it has to be the right one.
+ */
+async function ensureIgnored(cwd: string, entry: string): Promise<{ ignored: boolean; reason?: string }> {
   const target = path.join(cwd, '.gitignore');
   let existing = '';
   try {
     existing = await readFile(target, 'utf8');
   } catch (err) {
-    if ((err as NodeJS.ErrnoException).code !== 'ENOENT') return; // unreadable — leave it alone
+    const code = (err as NodeJS.ErrnoException).code;
+    if (code !== 'ENOENT') {
+      return { ignored: false, reason: `.gitignore could not be read (${code ?? 'unknown error'})` };
+    }
   }
 
-  const covered = existing
-    .split('\n')
-    .map((line) => line.trim())
-    .some((line) => line === entry || line === `/${entry}`);
-  if (covered) return;
+  if (ignoresEntry(existing, entry)) return { ignored: true };
 
   const separator = existing === '' || existing.endsWith('\n') ? '' : '\n';
   const block = `${separator}\n# Patchstack credential — never commit this\n${entry}\n`;
   try {
     await writeFile(target, existing + block, 'utf8');
-  } catch {
-    // Unwritable ignore file. The credential is still out of the committed config, and the caller warns.
+  } catch (err) {
+    const code = (err as NodeJS.ErrnoException).code;
+
+    return { ignored: false, reason: `.gitignore could not be written (${code ?? 'unknown error'})` };
   }
+
+  // Read back rather than assume. The write can succeed and still not produce coverage — a symlink into a
+  // read-only location, a filesystem that silently truncates — and this is the only claim being made.
+  try {
+    const written = await readFile(target, 'utf8');
+    if (ignoresEntry(written, entry)) return { ignored: true };
+
+    return { ignored: false, reason: '.gitignore does not cover the file after writing it' };
+  } catch (err) {
+    const code = (err as NodeJS.ErrnoException).code;
+
+    return { ignored: false, reason: `.gitignore could not be read back (${code ?? 'unknown error'})` };
+  }
+}
+
+/**
+ * Whether the project currently ignores the credential file.
+ *
+ * A fresh verified read, for callers that are about to tell somebody their credential is safe but did not
+ * write it themselves — the login flow rotates the credential several layers below the line that prints.
+ */
+export async function secretFileIgnored(cwd: string): Promise<{ ignored: boolean; reason?: string }> {
+  try {
+    const contents = await readFile(path.join(cwd, '.gitignore'), 'utf8');
+    if (ignoresEntry(contents, SECRET_FILENAME)) return { ignored: true };
+
+    return { ignored: false, reason: `.gitignore does not cover ${SECRET_FILENAME}` };
+  } catch (err) {
+    const code = (err as NodeJS.ErrnoException).code;
+
+    return {
+      ignored: false,
+      reason: code === 'ENOENT' ? 'this project has no .gitignore' : `.gitignore could not be read (${code ?? 'unknown error'})`,
+    };
+  }
+}
+
+/**
+ * Does this `.gitignore` text actually ignore `entry`?
+ *
+ * Last match wins, as git resolves it: a `!entry` line below a matching pattern un-ignores the file, so a
+ * scan that stops at the first positive line reports coverage a `git status` would contradict. Only exact
+ * entries are recognised — a glob that happens to cover the file is not claimed, because claiming it wrong
+ * is the failure this function exists to prevent.
+ */
+function ignoresEntry(contents: string, entry: string): boolean {
+  let ignored = false;
+  for (const raw of contents.split('\n')) {
+    const line = raw.trim();
+    if (line === '' || line.startsWith('#')) continue;
+    const negated = line.startsWith('!');
+    const pattern = negated ? line.slice(1).trim() : line;
+    if (pattern === entry || pattern === `/${entry}`) ignored = !negated;
+  }
+
+  return ignored;
 }
 
 /**
@@ -186,7 +274,7 @@ export async function persistSiteUuid(cwd: string, siteUuid: string): Promise<st
  * goes with it: that field resolves ahead of `apiKey`, so a stale copy would keep authenticating with a
  * credential the server has replaced.
  */
-export async function persistApiKey(cwd: string, apiKey: string): Promise<string> {
+export async function persistApiKey(cwd: string, apiKey: string): Promise<SecretFileResult> {
   const { apiKey: _movedKey, pulseAuth: _movedPulse, ...publicConfig } = await readConfigFile(cwd);
   const existingSecrets = await readSecretFile(cwd);
 
@@ -207,7 +295,7 @@ export async function persistApiKey(cwd: string, apiKey: string): Promise<string
  * credentials; they share one today, so `persistApiKey` covers both. Retained
  * for callers that separate them.
  */
-export async function persistPulseAuth(cwd: string, pulseAuth: string): Promise<string> {
+export async function persistPulseAuth(cwd: string, pulseAuth: string): Promise<SecretFileResult> {
   const existing = await readSecretFile(cwd);
 
   return writeSecretFile(cwd, { ...existing, pulseAuth });
