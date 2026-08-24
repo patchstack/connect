@@ -104,7 +104,8 @@ Precedence (highest wins):
 
 1. CLI flag (`--site-uuid`, `--endpoint`)
 2. Environment variable
-3. `.patchstackrc.json` in the current directory
+3. `.patchstackrc.local.json` in the current directory (the credential)
+4. `.patchstackrc.json` in the current directory
 
 Environment variables:
 
@@ -113,13 +114,22 @@ Environment variables:
 - `PATCHSTACK_TIMEOUT_MS` — request timeout in milliseconds (default `30000`)
 - `PATCHSTACK_ENVIRONMENT` — manifest label: `production` (default) or `sandbox`
 
-`.patchstackrc.json` example:
+Two files, because one value is public and the other is not.
+
+`.patchstackrc.json` — commit it:
 
 ```json
 {
   "siteUuid": "550e8400-e29b-41d4-a716-446655440000",
-  "apiKey": "…",
   "widget": true
+}
+```
+
+`.patchstackrc.local.json` — the credential. `scan` writes it and adds it to your `.gitignore`:
+
+```json
+{
+  "apiKey": "…"
 }
 ```
 
@@ -129,11 +139,11 @@ Environment variables:
 
 The site UUID identifies the site and is **not** a secret — the disclosure widget ships the same UUID in client-side HTML.
 
-`apiKey` **is** a secret. One credential authenticates both paths: Pulse ingest (manifest, attack-surface map, package removal), where it is exchanged for a short-lived token rather than sent directly, and block-log reporting. Keep it out of the widget tag, client bundles and public env vars (`NEXT_PUBLIC_*`). For deploys, prefer `PATCHSTACK_API_KEY` in the platform's secret store over the committed file.
+`apiKey` **is** a secret. One credential authenticates both paths: Pulse ingest (manifest, attack-surface map, package removal), where it is exchanged for a short-lived token rather than sent directly, and block-log reporting. Keep it out of the widget tag, client bundles and public env vars (`NEXT_PUBLIC_*`), and out of the committed config — `.patchstackrc.local.json` is git-ignored for that reason. For deploys, prefer `PATCHSTACK_API_KEY` in the platform's secret store.
 
 If it is ever lost, `npx @patchstack/connect login` recovers it — approval happens in the dashboard and rotates the credential.
 
-In CI setups where the file isn't committed, set `PATCHSTACK_SITE_UUID` and `PATCHSTACK_API_KEY`. Precedence is CLI flag → env var → `.patchstackrc.json`.
+The credential's file is never committed, so CI needs `PATCHSTACK_API_KEY` in the environment (and `PATCHSTACK_SITE_UUID` too where `.patchstackrc.json` is also absent). Precedence is CLI flag → env var → `.patchstackrc.local.json` → `.patchstackrc.json`.
 
 A `pulseAuth` field is still read if present, and `PATCHSTACK_PULSE_AUTH` still overrides, for deployments that authenticate Pulse ingest with a different credential from block-logs. Neither is written by default, and neither is needed when the two share one.
 

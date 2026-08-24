@@ -38,3 +38,4 @@ Use `bun add -d`, `pnpm add -D`, or `yarn add -D` followed by the same `npx @pat
 - You've opened the dashboard URL in your browser and the site shows in your Patchstack dashboard.
 - `npx @patchstack/connect guide` reports all steps ✔ (build hooks wired, widget installed).
 - `.patchstackrc.json`, `package.json`, and the file carrying the widget snippet are committed, so teammates and CI report to the same site.
+- `.patchstackrc.local.json` is **not** committed. It holds the API key; setup adds it to `.gitignore`. Teammates and CI get the credential from `PATCHSTACK_API_KEY` instead.
