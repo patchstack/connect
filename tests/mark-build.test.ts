@@ -5,8 +5,11 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import {
   MARKER_ATTR,
   buildInjectionSnippet,
+  buildSourceMarkerSnippet,
   findHtmlFiles,
+  hasJsxShell,
   injectMarker,
+  productionGate,
   resolveBuildDir,
 } from '../src/mark-build.js';
 
@@ -116,5 +119,56 @@ describe('resolveBuildDir + findHtmlFiles', () => {
 
   it('returns null when no build directory exists', () => {
     expect(resolveBuildDir(root)).toBeNull();
+  });
+});
+
+
+describe('productionGate', () => {
+  it('uses the Vite-replaced flag for bundlers that define it', () => {
+    expect(productionGate('tanstack-start')).toBe('import.meta.env.PROD');
+    expect(productionGate('remix')).toBe('import.meta.env.PROD');
+    expect(productionGate(null)).toBe('import.meta.env.PROD');
+  });
+
+  it('falls back to NODE_ENV where import.meta.env is not defined', () => {
+    expect(productionGate('next')).toContain('process.env.NODE_ENV');
+    expect(productionGate('gatsby')).toContain('process.env.NODE_ENV');
+  });
+
+  it('uses the Nuxt dev flag for Nuxt', () => {
+    expect(productionGate('nuxt')).toBe('!import.meta.dev');
+  });
+});
+
+describe('hasJsxShell', () => {
+  it('is true for React-family roots and false otherwise', () => {
+    expect(hasJsxShell('tanstack-start')).toBe(true);
+    expect(hasJsxShell('next')).toBe(true);
+    expect(hasJsxShell('nuxt')).toBe(false);
+    expect(hasJsxShell('sveltekit')).toBe(false);
+    expect(hasJsxShell(null)).toBe(false);
+  });
+});
+
+describe('buildSourceMarkerSnippet', () => {
+  it('sets the marker the widget reads, behind the framework production gate', () => {
+    const snippet = buildSourceMarkerSnippet('tanstack-start');
+    expect(snippet).toContain('window.__PATCHSTACK_PROD__=true;');
+    expect(snippet).toContain('import.meta.env.PROD &&');
+    expect(snippet).toContain(MARKER_ATTR);
+  });
+
+  it('never emits an ungated marker, which would also hide the claim flow in dev', () => {
+    for (const framework of ['tanstack-start', 'next', 'remix', 'react-router', 'gatsby']) {
+      const snippet = buildSourceMarkerSnippet(framework);
+      const gateIndex = snippet.indexOf(productionGate(framework));
+      expect(gateIndex).toBeGreaterThanOrEqual(0);
+      expect(gateIndex).toBeLessThan(snippet.indexOf('__PATCHSTACK_PROD__'));
+    }
+  });
+
+  it('is an inline document script, so it beats the deferred widget tag', () => {
+    // A module-level assignment would not be ordered ahead of the widget's init.
+    expect(buildSourceMarkerSnippet('tanstack-start')).toContain('dangerouslySetInnerHTML');
   });
 });

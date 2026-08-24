@@ -932,7 +932,17 @@ async function runMarkBuild(args: ParsedArgs): Promise<number> {
 
   const files = findHtmlFiles(dir);
   if (files.length === 0) {
-    console.warn(`mark-build: no HTML files found under ${dir}. Nothing to mark.`);
+    // A build directory with no HTML in it is the signature of a server-rendered
+    // app: the document is produced per request, so there is no file to stamp and
+    // the marker only reaches production if it ships in the source shell. Silence
+    // here reads as success, and the widget then treats the live site as a build.
+    console.warn(`mark-build: found ${dir} but no HTML files in it.`);
+    console.warn(
+      'mark-build: this build looks server-rendered, so the production flag has nothing to stamp.',
+    );
+    console.warn(
+      'mark-build: add the marker to your root shell instead — run `patchstack-connect guide` for the snippet.',
+    );
     return 0;
   }
 

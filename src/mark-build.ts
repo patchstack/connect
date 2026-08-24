@@ -88,3 +88,69 @@ export function injectMarker(html: string, snippet: string): string {
   }
   return stripped + snippet;
 }
+
+/* ------------------------------------------------------------------ */
+/*  Source-shell marking (server-rendered roots)                      */
+/* ------------------------------------------------------------------ */
+
+/**
+ * Frameworks whose root shell is JSX. These get a literal snippet; every other
+ * code shell gets the requirement described instead, because its head mechanism
+ * (`useHead`, `<svelte:head>`, Astro frontmatter) is not a plain script tag and
+ * a wrong snippet costs more than an accurate sentence.
+ */
+const JSX_SHELL_FRAMEWORKS = new Set([
+  'next',
+  'remix',
+  'react-router',
+  'tanstack-start',
+  'gatsby',
+]);
+
+/**
+ * How each framework spells "this is a production build" in source. Vite-built
+ * roots use `import.meta.env.PROD`, which the bundler statically replaces;
+ * bundlers that don't define it fall back to NODE_ENV.
+ *
+ * The gate is load-bearing: an ungated marker also fires in the hosted builder's
+ * dev preview, which is exactly where the owner still needs the claim flow.
+ */
+const PRODUCTION_GATES: Record<string, string> = {
+  next: "process.env.NODE_ENV === 'production'",
+  gatsby: "process.env.NODE_ENV === 'production'",
+  nuxt: '!import.meta.dev',
+};
+
+const DEFAULT_PRODUCTION_GATE = 'import.meta.env.PROD';
+
+/** The build-time expression that must guard the marker for this framework. */
+export function productionGate(framework: string | null): string {
+  const mapped = framework !== null ? PRODUCTION_GATES[framework] : undefined;
+  return mapped ?? DEFAULT_PRODUCTION_GATE;
+}
+
+/** True when `guide` can print a literal marker snippet for this framework. */
+export function hasJsxShell(framework: string | null): boolean {
+  return framework !== null && JSX_SHELL_FRAMEWORKS.has(framework);
+}
+
+/**
+ * The production marker as it belongs in a JSX root shell.
+ *
+ * Server-rendered roots never produce a static HTML file for `mark-build` to
+ * stamp, so on those stacks this is the only path the marker has to production.
+ * It stays an inline document script rather than a module-level assignment: the
+ * widget tag is `defer`, and only a parser-executed inline script is ordered
+ * ahead of it for certain.
+ */
+export function buildSourceMarkerSnippet(framework: string | null): string {
+  const gate = productionGate(framework);
+  return (
+    `{${gate} && (\n` +
+    `  <script\n` +
+    `    ${MARKER_ATTR}="true"\n` +
+    `    dangerouslySetInnerHTML={{ __html: 'window.__PATCHSTACK_PROD__=true;' }}\n` +
+    `  />\n` +
+    `)}`
+  );
+}

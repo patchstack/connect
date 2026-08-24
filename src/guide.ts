@@ -14,8 +14,16 @@ import { DEFAULT_ENDPOINT, buildClaimUrl } from './client.js';
 import { resolveConfig } from './config.js';
 import { runVerify } from './protect/install/index.js';
 import type { VerifyCheck } from './protect/install/types.js';
+import {
+  buildSourceMarkerSnippet,
+  hasJsxShell,
+  productionGate,
+} from './mark-build.js';
 import { detectStack } from './stack.js';
 import { buildWidgetTag } from './widget.js';
+
+/** Global the widget reads to decide it is running on a published build. */
+const PROD_MARKER_NEEDLE = '__PATCHSTACK_PROD__';
 
 /** Substring that marks the widget as installed anywhere in the source tree. */
 const WIDGET_NEEDLE = 'patchstack-widget';
@@ -46,6 +54,11 @@ export interface GuideState {
   framework: string | null;
   /** Existing file the widget snippet belongs in, best-effort. */
   widgetFileHint: string | null;
+  /**
+   * True when the root shell already sets `__PATCHSTACK_PROD__`. Only meaningful
+   * for code shells: HTML shells get the marker stamped by `mark-build` instead.
+   */
+  productionMarkerWired: boolean;
   /** Result of the same local inspection used by `protect --check`. */
   protectionWired: boolean;
   protectionStack: string;
@@ -260,6 +273,22 @@ export function findWidgetMarker(cwd: string, siteUuid?: string | null): WidgetS
   };
 }
 
+/**
+ * Whether the root shell already carries the production marker. Reads only the
+ * file the snippet belongs in — the marker has one correct home, so a tree walk
+ * would cost more and answer no better.
+ */
+function findProductionMarker(cwd: string, widgetFileHint: string | null): boolean {
+  if (widgetFileHint === null) {
+    return false;
+  }
+  try {
+    return readFileSync(path.join(cwd, widgetFileHint), 'utf8').includes(PROD_MARKER_NEEDLE);
+  } catch {
+    return false;
+  }
+}
+
 function resolveWidgetFileHint(cwd: string, framework: string | null): string | null {
   const candidates = [
     ...(framework !== null ? WIDGET_FILE_CANDIDATES[framework] ?? [] : []),
@@ -317,6 +346,7 @@ export async function collectGuideState(cwd: string): Promise<GuideState> {
   );
 
   const widget = findWidgetMarker(cwd, siteUuid);
+  const widgetFileHint = resolveWidgetFileHint(cwd, stack.framework);
   const protection = runVerify(cwd);
 
   return {
@@ -341,7 +371,8 @@ export async function collectGuideState(cwd: string): Promise<GuideState> {
     widgetTokenMatches: widget.uuidMatches,
     widgetOptOut,
     framework: stack.framework,
-    widgetFileHint: resolveWidgetFileHint(cwd, stack.framework),
+    widgetFileHint: widgetFileHint,
+    productionMarkerWired: findProductionMarker(cwd, widgetFileHint),
     protectionWired: protection.wired,
     protectionStack: protection.stack,
     protectionChecks: protection.checks,
@@ -358,6 +389,18 @@ const ANSI = {
 };
 
 /** Setup steps still missing — 0 means the checklist is fully green. */
+/**
+ * True when the site's root shell is code rather than an HTML file. Those roots
+ * are server-rendered, so no built HTML file carries the marker to production and
+ * `mark-build`'s HTML pass has nothing to stamp.
+ */
+export function needsSourceProductionMarker(state: GuideState): boolean {
+  if (state.siteUuid === null || state.widgetOptOut || state.widgetFileHint === null) {
+    return false;
+  }
+  return !state.widgetFileHint.toLowerCase().endsWith('.html');
+}
+
 export function countRemainingSteps(state: GuideState): number {
   return [
     state.installed?.section === 'dependencies',
@@ -365,6 +408,7 @@ export function countRemainingSteps(state: GuideState): number {
     state.installScanWired,
     !state.hasBuildScript || (state.prebuildWired && state.postbuildWired),
     state.widgetOptOut || (state.widgetInstalled && state.widgetTokenMatches !== false),
+    !needsSourceProductionMarker(state) || state.productionMarkerWired,
     state.protectionWired,
   ].filter((step) => !step).length;
 }
@@ -472,6 +516,37 @@ export function renderGuideChecklist(state: GuideState, useColor: boolean): stri
     lines.push(detail(placement));
     lines.push(detail(`  ${buildWidgetTag(state.siteUuid)}`));
     lines.push(detail('The site UUID is public by design — it ships in client-side HTML.'));
+  }
+
+  // 5b. Production marker on server-rendered roots. A code root never emits a
+  // static HTML file, so `mark-build` has nothing to stamp and the marker only
+  // reaches production if it ships in the shell alongside the widget tag.
+  if (needsSourceProductionMarker(state)) {
+    if (state.productionMarkerWired) {
+      lines.push(done('Production marker wired (widget switches to report mode on the published site)'));
+    } else {
+      lines.push(todo('Add the production marker yourself — this root is server-rendered, so mark-build cannot stamp it'));
+      lines.push(
+        detail(
+          'Without it the widget treats the published site as build mode and shows the claim flow to visitors.',
+        ),
+      );
+      const gate = productionGate(state.framework);
+      if (hasJsxShell(state.framework)) {
+        lines.push(detail(`Edit ${state.widgetFileHint} → put it in <head>, above the widget tag:`));
+        for (const snippetLine of buildSourceMarkerSnippet(state.framework).split('\n')) {
+          lines.push(detail(`  ${snippetLine}`));
+        }
+      } else {
+        lines.push(
+          detail(
+            `Edit ${state.widgetFileHint} → using the framework's head mechanism, emit an inline`,
+          ),
+        );
+        lines.push(detail(`  <script>window.__PATCHSTACK_PROD__=true;</script> only when ${gate}.`));
+      }
+      lines.push(detail(`The ${gate} guard is required — an ungated marker also hides the claim flow in preview.`));
+    }
   }
 
   // 6. Runtime protection
