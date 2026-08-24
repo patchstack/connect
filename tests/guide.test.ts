@@ -351,7 +351,8 @@ describe('guide', () => {
       expect(state.productionMarkerWired).toBe(false);
 
       const output = renderGuideChecklist(state, false);
-      expect(output).toContain('Add the production marker yourself');
+      expect(output).toContain('Add the production marker');
+      expect(output).toContain('npx @patchstack/connect scan');
       expect(output).toContain('import.meta.env.PROD &&');
       expect(output).toContain('window.__PATCHSTACK_PROD__=true;');
     });

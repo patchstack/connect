@@ -289,7 +289,7 @@ function findProductionMarker(cwd: string, widgetFileHint: string | null): boole
   }
 }
 
-function resolveWidgetFileHint(cwd: string, framework: string | null): string | null {
+export function resolveWidgetFileHint(cwd: string, framework: string | null): string | null {
   const candidates = [
     ...(framework !== null ? WIDGET_FILE_CANDIDATES[framework] ?? [] : []),
     ...GENERIC_WIDGET_FILES,
@@ -525,7 +525,7 @@ export function renderGuideChecklist(state: GuideState, useColor: boolean): stri
     if (state.productionMarkerWired) {
       lines.push(done('Production marker wired (widget switches to report mode on the published site)'));
     } else {
-      lines.push(todo('Add the production marker yourself — this root is server-rendered, so mark-build cannot stamp it'));
+      lines.push(todo('Add the production marker — this root is server-rendered, so mark-build cannot stamp it'));
       lines.push(
         detail(
           'Without it the widget treats the published site as build mode and shows the claim flow to visitors.',
@@ -533,7 +533,8 @@ export function renderGuideChecklist(state: GuideState, useColor: boolean): stri
       );
       const gate = productionGate(state.framework);
       if (hasJsxShell(state.framework)) {
-        lines.push(detail(`Edit ${state.widgetFileHint} → put it in <head>, above the widget tag:`));
+        lines.push(detail(`Run → npx @patchstack/connect scan  (adds it to ${state.widgetFileHint} automatically)`));
+        lines.push(detail('Or add it by hand, in <head> above the widget tag:'));
         for (const snippetLine of buildSourceMarkerSnippet(state.framework).split('\n')) {
           lines.push(detail(`  ${snippetLine}`));
         }
@@ -545,7 +546,7 @@ export function renderGuideChecklist(state: GuideState, useColor: boolean): stri
         );
         lines.push(detail(`  <script>window.__PATCHSTACK_PROD__=true;</script> only when ${gate}.`));
       }
-      lines.push(detail(`The ${gate} guard is required — an ungated marker also hides the claim flow in preview.`));
+      lines.push(detail(`The ${gate} guard is required — an ungated marker also hides the claim flow in preview.`))
     }
   }
 

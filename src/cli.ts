@@ -25,8 +25,12 @@ import {
 import { persistApiKey, persistSiteUuid, resolveConfig, writeConfigFile } from './config.js';
 import {
   buildInjectionSnippet,
+  buildSourceMarkerSnippet,
+  ensureSourceMarker,
   findHtmlFiles,
+  hasJsxShell,
   injectMarker,
+  productionGate,
   resolveBuildDir,
 } from './mark-build.js';
 import {
@@ -35,6 +39,7 @@ import {
   detectPackageManager,
   installCommand,
   renderGuideChecklist,
+  resolveWidgetFileHint,
 } from './guide.js';
 import { login, readPendingLogin, redeemIfApproved, startLogin, waitForApproval } from './login.js';
 import { runProtect, runVerify } from './protect/install/index.js';
@@ -505,6 +510,7 @@ async function runScan(
   const effectiveUuid = config.siteUuid ?? response.uuid ?? null;
   if (config.widget && effectiveUuid !== null && effectiveUuid.length > 0) {
     reportSourceWidget(effectiveUuid);
+    reportSourceMarker(detectStack(payload.packages).framework);
   }
 
   // On the first scan (provisioning), surface the dashboard URL so the user can
@@ -578,6 +584,53 @@ function reportSourceWidget(siteUuid: string): void {
     }
   } catch (err) {
     console.warn(`Widget: skipped (${(err as Error).message}).`);
+  }
+}
+
+/**
+ * Run the production-marker pass for `scan` and narrate the outcome. Never
+ * throws, for the same reason the widget pass doesn't: this is a convenience on
+ * top of a successful scan and must not turn one into a failure.
+ *
+ * `scan` is a pre-build hook, so an edit here is compiled into the build that
+ * follows. On a server-rendered root that is the only way the marker reaches
+ * production — `mark-build` runs after the build and has no HTML to stamp.
+ */
+function reportSourceMarker(framework: string | null): void {
+  try {
+    const shell = resolveWidgetFileHint(process.cwd(), framework);
+    if (shell === null || shell.toLowerCase().endsWith('.html')) {
+      // An HTML shell needs nothing here: mark-build stamps the built copy.
+      return;
+    }
+
+    const result = ensureSourceMarker(process.cwd(), shell, framework);
+    switch (result.action) {
+      case 'added':
+        console.log(`Production marker: added to ${shell} (guarded by ${productionGate(framework)}).`);
+        console.log('  This root is server-rendered, so the marker ships in source rather than built HTML.');
+        break;
+      case 'manual':
+        console.log(`Production marker: already set in ${shell} — left untouched.`);
+        break;
+      case 'no-anchor':
+      case 'unsupported':
+        console.log(
+          `Production marker: ${shell} needs it by hand — without it the widget reads the published site as build mode.`,
+        );
+        if (hasJsxShell(framework)) {
+          for (const line of buildSourceMarkerSnippet(framework).split('\n')) {
+            console.log(`  ${line}`);
+          }
+        } else {
+          console.log(
+            `  Emit <script>window.__PATCHSTACK_PROD__=true;</script> only when ${productionGate(framework)}.`,
+          );
+        }
+        break;
+    }
+  } catch (err) {
+    console.warn(`Production marker: skipped (${(err as Error).message}).`);
   }
 }
 
