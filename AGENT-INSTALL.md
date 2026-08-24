@@ -126,7 +126,7 @@ It is server-only. Never put it in the widget tag, client bundles, or public env
 - The CLI never opens the dashboard link and never asks for Patchstack credentials.
 - Label hosted workspace scans with `PATCHSTACK_ENVIRONMENT=sandbox` in that process only. Leave production builds unset (the default is `production`) and never commit a sandbox label into files shared with production.
 - If a step fails, stop and report it. Don't proceed with placeholders.
-- In CI where `.patchstackrc.json` can't be committed, set `PATCHSTACK_SITE_UUID` and `PATCHSTACK_API_KEY` as env vars instead. Precedence: CLI flag → env var → `.patchstackrc.json`. `login` is interactive and refuses to run in CI, so CI always takes its credential from the environment.
+- CI never has the credential in a file: `.patchstackrc.local.json` is git-ignored by design, so set `PATCHSTACK_API_KEY` as an env var there (and `PATCHSTACK_SITE_UUID` too where `.patchstackrc.json` is also absent). Precedence for the site UUID and settings: CLI flag → env var → `.patchstackrc.json`. For the API key: env var → `.patchstackrc.local.json` → `.patchstackrc.json` (where installs made before the split still hold it). `login` is interactive and refuses to run in CI, so CI always takes its credential from the environment.
 
 ## Runtime guard reporting
 
@@ -195,13 +195,13 @@ These are **two independent states** — never conflate them:
 1. **The site record on Patchstack** (remote). Deleting the site in the dashboard or through the widget's uninstall flow removes it. Reporting stops and the widget stops rendering, but nothing in the project changes.
 2. **The local integration** (this repo): the widget `<script>` tag, `.patchstackrc.json`, the `@patchstack/connect` dependency, the runtime guard files, and the build hooks.
 
-Local files alone cannot tell you whether the site was removed from Patchstack. Run `npx @patchstack/connect status` and read the `Site status` line, then answer with both states. For example, when the site was removed but the local files remain, say: *"The site itself was removed from Patchstack — reporting has stopped and the widget no longer renders. The local integration code (widget tag, `.patchstackrc.json`, the dependency) is still in the project; want me to remove it?"* — not "Patchstack is still installed."
+Local files alone cannot tell you whether the site was removed from Patchstack. Run `npx @patchstack/connect status` and read the `Site status` line, then answer with both states. For example, when the site was removed but the local files remain, say: *"The site itself was removed from Patchstack — reporting has stopped and the widget no longer renders. The local integration code (widget tag, `.patchstackrc.json`, `.patchstackrc.local.json`, the dependency) is still in the project; want me to remove it?"* — not "Patchstack is still installed."
 
 ## Recovering a lost credential — `login`
 
-Use this when the project **already has a site** but its credential is gone or rejected: `.patchstackrc.json` was deleted or never committed, the repo was cloned without it, a container was recycled, or ingest started failing with 401.
+Use this when the project **already has a site** but its credential is gone or rejected: `.patchstackrc.local.json` was deleted, the repo was cloned without it (it is git-ignored, so a fresh clone never has it), a container was recycled, or ingest started failing with 401. The site UUID `login` needs comes from the committed `.patchstackrc.json`.
 
-> **Do not "fix" a missing credential by deleting `.patchstackrc.json` and running `scan` again.** That provisions a **second site**, and the original — with all its history and its widget tag already live on the deployed page — is orphaned. `login` recovers the existing one.
+> **Do not "fix" a missing credential by deleting `.patchstackrc.json` and running `scan` again.** That file holds the site UUID, and without it `scan` provisions a **second site** — the original, with all its history and its widget tag already live on the deployed page, is orphaned. `login` recovers the credential for the site you already have.
 
 ### What it does
 
@@ -214,7 +214,7 @@ npx @patchstack/connect login
   Waiting for approval…  ✓ Credential restored
 ```
 
-The command asks Patchstack for a short code, prints a link, and polls until the site's **owner approves it in the dashboard**. On approval it writes the new credential into `.patchstackrc.json` and exits. The link opens the approval page with the code already filled in, so the person only has to confirm.
+The command asks Patchstack for a short code, prints a link, and polls until the site's **owner approves it in the dashboard**. On approval it writes the new credential into `.patchstackrc.local.json`, reports whether that file is covered by `.gitignore`, and exits. The link opens the approval page with the code already filled in, so the person only has to confirm.
 
 ### What you must do, as the agent — two commands, not one
 
@@ -247,7 +247,7 @@ You cannot complete this alone. It is deliberately a human-in-the-loop step: sta
 
 | Situation | What happens | What to do |
 |---|---|---|
-| Site was never claimed | `409` — no owner exists to approve | Ask the user to claim the site in the dashboard first, or, if the site is disposable, delete `.patchstackrc.json` and `scan` to provision a fresh one |
+| Site was never claimed | `409` — no owner exists to approve | Ask the user to claim the site in the dashboard first, or, if the site is disposable, delete `.patchstackrc.json` **and** `.patchstackrc.local.json` and `scan` to provision a fresh one — leaving the old credential behind means the next scan starts out holding one that belongs to a different site |
 | Running in CI | Refuses to start | CI takes its credential from `PATCHSTACK_PULSE_AUTH`; `login` is for a developer machine |
 | No `siteUuid` configured | Refuses to start | There is no site to recover — run `scan` |
 | Code expired | `--wait` ends after 10 minutes | Start again from step 1 for a new code |
@@ -263,7 +263,7 @@ Remove only the pieces that are actually present — check for each first. If no
 4. **Remove the hooks from `package.json` scripts.** If a hook was chained (e.g. `"postbuild": "existing-command && patchstack-connect mark-build"`), remove only the `patchstack-connect …` part and keep the rest; if removal leaves a script empty, delete the key.
 5. **Signal Patchstack that the package is being removed**: run `npx @patchstack/connect uninstall` (while the package is still installed and `.patchstackrc.json` still exists). If the site was never claimed, this deletes its anonymous record on Patchstack; if the site is claimed, it is only flagged — the record stays until its owner removes it in the dashboard. A failed signal must not stop the uninstall; continue with the remaining steps.
 6. **Uninstall the package** with the manager matching the lockfile: `npm uninstall` / `pnpm remove` / `yarn remove` / `bun remove` `@patchstack/connect`. Don't hand-edit `node_modules` or the lockfile.
-7. **Delete `.patchstackrc.json`** and remove `PATCHSTACK_SITE_UUID`, `PATCHSTACK_API_KEY` (and public-prefixed variants like `NEXT_PUBLIC_PATCHSTACK_SITE_UUID`) from env files and CI variables.
+7. **Delete `.patchstackrc.json` and `.patchstackrc.local.json`** (the second holds the API key and is git-ignored, so it is present locally even when the repo shows nothing), remove the `.gitignore` entry setup added for it, and remove `PATCHSTACK_SITE_UUID`, `PATCHSTACK_API_KEY` (and public-prefixed variants like `NEXT_PUBLIC_PATCHSTACK_SITE_UUID`) from env files and CI variables.
 8. **Commit** the changes. Reporting stops immediately. The `window.__PATCHSTACK_PROD__` flag that `mark-build` injected lives only in build output, never in source — the next build simply won't contain it (rebuild if build output is committed).
 
 The `uninstall` signal is the only account-side effect local removal can have: it deletes an *unclaimed* (anonymous) record and merely flags a *claimed* one. A claimed site keeps using a site slot until its owner removes it in the dashboard at https://app.patchstack.com — end your report by telling the user this, alongside the site UUID from step 1. Never attempt to authenticate or remove a claimed site on the user's behalf.
