@@ -246,9 +246,41 @@ describe('what counts as the generic guard being wired', () => {
     // export is not the guard, and counting it would make the check satisfiable without the guard at all.
     const cwd = scaffolded({
       'src/server.ts': [
-        'import { screenResponse } from "./patchstack/guard";',
+        'import { patchstackMiddleware } from "./patchstack/guard";',
         '',
         'function protectFetch(handler) { return handler; }',
+        'export default { fetch: protectFetch(async () => new Response("ok")) };',
+        '',
+      ].join('\n'),
+    });
+
+    expect(genericVerify(cwd).wired).toBe(false);
+  });
+
+  it('is not satisfied by an export this scaffold does not have', () => {
+    // Reported. `screenResponse` is exported by the OTHER guard templates; the generic one calls it on the
+    // protection object inside `protectFetch`. Importing it from this module fails at load — worse than
+    // unwired — and it verified green.
+    const cwd = scaffolded({
+      'src/server.ts': [
+        'import { screenResponse } from "./patchstack/guard";',
+        '',
+        'export default { fetch: async (r: Request) => screenResponse(new Response("ok"), r) };',
+        '',
+      ].join('\n'),
+    });
+
+    expect(genericVerify(cwd).wired).toBe(false);
+  });
+
+  it('is not satisfied by a sibling module whose path merely contains the guard\'s', () => {
+    // Reported. The specifier was tested for the substring `patchstack/guard`, so a neighbour with a longer
+    // name passed — and it can export a no-op `protectFetch`, which is a green check with no guard in it.
+    const cwd = scaffolded({
+      'src/patchstack/guard-helper.ts': 'export const protectFetch = (h: unknown) => h;\n',
+      'src/server.ts': [
+        'import { protectFetch } from "./patchstack/guard-helper";',
+        '',
         'export default { fetch: protectFetch(async () => new Response("ok")) };',
         '',
       ].join('\n'),

@@ -15,6 +15,8 @@ import {
   parses,
   stripComments,
   maskStringContents,
+  moduleKindOf,
+  resolvesToGuardModule,
 } from './source-scope.js';
 import type { WireOptions, WireResult, VerifyResult } from './types.js';
 
@@ -168,9 +170,6 @@ function wiringState(
   };
 }
 
-/** The file names the scaffolder gives a guard, one per module format. */
-const GUARD_FILENAMES = ['guard.ts', 'guard.js', 'guard.mjs', 'guard.cjs'] as const;
-
 /**
  * Does this line bind the guard's name FROM the guard module?
  *
@@ -209,31 +208,23 @@ function bindsGuard(
   const specifier = /(['"`])([^'"`]*)\1/.exec(line)?.[2];
   if (specifier === undefined || specifier === '') return false;
 
-  return resolvesToGuardModule(specifier, fileRel, guard);
+  return namesGuardModule(specifier, fileRel, guard);
 }
 
 /**
- * Does this specifier name a guard file the scaffolder wrote, and that is on disk?
+ * Does this specifier name the guard, and would this file's own loader find it there?
  *
- * An explicit extension has to be the right one — `./patchstack/guard.mjs` where only `guard.cjs` was
- * written does not resolve at runtime, so it must not verify here. A specifier with no extension is how
- * TypeScript and bundler resolution are written, and matches whichever guard file actually exists.
+ * Strict about extensions here, unlike the generic scaffold: the register-based adapters write a specifier
+ * matched to the entry's module format, so anything else in the file is a hand-edit — and a hand-edit that
+ * names something the loader will not look for is a `MODULE_NOT_FOUND` at boot, not a wired guard.
  */
-function resolvesToGuardModule(specifier: string, fileRel: string, guard: GuardLocation): boolean {
-  const resolved = resolve(dirname(join(guard.cwd, fileRel)), specifier);
-  const dir = resolve(join(guard.cwd, guard.guardDir));
-  const bare = !/\.[A-Za-z0-9]+$/.test(specifier);
-
-  return GUARD_FILENAMES.some((name) => {
-    const candidate = join(dir, name);
-    const named = bare ? resolved === withoutExtension(candidate) : resolved === candidate;
-
-    return named && existsSync(candidate);
+function namesGuardModule(specifier: string, fileRel: string, guard: GuardLocation): boolean {
+  return resolvesToGuardModule(specifier, {
+    fromFile: join(guard.cwd, fileRel),
+    guardDir: resolve(join(guard.cwd, guard.guardDir)),
+    kind: moduleKindOf(fileRel, packageType(guard.cwd) === 'module'),
+    strictExtensions: true,
   });
-}
-
-function withoutExtension(filePath: string): string {
-  return filePath.replace(/\.(?:ts|js|mjs|cjs)$/, '');
 }
 
 export function wireRegister(cwd: string, opts: WireOptions, spec: RegisterSpec): WireResult {

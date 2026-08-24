@@ -7,6 +7,8 @@
 // while the install and the verification both report the guard wired.
 
 import { execFileSync } from 'node:child_process';
+import { existsSync } from 'node:fs';
+import { dirname, join, resolve } from 'node:path';
 
 /** An import statement, or a `const x = require(...)` binding. Matched only at the start of a line. */
 const IMPORT_LINE = /^\s*(?:import\b|export\s+(?:\*|\{)|(?:const|let|var)\s+[^=]+=\s*require\()/;
@@ -286,4 +288,88 @@ export function maskStringContents(source: string): string {
   }
 
   return out;
+}
+
+// --- which module a specifier names -------------------------------------------------------------
+
+/** The file names the scaffolder gives a guard, one per module format. */
+export const GUARD_FILENAMES = ['guard.ts', 'guard.js', 'guard.mjs', 'guard.cjs'] as const;
+
+/**
+ * How the runtime that loads a file resolves the specifiers inside it.
+ *
+ * Not a detail: the three answers differ about extensions, and a specifier that reads fine is a
+ * `MODULE_NOT_FOUND` at boot if it names something its own loader will not look for.
+ *
+ * - `cjs` — `require()` guesses `.js`, `.json`, `.node`. It never guesses `.cjs`.
+ * - `esm` — Node's ESM resolver guesses nothing. The extension has to be written out.
+ * - `ts` — a compiler or bundler resolves the specifier, and accepts it bare or with the `.js` extension
+ *   TypeScript emits for a `.ts` source.
+ */
+export type ModuleKind = 'ts' | 'cjs' | 'esm';
+
+/** The loader that will read this file, from its extension and the package's `type`. */
+export function moduleKindOf(filePath: string, packageIsModule: boolean): ModuleKind {
+  if (/\.(?:ts|tsx|mts|cts|jsx)$/.test(filePath)) return 'ts';
+  if (/\.mjs$/.test(filePath)) return 'esm';
+  if (/\.cjs$/.test(filePath)) return 'cjs';
+
+  return packageIsModule ? 'esm' : 'cjs';
+}
+
+export interface GuardModuleQuery {
+  /** Absolute path of the file the specifier was written in. */
+  fromFile: string;
+  /** Absolute path of the directory the guard was scaffolded into. */
+  guardDir: string;
+  /** How `fromFile` will be loaded. */
+  kind: ModuleKind;
+  /**
+   * Hold the specifier to what its own loader would really resolve.
+   *
+   * On for the register-based adapters, where the scaffolder writes a specifier matched to the entry's
+   * module format, so anything else in the file is a hand-edit that has to be right.
+   *
+   * Off for the generic scaffold, whose printed plan tells people to import from `<dir>/guard` with no
+   * extension whatever their stack is. Under this flag the module IDENTITY is still checked — a sibling in
+   * the same directory is not the guard — and only the extension question is left open.
+   */
+  strictExtensions: boolean;
+}
+
+/**
+ * Does this specifier name the scaffolded guard module?
+ *
+ * Two separate questions, and both were answered wrongly at some point. Identity: the resolved path,
+ * extension aside, has to BE the guard — `patchstack/rules.json` and `patchstack/guard-helper` both live in
+ * the guard's directory and neither is a guard, so containment and substring matching each accepted a
+ * module that exports no middleware. Loadability: the file has to exist, and the specifier has to be one
+ * this file's own loader will resolve to it.
+ */
+export function resolvesToGuardModule(specifier: string, query: GuardModuleQuery): boolean {
+  const resolved = resolve(dirname(query.fromFile), specifier);
+  if (withoutModuleExtension(resolved) !== join(query.guardDir, 'guard')) return false;
+
+  const existing = GUARD_FILENAMES.filter((name) => existsSync(join(query.guardDir, name)));
+  if (existing.length === 0) return false;
+
+  const extension = /(\.[A-Za-z0-9]+)$/.exec(specifier)?.[1] ?? '';
+  if (!query.strictExtensions) return true;
+
+  if (extension === '') {
+    // Bare. Only a loader that guesses can find the file, and each guesses differently.
+    if (query.kind === 'esm') return false;
+    if (query.kind === 'cjs') return existing.includes('guard.js');
+
+    return true; // a compiler or bundler resolves any of them
+  }
+
+  if (existsSync(resolved)) return true;
+
+  // `./guard.js` from a `.ts` source is what TypeScript emits for a `.ts` guard, and resolves.
+  return query.kind === 'ts' && extension === '.js' && existing.includes('guard.ts');
+}
+
+function withoutModuleExtension(filePath: string): string {
+  return filePath.replace(/\.(?:ts|tsx|js|jsx|mjs|cjs)$/, '');
 }

@@ -4,12 +4,25 @@
 // entirely through the CLI (no server, no hosted infra).
 
 import { readFileSync, existsSync, mkdirSync, copyFileSync, readdirSync, lstatSync } from 'node:fs';
-import { join } from 'node:path';
+import { join, dirname } from 'node:path';
 import { bakeSiteUuid, read, templatesDir } from './util.js';
 import type { WireOptions, VerifyResult } from './types.js';
-import { stripComments, maskStringContents } from './source-scope.js';
+import type { GuardModuleQuery } from './source-scope.js';
+import {
+  stripComments,
+  maskStringContents,
+  moduleKindOf,
+  resolvesToGuardModule,
+} from './source-scope.js';
 
-const GUARD_MARKER = 'patchstack/guard';
+/** Does this package's `type` make an extensionless `.js` file an ES module? */
+function packageIsEsm(cwd: string): boolean {
+  try {
+    return (JSON.parse(read(join(cwd, 'package.json'))) as { type?: unknown }).type === 'module';
+  } catch {
+    return false;
+  }
+}
 
 function genericDir(cwd: string): string {
   return existsSync(join(cwd, 'src')) ? 'src/patchstack' : 'patchstack';
@@ -79,13 +92,18 @@ export function wiringPlan(cwd: string, dir: string): string {
 }
 
 /**
- * The guard exports that put it in the request path. One of these has to be imported, and used.
+ * The exports of THIS scaffold that put the guard in the request path. One has to be imported, and used.
  *
- * The guard also exports `getProtection`, which builds the policy and screens nothing on its own. Accepting
- * any exported name meant a file that imported and called that one verified as wired — a policy built, and
- * no request going through it.
+ * Taken from `generic-guard.*`, which is the template this check verifies. Its third export is
+ * `getProtection`, which builds the policy and screens nothing on its own — accepting any exported name
+ * meant a file that imported and called that one verified as wired, with a policy built and no request
+ * going through it.
+ *
+ * `screenResponse` is deliberately absent. The other guard templates export it; this one calls it on the
+ * protection object inside `protectFetch`, so an app importing it from the scaffolded module fails at load
+ * — which is worse than unwired, and it verified green.
  */
-const GUARD_EXPORTS = ['protectFetch', 'patchstackMiddleware', 'screenResponse'] as const;
+const GUARD_EXPORTS = ['protectFetch', 'patchstackMiddleware'] as const;
 
 /**
  * Whether this file imports the guard module and uses what it imported.
@@ -96,13 +114,20 @@ const GUARD_EXPORTS = ['protectFetch', 'patchstackMiddleware', 'screenResponse']
  * comments removed, string CONTENTS blanked, and the declarations themselves excluded from the search for
  * a use. What is left is what executes.
  */
-function importsAndUsesGuard(source: string): boolean {
+function importsAndUsesGuard(source: string, sourcePath: string, guardDir: string, packageIsModule: boolean): boolean {
   const code = stripComments(source);
   // Same length as `code`, so a match found here can be read back out of `code` — which is how the module
   // specifier is recovered after being blanked.
   const masked = maskStringContents(code);
 
-  const declarations = guardImportDeclarations(code, masked);
+  const declarations = guardImportDeclarations(code, masked, {
+    fromFile: sourcePath,
+    guardDir,
+    kind: moduleKindOf(sourcePath, packageIsModule),
+    // The printed plan tells people to import from `<dir>/guard` with no extension whatever their stack
+    // is, so the extension is left open here and only the module's identity is checked.
+    strictExtensions: false,
+  });
   if (declarations.length === 0) return false;
 
   const direct = new Set<string>();
@@ -143,10 +168,11 @@ interface GuardDeclaration {
  * The import or require statements that bring in the guard module.
  *
  * Found on the MASKED text, so a string holding an import statement is one opaque token rather than a
- * declaration. The specifier is then read out of the unmasked text at the same offsets and checked for the
- * guard path — the check the masking makes possible, rather than one it gets in the way of.
+ * declaration. The specifier is then read out of the unmasked text at the same offsets and RESOLVED — a
+ * substring test passed `./patchstack/guard-helper`, a sibling that can export a no-op `protectFetch` and
+ * produce a green check with no guard involved.
  */
-function guardImportDeclarations(code: string, masked: string): GuardDeclaration[] {
+function guardImportDeclarations(code: string, masked: string, query: GuardModuleQuery): GuardDeclaration[] {
   const pattern = /import\s+[^;]*?from\s*(['"`])[^'"`]*\1|(?:const|let|var)\s+[^;=]+=\s*require\(\s*(['"`])[^'"`]*\2\s*\)/g;
   const found: GuardDeclaration[] = [];
 
@@ -154,7 +180,8 @@ function guardImportDeclarations(code: string, masked: string): GuardDeclaration
     const start = match.index ?? -1;
     if (start < 0) continue;
     const text = code.slice(start, start + match[0].length);
-    if (specifierOf(text)?.includes(GUARD_MARKER) === true) found.push({ text, start });
+    const specifier = specifierOf(text);
+    if (specifier !== null && resolvesToGuardModule(specifier, query)) found.push({ text, start });
   }
 
   return found;
@@ -265,6 +292,8 @@ const NON_RUNTIME_DIRS = new Set([
  * — and the printed plan says which edit remains, rather than the check claiming more than it established.
  */
 function guardIsImported(cwd: string, guardPath: string): boolean {
+  const guardDir = dirname(guardPath);
+  const packageIsModule = packageIsEsm(cwd);
   const root = existsSync(join(cwd, 'src')) ? join(cwd, 'src') : cwd;
   let found = false;
   const walk = (d: string, depth: number): void => {
@@ -289,7 +318,7 @@ function guardIsImported(cwd: string, guardPath: string): boolean {
       if (st.isDirectory()) walk(p, depth + 1);
       else if (/\.(?:ts|tsx|js|jsx|mjs|cjs)$/.test(name) && p !== guardPath) {
         try {
-          if (importsAndUsesGuard(readFileSync(p, 'utf8'))) found = true;
+          if (importsAndUsesGuard(readFileSync(p, 'utf8'), p, guardDir, packageIsModule)) found = true;
         } catch {
           /* ignore */
         }

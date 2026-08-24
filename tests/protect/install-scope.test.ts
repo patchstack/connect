@@ -788,28 +788,39 @@ describe('what counts as the guard module itself', () => {
     expect(expressAdapter.verify(cwd).wired).toBe(false);
   });
 
-  it('is the scaffolded guard, named with or without its extension', () => {
-    // The control, both spellings. Extension-less specifiers are how TypeScript and bundler resolution are
-    // written, so refusing them would fail correctly wired apps.
-    for (const specifier of ['./patchstack/guard.cjs', './patchstack/guard']) {
-      const cwd = project({
-        'package.json': PACKAGE_JSON,
-        'src/server.js': [`const { patchstackMiddleware } = require("${specifier}");`, SERVER].join('\n'),
-      });
-      scaffoldedGuard(cwd);
-
-      expect(expressAdapter.verify(cwd).wired, specifier).toBe(true);
-    }
-  });
-
-  it('is bound by a require that also exports it', () => {
-    // The other side of the re-export rule, and the reason it cannot just refuse every line starting with
-    // `export`: `export const { … } = require(…)` really does bind the name here.
+  it('is the scaffolded guard named the way this loader resolves it', () => {
+    // The control. A CommonJS entry has to name `.cjs`, because `require()` guesses `.js`, `.json` and
+    // `.node` and never `.cjs` — which is also why the bare form below is refused rather than accepted for
+    // being shorter.
     const cwd = project({
       'package.json': PACKAGE_JSON,
-      'src/server.js': [
-        "const express = require('express');",
-        'export const { patchstackMiddleware } = require("./patchstack/guard.cjs");',
+      'src/server.js': ['const { patchstackMiddleware } = require("./patchstack/guard.cjs");', SERVER].join('\n'),
+    });
+    scaffoldedGuard(cwd);
+
+    expect(expressAdapter.verify(cwd).wired).toBe(true);
+  });
+
+  it('is not a bare specifier a CommonJS loader would not resolve', () => {
+    // Reported. `require('./patchstack/guard')` with only `guard.cjs` on disk throws MODULE_NOT_FOUND: Node
+    // does not infer `.cjs`. A specifier that cannot load is not a wired guard, however well it reads.
+    const cwd = project({
+      'package.json': PACKAGE_JSON,
+      'src/server.js': ['const { patchstackMiddleware } = require("./patchstack/guard");', SERVER].join('\n'),
+    });
+    scaffoldedGuard(cwd);
+
+    expect(expressAdapter.verify(cwd).wired).toBe(false);
+  });
+
+  it('is a bare specifier from a TypeScript entry, which a compiler resolves', () => {
+    // The other side of the same rule: a `.ts` source is read by a compiler or bundler, which does look for
+    // the extension, so the bare form is what belongs there and refusing it would fail a wired app.
+    const cwd = project({
+      'package.json': PACKAGE_JSON,
+      'src/server.ts': [
+        "import express from 'express';",
+        'import { patchstackMiddleware } from "./patchstack/guard";',
         'const app = express();',
         'app.use(express.json());',
         'app.use(patchstackMiddleware);',
@@ -817,7 +828,53 @@ describe('what counts as the guard module itself', () => {
         '',
       ].join('\n'),
     });
-    scaffoldedGuard(cwd);
+    mkdirSync(join(cwd, 'src/patchstack'), { recursive: true });
+    writeFileSync(join(cwd, 'src/patchstack/guard.ts'), 'export const patchstackMiddleware = () => {};\n');
+
+    expect(expressAdapter.verify(cwd).wired).toBe(true);
+  });
+
+  it('is not a bare specifier from an ESM entry, which resolves nothing', () => {
+    // Node's ESM resolver guesses no extensions at all, so the bare form fails there whichever guard file
+    // exists.
+    const cwd = project({
+      'package.json': JSON.stringify({ name: 'fixture', type: 'module', dependencies: { express: '^4.19.2' } }),
+      'src/server.js': [
+        "import express from 'express';",
+        'import { patchstackMiddleware } from "./patchstack/guard";',
+        'const app = express();',
+        'app.use(express.json());',
+        'app.use(patchstackMiddleware);',
+        'app.listen(3000);',
+        '',
+      ].join('\n'),
+    });
+    mkdirSync(join(cwd, 'src/patchstack'), { recursive: true });
+    writeFileSync(join(cwd, 'src/patchstack/guard.js'), 'export const patchstackMiddleware = () => {};\n');
+
+    expect(expressAdapter.verify(cwd).wired).toBe(false);
+  });
+
+  it('is bound by a require that also exports it', () => {
+    // The other side of the re-export rule, and the reason it cannot just refuse every line starting with
+    // `export`: `export const { … } = require(…)` really does bind the name here.
+    //
+    // A `.ts` entry, because that is where this shape is valid — `export` in a CommonJS `.js` file is a
+    // syntax error, and a control asserting code that cannot run proves nothing about code that does.
+    const cwd = project({
+      'package.json': PACKAGE_JSON,
+      'src/server.ts': [
+        "import express from 'express';",
+        'export const { patchstackMiddleware } = require("./patchstack/guard");',
+        'const app = express();',
+        'app.use(express.json());',
+        'app.use(patchstackMiddleware);',
+        'app.listen(3000);',
+        '',
+      ].join('\n'),
+    });
+    mkdirSync(join(cwd, 'src/patchstack'), { recursive: true });
+    writeFileSync(join(cwd, 'src/patchstack/guard.ts'), 'export const patchstackMiddleware = () => {};\n');
 
     expect(expressAdapter.verify(cwd).wired).toBe(true);
   });
@@ -827,9 +884,9 @@ describe('what counts as the guard module itself', () => {
     // here, so the registration below it throws on the first request — while the text reads as wired.
     const cwd = project({
       'package.json': PACKAGE_JSON,
-      'src/server.js': [
-        "const express = require('express');",
-        'export { patchstackMiddleware } from "./patchstack/guard.cjs";',
+      'src/server.ts': [
+        "import express from 'express';",
+        'export { patchstackMiddleware } from "./patchstack/guard";',
         'const app = express();',
         'app.use(express.json());',
         'app.use(patchstackMiddleware);',
@@ -837,7 +894,8 @@ describe('what counts as the guard module itself', () => {
         '',
       ].join('\n'),
     });
-    scaffoldedGuard(cwd);
+    mkdirSync(join(cwd, 'src/patchstack'), { recursive: true });
+    writeFileSync(join(cwd, 'src/patchstack/guard.ts'), 'export const patchstackMiddleware = () => {};\n');
 
     expect(expressAdapter.verify(cwd).wired).toBe(false);
   });
