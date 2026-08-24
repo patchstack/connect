@@ -662,9 +662,17 @@ async function runProtectCommand(args: ParsedArgs): Promise<number> {
     const report = runVerify(process.cwd());
     console.log(`patchstack protect --check (${report.stack}):`);
     for (const c of report.checks) {
-      console.log(`  ${c.ok ? '✓' : '✗'} ${c.label}${!c.ok && c.hint ? ` — ${c.hint}` : ''}`);
+      // Three states, not two. A check this machine cannot answer is marked `?` and always prints its
+      // note: shown as a tick it would claim something nobody established, and as a cross it would fail a
+      // correctly configured deployment.
+      const mark = c.unverifiable ? '?' : c.ok ? '✓' : '✗';
+      const note = c.unverifiable || !c.ok ? c.hint : undefined;
+      console.log(`  ${mark} ${c.label}${note ? ` — ${note}` : ''}`);
     }
     console.log(report.wired ? 'guard is wired ✓' : 'guard is NOT fully wired ✗');
+    if (report.checks.some((c) => c.unverifiable)) {
+      console.log('One or more checks could not be answered from here — see the `?` lines above.');
+    }
     return report.wired ? 0 : 1;
   }
   // Best-effort: like mark-build, this runs during builds and must never fail one.

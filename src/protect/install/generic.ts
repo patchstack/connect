@@ -68,13 +68,97 @@ export function wiringPlan(cwd: string, dir: string): string {
     `no built-in adapter matched this stack — scaffolded a generic guard at ${dir}/guard.ts + ${dir}/rules.json.`,
     'Finish by wiring it into your server (pick the one that fits):',
     `  • Web-Fetch entry:  export default { fetch: protectFetch(yourHandler) }   // import from "${dir}/guard"`,
-    `  • Node / Express:   app.use(patchstackMiddleware)                          // add before your routes`,
+    `  • Node / Connect:   app.use(patchstackMiddleware)                          // before any body parser`,
     entries.length
       ? `Likely server ${entries.length === 1 ? 'entry' : 'entries'}: ${entries.join(', ')}${express ? '  (Express detected)' : ''}.`
       : 'Could not locate a server entry — wire it wherever requests enter your app.',
     'Then confirm it is hooked up:  npx patchstack-connect protect --check',
   ];
   return lines.join('\n');
+}
+
+/** The guard's exports. One of these has to be imported, and the same one has to be called. */
+const GUARD_EXPORTS = ['protectFetch', 'patchstackMiddleware', 'screenResponse'] as const;
+
+/**
+ * Whether this file imports the guard module and uses what it imported.
+ *
+ * The import is matched on a real import or require of the guard path, not on the path appearing anywhere —
+ * a comment mentioning it is not an import. The use is matched on a call, because an unused import wraps no
+ * request: it type-checks, it ships, and it screens nothing.
+ */
+function importsAndUsesGuard(source: string): boolean {
+  const stripped = stripComments(source);
+  const marker = GUARD_MARKER.replace(/[/]/g, '\\/');
+  const importsGuard = new RegExp(
+    `(?:import[^;]*from\\s*['"\`][^'"\`]*${marker}[^'"\`]*['"\`]|require\\(\\s*['"\`][^'"\`]*${marker}[^'"\`]*['"\`]\\s*\\))`,
+  ).test(stripped);
+  if (!importsGuard) return false;
+
+  return GUARD_EXPORTS.some((name) => new RegExp(`\\b${name}\\s*[(),]`).test(stripped));
+}
+
+/**
+ * Source with comments removed, so a commented-out import cannot satisfy the check.
+ *
+ * String-aware: a `//` inside a URL literal is not a comment, and treating it as one would blank the rest
+ * of a line that might hold the real import.
+ */
+function stripComments(source: string): string {
+  let out = '';
+  let quote: string | null = null;
+  let inLine = false;
+  let inBlock = false;
+
+  for (let i = 0; i < source.length; i++) {
+    const ch = source[i] as string;
+    const next = source[i + 1];
+
+    if (inLine) {
+      if (ch === '\n') {
+        inLine = false;
+        out += ch;
+      }
+      continue;
+    }
+    if (inBlock) {
+      if (ch === '*' && next === '/') {
+        inBlock = false;
+        i++;
+      }
+      continue;
+    }
+    if (quote !== null) {
+      out += ch;
+      if (ch === '\\') {
+        if (next !== undefined) {
+          out += next;
+          i++;
+        }
+      } else if (ch === quote) {
+        quote = null;
+      }
+      continue;
+    }
+    if (ch === '"' || ch === "'" || ch === '`') {
+      quote = ch;
+      out += ch;
+      continue;
+    }
+    if (ch === '/' && next === '/') {
+      inLine = true;
+      i++;
+      continue;
+    }
+    if (ch === '/' && next === '*') {
+      inBlock = true;
+      i++;
+      continue;
+    }
+    out += ch;
+  }
+
+  return out;
 }
 
 export function genericVerify(cwd: string): VerifyResult {
@@ -86,14 +170,38 @@ export function genericVerify(cwd: string): VerifyResult {
     checks: [
       { label: 'generic guard scaffolded', ok: scaffolded, hint: 'run `patchstack-connect protect`' },
       {
-        label: 'guard imported into a server entry',
+        label: 'guard imported and called in a server entry',
         ok: imported,
-        hint: `import { protectFetch } (or patchstackMiddleware) from "${dir}/guard" and wire it into your request path`,
+        hint: `import { protectFetch } (or patchstackMiddleware) from "${dir}/guard" and wire it into your request path — an import that is never called screens nothing`,
       },
     ],
   };
 }
 
+/**
+ * Directories whose contents are not the running application.
+ *
+ * A guard imported in a test or present in build output protects nothing at runtime, and finding it there
+ * turned the check green. Mirrors the same skip list the app-instance search uses, for the same reason.
+ */
+const NON_RUNTIME_DIRS = new Set([
+  'node_modules', 'patchstack', 'dist', 'build', 'out', 'coverage', '.next', '.output', '.svelte-kit',
+  'test', 'tests', '__tests__', 'e2e', 'examples', 'fixtures', '__fixtures__', 'stories', '__mocks__',
+]);
+
+/**
+ * Is one of the guard's exports actually imported and used somewhere in the app's own source?
+ *
+ * Three things a substring search could not tell apart, all of which reported the guard wired:
+ *
+ * - a commented-out line, or a note mentioning the path;
+ * - the import present with the helper never called, so nothing wraps a request;
+ * - the file living in test or build output rather than in the application.
+ *
+ * So this looks for an import of the guard module AND a use of what it imported, in a file that is part of
+ * the running app. Still not a parser — it cannot prove the wrapped handler is the one the platform serves
+ * — and the printed plan says which edit remains, rather than the check claiming more than it established.
+ */
 function guardIsImported(cwd: string, guardPath: string): boolean {
   const root = existsSync(join(cwd, 'src')) ? join(cwd, 'src') : cwd;
   let found = false;
@@ -107,7 +215,7 @@ function guardIsImported(cwd: string, guardPath: string): boolean {
     }
     for (const name of entries) {
       if (found) return;
-      if (name === 'node_modules' || name === 'patchstack' || name.startsWith('.')) continue;
+      if (NON_RUNTIME_DIRS.has(name) || name.startsWith('.')) continue;
       const p = join(d, name);
       let st;
       try {
@@ -119,7 +227,7 @@ function guardIsImported(cwd: string, guardPath: string): boolean {
       if (st.isDirectory()) walk(p, depth + 1);
       else if (/\.(?:ts|tsx|js|jsx|mjs|cjs)$/.test(name) && p !== guardPath) {
         try {
-          if (readFileSync(p, 'utf8').includes(GUARD_MARKER)) found = true;
+          if (importsAndUsesGuard(readFileSync(p, 'utf8'))) found = true;
         } catch {
           /* ignore */
         }

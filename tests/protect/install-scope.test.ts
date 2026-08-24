@@ -250,3 +250,105 @@ describe('where a registration is allowed to live', () => {
     expect(inSameBlockAfter(source, 1, 0)).toBe(false);
   });
 });
+
+describe('a project that starts more than one server', () => {
+  const API = [
+    "const express = require('express');",
+    'const app = express();',
+    'app.use(express.json());',
+    "app.get('/api', (req, res) => res.json({ ok: true }));",
+    'app.listen(3000);',
+    '',
+  ].join('\n');
+
+  const ADMIN = [
+    "const express = require('express');",
+    'const admin = express();',
+    'admin.use(express.json());',
+    'admin.listen(4000);',
+    '',
+  ].join('\n');
+
+  it('wires the one that serves and names the one it did not', () => {
+    // Two servers, and the alphabetically first is not a reason to choose either. Wiring one and reporting
+    // the project protected would leave the other serving every request unscreened.
+    const cwd = project({ 'package.json': PACKAGE_JSON, 'src/admin.js': ADMIN, 'src/server.js': API });
+
+    expressAdapter.wire(cwd, { cwd, force: false } as never);
+    const report = expressAdapter.verify(cwd);
+
+    expect(readFileSync(join(cwd, 'src/server.js'), 'utf8')).toContain('app.use(patchstackMiddleware)');
+    expect(report.wired).toBe(false);
+    const check = report.checks.find((c) => c.label.includes('every server in this project has a guard'));
+    expect(check?.ok).toBe(false);
+    expect(check?.hint).toContain('src/admin.js');
+  });
+
+  it('is fully wired once the second one has a guard too', () => {
+    // The control. Without it the check would be one nothing can satisfy, which is a check people learn to
+    // ignore rather than act on.
+    const cwd = project({ 'package.json': PACKAGE_JSON, 'src/admin.js': ADMIN, 'src/server.js': API });
+
+    expressAdapter.wire(cwd, { cwd, force: false } as never);
+    writeFileSync(
+      join(cwd, 'src/admin.js'),
+      ADMIN.replace(
+        'admin.use(express.json());',
+        [
+          'const { patchstackMiddleware } = require("./patchstack/guard.cjs");',
+          'admin.use(express.json());',
+          'admin.use(patchstackMiddleware);',
+        ].join('\n'),
+      ),
+    );
+
+    expect(expressAdapter.verify(cwd).wired).toBe(true);
+  });
+
+  it('does not count a file that builds an app for somebody else to mount', () => {
+    // A factory or a plugin is served through whichever app mounts it, and its traffic is screened by that
+    // app's guard. Reported as a second server it would be a check that cannot be satisfied.
+    const cwd = project({
+      'package.json': PACKAGE_JSON,
+      'src/routes.js': ["const express = require('express');", 'const router = express();', 'module.exports = router;', ''].join('\n'),
+      'src/server.js': API,
+    });
+
+    expressAdapter.wire(cwd, { cwd, force: false } as never);
+    const report = expressAdapter.verify(cwd);
+
+    expect(report.wired).toBe(true);
+    expect(report.checks.some((c) => c.label.includes('every server in this project has a guard'))).toBe(false);
+  });
+});
+
+describe('choosing between candidate entries', () => {
+  it('takes the file the package itself names', () => {
+    // Better than any guess made from the file name: the project has already answered which file it starts.
+    const cwd = project({
+      'package.json': JSON.stringify({
+        name: 'fixture',
+        dependencies: { express: '^4.19.2' },
+        scripts: { start: 'node src/boot.js' },
+      }),
+      'src/boot.js': [
+        "const express = require('express');",
+        'const boot = express();',
+        'boot.use(express.json());',
+        'boot.listen(3000);',
+        '',
+      ].join('\n'),
+      'src/server.js': [
+        "const express = require('express');",
+        'const app = express();',
+        'app.use(express.json());',
+        'app.listen(4000);',
+        '',
+      ].join('\n'),
+    });
+
+    expressAdapter.wire(cwd, { cwd, force: false } as never);
+
+    expect(readFileSync(join(cwd, 'src/boot.js'), 'utf8')).toContain('boot.use(patchstackMiddleware)');
+  });
+});

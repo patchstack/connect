@@ -71,7 +71,8 @@ describe('runProtect scaffolder', () => {
     expect(start).toContain('const patchstackGuard =');
     expect(start).toContain('const patchstackFunctionGuard =');
     // response screening is wired on the non-tunnel path
-    expect(start).toContain('return screenResponse(await next());');
+    // With the request: a response rule scoped to a route or method cannot apply that scope without it.
+    expect(start).toContain('return screenResponse(await next(), request);');
     // guards registered FIRST, existing middleware kept
     expect(start).toContain('requestMiddleware: [patchstackGuard, errorMiddleware]');
     expect(start).toContain('functionMiddleware: [patchstackFunctionGuard, attachSupabaseAuth]');
@@ -83,7 +84,7 @@ describe('runProtect scaffolder', () => {
     // Regression: a strict `tsc` build in the target app rejected a `string` mode and a
     // `Promise<unknown>` from screenResponse (the middleware return type). Keep both type-safe.
     expect(guard).toContain('const mode: "block" | "dry-run" =');
-    expect(guard).toContain('export async function screenResponse<T>(response: T): Promise<T>');
+    expect(guard).toContain('export async function screenResponse<T>(response: T, request?: Request): Promise<T>');
   });
 
   it('scaffolds the opt-in route-level WAF (gated on PATCHSTACK_ROUTE_WAF)', () => {
@@ -143,7 +144,7 @@ const patchstackGuard = createMiddleware().server(async ({ next }) => {
     const { pathname } = new URL(request.url);
     if (pathname === GUARD_PATH) return handleGuardRequest(request);
   }
-  return screenResponse(await next());
+  return screenResponse(await next(), request);
 });
 
 // Patchstack guard (server functions): inspect server-fn args before they reach the database.

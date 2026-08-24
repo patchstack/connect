@@ -19,8 +19,14 @@ export interface Protection {
   fetchGuard(): (request: Request) => Promise<Response | null>;
   /** Screens the request, then the response (secret-leak redaction / withhold). */
   fetch(handler: (request: Request, ...rest: unknown[]) => unknown): (request: Request, ...rest: unknown[]) => Promise<unknown>;
-  /** Screen a fetch Response through the response-phase rules (redact/withhold). */
-  screenResponse(response: Response): Promise<Response>;
+  /**
+   * Screen a fetch Response through the response-phase rules (redact/withhold/encode).
+   *
+   * Pass the originating `request` wherever it is available. A response rule can be scoped to a route or a
+   * method (`when`), and that scope can only be applied if the engine is given the request the response
+   * belongs to — without it, a scoped response rule is delivered, counted as protection, and never matches.
+   */
+  screenResponse(response: Response, request?: Request): Promise<Response>;
   express(options?: { screenResponses?: boolean }): (req: unknown, res: unknown, next: () => void) => void;
   node(options?: { maxBodyBytes?: number; screenResponses?: boolean }): (req: unknown, res: unknown, next: () => void) => void;
   /** Present when `egress: true` — restores the original global fetch. */

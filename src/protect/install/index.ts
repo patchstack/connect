@@ -16,7 +16,8 @@ import { nestjsAdapter } from './adapters/nestjs.js';
 import { fastifyAdapter } from './adapters/fastify.js';
 import { expressAdapter } from './adapters/express.js';
 import { scaffoldGeneric, wiringPlan, genericVerify } from './generic.js';
-import type { Adapter, WireOptions, ProtectResult, VerifyReport } from './types.js';
+import { hasResolvableCredential } from './util.js';
+import type { Adapter, VerifyCheck, WireOptions, ProtectResult, VerifyReport } from './types.js';
 
 // Registry — order = match priority (most specific first): framework meta-frameworks before the
 // bare server libraries (a SvelteKit/Astro app may also carry express/fastify as a transitive dep).
@@ -59,12 +60,52 @@ export function runProtect(cwd: string, opts: WireOptions = {}): ProtectResult {
   }
 }
 
+/**
+ * Stacks whose guard runs where there is no filesystem to read config from.
+ *
+ * Setup bakes the site UUID into the scaffolded guard, which is enough to identify the site — but the
+ * credential that authenticates live rule delivery is in a file these runtimes cannot open, so it has to be
+ * an environment variable in the deployment. Without it the guard runs on the rules it shipped with: it
+ * screens every request, reports healthy, and never receives another rule.
+ */
+const RUNTIMES_WITHOUT_CONFIG_FILE = new Set(['next', 'sveltekit', 'astro', 'nuxt', 'generic']);
+
+/**
+ * A note about the deployment credential, when the stack needs one and this machine cannot confirm it.
+ *
+ * Not a pass and not a failure. The CLI cannot see a hosting platform's environment variables, so calling
+ * it either would be inventing an answer — and the previous report simply omitted the question, which is
+ * how an app could be told it was fully wired while nothing would ever update its rules.
+ */
+function credentialNote(cwd: string, adapterName: string): VerifyCheck[] {
+  if (!RUNTIMES_WITHOUT_CONFIG_FILE.has(adapterName)) return [];
+
+  // A credential in the local environment says the developer has one; it says nothing about production,
+  // which is where it matters. Either way the answer is the same note.
+  const localHint = hasResolvableCredential(cwd)
+    ? 'a credential is configured here; set the same one in your deployment'
+    : 'no credential found here either — run `npx @patchstack/connect scan` to provision one';
+
+  return [
+    {
+      label: 'live rule updates need PATCHSTACK_API_KEY in the deployment environment',
+      ok: true,
+      unverifiable: true,
+      hint: `this runtime cannot read .patchstackrc.local.json — ${localHint}. Without it the guard keeps running on the rules it shipped with.`,
+    },
+  ];
+}
+
 /** Verify the guard is correctly wired (backs `protect --check`). Fail-open — never throws. */
 export function runVerify(cwd: string): VerifyReport {
   try {
     const adapter = ADAPTERS.find((a) => a.detect(cwd));
-    if (adapter) return { stack: adapter.label, ...adapter.verify(cwd) };
-    return { stack: 'generic', ...genericVerify(cwd) };
+    if (adapter) {
+      const result = adapter.verify(cwd);
+      return { stack: adapter.label, ...result, checks: [...result.checks, ...credentialNote(cwd, adapter.name)] };
+    }
+    const generic = genericVerify(cwd);
+    return { stack: 'generic', ...generic, checks: [...generic.checks, ...credentialNote(cwd, 'generic')] };
   } catch (err) {
     return { stack: 'unknown', wired: false, checks: [{ label: 'verification failed', ok: false, hint: String((err as Error)?.message ?? err) }] };
   }

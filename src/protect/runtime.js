@@ -572,11 +572,22 @@ export async function createProtection(options = {}) {
       };
     },
 
-    // Node / Connect middleware — buffers the body itself (request phase).
+    // Node / Connect middleware — buffers the body itself (request phase). Register it BEFORE any body
+    // parser: it reads the request stream, and exposes what it read as `req.body` so a parser is not
+    // also needed. (`.express()` is the other way round — it reads a body somebody else parsed.)
     // Pass { screenResponses: true } to also screen the outgoing response (buffers it).
     node(nodeOptions = {}) {
       const maxBytes = nodeOptions.maxBodyBytes ?? 1024 * 1024;
       return (req, res, next) => {
+        // Registered after a body parser, the stream is already at its end: 'data' and 'end' will not fire
+        // again, and waiting for them would hold the request open for as long as the client allows. Screen
+        // the body the parser left instead — a guard that stops serving the app is a worse outcome than the
+        // registration order it was trying to insist on.
+        if (req.readableEnded || req.body !== undefined) {
+          screenNodeRequest(req, res, next, '', req.body);
+          return;
+        }
+
         const chunks = [];
         let size = 0;
         let overflow = false;
@@ -594,40 +605,47 @@ export async function createProtection(options = {}) {
         });
         req.on('end', () => {
           if (overflow) recordSkip('request', 'body-cap', { bytes: size, limit: maxBytes });
-          const rawBody = overflow ? '' : Buffer.concat(chunks).toString('utf8');
-          let shaped;
-          let result;
-          try {
-            shaped = fromNodeRequest(req, rawBody);
-            result = engine.evaluate(shaped);
-          } catch (err) {
-            notify(onError, err, 'onError');
-            return next();
-          }
-          decide(
-            'request',
-            result,
-            () => {
-              res.statusCode = 403;
-              if (isDocumentNavigation((n) => req.headers?.[n])) {
-                res.setHeader('content-type', 'text/html; charset=utf-8');
-                res.end(renderBlockPage({ url: req.url || '/', code: result?.rule?.id }));
-              } else {
-                res.setHeader('content-type', 'application/json');
-                res.end(JSON.stringify(blockBody(result)));
-              }
-            },
-            () => {
-              // This guard consumed the request stream to screen it; re-expose the parsed
-              // body so a downstream handler (without its own body-parser) can read it.
-              if (req.body === undefined) req.body = shaped.body;
-              if (nodeOptions.screenResponses) wrapNodeResponse(res, reqContextFromNode(req));
-              next();
-            },
-            nodeRequestMeta(req),
-          );
+          screenNodeRequest(req, res, next, overflow ? '' : Buffer.concat(chunks).toString('utf8'));
         });
       };
+
+      // `parsedBody`, when given, is a body somebody else already parsed: it replaces the shaped body
+      // rather than being re-serialized, because re-encoding it would have to guess a format and a form
+      // body handed back as JSON resolves no `post.<field>` at all.
+      function screenNodeRequest(req, res, next, rawBody, parsedBody) {
+        let shaped;
+        let result;
+        try {
+          shaped = fromNodeRequest(req, rawBody);
+          if (parsedBody !== undefined && parsedBody !== null) shaped.body = parsedBody;
+          result = engine.evaluate(shaped);
+        } catch (err) {
+          notify(onError, err, 'onError');
+          return next();
+        }
+        decide(
+          'request',
+          result,
+          () => {
+            res.statusCode = 403;
+            if (isDocumentNavigation((n) => req.headers?.[n])) {
+              res.setHeader('content-type', 'text/html; charset=utf-8');
+              res.end(renderBlockPage({ url: req.url || '/', code: result?.rule?.id }));
+            } else {
+              res.setHeader('content-type', 'application/json');
+              res.end(JSON.stringify(blockBody(result)));
+            }
+          },
+          () => {
+            // This guard consumed the request stream to screen it; re-expose the parsed
+            // body so a downstream handler (without its own body-parser) can read it.
+            if (req.body === undefined) req.body = shaped.body;
+            if (nodeOptions.screenResponses) wrapNodeResponse(res, reqContextFromNode(req));
+            next();
+          },
+          nodeRequestMeta(req),
+        );
+      }
     },
   };
 

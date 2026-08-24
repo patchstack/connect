@@ -11,6 +11,37 @@ import { findAppInstance, importSpecifier } from './find-app.js';
 import { lastTopLevelImportLine, isTopLevelLine, inSameBlockAfter, parses } from './source-scope.js';
 import type { WireOptions, WireResult, VerifyResult } from './types.js';
 
+/**
+ * A route or router registration — `app.get(...)`, `app.post(...)`, `app.use('/path', router)`.
+ *
+ * Used to answer the question verification was not asking: not "is the guard after the body parser" but
+ * "is it before every route". A route registered above the guard is served without it, and the guard being
+ * correctly placed relative to the parser says nothing about that.
+ */
+const routeRegistration = (appVar: string) =>
+  new RegExp(
+    `^\\s*${appVar}\\.(?:get|post|put|patch|delete|head|options|all|route)\\(|` +
+      `^\\s*${appVar}\\.use\\(\\s*['"\`]`,
+    'm',
+  );
+
+/**
+ * Route lines that come before `guardIndex`, if any.
+ *
+ * `app.use('/path', router)` counts: mounting a router registers everything in it. A bare `app.use(fn)` does
+ * not — that is middleware, and middleware ordering is what the parser anchor already handles.
+ */
+export function routesBefore(source: string, appVar: string, guardIndex: number): number[] {
+  if (guardIndex < 0) return [];
+  const pattern = routeRegistration(appVar);
+
+  return source
+    .split('\n')
+    .map((line, index) => ({ line, index }))
+    .filter(({ line, index }) => index < guardIndex && pattern.test(line))
+    .map(({ index }) => index + 1); // 1-based, for a message a person reads
+}
+
 export interface RegisterSpec {
   appRe: RegExp; // matches the app-instance line; MUST capture the app var in group 1
   guardTemplate: string; // guard template scaffolded as src/patchstack/guard.ts
@@ -79,6 +110,12 @@ export function wireRegister(cwd: string, opts: WireOptions, spec: RegisterSpec)
     return { ok: true, changed };
   }
 
+  if (entry.others.length > 0) {
+    log(
+      `${entry.others.join(', ')} also start${entry.others.length === 1 ? 's' : ''} a server — wired ${entry.relPath} only; ${spec.manualHint} there too`,
+    );
+  }
+
   const target = guardTarget(cwd, entry.relPath, spec);
   const { changed, dir } = scaffoldGeneric(cwd, opts, target.template, target.file);
 
@@ -127,6 +164,21 @@ export function wireRegister(cwd: string, opts: WireOptions, spec: RegisterSpec)
 
   const patched = lines.join('\n');
   writeFileSync(p, patched);
+
+  // Said at install time, because this is the moment somebody is looking. The guard goes after the body
+  // parser — it reads the parsed body — so a route registered above that parser cannot be covered by moving
+  // the guard, only by moving the route.
+  if (spec.callAfter) {
+    const guardIndex = lines.findIndex((line) => line.includes(spec.call(entry.appVar)));
+    const early = routesBefore(patched, entry.appVar, guardIndex);
+    if (early.length > 0) {
+      log(
+        `${entry.relPath}: ${early.length} route${early.length === 1 ? '' : 's'} registered before the guard ` +
+          `(line${early.length === 1 ? '' : 's'} ${early.join(', ')}) — those are not screened. ` +
+          'Move them below the guard, or move your body parser above them.',
+      );
+    }
+  }
 
   // Then check the file we just wrote. An edit that leaves an entry point unparseable takes the whole app
   // down, and it is our edit — so it is reverted and reported rather than left for the next `npm start`.
@@ -185,11 +237,44 @@ export function verifyRegister(cwd: string, spec: RegisterSpec): VerifyResult {
   const callInAppScope = callIndex !== -1 && inSameBlockAfter(entrySource, appIndex, callIndex);
   const wired = importAtTopLevel && callInAppScope && ordered;
 
+  // "After the parser" was the only ordering checked, and it is only half the question. A route registered
+  // above the guard is served without it, so reporting the app fully wired would name protection that this
+  // route does not have.
+  const early = spec.callAfter && entry ? routesBefore(entrySource, entry.appVar, callIndex) : [];
+  const noEarlyRoutes = early.length === 0;
+
+  // A project can start more than one server, and a guard on one is not a guard on the other. Only the ones
+  // that have no guard of their own are named: a second server somebody wired by hand is wired.
+  const unguarded = (entry?.others ?? []).filter((rel) => !read(join(cwd, rel)).includes(spec.importName));
+
   return {
-    wired: scaffolded && wired,
+    wired: scaffolded && wired && noEarlyRoutes && unguarded.length === 0,
     checks: [
       { label: `${spec.label} guard scaffolded`, ok: scaffolded, hint: 'run `patchstack-connect protect`' },
       { label: `guard registered on the ${spec.label}`, ok: wired, hint: spec.manualHint },
+      ...(entry && entry.others.length > 0
+        ? [
+            {
+              label: 'every server in this project has a guard',
+              ok: unguarded.length === 0,
+              hint:
+                unguarded.length === 0
+                  ? 'nothing to do'
+                  : `${unguarded.join(', ')} start${unguarded.length === 1 ? 's' : ''} a server without one — ${spec.manualHint} there`,
+            },
+          ]
+        : []),
+      ...(spec.callAfter
+        ? [
+            {
+              label: 'every route registered after the guard',
+              ok: noEarlyRoutes,
+              hint: noEarlyRoutes
+                ? 'nothing to do'
+                : `move the route${early.length === 1 ? '' : 's'} on line${early.length === 1 ? '' : 's'} ${early.join(', ')} below the guard, or move your body parser above them`,
+            },
+          ]
+        : []),
     ],
   };
 }

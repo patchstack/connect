@@ -26,35 +26,52 @@ const PS_SITE_UUID = "__PATCHSTACK_SITE_UUID__";
 export { GUARD_PATH };
 
 // One shared protection policy for both guards (rules load once).
-let _protection: Awaited<ReturnType<typeof createProtection>> | undefined;
+/**
+ * One protection policy, memoized on the IN-FLIGHT promise rather than the resolved value.
+ *
+ * A cold start takes several concurrent requests. Caching only the finished value lets each of them see an
+ * empty cache and start its own build — several rule fetches, several refresh loops, and several policies
+ * where the app is meant to have one. Holding the promise means the first request starts it and the rest
+ * await the same one. A failed build is not cached, so the next request retries rather than inheriting one
+ * bad boot for the life of the process.
+ */
+let _protection: Promise<Awaited<ReturnType<typeof createProtection>>> | undefined;
 async function getProtection() {
   if (!_protection) {
-    // Always-on: block by default. An explicit PATCHSTACK_MODE=dry-run downgrades to log-only.
-    const mode: "block" | "dry-run" = process.env.PATCHSTACK_MODE === "dry-run" ? "dry-run" : "block";
-    const token = process.env.PATCHSTACK_WAF_TOKEN;
-    const siteUuid = PS_SITE_UUID.startsWith("__") ? process.env.PATCHSTACK_SITE_UUID : PS_SITE_UUID;
-    // Egress SSRF screening: block the app's outbound calls to internal / metadata addresses,
-    // but never its own Supabase project.
-    let allowHosts: string[] = [];
-    try {
-      if (process.env.SUPABASE_URL) allowHosts = [new URL(process.env.SUPABASE_URL).host];
-    } catch {
-      /* ignore a malformed SUPABASE_URL — just don't add an allow entry */
-    }
-    // The sandbox dev server is long-lived and isn't restarted on change, so refresh the live
-    // rules periodically — a dependency flagged after boot is then enforced without a restart.
-    // Production relies on a redeploy (which re-fetches at boot), so refresh stays off there.
-    const refreshMs = process.env.PATCHSTACK_ENVIRONMENT === "sandbox" ? 15000 : 0;
-    const common = { mode, egress: true, allowHosts, refreshMs };
-    _protection = await createProtection(
-      siteUuid
-        ? { ...common, siteUuid, rules: fallbackRules as never, cacheDir: ".patchstack" } // live per-site rules; bundled = offline fallback
-        : token
-          ? { ...common, token, cacheDir: ".patchstack" } // live per-site WAF rules from the Patchstack API (cached)
-          : { ...common, rules: fallbackRules as never }, // demo fallback until a site UUID / token is set
-    );
+    _protection = buildProtection().catch((err) => {
+      _protection = undefined; // don't cache a failed boot
+      throw err;
+    });
   }
+
   return _protection;
+}
+
+async function buildProtection() {
+  // Always-on: block by default. An explicit PATCHSTACK_MODE=dry-run downgrades to log-only.
+  const mode: "block" | "dry-run" = process.env.PATCHSTACK_MODE === "dry-run" ? "dry-run" : "block";
+  const token = process.env.PATCHSTACK_WAF_TOKEN;
+  const siteUuid = PS_SITE_UUID.startsWith("__") ? process.env.PATCHSTACK_SITE_UUID : PS_SITE_UUID;
+  // Egress SSRF screening: block the app's outbound calls to internal / metadata addresses,
+  // but never its own Supabase project.
+  let allowHosts: string[] = [];
+  try {
+    if (process.env.SUPABASE_URL) allowHosts = [new URL(process.env.SUPABASE_URL).host];
+  } catch {
+    /* ignore a malformed SUPABASE_URL — just don't add an allow entry */
+  }
+  // The sandbox dev server is long-lived and isn't restarted on change, so refresh the live
+  // rules periodically — a dependency flagged after boot is then enforced without a restart.
+  // Production relies on a redeploy (which re-fetches at boot), so refresh stays off there.
+  const refreshMs = process.env.PATCHSTACK_ENVIRONMENT === "sandbox" ? 15000 : 0;
+  const common = { mode, egress: true, allowHosts, refreshMs };
+  return createProtection(
+    siteUuid
+      ? { ...common, siteUuid, rules: fallbackRules as never, cacheDir: ".patchstack" } // live per-site rules; bundled = offline fallback
+      : token
+        ? { ...common, token, cacheDir: ".patchstack" } // live per-site WAF rules from the Patchstack API (cached)
+        : { ...common, rules: fallbackRules as never }, // demo fallback until a site UUID / token is set
+  );
 }
 
 // Request-middleware path: the browser tunnels its direct Supabase calls here.
@@ -84,11 +101,14 @@ export async function inspectServerFn(data: unknown): Promise<{ rule?: string; m
 // src/start.ts (the browser→Supabase tunnel screens its own forwarded response). Only acts on a
 // web Response (text/JSON/HTML) — anything else, or any error, passes through untouched (fail-open,
 // never breaks a response).
-export async function screenResponse<T>(response: T): Promise<T> {
+// `request` is optional but should be passed wherever it is available: response rules can be scoped to a
+// route or a method, and the engine can only apply that scope if it is given the request the response
+// belongs to. Without it a scoped response rule is delivered, counted as protection, and matches nothing.
+export async function screenResponse<T>(response: T, request?: Request): Promise<T> {
   try {
     if (!(response instanceof Response)) return response;
     const protection = await getProtection();
-    return (protection.screenResponse ? await protection.screenResponse(response) : response) as T;
+    return (protection.screenResponse ? await protection.screenResponse(response, request) : response) as T;
   } catch {
     return response; // fail open
   }

@@ -41,9 +41,12 @@ describe('guide', () => {
     const root = underSrc ? path.join(cwd, 'src') : cwd;
     mkdirSync(path.join(root, 'patchstack'), { recursive: true });
     writeFileSync(path.join(root, 'patchstack', 'guard.ts'), 'export const protectFetch = () => {};');
+    // Imported AND called. An import on its own wraps no request, so a fixture that stopped at the import
+    // would be describing a project the checklist should not call done.
     writeFileSync(
       path.join(root, 'server.ts'),
-      'import { protectFetch } from "./patchstack/guard";',
+      'import { protectFetch } from "./patchstack/guard";\n' +
+        'export default { fetch: protectFetch(async () => new Response("ok")) };\n',
     );
   };
 
