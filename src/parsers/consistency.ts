@@ -28,7 +28,9 @@ export async function readDeclaredDependencyNames(cwd: string): Promise<string[]
   }
 
   const names = new Set<string>();
-  for (const group of ['dependencies', 'devDependencies'] as const) {
+  // `optionalDependencies` included: they are installed when the platform supports them, they can be
+  // vulnerable, and leaving them out meant a lockfile that omitted one still read as complete.
+  for (const group of ['dependencies', 'devDependencies', 'optionalDependencies'] as const) {
     const deps = (parsed as Record<string, unknown>)[group];
     if (typeof deps !== 'object' || deps === null) {
       continue;
@@ -53,4 +55,43 @@ export async function readDeclaredDependencyNames(cwd: string): Promise<string[]
 export function missingDependencies(declared: string[], packages: PackageEntry[]): string[] {
   const present = new Set(packages.map((entry) => entry.name));
   return declared.filter((name) => !present.has(name));
+}
+
+/**
+ * Packages two sources both list at DIFFERENT versions.
+ *
+ * A name check cannot see this, and the version is what decides whether a package is vulnerable: a stale
+ * lockfile naming every dependency looks complete while reporting the versions of an older install. It
+ * fails in both directions — an old version reported for a patched install raises a finding that is not
+ * real, and a new version reported for an old install hides one that is.
+ *
+ * Only direct-name collisions are compared. A package present in one source and absent from the other is
+ * not a disagreement about a version; it is a difference in what got installed, which the staleness check
+ * above is for.
+ */
+export function disagreements(
+  packages: PackageEntry[],
+  other: PackageEntry[],
+): Array<{ name: string; version: string; otherVersion: string }> {
+  const otherVersions = new Map<string, string>();
+  for (const entry of other) {
+    // First occurrence wins, mirroring how a lockfile's own top-level entry precedes nested copies. A
+    // package installed at two versions in one tree is not a disagreement BETWEEN sources.
+    if (!otherVersions.has(entry.name)) otherVersions.set(entry.name, entry.version);
+  }
+
+  const seen = new Set<string>();
+  const conflicts: Array<{ name: string; version: string; otherVersion: string }> = [];
+
+  for (const entry of packages) {
+    if (seen.has(entry.name)) continue;
+    seen.add(entry.name);
+
+    const otherVersion = otherVersions.get(entry.name);
+    if (otherVersion !== undefined && otherVersion !== entry.version) {
+      conflicts.push({ name: entry.name, version: entry.version, otherVersion });
+    }
+  }
+
+  return conflicts;
 }

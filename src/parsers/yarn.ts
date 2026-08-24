@@ -167,10 +167,27 @@ export function splitDescriptors(keyLine: string): string[] {
 }
 
 /**
- * Extracts the package name from a yarn descriptor like `axios@^1.6.0`,
- * `"@scope/pkg@^2.1.0"`, or `"@scope/pkg@npm:2.1.0"`. The descriptor's
- * range portion is discarded — we only need the name, since the resolved
- * version comes from the `version` field of the block.
+ * Protocols in a Berry descriptor that mean the entry is not a published registry package.
+ *
+ * `workspace:` is a local package in this repository; `patch:`, `virtual:` and `portal:` wrap another
+ * descriptor; `file:`, `link:` and `exec:` point at the disk. None of them names something an advisory can
+ * be about, and each of them puts an `@` in the range — so splitting on the last `@` treats part of the
+ * range as part of the NAME and produces an entry naming a thing that does not exist.
+ */
+const NON_REGISTRY_PROTOCOLS = /^(?:workspace|patch|virtual|portal|file|link|exec|git|github|https?|ssh):/i;
+
+/**
+ * The package name from a yarn descriptor, or null when the descriptor is not a registry package.
+ *
+ * Handles `axios@^1.6.0`, `"@scope/pkg@^2.1.0"` and `"@scope/pkg@npm:2.1.0"`. The range is discarded — the
+ * resolved version comes from the block's `version` field.
+ *
+ * Two things it must not do. It must not split inside a range: a Berry descriptor's range can contain `@`
+ * of its own (`lodash@patch:lodash@npm%3A4.17.20#…`), and the last `@` is then inside the range. And it
+ * must not report a non-registry entry as a package at all, because the resulting name is not one.
+ *
+ * An alias (`alias@npm:real@1.2.3`) resolves to the REAL package: that is what is installed, and what an
+ * advisory would be about. The alias is what the app imports it by, which is not this inventory's question.
  */
 export function extractName(rawSpec: string): string | null {
   let s = rawSpec.trim();
@@ -183,13 +200,36 @@ export function extractName(rawSpec: string): string | null {
   ) {
     s = s.slice(1, -1);
   }
-  // Position-0 `@` belongs to a scope, so we want the last `@` after it.
-  const atIdx = s.lastIndexOf('@');
+
+  // Split at the FIRST `@` that starts a range, not the last character that happens to be one. A scope's
+  // leading `@` is at position 0 and never a separator.
+  const atIdx = s.indexOf('@', 1);
   if (atIdx <= 0) {
     return null;
   }
+
   const name = s.slice(0, atIdx);
-  return name.length > 0 ? name : null;
+  const range = s.slice(atIdx + 1);
+  if (name.length === 0) {
+    return null;
+  }
+
+  if (NON_REGISTRY_PROTOCOLS.test(range)) {
+    return null;
+  }
+
+  // `npm:` is the registry protocol, and it is the one place a second package name appears: an alias points
+  // at the package actually installed, which is the one an advisory can be about.
+  const alias = /^npm:(.+)$/i.exec(range);
+  if (alias !== null) {
+    const target = alias[1] ?? '';
+    // `npm:1.2.3` is a plain version for THIS package; `npm:other@1.2.3` renames another one.
+    const targetAt = target.indexOf('@', 1);
+
+    return targetAt > 0 ? target.slice(0, targetAt) : name;
+  }
+
+  return name;
 }
 
 function parseVersionField(content: string): string | null {
