@@ -43,4 +43,15 @@ async function patchstackFastify(fastify) {
   });
 }
 
+// Fastify ENCAPSULATES a registered plugin: hooks added inside one apply to that plugin's context and
+// its children, and to nothing else. Registered as an ordinary plugin, this guard would screen nothing
+// on the root instance and nothing in sibling route plugins — which is most of an application, and it
+// would look installed the whole time.
+//
+// This is the marker `fastify-plugin` sets, and the mechanism Fastify documents for opting out: with it,
+// `register` runs the function against the ROOT instance instead of a child context, so the hook applies
+// to every route. Set here rather than pulling in `fastify-plugin` so an installed app gains no
+// dependency it did not already have.
+patchstackFastify[Symbol.for("skip-override")] = true;
+
 module.exports = { patchstackFastify };

@@ -22,7 +22,14 @@ import {
   resolveDemoScenario,
   waitForDemoRule,
 } from './demo.js';
-import { persistApiKey, persistSiteUuid, resolveConfig, writeConfigFile } from './config.js';
+import {
+  SECRET_CONFIG_FILENAME,
+  credentialInCommittedConfig,
+  persistApiKey,
+  persistSiteUuid,
+  resolveConfig,
+  writeConfigFile,
+} from './config.js';
 import {
   buildInjectionSnippet,
   buildSourceMarkerSnippet,
@@ -243,7 +250,7 @@ async function runLogin(args: ParsedArgs): Promise<number> {
 
   const approved = () => {
     // The value itself is never printed — only that it landed.
-    console.log('\n  ✓ Credential restored and saved to .patchstackrc.json.');
+    console.log(`\n  ✓ Credential restored and saved to ${SECRET_CONFIG_FILENAME} — added to .gitignore.`);
     console.log('    The previous credential no longer works. Update it anywhere else it was set:');
     console.log('    CI secrets, hosting env vars, preview environments, other checkouts.\n');
     return 0;
@@ -498,8 +505,16 @@ async function runScan(
     // One credential for both paths: Pulse resolution falls back to apiKey, so
     // a second copy under pulseAuth bought nothing except an obligation to keep
     // the two in step. Never printed — only the path it landed in.
+    const hadCredentialInConfig = await credentialInCommittedConfig(process.cwd());
     const target = await persistApiKey(process.cwd(), response.api_key);
-    console.log(`Saved API key to ${target} (authenticates Pulse ingest and block-log reporting; keep out of the public widget).`);
+    console.log(`Saved API key to ${target} — added to .gitignore. Do not commit it.`);
+    if (hadCredentialInConfig) {
+      // Said out loud, because moving the file does not undo a commit: if it was ever pushed, the value is
+      // in the history and only a new credential ends that.
+      console.log(
+        'A credential was also present in .patchstackrc.json and has been removed from it. If that file was ever committed, rotate the credential from the dashboard.',
+      );
+    }
   }
 
   if (response.stored) {
