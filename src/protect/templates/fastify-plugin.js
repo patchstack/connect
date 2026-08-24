@@ -9,19 +9,30 @@ let protection;
 
 async function getProtection() {
   if (!protection) {
-    const mode = process.env.PATCHSTACK_MODE === "dry-run" ? "dry-run" : "block";
-    const token = process.env.PATCHSTACK_WAF_TOKEN;
-    const siteUuid = PS_SITE_UUID.startsWith("__") ? process.env.PATCHSTACK_SITE_UUID : PS_SITE_UUID;
-    const common = { mode, egress: true };
-    protection = await createProtection(
-      siteUuid
-        ? { ...common, siteUuid, rules: fallbackRules, cacheDir: ".patchstack" }
-        : token
-          ? { ...common, token, cacheDir: ".patchstack" }
-          : { ...common, rules: fallbackRules },
-    );
+    // Memoized on the in-flight promise, not the resolved value: a cold start takes several
+    // concurrent requests, and caching only the finished value lets each of them build its own
+    // policy — several rule fetches and several refresh loops where the app should have one.
+    protection = buildProtection().catch((err) => {
+      protection = undefined; // don't cache a failed boot
+      throw err;
+    });
   }
+
   return protection;
+}
+
+async function buildProtection() {
+  const mode = process.env.PATCHSTACK_MODE === "dry-run" ? "dry-run" : "block";
+  const token = process.env.PATCHSTACK_WAF_TOKEN;
+  const siteUuid = PS_SITE_UUID.startsWith("__") ? process.env.PATCHSTACK_SITE_UUID : PS_SITE_UUID;
+  const common = { mode, egress: true };
+  return createProtection(
+    siteUuid
+      ? { ...common, siteUuid, rules: fallbackRules, cacheDir: ".patchstack" }
+      : token
+        ? { ...common, token, cacheDir: ".patchstack" }
+        : { ...common, rules: fallbackRules },
+  );
 }
 
 export async function patchstackFastify(fastify) {
@@ -43,3 +54,14 @@ export async function patchstackFastify(fastify) {
     }
   });
 }
+
+// Fastify ENCAPSULATES a registered plugin: hooks added inside one apply to that plugin's context and
+// its children, and to nothing else. Registered as an ordinary plugin, this guard would screen nothing
+// on the root instance and nothing in sibling route plugins — which is most of an application, and it
+// would look installed the whole time.
+//
+// This is the marker `fastify-plugin` sets, and the mechanism Fastify documents for opting out: with it,
+// `register` runs the function against the ROOT instance instead of a child context, so the hook applies
+// to every route. Set here rather than pulling in `fastify-plugin` so an installed app gains no
+// dependency it did not already have.
+patchstackFastify[Symbol.for("skip-override")] = true;

@@ -1,11 +1,13 @@
 import { access } from 'node:fs/promises';
 import path from 'node:path';
 import { PatchstackError, type Manifest, type PackageEntry } from '../types.js';
-import { missingDependencies, readDeclaredDependencyNames } from './consistency.js';
+import { disagreements, missingDependencies, readDeclaredDependencyNames } from './consistency.js';
+import { parseBunLockfile } from './bun.js';
 import { parseNpmLockfile } from './npm.js';
 import { walkNodeModules } from './node_modules.js';
 import { parsePnpmLockfile } from './pnpm.js';
 import { parseYarnLockfile } from './yarn.js';
+import { newReport, unreadableWarning, type ParseReport } from './report.js';
 
 type LockfileFilename =
   | 'package-lock.json'
@@ -16,6 +18,7 @@ type LockfileFilename =
 
 type DetectionStrategy =
   | 'npm-lockfile'
+  | 'bun-lockfile'
   | 'node-modules-walk'
   | 'pnpm-lockfile'
   | 'yarn-lockfile';
@@ -35,7 +38,10 @@ interface LockfileCandidate {
 // Checked in priority order: the first candidate present in `cwd` wins.
 const LOCKFILE_CANDIDATES: readonly LockfileCandidate[] = [
   { filename: 'package-lock.json', strategy: 'npm-lockfile' },
-  { filename: 'bun.lock', strategy: 'node-modules-walk' },
+  // Read directly, not walked. Bun's isolated layout puts packages under a dot-directory and makes the
+  // top level symlinks into it, so a `node_modules` walk finds nothing there — and isolated is the default
+  // for new workspaces.
+  { filename: 'bun.lock', strategy: 'bun-lockfile' },
   { filename: 'bun.lockb', strategy: 'node-modules-walk' },
   { filename: 'pnpm-lock.yaml', strategy: 'pnpm-lockfile' },
   { filename: 'yarn.lock', strategy: 'yarn-lockfile' },
@@ -84,39 +90,81 @@ export async function scanLockfile(cwd: string): Promise<Manifest> {
   const declared = await readDeclaredDependencyNames(cwd);
   const warnings: string[] = [];
   let firstParsed: { packages: PackageEntry[]; filename: string } | null = null;
-  let walkTried = false;
+  // The installed tree, if some lockfile already routed us to it (a `bun.lockb` cannot be read, so it
+  // does). Kept rather than just remembered as "tried": on a version conflict the installed tree is what
+  // decides, and a flag meant that decision fell back to the lockfile it had just been overruled by.
+  let walked: PackageEntry[] | null = null;
+  let walkWasCandidate = false;
+
+  // Every source is parsed before one is chosen, so a disagreement between two of them can be seen at all.
+  // Taking the first source that merely lists the right NAMES is what let a stale lockfile decide the
+  // version: a fossil that still names every dependency looks complete, and the version is what decides
+  // whether a package is vulnerable.
+  const parsedSources: Array<{ packages: PackageEntry[]; filename: string }> = [];
 
   for (const candidate of candidates) {
     let packages: PackageEntry[];
+    const report = newReport();
     try {
-      packages = await runStrategy(candidate, cwd);
+      packages = await runStrategy(candidate, cwd, report);
     } catch {
       continue;
     }
-    walkTried ||= candidate.strategy === 'node-modules-walk';
-    firstParsed ??= { packages, filename: candidate.filename };
-
-    const missing = missingDependencies(declared, packages);
-    if (missing.length === 0) {
-      return manifestWith(packages, warnings);
+    const unreadable = unreadableWarning(candidate.filename, report);
+    if (unreadable !== null) warnings.push(unreadable);
+    if (candidate.strategy === 'node-modules-walk') {
+      walked = packages;
+      walkWasCandidate = true;
     }
-    warnings.push(staleWarning(candidate.filename, missing));
+    firstParsed ??= { packages, filename: candidate.filename };
+    parsedSources.push({ packages, filename: candidate.filename });
+  }
+
+  for (const source of parsedSources) {
+    const missing = missingDependencies(declared, source.packages);
+    if (missing.length > 0) {
+      warnings.push(staleWarning(source.filename, missing));
+      continue;
+    }
+
+    // Names complete. Now: does any other source that is also name-complete report a different VERSION for
+    // a shared package? If so, one of the two is stale in a way no name check can see, and neither can be
+    // preferred on the evidence available here — so the installed tree decides, and the disagreement is
+    // reported either way.
+    const conflicts = otherCompleteSources(parsedSources, source, declared).flatMap((other) =>
+      disagreements(source.packages, other.packages).map((conflict) => ({ other: other.filename, conflict })),
+    );
+
+    if (conflicts.length === 0) {
+      return manifestWith(source.packages, warnings);
+    }
+
+    warnings.push(conflictWarning(source.filename, conflicts));
+    break; // fall through to node_modules, which is what the build actually loads
   }
 
   // Last resort: the installed truth. node_modules reflects what the build
   // actually compiles against, whichever package manager wrote it.
-  if (!walkTried) {
+  if (walked === null) {
     try {
-      const packages = await walkNodeModules(cwd);
-      const missing = missingDependencies(declared, packages);
-      if (missing.length > 0) {
-        warnings.push(staleWarning('node_modules/', missing));
-      }
-      warnings.push('Scanned node_modules/ instead. Delete the stale lockfile to silence this warning.');
-      return manifestWith(packages, warnings);
+      walked = await walkNodeModules(cwd);
     } catch {
-      // fall through to the best lockfile we managed to parse
+      walked = null; // no installed tree either — fall through to the best lockfile we parsed
     }
+  }
+
+  if (walked !== null) {
+    const missing = missingDependencies(declared, walked);
+    if (missing.length > 0) {
+      warnings.push(staleWarning('node_modules/', missing));
+    }
+    warnings.push(
+      walkWasCandidate
+        ? 'Reporting node_modules/, which is what the build loads.'
+        : 'Scanned node_modules/ instead. Delete the stale lockfile to silence this warning.',
+    );
+
+    return manifestWith(walked, warnings);
   }
 
   if (firstParsed === null) {
@@ -138,6 +186,33 @@ function manifestWith(packages: PackageEntry[], warnings: string[]): Manifest {
   return warnings.length > 0
     ? { ecosystem: 'npm', packages, warnings }
     : { ecosystem: 'npm', packages };
+}
+
+/** The other sources that are themselves name-complete — the only ones whose versions are worth comparing. */
+function otherCompleteSources(
+  all: Array<{ packages: PackageEntry[]; filename: string }>,
+  current: { filename: string },
+  declared: string[],
+): Array<{ packages: PackageEntry[]; filename: string }> {
+  return all.filter(
+    (source) => source.filename !== current.filename && missingDependencies(declared, source.packages).length === 0,
+  );
+}
+
+function conflictWarning(
+  filename: string,
+  conflicts: Array<{ other: string; conflict: { name: string; version: string; otherVersion: string } }>,
+): string {
+  const shown = conflicts
+    .slice(0, 3)
+    .map(({ other, conflict }) => `${conflict.name} ${conflict.version} vs ${conflict.otherVersion} in ${other}`)
+    .join('; ');
+
+  return (
+    `${filename} and another lockfile disagree about installed versions (${shown}` +
+    `${conflicts.length > 3 ? `, +${conflicts.length - 3} more` : ''}). ` +
+    'Scanned node_modules/ instead. Remove whichever lockfile your package manager does not maintain.'
+  );
 }
 
 function staleWarning(source: string, missing: string[]): string {
@@ -162,14 +237,19 @@ async function presentLockfiles(cwd: string): Promise<DetectedLockfile[]> {
 async function runStrategy(
   detected: DetectedLockfile,
   cwd: string,
+  report: ParseReport,
 ): Promise<PackageEntry[]> {
   switch (detected.strategy) {
     case 'npm-lockfile':
       return parseNpmLockfile(detected.filePath);
+    case 'bun-lockfile':
+      return parseBunLockfile(detected.filePath, report);
+    // The hand-written scanners. Each meets entries it was not written for, and each is asked to say how
+    // many it dropped, because a manifest short a package reads exactly like a project without it.
     case 'pnpm-lockfile':
-      return parsePnpmLockfile(detected.filePath);
+      return parsePnpmLockfile(detected.filePath, report);
     case 'yarn-lockfile':
-      return parseYarnLockfile(detected.filePath);
+      return parseYarnLockfile(detected.filePath, report);
     case 'node-modules-walk':
       return walkNodeModules(cwd);
   }

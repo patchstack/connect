@@ -17,6 +17,31 @@ export function hasDependency(cwd: string, name: string): boolean {
   }
 }
 
+/**
+ * Is a credential resolvable from this machine?
+ *
+ * Only used to word a note: it says nothing about the deployment, which is where the credential has to be,
+ * and the note is printed either way. Reads the files directly rather than going through config resolution
+ * so that verification stays synchronous and never throws.
+ */
+export function hasResolvableCredential(cwd: string): boolean {
+  if ((process.env.PATCHSTACK_API_KEY ?? '') !== '' || (process.env.PATCHSTACK_PULSE_AUTH ?? '') !== '') {
+    return true;
+  }
+
+  for (const file of ['.patchstackrc.local.json', '.patchstackrc.json']) {
+    try {
+      const parsed = JSON.parse(read(join(cwd, file))) as { apiKey?: unknown; pulseAuth?: unknown };
+      if (typeof parsed.apiKey === 'string' && parsed.apiKey !== '') return true;
+      if (typeof parsed.pulseAuth === 'string' && parsed.pulseAuth !== '') return true;
+    } catch {
+      // Absent or unreadable — the next candidate, then the note's other wording.
+    }
+  }
+
+  return false;
+}
+
 const SITE_UUID_PLACEHOLDER = '__PATCHSTACK_SITE_UUID__';
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 

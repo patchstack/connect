@@ -21,6 +21,15 @@ export interface VerifyCheck {
   ok: boolean;
   /** How to fix it, shown when `ok` is false. */
   hint?: string;
+  /**
+   * This check could not be answered from here, and `ok` is not a verdict on it.
+   *
+   * A deployment's environment variables are the case it exists for: the CLI runs on a developer's machine
+   * or in CI, and cannot see what the hosting platform holds. Reporting such a thing as passing would claim
+   * something nobody established; reporting it as failing would fail a correctly configured app and teach
+   * people to ignore the output. So it is neither, it is stated, and it does not decide `wired`.
+   */
+  unverifiable?: boolean;
 }
 
 export interface VerifyResult {

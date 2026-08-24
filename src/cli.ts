@@ -22,7 +22,15 @@ import {
   resolveDemoScenario,
   waitForDemoRule,
 } from './demo.js';
-import { persistApiKey, persistSiteUuid, resolveConfig, writeConfigFile } from './config.js';
+import {
+  SECRET_CONFIG_FILENAME,
+  credentialInCommittedConfig,
+  persistApiKey,
+  secretFileIgnored,
+  persistSiteUuid,
+  resolveConfig,
+  writeConfigFile,
+} from './config.js';
 import {
   buildInjectionSnippet,
   buildSourceMarkerSnippet,
@@ -109,7 +117,9 @@ Usage:
                                                      print the full setup guide. --full prints the
                                                      guide even when setup is complete
   patchstack-connect login  [--wait]                 Recover this site's credential when
-                                                     .patchstackrc.json has been lost. Prints a link
+                                                     .patchstackrc.local.json has been lost. Needs the
+                                                     site UUID, which lives in the committed
+                                                     .patchstackrc.json. Prints a link
                                                      for the site's OWNER to approve in the dashboard.
                                                      In a terminal it then waits. When the output is
                                                      piped or captured — an assistant running it — it
@@ -150,7 +160,8 @@ Environment:
   PATCHSTACK_MODE         (protect) Runtime guard mode: block (default) | dry-run
   PATCHSTACK_ROUTE_WAF    (protect) Set to 1 to also screen every request at the route level (opt-in)
 
-Precedence: CLI flag > environment variable > .patchstackrc.json.
+Precedence, site UUID and settings: CLI flag > environment variable > .patchstackrc.json (committed).
+Precedence, API key: environment variable > .patchstackrc.local.json (git-ignored) > .patchstackrc.json.
 
 Examples:
   npx @patchstack/connect setup
@@ -241,9 +252,17 @@ async function runLogin(args: ParsedArgs): Promise<number> {
     cliEndpoint: getStringFlag(args.flags, 'endpoint'),
   });
 
-  const approved = () => {
-    // The value itself is never printed — only that it landed.
-    console.log('\n  ✓ Credential restored and saved to .patchstackrc.json.');
+  // Checked here rather than carried up from the write: the rotation happens several layers down, and the
+  // claim belongs to the line that prints it.
+  const approved = async () => {
+    const ignore = await secretFileIgnored(process.cwd());
+    // The value itself is never printed — only that it landed, and only that it is ignored when it is.
+    console.log(`\n  ✓ Credential restored and saved to ${SECRET_CONFIG_FILENAME}.`);
+    console.log(
+      ignore.ignored
+        ? '    Added to .gitignore.'
+        : `    NOT ignored by git — ${ignore.reason ?? 'unknown reason'}. Add it to .gitignore yourself before committing.`,
+    );
     console.log('    The previous credential no longer works. Update it anywhere else it was set:');
     console.log('    CI secrets, hosting env vars, preview environments, other checkouts.\n');
     return 0;
@@ -259,7 +278,7 @@ async function runLogin(args: ParsedArgs): Promise<number> {
     }
 
     const resumed = await waitForApproval(config, pending);
-    if (resumed.status === 'approved') return approved();
+    if (resumed.status === 'approved') return await approved();
 
     console.error(`\n  ${resumed.message ?? 'Login failed.'}\n`);
     return 1;
@@ -288,7 +307,7 @@ async function runLogin(args: ParsedArgs): Promise<number> {
     if (existing !== null && Date.now() < existing.expiresAt) {
       const outcome = await redeemIfApproved(config, existing);
 
-      if (outcome === 'approved') return approved();
+      if (outcome === 'approved') return await approved();
 
       if (outcome === 'pending') {
         const secondsLeft = Math.round((existing.expiresAt - Date.now()) / 1000);
@@ -319,7 +338,7 @@ async function runLogin(args: ParsedArgs): Promise<number> {
     console.log('  Waiting for approval (the code expires in 10 minutes)…');
   });
 
-  if (result.status === 'approved') return approved();
+  if (result.status === 'approved') return await approved();
 
   console.error(`\n  ${result.message ?? 'Login failed.'}\n`);
 
@@ -498,8 +517,23 @@ async function runScan(
     // One credential for both paths: Pulse resolution falls back to apiKey, so
     // a second copy under pulseAuth bought nothing except an obligation to keep
     // the two in step. Never printed — only the path it landed in.
-    const target = await persistApiKey(process.cwd(), response.api_key);
-    console.log(`Saved API key to ${target} (authenticates Pulse ingest and block-log reporting; keep out of the public widget).`);
+    const hadCredentialInConfig = await credentialInCommittedConfig(process.cwd());
+    const saved = await persistApiKey(process.cwd(), response.api_key);
+    console.log(`Saved API key to ${saved.path}. Do not commit it.`);
+    // Only claimed when the ignore file was read back and really covers it. An assurance that turns out to
+    // be false is worse than none: it is the reason somebody stops checking.
+    console.log(
+      saved.ignored
+        ? '  Added to .gitignore.'
+        : `  NOT ignored by git — ${saved.reason ?? 'unknown reason'}. Add \`${SECRET_CONFIG_FILENAME}\` to .gitignore yourself before committing.`,
+    );
+    if (hadCredentialInConfig) {
+      // Said out loud, because moving the file does not undo a commit: if it was ever pushed, the value is
+      // in the history and only a new credential ends that.
+      console.log(
+        'A credential was also present in .patchstackrc.json and has been removed from it. If that file was ever committed, rotate the credential from the dashboard.',
+      );
+    }
   }
 
   if (response.stored) {
@@ -647,9 +681,17 @@ async function runProtectCommand(args: ParsedArgs): Promise<number> {
     const report = runVerify(process.cwd());
     console.log(`patchstack protect --check (${report.stack}):`);
     for (const c of report.checks) {
-      console.log(`  ${c.ok ? '✓' : '✗'} ${c.label}${!c.ok && c.hint ? ` — ${c.hint}` : ''}`);
+      // Three states, not two. A check this machine cannot answer is marked `?` and always prints its
+      // note: shown as a tick it would claim something nobody established, and as a cross it would fail a
+      // correctly configured deployment.
+      const mark = c.unverifiable ? '?' : c.ok ? '✓' : '✗';
+      const note = c.unverifiable || !c.ok ? c.hint : undefined;
+      console.log(`  ${mark} ${c.label}${note ? ` — ${note}` : ''}`);
     }
     console.log(report.wired ? 'guard is wired ✓' : 'guard is NOT fully wired ✗');
+    if (report.checks.some((c) => c.unverifiable)) {
+      console.log('One or more checks could not be answered from here — see the `?` lines above.');
+    }
     return report.wired ? 0 : 1;
   }
   // Best-effort: like mark-build, this runs during builds and must never fail one.

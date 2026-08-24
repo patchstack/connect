@@ -581,7 +581,7 @@ export function renderGuideChecklist(state: GuideState, useColor: boolean): stri
       done(
         paint(
           ANSI.bold,
-          'All setup steps complete. Commit .patchstackrc.json, package.json, the runtime guard changes, and the file carrying the widget snippet.',
+          'All setup steps complete. Commit .patchstackrc.json, package.json, the runtime guard changes, and the file carrying the widget snippet. Never commit .patchstackrc.local.json — it holds the API key, and setup has already added it to .gitignore.',
         ),
       ),
     );

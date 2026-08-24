@@ -61,11 +61,15 @@ describe('login', () => {
         'https://api.patchstack.com/monitor/pulse/device?code=WDJB-MJHT',
       );
 
-      // One credential for both paths. Pulse resolution falls back to apiKey,
-      // so a second copy is not written.
-      const written = JSON.parse(readFileSync('.patchstackrc.json', 'utf8'));
+      // The credential file, not the committed config: the config is meant to be committed, so a
+      // credential in it is a credential in the repository.
+      const written = JSON.parse(readFileSync('.patchstackrc.local.json', 'utf8'));
       expect(written.apiKey).toBe('new-secret-987');
+      // One credential for both paths. Pulse resolution falls back to apiKey, so a second copy is not
+      // written.
       expect(written.pulseAuth).toBeUndefined();
+      // And the project now ignores it. A rotated credential is no less of a secret than a fresh one.
+      expect(readFileSync('.gitignore', 'utf8')).toContain('.patchstackrc.local.json');
     } finally {
       process.chdir(original);
     }
@@ -187,7 +191,7 @@ describe('start and resume', () => {
       const result = await waitForApproval(cfg, begun.pending!, { fetchImpl: poll as never, ...noSleep });
 
       expect(result.status).toBe('approved');
-      expect(JSON.parse(readFileSync('.patchstackrc.json', 'utf8')).apiKey).toBe('rotated-987');
+      expect(JSON.parse(readFileSync('.patchstackrc.local.json', 'utf8')).apiKey).toBe('rotated-987');
       // The pending request is consumed, so a stale --wait cannot re-redeem it.
       expect(readPendingLogin('resume-2')).toBeNull();
     } finally {
@@ -226,7 +230,7 @@ describe('redeemIfApproved', () => {
       });
 
       expect(outcome).toBe('approved');
-      expect(JSON.parse(readFileSync('.patchstackrc.json', 'utf8')).apiKey).toBe('restored-42');
+      expect(JSON.parse(readFileSync('.patchstackrc.local.json', 'utf8')).apiKey).toBe('restored-42');
     } finally {
       process.chdir(original);
     }

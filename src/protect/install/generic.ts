@@ -4,22 +4,84 @@
 // entirely through the CLI (no server, no hosted infra).
 
 import { readFileSync, existsSync, mkdirSync, copyFileSync, readdirSync, lstatSync } from 'node:fs';
-import { join } from 'node:path';
+import { join, dirname } from 'node:path';
 import { bakeSiteUuid, read, templatesDir } from './util.js';
 import type { WireOptions, VerifyResult } from './types.js';
+import type { GuardModuleQuery } from './source-scope.js';
+import {
+  stripComments,
+  maskStringContents,
+  moduleKindOf,
+  resolvesToGuardModule,
+  GUARD_FILENAMES,
+} from './source-scope.js';
 
-const GUARD_MARKER = 'patchstack/guard';
+/** Does this package's `type` make an extensionless `.js` file an ES module? */
+function packageIsEsm(cwd: string): boolean {
+  try {
+    return (JSON.parse(read(join(cwd, 'package.json'))) as { type?: unknown }).type === 'module';
+  } catch {
+    return false;
+  }
+}
 
 function genericDir(cwd: string): string {
   return existsSync(join(cwd, 'src')) ? 'src/patchstack' : 'patchstack';
 }
 
+/**
+ * Which guard file this project can actually load, and how to name it.
+ *
+ * The scaffold used to be `guard.ts` for everybody. A plain CommonJS project got a TypeScript file it
+ * cannot require and a printed plan telling it to import from `<dir>/guard` — two specifiers that both
+ * fail, and a check that called the second one wired. So the format follows the project:
+ *
+ * - a `tsconfig.json` means a compiler or bundler is in the picture, so the TypeScript guard is loadable and
+ *   the bare specifier is the right thing to write;
+ * - `"type": "module"` means Node ESM, which resolves no extensions, so the guard is `.js` and the specifier
+ *   has to say so;
+ * - anything else is CommonJS, where `require()` never guesses `.cjs`, so the guard is `.cjs` and the
+ *   specifier has to say so.
+ */
+/**
+ * Does a compiler or bundler read this project's sources?
+ *
+ * A `tsconfig.json` says so outright. So does a `.ts` entry without one — plenty of projects rely on a
+ * framework's own config — and either way nothing but a compiler can load the TypeScript guard.
+ */
+function hasTypeScript(cwd: string): boolean {
+  return existsSync(join(cwd, 'tsconfig.json')) || candidateEntries(cwd).some((entry) => /\.tsx?$/.test(entry));
+}
+
+export interface GenericGuardTarget {
+  template: string;
+  file: string;
+  /** What to write in an import, relative to the guard's directory. */
+  specifier: string;
+}
+
+export function genericGuardTarget(cwd: string): GenericGuardTarget {
+  if (hasTypeScript(cwd)) {
+    return { template: 'generic-guard.ts', file: 'guard.ts', specifier: 'guard' };
+  }
+  if (packageIsEsm(cwd)) {
+    return { template: 'generic-guard.js', file: 'guard.js', specifier: 'guard.js' };
+  }
+
+  return { template: 'generic-guard.cjs', file: 'guard.cjs', specifier: 'guard.cjs' };
+}
+
 export function scaffoldGeneric(
   cwd: string,
   opts: WireOptions,
-  guardTemplate = 'generic-guard.ts',
-  guardFile = 'guard.ts',
+  guardTemplate?: string,
+  guardFile?: string,
 ): { changed: string[]; dir: string } {
+  // The register-based adapters name the file themselves, from the entry they are patching. With no entry
+  // to read — which is why the generic scaffold exists — the project's own configuration decides.
+  const target = genericGuardTarget(cwd);
+  guardTemplate ??= target.template;
+  guardFile ??= target.file;
   const templates = templatesDir();
   const dir = genericDir(cwd);
   const dst = join(cwd, dir);
@@ -64,11 +126,14 @@ function usesExpress(cwd: string): boolean {
 export function wiringPlan(cwd: string, dir: string): string {
   const entries = candidateEntries(cwd);
   const express = usesExpress(cwd);
+  const target = genericGuardTarget(cwd);
   const lines = [
-    `no built-in adapter matched this stack — scaffolded a generic guard at ${dir}/guard.ts + ${dir}/rules.json.`,
+    `no built-in adapter matched this stack — scaffolded a generic guard at ${dir}/${target.file} + ${dir}/rules.json.`,
     'Finish by wiring it into your server (pick the one that fits):',
-    `  • Web-Fetch entry:  export default { fetch: protectFetch(yourHandler) }   // import from "${dir}/guard"`,
-    `  • Node / Express:   app.use(patchstackMiddleware)                          // add before your routes`,
+    // The specifier is the one this project's loader resolves — a bare path is right for a compiler and
+    // wrong for `require()`, which never guesses `.cjs`.
+    `  • Web-Fetch entry:  export default { fetch: protectFetch(yourHandler) }   // import from "${dir}/${target.specifier}"`,
+    `  • Node / Connect:   app.use(patchstackMiddleware)                          // before any body parser`,
     entries.length
       ? `Likely server ${entries.length === 1 ? 'entry' : 'entries'}: ${entries.join(', ')}${express ? '  (Express detected)' : ''}.`
       : 'Could not locate a server entry — wire it wherever requests enter your app.',
@@ -77,24 +142,214 @@ export function wiringPlan(cwd: string, dir: string): string {
   return lines.join('\n');
 }
 
+/**
+ * The exports of THIS scaffold that put the guard in the request path. One has to be imported, and used.
+ *
+ * Taken from `generic-guard.*`, which is the template this check verifies. Its third export is
+ * `getProtection`, which builds the policy and screens nothing on its own — accepting any exported name
+ * meant a file that imported and called that one verified as wired, with a policy built and no request
+ * going through it.
+ *
+ * `screenResponse` is deliberately absent. The other guard templates export it; this one calls it on the
+ * protection object inside `protectFetch`, so an app importing it from the scaffolded module fails at load
+ * — which is worse than unwired, and it verified green.
+ */
+const GUARD_EXPORTS = ['protectFetch', 'patchstackMiddleware'] as const;
+
+/**
+ * Whether this file imports the guard module and uses what it imported.
+ *
+ * Three ways a file can carry the guard's name without running it, and all three had to be closed:
+ * a comment, an import clause (where a name is followed by a comma, which a use test read as use), and a
+ * string literal (which is just a place to put code-shaped text). So the question is asked about code:
+ * comments removed, string CONTENTS blanked, and the declarations themselves excluded from the search for
+ * a use. What is left is what executes.
+ */
+function importsAndUsesGuard(source: string, sourcePath: string, guardDir: string, packageIsModule: boolean): boolean {
+  const code = stripComments(source);
+  // Same length as `code`, so a match found here can be read back out of `code` — which is how the module
+  // specifier is recovered after being blanked.
+  const masked = maskStringContents(code);
+
+  const declarations = guardImportDeclarations(code, masked, {
+    fromFile: sourcePath,
+    guardDir,
+    kind: moduleKindOf(sourcePath, packageIsModule),
+    // The scaffold now matches the project's module format and the printed plan names the specifier that
+    // format resolves, so there is nothing left to excuse: a specifier this file's loader would not find is
+    // not a wired guard here either.
+    strictExtensions: true,
+  });
+  if (declarations.length === 0) return false;
+
+  const direct = new Set<string>();
+  const namespaces = new Set<string>();
+  for (const declaration of declarations) {
+    const bound = boundNames(declaration.text);
+    for (const name of bound.direct) direct.add(name);
+    for (const name of bound.namespaces) namespaces.add(name);
+  }
+  if (direct.size === 0 && namespaces.size === 0) return false;
+
+  // The declarations are blanked before looking for a use, so the import clause cannot supply it.
+  let body = masked;
+  for (const declaration of declarations) {
+    body = body.slice(0, declaration.start) + ' '.repeat(declaration.text.length) + body.slice(declaration.start + declaration.text.length);
+  }
+
+  // A use is a call or being passed somewhere — both put the guard in the request path, and neither is the
+  // import line. A namespace binding has to reach one of the screening exports THROUGH it, because the
+  // object itself says nothing about which member the app went on to use.
+  const members = GUARD_EXPORTS.map(escapeForRegExp).join('|');
+
+  return (
+    [...direct].some((name) => new RegExp(`\\b${escapeForRegExp(name)}\\s*[(),]`).test(body)) ||
+    [...namespaces].some((name) =>
+      new RegExp(`\\b${escapeForRegExp(name)}\\s*\\.\\s*(?:${members})\\s*[(),]`).test(body),
+    )
+  );
+}
+
+/** An import or require declaration of the guard module: its source text and where it starts. */
+interface GuardDeclaration {
+  text: string;
+  start: number;
+}
+
+/**
+ * The import or require statements that bring in the guard module.
+ *
+ * Found on the MASKED text, so a string holding an import statement is one opaque token rather than a
+ * declaration. The specifier is then read out of the unmasked text at the same offsets and RESOLVED — a
+ * substring test passed `./patchstack/guard-helper`, a sibling that can export a no-op `protectFetch` and
+ * produce a green check with no guard involved.
+ */
+function guardImportDeclarations(code: string, masked: string, query: GuardModuleQuery): GuardDeclaration[] {
+  const pattern = /import\s+[^;]*?from\s*(['"`])[^'"`]*\1|(?:const|let|var)\s+[^;=]+=\s*require\(\s*(['"`])[^'"`]*\2\s*\)/g;
+  const found: GuardDeclaration[] = [];
+
+  for (const match of masked.matchAll(pattern)) {
+    const start = match.index ?? -1;
+    if (start < 0) continue;
+    const text = code.slice(start, start + match[0].length);
+    const specifier = specifierOf(text);
+    if (specifier !== null && resolvesToGuardModule(specifier, query)) found.push({ text, start });
+  }
+
+  return found;
+}
+
+/** The module string of a declaration, read from the unmasked text. */
+function specifierOf(declaration: string): string | null {
+  return /(['"`])([^'"`]*)\1/.exec(declaration)?.[2] ?? null;
+}
+
+/**
+ * The LOCAL names a guard import declaration binds, split by how they can be used.
+ *
+ * `direct` are locals bound to one of the screening exports. Local, because that is the name the code below
+ * has to call: an alias (`protectFetch as shield`) binds `shield`, and looking for the exported name would
+ * refuse a correctly wired app. The EXPORTED name is what has to be a screening one — importing
+ * `getProtection` under any local name still screens nothing.
+ *
+ * `namespaces` are whole-module bindings: `import * as g`, `import g from`, `const g = require(...)`. What
+ * they bind says nothing about which member the app used, so the caller asks for a member call instead.
+ */
+function boundNames(declaration: string): { direct: string[]; namespaces: string[] } {
+  const direct: string[] = [];
+  const namespaces: string[] = [];
+  const clause =
+    /^import\s+([^]*?)\s+from\b/.exec(declaration)?.[1] ??
+    /^(?:const|let|var)\s+([^]*?)=\s*require\b/.exec(declaration)?.[1] ??
+    '';
+
+  const braced = /\{([^}]*)\}/.exec(clause)?.[1];
+  if (braced !== undefined) {
+    for (const part of braced.split(',')) {
+      const [exported, local] = splitBinding(part);
+      if (!isGuardExport(exported)) continue;
+      if (/^[A-Za-z_$][\w$]*$/.test(local)) direct.push(local);
+    }
+  }
+
+  const bare = clause.replace(/\{[^}]*\}/g, '').replace(/^\*\s*as\s*/, '').replace(/,/g, ' ').trim();
+  for (const token of bare.split(/\s+/)) {
+    if (/^[A-Za-z_$][\w$]*$/.test(token) && token !== 'as') namespaces.push(token);
+  }
+
+  return { direct, namespaces };
+}
+
+/** `name`, `name as local`, `name: local` — the exported name and the local one it binds. */
+function splitBinding(part: string): [string, string] {
+  const separator = part.includes(' as ') ? ' as ' : part.includes(':') ? ':' : null;
+  if (separator === null) {
+    const name = part.trim();
+
+    return [name, name];
+  }
+
+  const [exported, ...rest] = part.split(separator);
+
+  return [(exported ?? '').trim(), (rest.join(separator) ?? '').trim()];
+}
+
+function isGuardExport(name: string): boolean {
+  return (GUARD_EXPORTS as readonly string[]).includes(name);
+}
+
+function escapeForRegExp(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\/]/g, '\\$&');
+}
+
 export function genericVerify(cwd: string): VerifyResult {
   const dir = genericDir(cwd);
-  const scaffolded = existsSync(join(cwd, dir, 'guard.ts'));
-  const imported = scaffolded && guardIsImported(cwd, join(cwd, dir, 'guard.ts'));
+  const target = genericGuardTarget(cwd);
+  // Whichever guard file is on disk, not the one this project would be given today: a project that gained a
+  // `tsconfig.json` after setup ran still has the guard it was scaffolded.
+  const present = GUARD_FILENAMES.find((name) => existsSync(join(cwd, dir, name)));
+  const scaffolded = present !== undefined;
+  const imported = scaffolded && guardIsImported(cwd, join(cwd, dir, present));
   return {
     wired: scaffolded && imported,
     checks: [
       { label: 'generic guard scaffolded', ok: scaffolded, hint: 'run `patchstack-connect protect`' },
       {
-        label: 'guard imported into a server entry',
+        label: 'guard imported and called in a server entry',
         ok: imported,
-        hint: `import { protectFetch } (or patchstackMiddleware) from "${dir}/guard" and wire it into your request path`,
+        hint: `import { protectFetch } (or patchstackMiddleware) from "${dir}/${present ?? target.specifier}" and wire it into your request path — an import that is never called screens nothing`,
       },
     ],
   };
 }
 
+/**
+ * Directories whose contents are not the running application.
+ *
+ * A guard imported in a test or present in build output protects nothing at runtime, and finding it there
+ * turned the check green. Mirrors the same skip list the app-instance search uses, for the same reason.
+ */
+const NON_RUNTIME_DIRS = new Set([
+  'node_modules', 'patchstack', 'dist', 'build', 'out', 'coverage', '.next', '.output', '.svelte-kit',
+  'test', 'tests', '__tests__', 'e2e', 'examples', 'fixtures', '__fixtures__', 'stories', '__mocks__',
+]);
+
+/**
+ * Is one of the guard's exports actually imported and used somewhere in the app's own source?
+ *
+ * Three things a substring search could not tell apart, all of which reported the guard wired:
+ *
+ * - a commented-out line, or a note mentioning the path;
+ * - the import present with the helper never called, so nothing wraps a request;
+ * - the file living in test or build output rather than in the application.
+ *
+ * So this looks for an import of the guard module AND a use of what it imported, in a file that is part of
+ * the running app. Still not a parser — it cannot prove the wrapped handler is the one the platform serves
+ * — and the printed plan says which edit remains, rather than the check claiming more than it established.
+ */
 function guardIsImported(cwd: string, guardPath: string): boolean {
+  const guardDir = dirname(guardPath);
+  const packageIsModule = packageIsEsm(cwd);
   const root = existsSync(join(cwd, 'src')) ? join(cwd, 'src') : cwd;
   let found = false;
   const walk = (d: string, depth: number): void => {
@@ -107,7 +362,7 @@ function guardIsImported(cwd: string, guardPath: string): boolean {
     }
     for (const name of entries) {
       if (found) return;
-      if (name === 'node_modules' || name === 'patchstack' || name.startsWith('.')) continue;
+      if (NON_RUNTIME_DIRS.has(name) || name.startsWith('.')) continue;
       const p = join(d, name);
       let st;
       try {
@@ -119,7 +374,7 @@ function guardIsImported(cwd: string, guardPath: string): boolean {
       if (st.isDirectory()) walk(p, depth + 1);
       else if (/\.(?:ts|tsx|js|jsx|mjs|cjs)$/.test(name) && p !== guardPath) {
         try {
-          if (readFileSync(p, 'utf8').includes(GUARD_MARKER)) found = true;
+          if (importsAndUsesGuard(readFileSync(p, 'utf8'), p, guardDir, packageIsModule)) found = true;
         } catch {
           /* ignore */
         }

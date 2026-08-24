@@ -46,7 +46,8 @@ const REQUEST_MIDDLEWARE_BLOCK = [
   '      if (blocked) return blocked;',
   '    }',
   '  }',
-  '  return screenResponse(await next());',
+  '  // The request is passed so route/method-scoped response rules can apply their scope.',
+  '  return screenResponse(await next(), request);',
   '});',
   '// #endregion patchstack-guard',
 ].join('\n');

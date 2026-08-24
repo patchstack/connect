@@ -75,7 +75,7 @@ export async function createProtection(options = {}) {
   const userOnDetect = options.onDetect ?? defaultOnDetect;
 
   // Report enforced blocks via existing connector POST /api/logs/log (WP path).
-  // Needs api_key from provision / PATCHSTACK_API_KEY / .patchstackrc.json.
+  // Needs api_key from provision / PATCHSTACK_API_KEY / the config files.
   // Opt out: PATCHSTACK_TELEMETRY=off. Never embed api_key in the public widget.
   const apiKey = await resolveApiKey(options);
   const firewallLog =
@@ -119,7 +119,7 @@ export async function createProtection(options = {}) {
   const pulseAuth = await resolvePulseAuth(options);
   // A site UUID with no credential behind it, said out loud ONCE at boot.
   //
-  // Resolution reads `.patchstackrc.json`, so it needs a filesystem and a working directory. The
+  // Resolution reads the config files, so it needs a filesystem and a working directory. The
   // runtimes this guard is built for do not all have one: on a Worker or an edge function the file is
   // absent and only `PATCHSTACK_PULSE_AUTH` / `PATCHSTACK_API_KEY` can carry the credential.
   //
@@ -572,11 +572,22 @@ export async function createProtection(options = {}) {
       };
     },
 
-    // Node / Connect middleware — buffers the body itself (request phase).
+    // Node / Connect middleware — buffers the body itself (request phase). Register it BEFORE any body
+    // parser: it reads the request stream, and exposes what it read as `req.body` so a parser is not
+    // also needed. (`.express()` is the other way round — it reads a body somebody else parsed.)
     // Pass { screenResponses: true } to also screen the outgoing response (buffers it).
     node(nodeOptions = {}) {
       const maxBytes = nodeOptions.maxBodyBytes ?? 1024 * 1024;
       return (req, res, next) => {
+        // Registered after a body parser, the stream is already at its end: 'data' and 'end' will not fire
+        // again, and waiting for them would hold the request open for as long as the client allows. Screen
+        // the body the parser left instead — a guard that stops serving the app is a worse outcome than the
+        // registration order it was trying to insist on.
+        if (req.readableEnded || req.body !== undefined) {
+          screenNodeRequest(req, res, next, '', req.body);
+          return;
+        }
+
         const chunks = [];
         let size = 0;
         let overflow = false;
@@ -594,40 +605,47 @@ export async function createProtection(options = {}) {
         });
         req.on('end', () => {
           if (overflow) recordSkip('request', 'body-cap', { bytes: size, limit: maxBytes });
-          const rawBody = overflow ? '' : Buffer.concat(chunks).toString('utf8');
-          let shaped;
-          let result;
-          try {
-            shaped = fromNodeRequest(req, rawBody);
-            result = engine.evaluate(shaped);
-          } catch (err) {
-            notify(onError, err, 'onError');
-            return next();
-          }
-          decide(
-            'request',
-            result,
-            () => {
-              res.statusCode = 403;
-              if (isDocumentNavigation((n) => req.headers?.[n])) {
-                res.setHeader('content-type', 'text/html; charset=utf-8');
-                res.end(renderBlockPage({ url: req.url || '/', code: result?.rule?.id }));
-              } else {
-                res.setHeader('content-type', 'application/json');
-                res.end(JSON.stringify(blockBody(result)));
-              }
-            },
-            () => {
-              // This guard consumed the request stream to screen it; re-expose the parsed
-              // body so a downstream handler (without its own body-parser) can read it.
-              if (req.body === undefined) req.body = shaped.body;
-              if (nodeOptions.screenResponses) wrapNodeResponse(res, reqContextFromNode(req));
-              next();
-            },
-            nodeRequestMeta(req),
-          );
+          screenNodeRequest(req, res, next, overflow ? '' : Buffer.concat(chunks).toString('utf8'));
         });
       };
+
+      // `parsedBody`, when given, is a body somebody else already parsed: it replaces the shaped body
+      // rather than being re-serialized, because re-encoding it would have to guess a format and a form
+      // body handed back as JSON resolves no `post.<field>` at all.
+      function screenNodeRequest(req, res, next, rawBody, parsedBody) {
+        let shaped;
+        let result;
+        try {
+          shaped = fromNodeRequest(req, rawBody);
+          if (parsedBody !== undefined && parsedBody !== null) shaped.body = parsedBody;
+          result = engine.evaluate(shaped);
+        } catch (err) {
+          notify(onError, err, 'onError');
+          return next();
+        }
+        decide(
+          'request',
+          result,
+          () => {
+            res.statusCode = 403;
+            if (isDocumentNavigation((n) => req.headers?.[n])) {
+              res.setHeader('content-type', 'text/html; charset=utf-8');
+              res.end(renderBlockPage({ url: req.url || '/', code: result?.rule?.id }));
+            } else {
+              res.setHeader('content-type', 'application/json');
+              res.end(JSON.stringify(blockBody(result)));
+            }
+          },
+          () => {
+            // This guard consumed the request stream to screen it; re-expose the parsed
+            // body so a downstream handler (without its own body-parser) can read it.
+            if (req.body === undefined) req.body = shaped.body;
+            if (nodeOptions.screenResponses) wrapNodeResponse(res, reqContextFromNode(req));
+            next();
+          },
+          nodeRequestMeta(req),
+        );
+      }
     },
   };
 
@@ -738,28 +756,57 @@ function resolveMode(options, bundle) {
 }
 
 /**
- * WP-format api_key for connector /api/logs/log. Never use the public site UUID.
- * The `.patchstackrc.json` fallback reads the filesystem, so fs/path are imported LAZILY — this
- * module must stay loadable on edge runtimes (Next edge middleware, Workers, Deno, Supabase
- * Functions), where a static `node:fs` import fails to resolve and would take the guard down.
+ * The two files a credential can live in, in the order they are read.
+ *
+ * Setup writes the credential to the local file and the public identity to the other one, because the
+ * public file is meant to be committed. The committed file is still read second: installs that predate
+ * the split keep their credential there, and a guard that stopped authenticating on upgrade would lose
+ * live rules and reporting on every one of them.
  */
+const CREDENTIAL_FILES = ['.patchstackrc.local.json', '.patchstackrc.json'];
+
+/**
+ * A credential field from the config files, or undefined.
+ *
+ * fs/path are imported LAZILY — this module must stay loadable on edge runtimes (Next edge middleware,
+ * Workers, Deno, Supabase Functions), where a static `node:fs` import fails to resolve and would take the
+ * guard down.
+ */
+async function readCredentialField(options, field) {
+  if (typeof process === 'undefined' || typeof process.cwd !== 'function') return undefined;
+
+  let readFileSync;
+  let join;
+  try {
+    const [fs, pathMod] = await Promise.all([import('node:fs'), import('node:path')]);
+    readFileSync = fs.readFileSync;
+    join = pathMod.join;
+  } catch {
+    return undefined; // no filesystem on this runtime
+  }
+
+  const cwd = options?.cwd ?? process.cwd();
+  for (const filename of CREDENTIAL_FILES) {
+    try {
+      const value = JSON.parse(readFileSync(join(cwd, filename), 'utf8'))?.[field];
+      if (typeof value === 'string' && value.length > 0) return value;
+    } catch {
+      /* missing or unparseable — try the next one */
+    }
+  }
+
+  return undefined;
+}
+
+/** WP-format api_key for connector /api/logs/log. Never use the public site UUID. */
 async function resolveApiKey(options) {
   if (typeof options?.apiKey === 'string' && options.apiKey.length > 0) return options.apiKey;
   if (typeof process !== 'undefined') {
     const fromEnv = process.env?.PATCHSTACK_API_KEY;
     if (typeof fromEnv === 'string' && fromEnv.length > 0) return fromEnv;
   }
-  try {
-    if (typeof process === 'undefined' || typeof process.cwd !== 'function') return undefined;
-    const [{ readFileSync }, { join }] = await Promise.all([import('node:fs'), import('node:path')]);
-    const cwd = options?.cwd ?? process.cwd();
-    const raw = readFileSync(join(cwd, '.patchstackrc.json'), 'utf8');
-    const key = JSON.parse(raw)?.apiKey;
-    if (typeof key === 'string' && key.length > 0) return key;
-  } catch {
-    /* missing, or no filesystem on this runtime — reporting stays off */
-  }
-  return undefined;
+
+  return readCredentialField(options, 'apiKey');
 }
 
 /**
@@ -777,16 +824,8 @@ async function resolvePulseAuth(options) {
     const fromEnv = process.env?.PATCHSTACK_PULSE_AUTH;
     if (typeof fromEnv === 'string' && fromEnv.length > 0) return fromEnv;
   }
-  try {
-    if (typeof process === 'undefined' || typeof process.cwd !== 'function') return resolveApiKey(options);
-    const [{ readFileSync }, { join }] = await Promise.all([import('node:fs'), import('node:path')]);
-    const cwd = options?.cwd ?? process.cwd();
-    const raw = readFileSync(join(cwd, '.patchstackrc.json'), 'utf8');
-    const key = JSON.parse(raw)?.pulseAuth;
-    if (typeof key === 'string' && key.length > 0) return key;
-  } catch {
-    /* missing, or no filesystem here — fall through to the apiKey path */
-  }
+  const fromFile = await readCredentialField(options, 'pulseAuth');
+  if (fromFile !== undefined) return fromFile;
 
   return resolveApiKey(options);
 }
