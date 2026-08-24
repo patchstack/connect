@@ -168,13 +168,26 @@ function wiringState(
   };
 }
 
+/** The file names the scaffolder gives a guard, one per module format. */
+const GUARD_FILENAMES = ['guard.ts', 'guard.js', 'guard.mjs', 'guard.cjs'] as const;
+
 /**
  * Does this line bind the guard's name FROM the guard module?
  *
- * The name alone is not the module. A local file that happens to export `patchstackMiddleware` binds the
- * same identifier and screens nothing, so the specifier is resolved against the file being edited and has
- * to land inside the scaffolded guard directory. Any file in there is ours — which extension the guard got
- * depends on the entry's module format, and a second server in this project may not share it.
+ * Three things have to hold, and each of them was a way to pass without a guard.
+ *
+ * The DECLARATION has to create a local binding. `export { patchstackMiddleware } from './guard'` names the
+ * symbol and re-exports it; it binds nothing in this module, so the registration below it throws on the
+ * first request while the text reads as wired.
+ *
+ * The name alone is not the module: a local file that happens to export `patchstackMiddleware` binds the
+ * same identifier and screens nothing. So the specifier is resolved against the file being edited.
+ *
+ * And the module has to be a guard, not merely something inside the guard's directory —
+ * `./patchstack/rules.json` resolves in there and exports no middleware. It has to be one of the files the
+ * scaffolder writes, and that file has to exist: which extension the guard got depends on the entry's
+ * module format, and a second server in this project may not share it, so all four are candidates and the
+ * filesystem decides which one is really there.
  *
  * `maskedLine` is what the shape is matched against, so a string cannot look like a declaration; `line` is
  * the real text, which is where the specifier is read from.
@@ -188,17 +201,35 @@ function bindsGuard(
   guard: GuardLocation,
 ): boolean {
   if (!maskedLine.includes(importName) || maskedLine.includes(call)) return false;
-  if (!/^\s*(?:import\b|export\s+(?:\*|\{)|(?:const|let|var)\s+[^=]+=\s*require\()/.test(maskedLine)) {
-    return false;
-  }
+  // `export ... from` re-exports the symbol and binds nothing here, so the registration below it would
+  // throw on the first request. `export const x = require(...)` does bind, and is accepted.
+  if (/^\s*export\b[^=]*\bfrom\b/.test(maskedLine)) return false;
+  if (!/^\s*(?:import\b|(?:export\s+)?(?:const|let|var)\s+[^=]+=\s*require\()/.test(maskedLine)) return false;
 
   const specifier = /(['"`])([^'"`]*)\1/.exec(line)?.[2];
   if (specifier === undefined || specifier === '') return false;
 
-  const resolved = withoutExtension(resolve(dirname(join(guard.cwd, fileRel)), specifier));
-  const dir = resolve(join(guard.cwd, guard.guardDir));
+  return resolvesToGuardModule(specifier, fileRel, guard);
+}
 
-  return resolved === dir || resolved.startsWith(dir + '/') || resolved.startsWith(dir + '\\');
+/**
+ * Does this specifier name a guard file the scaffolder wrote, and that is on disk?
+ *
+ * An explicit extension has to be the right one — `./patchstack/guard.mjs` where only `guard.cjs` was
+ * written does not resolve at runtime, so it must not verify here. A specifier with no extension is how
+ * TypeScript and bundler resolution are written, and matches whichever guard file actually exists.
+ */
+function resolvesToGuardModule(specifier: string, fileRel: string, guard: GuardLocation): boolean {
+  const resolved = resolve(dirname(join(guard.cwd, fileRel)), specifier);
+  const dir = resolve(join(guard.cwd, guard.guardDir));
+  const bare = !/\.[A-Za-z0-9]+$/.test(specifier);
+
+  return GUARD_FILENAMES.some((name) => {
+    const candidate = join(dir, name);
+    const named = bare ? resolved === withoutExtension(candidate) : resolved === candidate;
+
+    return named && existsSync(candidate);
+  });
 }
 
 function withoutExtension(filePath: string): string {

@@ -78,7 +78,13 @@ export function wiringPlan(cwd: string, dir: string): string {
   return lines.join('\n');
 }
 
-/** The guard's exports. One of these has to be imported, and the same one has to be called. */
+/**
+ * The guard exports that put it in the request path. One of these has to be imported, and used.
+ *
+ * The guard also exports `getProtection`, which builds the policy and screens nothing on its own. Accepting
+ * any exported name meant a file that imported and called that one verified as wired — a policy built, and
+ * no request going through it.
+ */
 const GUARD_EXPORTS = ['protectFetch', 'patchstackMiddleware', 'screenResponse'] as const;
 
 /**
@@ -99,9 +105,14 @@ function importsAndUsesGuard(source: string): boolean {
   const declarations = guardImportDeclarations(code, masked);
   if (declarations.length === 0) return false;
 
-  const bound = new Set<string>();
-  for (const declaration of declarations) for (const name of boundNames(declaration.text)) bound.add(name);
-  if (bound.size === 0) return false;
+  const direct = new Set<string>();
+  const namespaces = new Set<string>();
+  for (const declaration of declarations) {
+    const bound = boundNames(declaration.text);
+    for (const name of bound.direct) direct.add(name);
+    for (const name of bound.namespaces) namespaces.add(name);
+  }
+  if (direct.size === 0 && namespaces.size === 0) return false;
 
   // The declarations are blanked before looking for a use, so the import clause cannot supply it.
   let body = masked;
@@ -109,9 +120,17 @@ function importsAndUsesGuard(source: string): boolean {
     body = body.slice(0, declaration.start) + ' '.repeat(declaration.text.length) + body.slice(declaration.start + declaration.text.length);
   }
 
-  // A use is a call, or being passed somewhere, or a property read off a namespace import — all three put
-  // the guard in the request path; none of them is the import line.
-  return [...bound].some((name) => new RegExp(`\\b${escapeForRegExp(name)}\\s*[(),.]`).test(body));
+  // A use is a call or being passed somewhere — both put the guard in the request path, and neither is the
+  // import line. A namespace binding has to reach one of the screening exports THROUGH it, because the
+  // object itself says nothing about which member the app went on to use.
+  const members = GUARD_EXPORTS.map(escapeForRegExp).join('|');
+
+  return (
+    [...direct].some((name) => new RegExp(`\\b${escapeForRegExp(name)}\\s*[(),]`).test(body)) ||
+    [...namespaces].some((name) =>
+      new RegExp(`\\b${escapeForRegExp(name)}\\s*\\.\\s*(?:${members})\\s*[(),]`).test(body),
+    )
+  );
 }
 
 /** An import or require declaration of the guard module: its source text and where it starts. */
@@ -147,13 +166,19 @@ function specifierOf(declaration: string): string | null {
 }
 
 /**
- * The LOCAL names a guard import declaration binds.
+ * The LOCAL names a guard import declaration binds, split by how they can be used.
  *
- * Local, because that is the name the code below has to call. An alias (`protectFetch as guard`) binds
- * `guard`, and looking for the exported name instead would refuse a correctly wired app.
+ * `direct` are locals bound to one of the screening exports. Local, because that is the name the code below
+ * has to call: an alias (`protectFetch as shield`) binds `shield`, and looking for the exported name would
+ * refuse a correctly wired app. The EXPORTED name is what has to be a screening one — importing
+ * `getProtection` under any local name still screens nothing.
+ *
+ * `namespaces` are whole-module bindings: `import * as g`, `import g from`, `const g = require(...)`. What
+ * they bind says nothing about which member the app used, so the caller asks for a member call instead.
  */
-function boundNames(declaration: string): string[] {
-  const names: string[] = [];
+function boundNames(declaration: string): { direct: string[]; namespaces: string[] } {
+  const direct: string[] = [];
+  const namespaces: string[] = [];
   const clause =
     /^import\s+([^]*?)\s+from\b/.exec(declaration)?.[1] ??
     /^(?:const|let|var)\s+([^]*?)=\s*require\b/.exec(declaration)?.[1] ??
@@ -162,23 +187,36 @@ function boundNames(declaration: string): string[] {
   const braced = /\{([^}]*)\}/.exec(clause)?.[1];
   if (braced !== undefined) {
     for (const part of braced.split(',')) {
-      const local = part.includes(' as ')
-        ? part.split(' as ').pop()
-        : part.includes(':')
-          ? part.split(':').pop()
-          : part;
-      const name = (local ?? '').trim();
-      if (/^[A-Za-z_$][\w$]*$/.test(name)) names.push(name);
+      const [exported, local] = splitBinding(part);
+      if (!isGuardExport(exported)) continue;
+      if (/^[A-Za-z_$][\w$]*$/.test(local)) direct.push(local);
     }
   }
 
-  // A default or namespace binding: `import guard from`, `import * as guard from`, `const guard = require`.
   const bare = clause.replace(/\{[^}]*\}/g, '').replace(/^\*\s*as\s*/, '').replace(/,/g, ' ').trim();
   for (const token of bare.split(/\s+/)) {
-    if (/^[A-Za-z_$][\w$]*$/.test(token) && token !== 'as') names.push(token);
+    if (/^[A-Za-z_$][\w$]*$/.test(token) && token !== 'as') namespaces.push(token);
   }
 
-  return names;
+  return { direct, namespaces };
+}
+
+/** `name`, `name as local`, `name: local` — the exported name and the local one it binds. */
+function splitBinding(part: string): [string, string] {
+  const separator = part.includes(' as ') ? ' as ' : part.includes(':') ? ':' : null;
+  if (separator === null) {
+    const name = part.trim();
+
+    return [name, name];
+  }
+
+  const [exported, ...rest] = part.split(separator);
+
+  return [(exported ?? '').trim(), (rest.join(separator) ?? '').trim()];
+}
+
+function isGuardExport(name: string): boolean {
+  return (GUARD_EXPORTS as readonly string[]).includes(name);
 }
 
 function escapeForRegExp(value: string): string {

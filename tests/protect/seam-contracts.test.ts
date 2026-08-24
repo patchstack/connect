@@ -319,6 +319,51 @@ describe('what counts as the generic guard being wired', () => {
     expect(genericVerify(cwd).wired).toBe(false);
   });
 
+  it('is not satisfied by a guard export that screens nothing', () => {
+    // Reported. `getProtection` builds the policy; it is not a request path. A file that imports and calls
+    // it has done the setup and wrapped no handler, and accepting any exported name counted that as wired.
+    const cwd = scaffolded({
+      'src/server.ts': [
+        'import { getProtection } from "./patchstack/guard";',
+        '',
+        'void getProtection();',
+        '',
+      ].join('\n'),
+    });
+
+    expect(genericVerify(cwd).wired).toBe(false);
+  });
+
+  it('is not satisfied by a non-screening export renamed to look like one', () => {
+    // The alias has to be resolved in the right direction: the EXPORTED name decides whether it screens,
+    // the LOCAL name is only what to search for.
+    const cwd = scaffolded({
+      'src/server.ts': [
+        'import { getProtection as protectFetch } from "./patchstack/guard";',
+        '',
+        'export default { fetch: protectFetch() };',
+        '',
+      ].join('\n'),
+    });
+
+    expect(genericVerify(cwd).wired).toBe(false);
+  });
+
+  it('is not satisfied by a namespace import used for something else', () => {
+    // A namespace binding says nothing about which member the app went on to use, so the member has to be
+    // named — and this one is not a screening export.
+    const cwd = scaffolded({
+      'src/server.ts': [
+        'import * as guard from "./patchstack/guard";',
+        '',
+        'void guard.getProtection();',
+        '',
+      ].join('\n'),
+    });
+
+    expect(genericVerify(cwd).wired).toBe(false);
+  });
+
   it('is not fooled by a commented-out import beside a real mention', () => {
     // Comment stripping has to be string-aware: a `//` inside a URL is not a comment, and blanking the rest
     // of that line could hide a real import — or reveal a commented one.

@@ -747,3 +747,98 @@ describe('a guard already registered in the wrong place', () => {
     expect(expressAdapter.verify(cwd).wired).toBe(false);
   });
 });
+
+describe('what counts as the guard module itself', () => {
+  const SERVER = [
+    "const express = require('express');",
+    'const app = express();',
+    'app.use(express.json());',
+    'app.use(patchstackMiddleware);',
+    'app.listen(3000);',
+    '',
+  ].join('\n');
+
+  function scaffoldedGuard(cwd: string): void {
+    mkdirSync(join(cwd, 'src/patchstack'), { recursive: true });
+    writeFileSync(join(cwd, 'src/patchstack/guard.cjs'), 'module.exports = { patchstackMiddleware: () => {} };\n');
+    writeFileSync(join(cwd, 'src/patchstack/rules.json'), '{"firewall":[],"whitelists":[]}\n');
+  }
+
+  it('is not any file that happens to live beside it', () => {
+    // Reported. Directory containment was the test, so the rule bundle in the same folder passed — it
+    // exists, it resolves, and it exports no middleware.
+    const cwd = project({
+      'package.json': PACKAGE_JSON,
+      'src/server.js': ['const { patchstackMiddleware } = require("./patchstack/rules.json");', SERVER].join('\n'),
+    });
+    scaffoldedGuard(cwd);
+
+    expect(expressAdapter.verify(cwd).wired).toBe(false);
+  });
+
+  it('is not a guard file that was never scaffolded', () => {
+    // All four module formats are candidates because the guard's extension follows the entry's, but the
+    // filesystem decides which one is really there — a name alone would be back to trusting the text.
+    const cwd = project({
+      'package.json': PACKAGE_JSON,
+      'src/server.js': ['const { patchstackMiddleware } = require("./patchstack/guard.mjs");', SERVER].join('\n'),
+    });
+    scaffoldedGuard(cwd);
+
+    expect(expressAdapter.verify(cwd).wired).toBe(false);
+  });
+
+  it('is the scaffolded guard, named with or without its extension', () => {
+    // The control, both spellings. Extension-less specifiers are how TypeScript and bundler resolution are
+    // written, so refusing them would fail correctly wired apps.
+    for (const specifier of ['./patchstack/guard.cjs', './patchstack/guard']) {
+      const cwd = project({
+        'package.json': PACKAGE_JSON,
+        'src/server.js': [`const { patchstackMiddleware } = require("${specifier}");`, SERVER].join('\n'),
+      });
+      scaffoldedGuard(cwd);
+
+      expect(expressAdapter.verify(cwd).wired, specifier).toBe(true);
+    }
+  });
+
+  it('is bound by a require that also exports it', () => {
+    // The other side of the re-export rule, and the reason it cannot just refuse every line starting with
+    // `export`: `export const { … } = require(…)` really does bind the name here.
+    const cwd = project({
+      'package.json': PACKAGE_JSON,
+      'src/server.js': [
+        "const express = require('express');",
+        'export const { patchstackMiddleware } = require("./patchstack/guard.cjs");',
+        'const app = express();',
+        'app.use(express.json());',
+        'app.use(patchstackMiddleware);',
+        'app.listen(3000);',
+        '',
+      ].join('\n'),
+    });
+    scaffoldedGuard(cwd);
+
+    expect(expressAdapter.verify(cwd).wired).toBe(true);
+  });
+
+  it('is not re-exported into existence', () => {
+    // `export { patchstackMiddleware } from './guard'` names the symbol and passes it on. It binds nothing
+    // here, so the registration below it throws on the first request — while the text reads as wired.
+    const cwd = project({
+      'package.json': PACKAGE_JSON,
+      'src/server.js': [
+        "const express = require('express');",
+        'export { patchstackMiddleware } from "./patchstack/guard.cjs";',
+        'const app = express();',
+        'app.use(express.json());',
+        'app.use(patchstackMiddleware);',
+        'app.listen(3000);',
+        '',
+      ].join('\n'),
+    });
+    scaffoldedGuard(cwd);
+
+    expect(expressAdapter.verify(cwd).wired).toBe(false);
+  });
+});
