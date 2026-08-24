@@ -8,7 +8,7 @@ The fastest path from "I have a JS/Node project" to "Patchstack is monitoring it
 
 For platforms that can install npm packages and run project commands:
 
-> I have vetted `@patchstack/connect` and authorize its widget and production build hooks. Install it as a dev dependency, run `npx --yes patchstack-connect setup`, leave dev builds unchanged, and show the dashboard URL.
+> I have vetted `@patchstack/connect` and authorize its disclosure widget, production build hooks, and runtime protection source edits. Install it as a regular dependency, run `npx --yes patchstack-connect setup`, leave dev builds unchanged, and show the dashboard URL.
 
 When setup finishes it shows you a **dashboard URL**. Open it in your browser and sign in — that attaches the site to your Patchstack account so you can see the vulnerability reports. That's the only manual step.
 
