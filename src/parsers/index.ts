@@ -7,6 +7,7 @@ import { parseNpmLockfile } from './npm.js';
 import { walkNodeModules } from './node_modules.js';
 import { parsePnpmLockfile } from './pnpm.js';
 import { parseYarnLockfile } from './yarn.js';
+import { newReport, unreadableWarning, type ParseReport } from './report.js';
 
 type LockfileFilename =
   | 'package-lock.json'
@@ -99,11 +100,14 @@ export async function scanLockfile(cwd: string): Promise<Manifest> {
 
   for (const candidate of candidates) {
     let packages: PackageEntry[];
+    const report = newReport();
     try {
-      packages = await runStrategy(candidate, cwd);
+      packages = await runStrategy(candidate, cwd, report);
     } catch {
       continue;
     }
+    const unreadable = unreadableWarning(candidate.filename, report);
+    if (unreadable !== null) warnings.push(unreadable);
     walkTried ||= candidate.strategy === 'node-modules-walk';
     firstParsed ??= { packages, filename: candidate.filename };
     parsedSources.push({ packages, filename: candidate.filename });
@@ -218,16 +222,19 @@ async function presentLockfiles(cwd: string): Promise<DetectedLockfile[]> {
 async function runStrategy(
   detected: DetectedLockfile,
   cwd: string,
+  report: ParseReport,
 ): Promise<PackageEntry[]> {
   switch (detected.strategy) {
     case 'npm-lockfile':
       return parseNpmLockfile(detected.filePath);
     case 'bun-lockfile':
       return parseBunLockfile(detected.filePath);
+    // The two hand-written scanners. Both meet entries they were not written for, and both are asked to say
+    // how many they dropped, because a manifest short a package reads exactly like a project without it.
     case 'pnpm-lockfile':
-      return parsePnpmLockfile(detected.filePath);
+      return parsePnpmLockfile(detected.filePath, report);
     case 'yarn-lockfile':
-      return parseYarnLockfile(detected.filePath);
+      return parseYarnLockfile(detected.filePath, report);
     case 'node-modules-walk':
       return walkNodeModules(cwd);
   }

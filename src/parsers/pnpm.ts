@@ -1,5 +1,6 @@
 import { readFile } from 'node:fs/promises';
 import { PatchstackError, type PackageEntry } from '../types.js';
+import { recordUnreadable, type ParseReport } from './report.js';
 
 /**
  * Parses pnpm-lock.yaml without pulling in a YAML library. We don't need full
@@ -12,7 +13,7 @@ import { PatchstackError, type PackageEntry } from '../types.js';
  *   v6-v8: /pkg@1.0.0                /@scope/pkg@1.0.0     (optional `(peer@x)` suffix)
  *   v9:    pkg@1.0.0                 @scope/pkg@1.0.0      (optional `(peer@x)` suffix, may be quoted)
  */
-export async function parsePnpmLockfile(lockfilePath: string): Promise<PackageEntry[]> {
+export async function parsePnpmLockfile(lockfilePath: string, report?: ParseReport): Promise<PackageEntry[]> {
   let raw: string;
   try {
     raw = await readFile(lockfilePath, 'utf8');
@@ -39,6 +40,7 @@ export async function parsePnpmLockfile(lockfilePath: string): Promise<PackageEn
   for (const key of packageKeys) {
     const parsed = parsePackageKey(key);
     if (parsed === null) {
+      recordUnreadable(report, key);
       continue;
     }
     entries.push({

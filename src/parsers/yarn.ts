@@ -1,6 +1,7 @@
 import { readFile } from 'node:fs/promises';
 import path from 'node:path';
 import { PatchstackError, type PackageEntry } from '../types.js';
+import { recordUnreadable, type ParseReport } from './report.js';
 
 /**
  * Parses yarn.lock (yarn classic v1 and yarn berry v2+) without a YAML
@@ -13,7 +14,7 @@ import { PatchstackError, type PackageEntry } from '../types.js';
  * record an importer manifest the way pnpm v9 does), so we cross-reference
  * the sibling `package.json` when present.
  */
-export async function parseYarnLockfile(lockfilePath: string): Promise<PackageEntry[]> {
+export async function parseYarnLockfile(lockfilePath: string, report?: ParseReport): Promise<PackageEntry[]> {
   let raw: string;
   try {
     raw = await readFile(lockfilePath, 'utf8');
@@ -25,7 +26,7 @@ export async function parseYarnLockfile(lockfilePath: string): Promise<PackageEn
     );
   }
 
-  const blocks = parseBlocks(raw);
+  const blocks = parseBlocks(raw, report);
   if (blocks.length === 0) {
     throw new PatchstackError(
       `Lockfile at ${lockfilePath} contains no package entries`,
@@ -59,18 +60,32 @@ export async function parseYarnLockfile(lockfilePath: string): Promise<PackageEn
 }
 
 interface Block {
+  /** Set when no descriptor resolved and at least one was in a form this scanner does not read. */
+  unreadable: boolean;
   names: Set<string>;
   version: string;
+  /** The key line this block came from, kept so an unreadable one can be named rather than just counted. */
+  key: string;
 }
 
-function parseBlocks(raw: string): Block[] {
+/** Keys that are not packages and are not meant to become one. */
+const NON_PACKAGE_KEYS = new Set(['__metadata']);
+
+function parseBlocks(raw: string, report?: ParseReport): Block[] {
   const lines = raw.split(/\r?\n/);
   const blocks: Block[] = [];
   let current: Block | null = null;
 
   const finalize = () => {
-    if (current !== null && current.version.length > 0 && current.names.size > 0) {
+    if (current === null) {
+      return;
+    }
+    if (current.version.length > 0 && current.names.size > 0) {
       blocks.push(current);
+    } else if (current.unreadable) {
+      // Only a block whose descriptors this scanner did not UNDERSTAND. A workspace or a file: entry
+      // resolved no name on purpose, and reporting those would bury the one that matters.
+      recordUnreadable(report, current.key);
     }
     current = null;
   };
@@ -92,13 +107,13 @@ function parseBlocks(raw: string): Block[] {
       // produces an empty names set, so it's naturally skipped on finalize.
       const keyLine = trimmed.slice(0, -1);
       const names = new Set<string>();
+      let unreadable = false;
       for (const spec of splitDescriptors(keyLine)) {
-        const name = extractName(spec);
-        if (name !== null) {
-          names.add(name);
-        }
+        const classified = classifyDescriptor(spec);
+        if (classified.name !== undefined) names.add(classified.name);
+        else if (!classified.excluded) unreadable = true;
       }
-      current = { names, version: '' };
+      current = { names, version: '', key: keyLine, unreadable: unreadable && names.size === 0 };
       continue;
     }
 
@@ -190,9 +205,22 @@ const NON_REGISTRY_PROTOCOLS = /^(?:workspace|patch|virtual|portal|file|link|exe
  * advisory would be about. The alias is what the app imports it by, which is not this inventory's question.
  */
 export function extractName(rawSpec: string): string | null {
+  return classifyDescriptor(rawSpec).name ?? null;
+}
+
+/**
+ * A descriptor's package name, or why there isn't one.
+ *
+ * The two reasons are not the same and must not be reported the same way. `excluded` is a deliberate
+ * exclusion — a workspace, a file, a link, a key that was never a package — and the manifest is complete
+ * without it. Neither field set means this scanner did not recognise the descriptor at all, which is a
+ * package that may well be installed and is missing from the inventory. One is silence; the other is a
+ * warning, and telling them apart is the whole reason this returns more than a string.
+ */
+export function classifyDescriptor(rawSpec: string): { name?: string; excluded?: boolean } {
   let s = rawSpec.trim();
   if (s.length === 0) {
-    return null;
+    return { excluded: true };
   }
   if (
     (s.startsWith('"') && s.endsWith('"')) ||
@@ -201,21 +229,25 @@ export function extractName(rawSpec: string): string | null {
     s = s.slice(1, -1);
   }
 
+  if (NON_PACKAGE_KEYS.has(s)) {
+    return { excluded: true };
+  }
+
   // Split at the FIRST `@` that starts a range, not the last character that happens to be one. A scope's
   // leading `@` is at position 0 and never a separator.
   const atIdx = s.indexOf('@', 1);
   if (atIdx <= 0) {
-    return null;
+    return {};
   }
 
   const name = s.slice(0, atIdx);
   const range = s.slice(atIdx + 1);
   if (name.length === 0) {
-    return null;
+    return {};
   }
 
   if (NON_REGISTRY_PROTOCOLS.test(range)) {
-    return null;
+    return { excluded: true };
   }
 
   // `npm:` is the registry protocol, and it is the one place a second package name appears: an alias points
@@ -226,10 +258,10 @@ export function extractName(rawSpec: string): string | null {
     // `npm:1.2.3` is a plain version for THIS package; `npm:other@1.2.3` renames another one.
     const targetAt = target.indexOf('@', 1);
 
-    return targetAt > 0 ? target.slice(0, targetAt) : name;
+    return { name: targetAt > 0 ? target.slice(0, targetAt) : name };
   }
 
-  return name;
+  return { name };
 }
 
 function parseVersionField(content: string): string | null {
