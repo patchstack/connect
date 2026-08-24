@@ -1,12 +1,17 @@
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import {
   MARKER_ATTR,
   buildInjectionSnippet,
+  buildSourceMarkerSnippet,
+  ensureMarkerInJsxShell,
+  ensureSourceMarker,
   findHtmlFiles,
+  hasJsxShell,
   injectMarker,
+  productionGate,
   resolveBuildDir,
 } from '../src/mark-build.js';
 
@@ -116,5 +121,135 @@ describe('resolveBuildDir + findHtmlFiles', () => {
 
   it('returns null when no build directory exists', () => {
     expect(resolveBuildDir(root)).toBeNull();
+  });
+});
+
+
+describe('productionGate', () => {
+  it('uses the Vite-replaced flag for bundlers that define it', () => {
+    expect(productionGate('tanstack-start')).toBe('import.meta.env.PROD');
+    expect(productionGate('remix')).toBe('import.meta.env.PROD');
+    expect(productionGate(null)).toBe('import.meta.env.PROD');
+  });
+
+  it('falls back to NODE_ENV where import.meta.env is not defined', () => {
+    expect(productionGate('next')).toContain('process.env.NODE_ENV');
+    expect(productionGate('gatsby')).toContain('process.env.NODE_ENV');
+  });
+
+  it('uses the Nuxt dev flag for Nuxt', () => {
+    expect(productionGate('nuxt')).toBe('!import.meta.dev');
+  });
+});
+
+describe('hasJsxShell', () => {
+  it('is true for React-family roots and false otherwise', () => {
+    expect(hasJsxShell('tanstack-start')).toBe(true);
+    expect(hasJsxShell('next')).toBe(true);
+    expect(hasJsxShell('nuxt')).toBe(false);
+    expect(hasJsxShell('sveltekit')).toBe(false);
+    expect(hasJsxShell(null)).toBe(false);
+  });
+});
+
+describe('buildSourceMarkerSnippet', () => {
+  it('sets the marker the widget reads, behind the framework production gate', () => {
+    const snippet = buildSourceMarkerSnippet('tanstack-start');
+    expect(snippet).toContain('window.__PATCHSTACK_PROD__=true;');
+    expect(snippet).toContain('import.meta.env.PROD &&');
+    expect(snippet).toContain(MARKER_ATTR);
+  });
+
+  it('never emits an ungated marker, which would also hide the claim flow in dev', () => {
+    for (const framework of ['tanstack-start', 'next', 'remix', 'react-router', 'gatsby']) {
+      const snippet = buildSourceMarkerSnippet(framework);
+      const gateIndex = snippet.indexOf(productionGate(framework));
+      expect(gateIndex).toBeGreaterThanOrEqual(0);
+      expect(gateIndex).toBeLessThan(snippet.indexOf('__PATCHSTACK_PROD__'));
+    }
+  });
+
+  it('is an inline document script, so it beats the deferred widget tag', () => {
+    // A module-level assignment would not be ordered ahead of the widget's init.
+    expect(buildSourceMarkerSnippet('tanstack-start')).toContain('dangerouslySetInnerHTML');
+  });
+});
+
+
+describe('ensureMarkerInJsxShell', () => {
+  const widgetLine =
+    '      <script src="https://cdn.patchstack.com/patchstack-widget.js" data-site-uuid="u" defer />';
+
+  const doc = (body: string): string =>
+    ['export const Root = () => (', '  <html>', '    <head>', '    </head>', '    <body>', body, '    </body>', '  </html>', ');'].join('\n');
+
+  it('inserts the marker above the widget tag, so it runs first', () => {
+    const { source, action } = ensureMarkerInJsxShell(doc(widgetLine), 'tanstack-start');
+    expect(action).toBe('added');
+    expect(source.indexOf('__PATCHSTACK_PROD__')).toBeLessThan(source.indexOf('patchstack-widget'));
+    expect(source).toContain('import.meta.env.PROD &&');
+  });
+
+  it('falls back to <head> when no widget tag is present yet', () => {
+    const { source, action } = ensureMarkerInJsxShell(doc('      <div />'), 'tanstack-start');
+    expect(action).toBe('added');
+    expect(source.indexOf('__PATCHSTACK_PROD__')).toBeLessThan(source.indexOf('</head>'));
+  });
+
+  it('is idempotent — a re-run refreshes the block instead of stacking copies', () => {
+    const once = ensureMarkerInJsxShell(doc(widgetLine), 'tanstack-start').source;
+    const twice = ensureMarkerInJsxShell(once, 'tanstack-start').source;
+    expect((twice.match(/__PATCHSTACK_PROD__/g) ?? []).length).toBe(1);
+    expect((twice.match(/#region patchstack/g) ?? []).length).toBe(1);
+  });
+
+  it('adopts a hand-placed marker rather than adding a second one', () => {
+    const hand = doc('      {import.meta.env.PROD && <script>{"window.__PATCHSTACK_PROD__=true;"}</script>}');
+    const { source, action } = ensureMarkerInJsxShell(hand, 'tanstack-start');
+    expect(action).toBe('manual');
+    expect(source).toBe(hand);
+  });
+
+  it('reports no-anchor when the file has no JSX shell to attach to', () => {
+    const { action } = ensureMarkerInJsxShell('export const x = 1;\n', 'tanstack-start');
+    expect(action).toBe('no-anchor');
+  });
+
+  it('declines frameworks whose root shell is not JSX', () => {
+    expect(ensureMarkerInJsxShell(doc(widgetLine), 'nuxt').action).toBe('unsupported');
+    expect(ensureMarkerInJsxShell(doc(widgetLine), 'sveltekit').action).toBe('unsupported');
+  });
+});
+
+describe('ensureSourceMarker', () => {
+  let root: string;
+
+  beforeEach(() => {
+    root = mkdtempSync(path.join(tmpdir(), 'psmarker-'));
+  });
+
+  afterEach(() => {
+    rmSync(root, { recursive: true, force: true });
+  });
+
+  it('writes the marker into the shell so the next build compiles it in', () => {
+    mkdirSync(path.join(root, 'src', 'routes'), { recursive: true });
+    const shell = path.join('src', 'routes', '__root.tsx');
+    writeFileSync(
+      path.join(root, shell),
+      'export const Root = () => (\n  <html>\n    <head>\n    </head>\n  </html>\n);\n',
+    );
+
+    const result = ensureSourceMarker(root, shell, 'tanstack-start');
+    expect(result.action).toBe('added');
+    expect(readFileSync(path.join(root, shell), 'utf8')).toContain('window.__PATCHSTACK_PROD__=true;');
+  });
+
+  it('leaves the file untouched when there is no anchor', () => {
+    const shell = 'root.tsx';
+    writeFileSync(path.join(root, shell), 'export const x = 1;\n');
+
+    expect(ensureSourceMarker(root, shell, 'tanstack-start').action).toBe('no-anchor');
+    expect(readFileSync(path.join(root, shell), 'utf8')).toBe('export const x = 1;\n');
   });
 });

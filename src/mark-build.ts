@@ -1,4 +1,4 @@
-import { existsSync, readdirSync, statSync } from 'node:fs';
+import { existsSync, readFileSync, readdirSync, statSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 
 import { isEmptyStack, type StackDescriptor } from './stack.js';
@@ -87,4 +87,171 @@ export function injectMarker(html: string, snippet: string): string {
     return stripped.replace(/<\/body>/i, `${snippet}</body>`);
   }
   return stripped + snippet;
+}
+
+/* ------------------------------------------------------------------ */
+/*  Source-shell marking (server-rendered roots)                      */
+/* ------------------------------------------------------------------ */
+
+/**
+ * Frameworks whose root shell is JSX. These get a literal snippet; every other
+ * code shell gets the requirement described instead, because its head mechanism
+ * (`useHead`, `<svelte:head>`, Astro frontmatter) is not a plain script tag and
+ * a wrong snippet costs more than an accurate sentence.
+ */
+const JSX_SHELL_FRAMEWORKS = new Set([
+  'next',
+  'remix',
+  'react-router',
+  'tanstack-start',
+  'gatsby',
+]);
+
+/**
+ * How each framework spells "this is a production build" in source. Vite-built
+ * roots use `import.meta.env.PROD`, which the bundler statically replaces;
+ * bundlers that don't define it fall back to NODE_ENV.
+ *
+ * The gate is load-bearing: an ungated marker also fires in the hosted builder's
+ * dev preview, which is exactly where the owner still needs the claim flow.
+ */
+const PRODUCTION_GATES: Record<string, string> = {
+  next: "process.env.NODE_ENV === 'production'",
+  gatsby: "process.env.NODE_ENV === 'production'",
+  nuxt: '!import.meta.dev',
+};
+
+const DEFAULT_PRODUCTION_GATE = 'import.meta.env.PROD';
+
+/** The build-time expression that must guard the marker for this framework. */
+export function productionGate(framework: string | null): string {
+  const mapped = framework !== null ? PRODUCTION_GATES[framework] : undefined;
+  return mapped ?? DEFAULT_PRODUCTION_GATE;
+}
+
+/** True when `guide` can print a literal marker snippet for this framework. */
+export function hasJsxShell(framework: string | null): boolean {
+  return framework !== null && JSX_SHELL_FRAMEWORKS.has(framework);
+}
+
+/**
+ * The production marker as it belongs in a JSX root shell.
+ *
+ * Server-rendered roots never produce a static HTML file for `mark-build` to
+ * stamp, so on those stacks this is the only path the marker has to production.
+ * It stays an inline document script rather than a module-level assignment: the
+ * widget tag is `defer`, and only a parser-executed inline script is ordered
+ * ahead of it for certain.
+ */
+export function buildSourceMarkerSnippet(framework: string | null): string {
+  const gate = productionGate(framework);
+  return (
+    `{${gate} && (\n` +
+    `  <script\n` +
+    `    ${MARKER_ATTR}="true"\n` +
+    `    dangerouslySetInnerHTML={{ __html: 'window.__PATCHSTACK_PROD__=true;' }}\n` +
+    `  />\n` +
+    `)}`
+  );
+}
+
+/** Global the widget reads to decide it is running on a published build. */
+const PROD_MARKER_GLOBAL = '__PATCHSTACK_PROD__';
+
+/**
+ * JSX comment fence around the injected marker. Mirrors the `#region` fence the
+ * protect installer uses on server entries: it makes the block obviously ours,
+ * and lets a re-run replace it instead of stacking copies.
+ */
+const REGION_OPEN = '{/* #region patchstack (managed by patchstack-connect — do not edit) */}';
+const REGION_CLOSE = '{/* #endregion patchstack */}';
+const REGION_RE = /[ \t]*\{\/\* #region patchstack[\s\S]*?#endregion patchstack \*\/\}\n?/g;
+
+export type SourceMarkerAction =
+  /** The managed block was inserted (or refreshed in place). */
+  | 'added'
+  /** A marker is already present and not ours — adopted, left untouched. */
+  | 'manual'
+  /** No JSX anchor to attach to; the caller falls back to printing the snippet. */
+  | 'no-anchor'
+  /** This framework's root shell is not JSX, so there is no snippet to insert. */
+  | 'unsupported';
+
+export interface SourceMarkerResult {
+  source: string;
+  action: SourceMarkerAction;
+}
+
+/**
+ * Insert the production marker into a JSX root shell, idempotently.
+ *
+ * Anchors on the widget tag when one is present, so the marker is ordered ahead
+ * of it in the document; otherwise on `<head>`, then `<body>`. A marker the
+ * developer placed themselves is adopted rather than duplicated.
+ */
+export function ensureMarkerInJsxShell(source: string, framework: string | null): SourceMarkerResult {
+  if (!hasJsxShell(framework)) {
+    return { source, action: 'unsupported' };
+  }
+
+  const stripped = source.replace(REGION_RE, '');
+  if (stripped.includes(PROD_MARKER_GLOBAL)) {
+    return { source, action: 'manual' };
+  }
+
+  const block = (indent: string): string =>
+    [REGION_OPEN, ...buildSourceMarkerSnippet(framework).split('\n'), REGION_CLOSE]
+      .map((line) => `${indent}${line}`)
+      .join('\n');
+
+  const widget = stripped.match(/^([ \t]*).*patchstack-widget.*$/m);
+  if (widget?.index !== undefined) {
+    const indent = widget[1] ?? '';
+    return {
+      source: `${stripped.slice(0, widget.index)}${block(indent)}\n${stripped.slice(widget.index)}`,
+      action: 'added',
+    };
+  }
+
+  for (const anchor of [/^([ \t]*)<head>[ \t]*$/m, /^([ \t]*)<body>[ \t]*$/m]) {
+    const match = stripped.match(anchor);
+    if (match?.index === undefined) {
+      continue;
+    }
+    const end = match.index + match[0].length;
+    const indent = `${match[1] ?? ''}  `;
+    return {
+      source: `${stripped.slice(0, end)}\n${block(indent)}${stripped.slice(end)}`,
+      action: 'added',
+    };
+  }
+
+  return { source, action: 'no-anchor' };
+}
+
+export interface EnsureSourceMarkerResult extends SourceMarkerResult {
+  /** Project-relative shell that was inspected, or null when there is none. */
+  shell: string | null;
+}
+
+/**
+ * Ensure the production marker in the project's JSX root shell. Runs during
+ * `scan`, which is a pre-build hook, so the edit is picked up by the build that
+ * follows — the marker reaches production without anyone pasting anything.
+ */
+export function ensureSourceMarker(
+  cwd: string,
+  shell: string | null,
+  framework: string | null,
+): EnsureSourceMarkerResult {
+  if (shell === null) {
+    return { shell: null, source: '', action: 'no-anchor' };
+  }
+  const file = path.resolve(cwd, shell);
+  const before = readFileSync(file, 'utf8');
+  const result = ensureMarkerInJsxShell(before, framework);
+  if (result.source !== before && result.action === 'added') {
+    writeFileSync(file, result.source);
+  }
+  return { ...result, shell };
 }

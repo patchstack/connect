@@ -10,6 +10,7 @@ import {
   detectPackageManager,
   findWidgetMarker,
   installCommand,
+  needsSourceProductionMarker,
   renderGuideChecklist,
 } from '../src/guide.js';
 
@@ -326,6 +327,66 @@ describe('guide', () => {
     it('points at the project root when package.json is missing', async () => {
       const output = renderGuideChecklist(await collectGuideState(cwd), false);
       expect(output).toContain('No package.json found');
+    });
+  });
+
+  describe('production marker on server-rendered roots', () => {
+    const tanstackProject = (rootContents: string): void => {
+      writeJson('package.json', {
+        name: 'ssr-app',
+        dependencies: { '@tanstack/react-start': '1.0.0', react: '18.0.0' },
+      });
+      writeJson('.patchstackrc.json', { siteUuid: VALID_UUID });
+      mkdirSync(path.join(cwd, 'src', 'routes'), { recursive: true });
+      writeFileSync(path.join(cwd, 'src', 'routes', '__root.tsx'), rootContents);
+    };
+
+    const widgetTag = `<script src="https://cdn.patchstack.com/patchstack-widget.js" data-site-uuid="${VALID_UUID}"></script>`;
+
+    it('asks for the marker when the root is code and does not have it', async () => {
+      tanstackProject(`export const Root = () => <html>${widgetTag}</html>;`);
+      const state = await collectGuideState(cwd);
+
+      expect(needsSourceProductionMarker(state)).toBe(true);
+      expect(state.productionMarkerWired).toBe(false);
+
+      const output = renderGuideChecklist(state, false);
+      expect(output).toContain('Add the production marker');
+      expect(output).toContain('npx @patchstack/connect scan');
+      expect(output).toContain('import.meta.env.PROD &&');
+      expect(output).toContain('window.__PATCHSTACK_PROD__=true;');
+    });
+
+    it('counts the missing marker as an outstanding step', async () => {
+      tanstackProject(`export const Root = () => <html>${widgetTag}</html>;`);
+      const withoutMarker = countRemainingSteps(await collectGuideState(cwd));
+
+      tanstackProject(
+        `export const Root = () => <html>{import.meta.env.PROD && <script dangerouslySetInnerHTML={{ __html: 'window.__PATCHSTACK_PROD__=true;' }} />}${widgetTag}</html>;`,
+      );
+      const withMarker = countRemainingSteps(await collectGuideState(cwd));
+
+      expect(withoutMarker - withMarker).toBe(1);
+    });
+
+    it('reports the marker as done once the root sets it', async () => {
+      tanstackProject(
+        `export const Root = () => <html>{import.meta.env.PROD && <script dangerouslySetInnerHTML={{ __html: 'window.__PATCHSTACK_PROD__=true;' }} />}${widgetTag}</html>;`,
+      );
+      const state = await collectGuideState(cwd);
+
+      expect(state.productionMarkerWired).toBe(true);
+      expect(renderGuideChecklist(state, false)).toContain('Production marker wired');
+    });
+
+    it('stays silent for a plain HTML shell, where mark-build stamps the marker', async () => {
+      writeJson('package.json', { name: 'spa', dependencies: { vite: '5.0.0' } });
+      writeJson('.patchstackrc.json', { siteUuid: VALID_UUID });
+      writeFileSync(path.join(cwd, 'index.html'), `<html><body>${widgetTag}</body></html>`);
+
+      const state = await collectGuideState(cwd);
+      expect(needsSourceProductionMarker(state)).toBe(false);
+      expect(renderGuideChecklist(state, false)).not.toContain('Add the production marker');
     });
   });
 });
