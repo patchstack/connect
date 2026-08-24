@@ -7,7 +7,7 @@ import { readFileSync, existsSync, mkdirSync, copyFileSync, readdirSync, lstatSy
 import { join } from 'node:path';
 import { bakeSiteUuid, read, templatesDir } from './util.js';
 import type { WireOptions, VerifyResult } from './types.js';
-import { stripComments } from './source-scope.js';
+import { stripComments, maskStringContents } from './source-scope.js';
 
 const GUARD_MARKER = 'patchstack/guard';
 
@@ -84,45 +84,66 @@ const GUARD_EXPORTS = ['protectFetch', 'patchstackMiddleware', 'screenResponse']
 /**
  * Whether this file imports the guard module and uses what it imported.
  *
- * The import is matched on a real import or require of the guard path, not on the path appearing anywhere —
- * a comment mentioning it is not an import. The use is matched on a call, because an unused import wraps no
- * request: it type-checks, it ships, and it screens nothing.
+ * Three ways a file can carry the guard's name without running it, and all three had to be closed:
+ * a comment, an import clause (where a name is followed by a comma, which a use test read as use), and a
+ * string literal (which is just a place to put code-shaped text). So the question is asked about code:
+ * comments removed, string CONTENTS blanked, and the declarations themselves excluded from the search for
+ * a use. What is left is what executes.
  */
 function importsAndUsesGuard(source: string): boolean {
-  const stripped = stripComments(source);
-  const declarations = guardImportDeclarations(stripped);
+  const code = stripComments(source);
+  // Same length as `code`, so a match found here can be read back out of `code` — which is how the module
+  // specifier is recovered after being blanked.
+  const masked = maskStringContents(code);
+
+  const declarations = guardImportDeclarations(code, masked);
   if (declarations.length === 0) return false;
 
   const bound = new Set<string>();
-  for (const declaration of declarations) for (const name of boundNames(declaration)) bound.add(name);
+  for (const declaration of declarations) for (const name of boundNames(declaration.text)) bound.add(name);
   if (bound.size === 0) return false;
 
-  // The declarations themselves are removed before looking for a use. Inside an import clause a name is
-  // followed by a comma, which is what let `import { protectFetch, screenResponse } from "./guard"` count
-  // as using both of them while calling neither.
-  let body = stripped;
-  for (const declaration of declarations) body = body.split(declaration).join(' ');
+  // The declarations are blanked before looking for a use, so the import clause cannot supply it.
+  let body = masked;
+  for (const declaration of declarations) {
+    body = body.slice(0, declaration.start) + ' '.repeat(declaration.text.length) + body.slice(declaration.start + declaration.text.length);
+  }
 
   // A use is a call, or being passed somewhere, or a property read off a namespace import — all three put
   // the guard in the request path; none of them is the import line.
   return [...bound].some((name) => new RegExp(`\\b${escapeForRegExp(name)}\\s*[(),.]`).test(body));
 }
 
-/**
- * The import or require statements that bring in the guard module, verbatim.
- *
- * Matched on a real import or require of the guard path, not on the path appearing anywhere — a comment
- * mentioning it is not an import, and neither is a string that happens to contain it.
- */
-function guardImportDeclarations(stripped: string): string[] {
-  const marker = escapeForRegExp(GUARD_MARKER);
-  const pattern = new RegExp(
-    `import\\s+[^;]*?from\\s*['"\`][^'"\`]*${marker}[^'"\`]*['"\`]` +
-      `|(?:const|let|var)\\s+[^;=]+=\\s*require\\(\\s*['"\`][^'"\`]*${marker}[^'"\`]*['"\`]\\s*\\)`,
-    'g',
-  );
+/** An import or require declaration of the guard module: its source text and where it starts. */
+interface GuardDeclaration {
+  text: string;
+  start: number;
+}
 
-  return stripped.match(pattern) ?? [];
+/**
+ * The import or require statements that bring in the guard module.
+ *
+ * Found on the MASKED text, so a string holding an import statement is one opaque token rather than a
+ * declaration. The specifier is then read out of the unmasked text at the same offsets and checked for the
+ * guard path — the check the masking makes possible, rather than one it gets in the way of.
+ */
+function guardImportDeclarations(code: string, masked: string): GuardDeclaration[] {
+  const pattern = /import\s+[^;]*?from\s*(['"`])[^'"`]*\1|(?:const|let|var)\s+[^;=]+=\s*require\(\s*(['"`])[^'"`]*\2\s*\)/g;
+  const found: GuardDeclaration[] = [];
+
+  for (const match of masked.matchAll(pattern)) {
+    const start = match.index ?? -1;
+    if (start < 0) continue;
+    const text = code.slice(start, start + match[0].length);
+    if (specifierOf(text)?.includes(GUARD_MARKER) === true) found.push({ text, start });
+  }
+
+  return found;
+}
+
+/** The module string of a declaration, read from the unmasked text. */
+function specifierOf(declaration: string): string | null {
+  return /(['"`])([^'"`]*)\1/.exec(declaration)?.[2] ?? null;
 }
 
 /**
@@ -133,9 +154,10 @@ function guardImportDeclarations(stripped: string): string[] {
  */
 function boundNames(declaration: string): string[] {
   const names: string[] = [];
-  const clause = /^import\s+([^]*?)\s+from\b/.exec(declaration)?.[1]
-    ?? /^(?:const|let|var)\s+([^]*?)=\s*require\b/.exec(declaration)?.[1]
-    ?? '';
+  const clause =
+    /^import\s+([^]*?)\s+from\b/.exec(declaration)?.[1] ??
+    /^(?:const|let|var)\s+([^]*?)=\s*require\b/.exec(declaration)?.[1] ??
+    '';
 
   const braced = /\{([^}]*)\}/.exec(clause)?.[1];
   if (braced !== undefined) {

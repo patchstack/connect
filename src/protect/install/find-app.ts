@@ -16,8 +16,14 @@ const MAX_DEPTH = 8;
 export interface AppInstance {
   relPath: string;
   appVar: string;
-  /** Other files that create a server of their own and listen on it. Each needs its own guard. */
-  others: string[];
+  /**
+   * Other files that create a server of their own and listen on it. Each needs its own guard.
+   *
+   * The app variable comes with the path, because the questions asked of the wired entry — is the guard
+   * bound, is it registered on that instance, is it after the parser, is any route above it — are the same
+   * questions for a second server, and none of them can be asked from a filename alone.
+   */
+  others: Array<{ relPath: string; appVar: string }>;
 }
 
 /**
@@ -83,7 +89,7 @@ export function findAppInstance(cwd: string, re: RegExp): AppInstance | null {
   return {
     relPath: chosen.relPath,
     appVar: chosen.appVar,
-    others: found.filter((f) => f !== chosen && f.listens).map((f) => f.relPath),
+    others: found.filter((f) => f !== chosen && f.listens).map((f) => ({ relPath: f.relPath, appVar: f.appVar })),
   };
 }
 

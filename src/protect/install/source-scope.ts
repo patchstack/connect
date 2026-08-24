@@ -238,3 +238,52 @@ export function stripComments(source: string): string {
 
   return out;
 }
+
+/** The character a masked string literal's contents are replaced with. Never appears in real source. */
+export const MASKED_CHAR = '\u0001';
+
+/**
+ * Source with the CONTENTS of every string literal blanked, character for character.
+ *
+ * `stripComments` deliberately keeps strings — a `//` inside a URL is not a comment — which leaves one way
+ * back in: a string is a place to put code-shaped text that never runs. A literal holding
+ * `import { protectFetch } from "./patchstack/guard"`, and another holding `protectFetch(`, satisfy any
+ * check that searches text without knowing where that text is.
+ *
+ * Blanked rather than removed, one character for one character, so the result is the same length as the
+ * input: an offset or a line index taken from the masked text addresses the same place in the original,
+ * which is how a real declaration's module specifier is read back out. Newlines inside template literals
+ * are kept for the same reason.
+ */
+export function maskStringContents(source: string): string {
+  let out = '';
+  let quote: string | null = null;
+
+  for (let i = 0; i < source.length; i++) {
+    const ch = source[i] as string;
+
+    if (quote === null) {
+      out += ch;
+      if (ch === '"' || ch === "'" || ch === '`') quote = ch;
+      continue;
+    }
+
+    if (ch === '\\') {
+      // The escape and the character it escapes are both content, and neither ends the literal.
+      out += MASKED_CHAR;
+      if (i + 1 < source.length) {
+        out += source[i + 1] === '\n' ? '\n' : MASKED_CHAR;
+        i++;
+      }
+      continue;
+    }
+    if (ch === quote) {
+      out += ch;
+      quote = null;
+      continue;
+    }
+    out += ch === '\n' ? '\n' : MASKED_CHAR;
+  }
+
+  return out;
+}

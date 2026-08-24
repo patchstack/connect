@@ -542,3 +542,208 @@ describe('a name in a comment is not wiring', () => {
     expect(check?.hint).toContain(`line ${actual}`);
   });
 });
+
+describe('the module a guard binding comes from', () => {
+  it('is not any module that exports the same name', () => {
+    // Reported. The name is not the module: a local file exporting `patchstackMiddleware` binds the same
+    // identifier and screens nothing, and both install and `--check` called it wired.
+    const cwd = project({
+      'package.json': PACKAGE_JSON,
+      'src/unrelated.cjs': 'module.exports = { patchstackMiddleware: (req, res, next) => next() };\n',
+      'src/server.js': [
+        "const express = require('express');",
+        'const { patchstackMiddleware } = require("./unrelated.cjs");',
+        'const app = express();',
+        'app.use(express.json());',
+        'app.use(patchstackMiddleware);',
+        'app.listen(3000);',
+        '',
+      ].join('\n'),
+    });
+
+    mkdirSync(join(cwd, 'src/patchstack'), { recursive: true });
+    writeFileSync(join(cwd, 'src/patchstack/guard.cjs'), 'module.exports = { patchstackMiddleware: () => {} };\n');
+
+    expect(expressAdapter.verify(cwd).wired).toBe(false);
+  });
+
+  it('is the scaffolded guard, whichever spelling of its path is used', () => {
+    // The control. The specifier is resolved rather than compared as text, so an equivalent path — with or
+    // without the extension — is the same module and passes.
+    const cwd = project({
+      'package.json': PACKAGE_JSON,
+      'src/server.js': [
+        "const express = require('express');",
+        'const app = express();',
+        'app.use(express.json());',
+        'app.listen(3000);',
+        '',
+      ].join('\n'),
+    });
+
+    expressAdapter.wire(cwd, { cwd, force: false } as never);
+    const wiredSource = readFileSync(join(cwd, 'src/server.js'), 'utf8');
+    writeFileSync(
+      join(cwd, 'src/server.js'),
+      wiredSource.replace('./patchstack/guard.cjs', './patchstack/../patchstack/guard.cjs'),
+    );
+
+    expect(expressAdapter.verify(cwd).wired).toBe(true);
+  });
+
+  it('is not a registration that only exists inside a string', () => {
+    // Comments were handled and string literals are deliberately kept — a `//` inside a URL is not a
+    // comment — which leaves a string as the place to put code-shaped text that never runs. The import here
+    // is real, so the module loads; the registration is a doc string, so no request is screened.
+    const cwd = project({
+      'package.json': PACKAGE_JSON,
+      'src/server.js': [
+        "const express = require('express');",
+        'const { patchstackMiddleware } = require("./patchstack/guard.cjs");',
+        'const app = express();',
+        'app.use(express.json());',
+        'const usage = "app.use(patchstackMiddleware);";',
+        'module.exports = { usage };',
+        'app.listen(3000);',
+        '',
+      ].join('\n'),
+    });
+
+    mkdirSync(join(cwd, 'src/patchstack'), { recursive: true });
+    writeFileSync(join(cwd, 'src/patchstack/guard.cjs'), 'module.exports = { patchstackMiddleware: () => {} };\n');
+
+    expect(expressAdapter.verify(cwd).wired).toBe(false);
+  });
+
+  it('is not a string that looks like the import', () => {
+    const cwd = project({
+      'package.json': PACKAGE_JSON,
+      'src/server.js': [
+        "const express = require('express');",
+        'const hint = \'const { patchstackMiddleware } = require("./patchstack/guard.cjs");\';',
+        'const app = express();',
+        'app.use(express.json());',
+        'app.use(patchstackMiddleware);',
+        'app.listen(3000);',
+        '',
+      ].join('\n'),
+    });
+
+    mkdirSync(join(cwd, 'src/patchstack'), { recursive: true });
+    writeFileSync(join(cwd, 'src/patchstack/guard.cjs'), 'module.exports = { patchstackMiddleware: () => {} };\n');
+
+    expect(expressAdapter.verify(cwd).wired).toBe(false);
+  });
+});
+
+describe('a second server that only imports the guard', () => {
+  const API = [
+    "const express = require('express');",
+    'const app = express();',
+    'app.use(express.json());',
+    'app.listen(3000);',
+    '',
+  ].join('\n');
+
+  it('is not counted as guarded', () => {
+    // Reported. A secondary server was checked for a binding only, so an import with nothing under it —
+    // which loads the module and screens no request — passed.
+    const cwd = project({
+      'package.json': PACKAGE_JSON,
+      'src/server.js': API,
+      'src/admin.js': [
+        "const express = require('express');",
+        'const { patchstackMiddleware } = require("./patchstack/guard.cjs");',
+        'const admin = express();',
+        'admin.use(express.json());',
+        'admin.listen(4000);',
+        '',
+      ].join('\n'),
+    });
+
+    expressAdapter.wire(cwd, { cwd, force: false } as never);
+    const report = expressAdapter.verify(cwd);
+
+    expect(report.wired).toBe(false);
+    expect(report.checks.find((c) => c.label.includes('every server in this project'))?.hint).toContain('src/admin.js');
+  });
+
+  it('is not counted as guarded when its guard sits above its body parser', () => {
+    // The ordering question is the same question for a second server: the guard reads a parsed body.
+    const cwd = project({
+      'package.json': PACKAGE_JSON,
+      'src/server.js': API,
+      'src/admin.js': [
+        "const express = require('express');",
+        'const { patchstackMiddleware } = require("./patchstack/guard.cjs");',
+        'const admin = express();',
+        'admin.use(patchstackMiddleware);',
+        'admin.use(express.json());',
+        'admin.listen(4000);',
+        '',
+      ].join('\n'),
+    });
+
+    expressAdapter.wire(cwd, { cwd, force: false } as never);
+
+    expect(expressAdapter.verify(cwd).wired).toBe(false);
+  });
+
+  it('is counted once it is registered in the right place', () => {
+    // The control, so the check is one a project can actually satisfy.
+    const cwd = project({
+      'package.json': PACKAGE_JSON,
+      'src/server.js': API,
+      'src/admin.js': [
+        "const express = require('express');",
+        'const { patchstackMiddleware } = require("./patchstack/guard.cjs");',
+        'const admin = express();',
+        'admin.use(express.json());',
+        'admin.use(patchstackMiddleware);',
+        'admin.listen(4000);',
+        '',
+      ].join('\n'),
+    });
+
+    expressAdapter.wire(cwd, { cwd, force: false } as never);
+
+    expect(expressAdapter.verify(cwd).wired).toBe(true);
+  });
+});
+
+describe('a guard already registered in the wrong place', () => {
+  it('is named at install time instead of being called wired', () => {
+    // The installer returned early on "both halves present" without asking whether the registration was
+    // after the body parser, so it logged `already wired`, changed nothing, and left the verifier to
+    // disagree with it.
+    const cwd = project({
+      'package.json': PACKAGE_JSON,
+      'src/server.js': [
+        "const express = require('express');",
+        'const { patchstackMiddleware } = require("./patchstack/guard.cjs");',
+        'const app = express();',
+        'app.use(patchstackMiddleware);',
+        'app.use(express.json());',
+        'app.listen(3000);',
+        '',
+      ].join('\n'),
+    });
+
+    mkdirSync(join(cwd, 'src/patchstack'), { recursive: true });
+    writeFileSync(join(cwd, 'src/patchstack/guard.cjs'), 'module.exports = { patchstackMiddleware: () => {} };\n');
+
+    const said: string[] = [];
+    const original = console.log;
+    console.log = (...args: unknown[]) => void said.push(args.join(' '));
+    try {
+      expressAdapter.wire(cwd, { cwd, force: false } as never);
+    } finally {
+      console.log = original;
+    }
+
+    const output = said.join('\n');
+    expect(output).not.toContain('already wired');
+    expect(output).toContain('before the body parser');
+    expect(expressAdapter.verify(cwd).wired).toBe(false);
+  });
+});

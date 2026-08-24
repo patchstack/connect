@@ -257,6 +257,68 @@ describe('what counts as the generic guard being wired', () => {
     expect(genericVerify(cwd).wired).toBe(false);
   });
 
+  it('is not satisfied by strings that look like an import and a call', () => {
+    // Reported. Comments were handled and string literals were deliberately kept, so a string became the
+    // remaining place to put code-shaped text that never runs.
+    const cwd = scaffolded({
+      'src/server.ts': [
+        'const docs = "import { protectFetch } from \'./patchstack/guard\'";',
+        'const example = "protectFetch(handler)";',
+        'export default { docs, example };',
+        '',
+      ].join('\n'),
+    });
+
+    expect(genericVerify(cwd).wired).toBe(false);
+  });
+
+  it('is not satisfied by a real import whose only use is inside a string', () => {
+    // The half that matters most: the import is real, so the module is loaded — and nothing calls it, which
+    // is an app that ships the guard and screens nothing.
+    const cwd = scaffolded({
+      'src/server.ts': [
+        'import { protectFetch } from "./patchstack/guard";',
+        'const hint = "wrap your handler with protectFetch(handler)";',
+        'export default { hint };',
+        '',
+      ].join('\n'),
+    });
+
+    expect(genericVerify(cwd).wired).toBe(false);
+  });
+
+  it('still reads the specifier of a real import, which is itself a string', () => {
+    // The control for the masking. Blanking string contents must not blind the check to the one string it
+    // has to read — the module the declaration imports from.
+    const cwd = scaffolded({
+      'src/server.ts': [
+        'const banner = "see https://example.test/docs for ./patchstack/guard";',
+        'import { protectFetch } from "./patchstack/guard";',
+        '',
+        'export default { banner, fetch: protectFetch(async () => new Response("ok")) };',
+        '',
+      ].join('\n'),
+    });
+
+    expect(genericVerify(cwd).wired).toBe(true);
+  });
+
+  it('is not satisfied by an import from a different module with the same names', () => {
+    // The name is not the module. A local file exporting something called `protectFetch` is not the guard,
+    // and accepting it would make the check satisfiable without the guard being installed at all.
+    const cwd = scaffolded({
+      'src/unrelated.ts': 'export function protectFetch(h: unknown) { return h; }\n',
+      'src/server.ts': [
+        'import { protectFetch } from "./unrelated";',
+        '',
+        'export default { fetch: protectFetch(async () => new Response("ok")) };',
+        '',
+      ].join('\n'),
+    });
+
+    expect(genericVerify(cwd).wired).toBe(false);
+  });
+
   it('is not fooled by a commented-out import beside a real mention', () => {
     // Comment stripping has to be string-aware: a `//` inside a URL is not a comment, and blanking the rest
     // of that line could hide a real import — or reveal a commented one.

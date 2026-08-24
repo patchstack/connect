@@ -117,7 +117,9 @@ Usage:
                                                      print the full setup guide. --full prints the
                                                      guide even when setup is complete
   patchstack-connect login  [--wait]                 Recover this site's credential when
-                                                     .patchstackrc.json has been lost. Prints a link
+                                                     .patchstackrc.local.json has been lost. Needs the
+                                                     site UUID, which lives in the committed
+                                                     .patchstackrc.json. Prints a link
                                                      for the site's OWNER to approve in the dashboard.
                                                      In a terminal it then waits. When the output is
                                                      piped or captured — an assistant running it — it
@@ -158,7 +160,8 @@ Environment:
   PATCHSTACK_MODE         (protect) Runtime guard mode: block (default) | dry-run
   PATCHSTACK_ROUTE_WAF    (protect) Set to 1 to also screen every request at the route level (opt-in)
 
-Precedence: CLI flag > environment variable > .patchstackrc.json.
+Precedence, site UUID and settings: CLI flag > environment variable > .patchstackrc.json (committed).
+Precedence, API key: environment variable > .patchstackrc.local.json (git-ignored) > .patchstackrc.json.
 
 Examples:
   npx @patchstack/connect setup
