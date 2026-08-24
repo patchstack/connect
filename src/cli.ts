@@ -473,6 +473,14 @@ async function runScan(
     return 0;
   }
 
+  // Ahead of the post deliberately. The marker carries no site UUID and needs no
+  // server round-trip, while `scan` is commonly chained as `scan || true`, so a
+  // failed or offline post must not be what decides whether a published build
+  // gets its production flag. --dry-run has already returned by here.
+  if (config.widget) {
+    reportSourceMarker(detectStack(payload.packages).framework);
+  }
+
   const provisioning = config.siteUuid === null;
   if (provisioning) {
     console.log('No site UUID configured — provisioning a new Patchstack site from this manifest…');
@@ -510,7 +518,6 @@ async function runScan(
   const effectiveUuid = config.siteUuid ?? response.uuid ?? null;
   if (config.widget && effectiveUuid !== null && effectiveUuid.length > 0) {
     reportSourceWidget(effectiveUuid);
-    reportSourceMarker(detectStack(payload.packages).framework);
   }
 
   // On the first scan (provisioning), surface the dashboard URL so the user can
