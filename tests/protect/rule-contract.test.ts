@@ -345,6 +345,62 @@ describe('what the delivered-bundle validator does with it', () => {
     expect(reasonFor({ parameter: 'server.HTTP_HOST', match: { type: 'hostname' } })).toMatch(/needs "value"/);
   });
 
+  it('rejects a rule-level property the runtime would silently ignore', () => {
+    // Each of these is read by the runtime in a way validation did not check, and each failure is silent in
+    // the same direction: the document says one thing and the guard does another. Measured against the
+    // runtime rather than inferred — with a body just over the default cap, `max_bytes: "Infinity"`
+    // validated and the secret was still served.
+    const response = {
+      phase: 'response', action: 'redact',
+      rule_v2: [{ parameter: 'response.body', match: { type: 'regex', value: '/sk-[a-z0-9]+/' } }],
+    };
+
+    // The cap is raised only when the value is FINITE, so these read as "no limit" and deliver the default.
+    // That is the sharpest of the set: the only intent here is the largest possible raise, and the effect
+    // is no raise at all. `bypass_limit: true` is how that intent is actually expressed.
+    expect(ruleReasonFor({ ...response, max_bytes: Infinity })).toMatch(/finite positive number/);
+    expect(ruleReasonFor({ ...response, max_bytes: 'Infinity' })).toMatch(/finite positive number/);
+    // A quoted number DOES raise the cap, because the calculation coerces — but the three layers that
+    // validate a document disagreed about accepting it, and one rule is worth more than the coercion.
+    expect(ruleReasonFor({ ...response, max_bytes: '1048576' })).toMatch(/finite positive number/);
+    expect(ruleReasonFor({ ...response, max_bytes: true })).toMatch(/finite positive number/);
+
+    // Tested `=== true`, so every other spelling means false while reading as "remove the cap entirely".
+    expect(ruleReasonFor({ ...response, bypass_limit: 'true' })).toMatch(/must be true or false/);
+    expect(ruleReasonFor({ ...response, bypass_limit: 1 })).toMatch(/must be true or false/);
+
+    // `enforcement` is deliberately NOT in this set, and an earlier version of this change put it there.
+    // The engine reads an unknown value as "follow the site" — conservative for a protection control, and
+    // forward compatible: a newer server may send a value this guard has not learned, and the rule must
+    // still protect. Refusing it here drops the rule instead, trading real enforcement for a stricter
+    // reading of a field that already fails safe. `per-rule-enforcement.test.ts` is what caught that.
+    expect(ruleReasonFor({ ...response, enforcement: 'observe-only' })).toBeNull();
+
+    expect(ruleReasonFor({ phase: 'response', action: 'set-header', set_headers: { 'X-A': '1' }, ensure: 'yes',
+      rule_v2: [{ parameter: 'response.status', match: { type: 'isset' } }] })).toMatch(/must be true or false/);
+
+    expect(ruleReasonFor({ ...response, prefilter: 'sk-' })).toMatch(/non-empty list of non-empty strings/);
+
+    // The working spellings stay working — this must not become a rule that refuses the feature.
+    expect(ruleReasonFor({ ...response, max_bytes: 1048576 })).toBeNull();
+    expect(ruleReasonFor({ ...response, bypass_limit: true })).toBeNull();
+    expect(ruleReasonFor({ ...response, bypass_limit: false })).toBeNull();
+    expect(ruleReasonFor({ ...response, enforcement: 'dry-run' })).toBeNull();
+    expect(ruleReasonFor({ ...response, prefilter: ['sk-'] })).toBeNull();
+  });
+
+  it('publishes the rule-property shapes, so a consumer derives them', () => {
+    // Three other codebases validate this document, and each had to be told about `max_bytes` separately.
+    // They disagreed: one accepted a quoted number, one accepted a boolean, one accepted only positive
+    // integers, and the engine accepted a value it then ignored.
+    expect(ruleContract().rule_property_shapes).toMatchObject({
+      max_bytes: 'positive-number',
+      bypass_limit: 'boolean',
+      ensure: 'boolean',
+    });
+    expect(ruleContract().enforcement_values).toEqual(['dry-run']);
+  });
+
   it('rejects a property authored as null, while an omitted one still means the default', () => {
     // Absent and authored-null are different events, and only one is a statement of intent. Omitting a
     // property means "whatever the engine defaults to", which is a real thing to mean. A null means

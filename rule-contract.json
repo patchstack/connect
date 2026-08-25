@@ -1,6 +1,6 @@
 {
   "$comment": "Generated from src/protect/rules/contract.js by scripts/emit-rule-contract.mjs. Do not edit.",
-  "version": "2.5",
+  "version": "2.6",
   "sources": {
     "raw": {
       "keyed": false
@@ -130,6 +130,8 @@
     "cors_reflected"
   ],
   "operand_shapes": [
+    "positive-number",
+    "boolean",
     "non-empty-string",
     "regex-literal",
     "string-or-string-list",
@@ -346,6 +348,15 @@
     "method"
   ],
   "null_valued_properties": "refused",
+  "rule_property_shapes": {
+    "max_bytes": "positive-number",
+    "bypass_limit": "boolean",
+    "ensure": "boolean",
+    "prefilter": "non-empty-string-list"
+  },
+  "enforcement_values": [
+    "dry-run"
+  ],
   "rule_properties": [
     "id",
     "rule_id",

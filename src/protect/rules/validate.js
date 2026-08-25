@@ -26,6 +26,7 @@ import {
   parameterProblem,
   whenProblem,
   nullPropertyProblem,
+  rulePropertyProblem,
 } from './contract.js';
 
 export const LIMITS = CONTRACT_LIMITS;
@@ -106,8 +107,12 @@ function ruleProblem(rule) {
   const scopeReason = whenProblem(rule.when);
   if (scopeReason) return scopeReason;
 
-  const capOverride = rule.max_bytes;
-  if (capOverride !== undefined && !(Number(capOverride) > 0)) return 'max_bytes must be a positive number';
+  // The rule-level properties the RUNTIME reads by identity or coercion. `Number(x) > 0` used to stand in
+  // for the cap check, and it accepted `Infinity` — which the cap calculation then ignores for not being
+  // finite, so the rule validated as "no limit" and delivered the default.
+  const propertyReason = rulePropertyProblem(rule);
+  if (propertyReason) return propertyReason;
+
   return conditionsProblem(rule.rule_v2);
 }
 
