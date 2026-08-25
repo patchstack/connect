@@ -367,17 +367,81 @@ function ruleAppliesTo(when, resolver) {
   }
 }
 
-// `when.path`: an exact path, a glob with `*`, or an explicit `/regex/` (starts & ends with `/`).
+// A `when.path` scope names an ENDPOINT, and no HTTP router decides which endpoint a request reached by
+// comparing the target byte for byte. Measured over raw sockets (so nothing upstream normalized the
+// target first) against Express 4.22, Express 5.2 and Fastify 5, each with one handler on `/api/fetch`:
+//
+//     /api/fetch/      runs the handler on Express      404 on Fastify
+//     /API/fetch       runs the handler on Express      404 on Fastify
+//     /api/%66etch     404 on Express                   runs the handler on Fastify
+//
+// All three run the handler, so all three are the endpoint the scope names and a scope has to cover
+// them; a byte comparison covers only the first. The percent-encoded one is already covered, because
+// `normalizeRequest` url-decodes the target before any rule is evaluated — decoding a second time here
+// would resolve a DOUBLE encoding as well and widen every scope onto requests no router resolves. What
+// is left to fold is case and one trailing slash.
+//
+// Deliberately NOT folded: duplicate slashes, dot segments and an encoded separator (`/api//fetch`,
+// `/api/./fetch`, `/api%2Ffetch`) reach no handler on either router, so folding them would widen every
+// scope in the field on a guess instead of on evidence. (A proxy that merges slashes does it before the
+// app is reached, so the engine already sees the merged path.)
+//
+// The direction of the remaining error is what makes the fold safe. If an app IS case- and slash-strict,
+// the extra requests a folded scope covers 404 anyway, so a rule firing there refuses something already
+// destined to fail. If the app is not strict, a rule that stays quiet lets the exploit through.
+function foldPathForScope(value) {
+  const out = String(value).toLowerCase();
+  // One trailing slash, not a run of them: one is what a router forgives, and `//` is in the not-folded
+  // list above.
+  return out.endsWith('/') ? out.slice(0, -1) : out;
+}
+
+// `when.path`: an exact path, a glob with `*`, or an explicit `/regex/`.
+//
+// The regex form is delimited by slashes — and EVERY path starts with one, so a path that also ends with
+// one used to be read as a regex. `path: '/admin/'`, the most ordinary way to write a directory, compiled
+// to the unanchored `/admin/` and scoped the rule to every path CONTAINING "admin": `/xadminy`,
+// `/admin/users`, all of it. A scope that reads narrow and behaves app-wide is the failure this whole
+// mechanism exists to avoid, so the regex form now has to actually use regex syntax. A delimiter pair
+// around a plain literal is a path, which is what the author typed, and the narrower of the two readings.
+const REGEX_SYNTAX = /[\\^$*+?()[\]{}|]/;
+
+// The same delimiter-and-flags shape `safeRegExp` compiles, so detecting the form and compiling it
+// cannot disagree about what a pattern is. Detection missed the flagged form entirely before: a scope
+// written `/^\\/admin$/i` does not end in a slash, so it was read as a literal path and matched nothing —
+// a rule scoped to a route that cannot exist protects nothing while reporting as scoped.
+const REGEX_FORM = /^\/(.+?)\/([gimsuy]*)$/s;
+
+function isRegexForm(pattern) {
+  const parts = REGEX_FORM.exec(pattern);
+  // Flags alone do not settle it. `/admin/i` reads as a regex but asks for nothing a plain path does not,
+  // now that an exact scope folds case — while `/blog/s` is a perfectly ordinary route. So the body has
+  // to actually use regex syntax before the pattern is compiled as one, which is the narrower of the two
+  // readings and the right way for an ambiguous scope to fail.
+  return parts !== null && REGEX_SYNTAX.test(parts[1]);
+}
+
 function pathMatches(pattern, path) {
-  if (pattern.length > 2 && pattern.startsWith('/') && pattern.endsWith('/')) {
+  // An author's own pattern runs against the target as it arrived, unfolded: they wrote the character
+  // class and the flags, and silently lowercasing the subject would break a pattern that matches on case.
+  if (isRegexForm(pattern)) {
     const re = safeRegExp(pattern);
     return re ? re.test(path) : false;
   }
-  if (pattern.includes('*')) {
-    const re = safeRegExp('/^' + pattern.replace(/[.+?^${}()|[\]\\]/g, '\\$&').replace(/\*/g, '[^?]*') + '$/');
-    return re ? re.test(path) : false;
+  const target = foldPathForScope(path);
+  const folded = foldPathForScope(pattern);
+  if (folded.includes('*')) {
+    // A trailing `/*` has to cover the bare directory as well. Measured: `/admin/` runs an Express
+    // handler registered at `/admin/*` — and the fold above has already turned that request into
+    // `/admin`, so without this the scope would miss the request it is named after. `/admin` itself is
+    // then covered too, though it 404s on such a route: the same direction of error as the fold, and the
+    // alternative is a scope that stands aside while the handler runs.
+    const trailing = folded.endsWith('/*');
+    const body = (trailing ? folded.slice(0, -2) : folded).replace(/[.+?^${}()|[\]\\]/g, '\\$&').replace(/\*/g, '[^?]*');
+    const re = safeRegExp('/^' + body + (trailing ? '(?:/[^?]*)?' : '') + '$/');
+    return re ? re.test(target) : false;
   }
-  return path === pattern;
+  return target === folded;
 }
 
 // Drop a default port so `app.com:443` and `app.com` compare equal (a real proxy shape), without
