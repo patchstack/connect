@@ -11,6 +11,7 @@ import {
   mutationsProblem,
   whenProblem,
   actionProblem,
+  conditionShapeProblem,
   isGroup,
   ruleContract,
 } from '../../src/protect/rules/contract.js';
@@ -147,9 +148,53 @@ describe('what the contract refuses', () => {
   });
 
   it('refuses an action whose own properties are missing', () => {
-    expect(actionProblem('set-header', {})).toBe('action "set-header" needs "set_headers"');
-    expect(actionProblem('remove-header', {})).toBe('action "remove-header" needs "remove_headers"');
-    expect(actionProblem('harden-cookie', {})).toBe('action "harden-cookie" needs "cookie_flags"');
+    expect(actionProblem('set-header', { phase: 'response' })).toBe('action "set-header" needs "set_headers"');
+    expect(actionProblem('remove-header', { phase: 'response' })).toBe('action "remove-header" needs "remove_headers"');
+  });
+
+  it('refuses a header action on a phase that cannot carry it out', () => {
+    // A header mutation is applied on the response. On the request phase the rule is not a header mutation
+    // at all — it falls through to the blocking path and answers 403, which is the opposite of hardening.
+    expect(actionProblem('set-header', { set_headers: { 'X-Frame-Options': 'DENY' } }))
+      .toMatch(/carried out on the response phase/);
+    expect(actionProblem('harden-cookie', { phase: 'request' })).toMatch(/carried out on the response phase/);
+    expect(actionProblem('redact', { phase: 'request' })).toMatch(/carried out on the response phase/);
+  });
+
+  it('does not require a property the runtime supplies', () => {
+    // `harden-cookie` applies HttpOnly, Secure and SameSite=Lax by itself, so requiring `cookie_flags`
+    // would drop a rule that works.
+    expect(actionProblem('harden-cookie', { phase: 'response' })).toBeNull();
+    expect(ruleContract().action_properties['harden-cookie'].defaulted).toContain('cookie_flags');
+  });
+
+  it('refuses a scope whose value the engine cannot use', () => {
+    // Both directions, because a malformed scope fails in both: an empty string is falsy so the check is
+    // skipped and the rule applies everywhere, while an empty list or a non-string matches nothing.
+    expect(whenProblem({ path: '' })).toMatch(/non-empty string/);
+    expect(whenProblem({ method: '' })).toMatch(/non-empty string/);
+    expect(whenProblem({ method: [] })).toMatch(/empty list/);
+    expect(whenProblem({ path: 42 })).toMatch(/non-empty string/);
+    expect(whenProblem({ method: ['POST', ''] })).toMatch(/non-empty string/);
+  });
+
+  it('refuses a wildcard on a source that does not fan out', () => {
+    expect(parameterProblem('egress.hos*')).toMatch(/does not fan out/);
+    expect(parameterProblem('response.head*')).toMatch(/does not fan out/);
+    expect(parameterProblem('server.HTTP_*')).toMatch(/does not fan out/);
+  });
+
+  it('refuses a group that is not a whole group', () => {
+    expect(conditionShapeProblem({ parameter: 'rules' })).toMatch(/needs a "rules" array/);
+    expect(conditionShapeProblem({ parameter: 'rules', rules: [] })).toMatch(/no conditions/);
+    expect(conditionShapeProblem({ parameter: 'rules', rules: [{ parameter: 'raw', match: { type: 'isset' } }], match: { type: 'isset' } }))
+      .toMatch(/carries no match of its own/);
+  });
+
+  it('refuses hostname without the value it compares against', () => {
+    // `hostname` tests `url.hostname === match.value`, so with no value it can only be false.
+    expect(matchProblem({ type: 'hostname' }, 'server.HTTP_HOST')).toMatch(/needs a value/);
+    expect(matchProblem({ type: 'hostname', value: 'evil.test' }, 'server.HTTP_HOST')).toBeNull();
   });
 
   it('refuses an incomplete array_key_value', () => {
@@ -207,7 +252,7 @@ describe('what the contract accepts', () => {
     expect(whenProblem({ path: '/admin' })).toBeNull();
     expect(whenProblem({ path: '/api/*', method: ['POST', 'PUT'] })).toBeNull();
     expect(actionProblem('block', {})).toBeNull();
-    expect(actionProblem('set-header', { set_headers: { 'X-Frame-Options': 'DENY' } })).toBeNull();
+    expect(actionProblem('set-header', { phase: 'response', set_headers: { 'X-Frame-Options': 'DENY' } })).toBeNull();
   });
 
   it('accepts a whole-request primitive with NO parameter', () => {
@@ -284,6 +329,18 @@ describe('what the delivered-bundle validator does with it', () => {
     return bundle.firewall.length === 1 ? null : (rejected[0]?.reason ?? 'rejected without a reason');
   }
 
+  it('rejects an unusable scope value and an inert group, at the gate', () => {
+    const leaf = { parameter: 'get.q', match: { type: 'contains', value: 'x' } };
+
+    expect(ruleReasonFor({ when: { path: '' }, rule_v2: [leaf] })).toMatch(/non-empty string/);
+    expect(ruleReasonFor({ when: { method: [] }, rule_v2: [leaf] })).toMatch(/empty list/);
+    expect(reasonFor({ parameter: 'rules' })).toMatch(/needs a "rules" array/);
+    expect(reasonFor({ parameter: 'rules', rules: [leaf], match: { type: 'isset' } })).toMatch(/carries no match/);
+    expect(reasonFor({ parameter: 'get.q*' })).not.toBeNull();
+    expect(reasonFor({ parameter: 'egress.hos*', match: { type: 'isset' } })).toMatch(/does not fan out/);
+    expect(reasonFor({ parameter: 'server.HTTP_HOST', match: { type: 'hostname' } })).toMatch(/needs a value/);
+  });
+
   it('rejects a scope the engine would ignore, at the gate', () => {
     // The gate, not the helper. Every guard added to the contract needs one of these: the functions can be
     // correct and unreferenced, and a scope the engine ignores makes the rule apply to every request.
@@ -294,9 +351,15 @@ describe('what the delivered-bundle validator does with it', () => {
   });
 
   it('rejects an action missing its own properties, at the gate', () => {
-    expect(ruleReasonFor({ action: 'set-header', rule_v2: [{ parameter: 'raw', match: { type: 'isset' } }] }))
+    expect(ruleReasonFor({ phase: 'response', action: 'set-header', rule_v2: [{ parameter: 'raw', match: { type: 'isset' } }] }))
       .toMatch(/needs "set_headers"/);
+    expect(ruleReasonFor({ phase: 'response', action: 'set-header', set_headers: { 'X-Frame-Options': 'DENY' }, rule_v2: [{ parameter: 'raw', match: { type: 'isset' } }] }))
+      .toBeNull();
+    // The phase half, at the gate: a request-phase header rule blocks instead of setting a header.
     expect(ruleReasonFor({ action: 'set-header', set_headers: { 'X-Frame-Options': 'DENY' }, rule_v2: [{ parameter: 'raw', match: { type: 'isset' } }] }))
+      .toMatch(/carried out on the response phase/);
+    // And the defaulted property is not demanded.
+    expect(ruleReasonFor({ phase: 'response', action: 'harden-cookie', rule_v2: [{ parameter: 'raw', match: { type: 'isset' } }] }))
       .toBeNull();
   });
 

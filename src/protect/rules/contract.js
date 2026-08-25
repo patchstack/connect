@@ -12,7 +12,7 @@
 // `rule-contract.json` is the published form. `tests/protect/rule-contract.test.ts` reads the engine's own
 // source and asserts these descriptions match what it implements.
 
-export const CONTRACT_VERSION = '2.0';
+export const CONTRACT_VERSION = '2.1';
 
 /**
  * Every parameter source, and what it accepts after the dot.
@@ -32,8 +32,8 @@ export const SOURCES = Object.freeze({
 
   get: Object.freeze({ keyed: true, keys: 'any', wildcard: true }),
   post: Object.freeze({ keyed: true, keys: 'any', wildcard: true }),
-  request: Object.freeze({ keyed: true, keys: 'any' }),
-  cookie: Object.freeze({ keyed: true, keys: 'any' }),
+  request: Object.freeze({ keyed: true, keys: 'any', wildcard: true }),
+  cookie: Object.freeze({ keyed: true, keys: 'any', wildcard: true }),
 
   // A bare `files.<name>` resolves to the filename; an optional trailing attribute selects another part
   // of the upload. Optional, not required — filename-scoped rules use the bare form.
@@ -82,7 +82,7 @@ export const PARAMETERLESS_MATCH_TYPES = Object.freeze(['cross_origin', 'off_ori
 /** Match types that read no operand: presence or a character-class test of the resolved value alone. */
 export const OPERANDLESS_MATCH_TYPES = Object.freeze([
   'isset', 'quotes', 'is_numeric', 'ctype_alnum', 'ctype_digit', 'ctype_special',
-  'inline_xss', 'inline_js_xss', 'internal_host', 'hostname',
+  'inline_xss', 'inline_js_xss', 'internal_host',
   'cross_origin', 'off_origin', 'cors_reflected',
 ]);
 
@@ -123,11 +123,23 @@ export const RULE_PROPERTIES = Object.freeze([
   'set_headers', 'remove_headers', 'cookie_flags', 'ensure',
 ]);
 
-/** Properties each action reads, so a consumer can require the ones its action needs. */
+/**
+ * What each action needs, what it defaults, and which phases can carry it out.
+ *
+ * `required` is a property without which the action does nothing. `defaulted` is one the runtime supplies
+ * — `harden-cookie` applies HttpOnly, Secure and SameSite=Lax on its own, so requiring `cookie_flags`
+ * would drop a rule that works.
+ *
+ * `phases` matters as much: the header mutations are carried out on the response, and a request-phase rule
+ * carrying one is not a header mutation at all — it falls through to the blocking path and answers 403.
+ */
 export const ACTION_PROPERTIES = Object.freeze({
-  'set-header': Object.freeze({ required: Object.freeze(['set_headers']), optional: Object.freeze(['ensure']) }),
-  'remove-header': Object.freeze({ required: Object.freeze(['remove_headers']), optional: Object.freeze([]) }),
-  'harden-cookie': Object.freeze({ required: Object.freeze(['cookie_flags']), optional: Object.freeze([]) }),
+  block: Object.freeze({ required: Object.freeze([]), defaulted: Object.freeze([]), phases: Object.freeze(['request', 'response', 'egress']) }),
+  redact: Object.freeze({ required: Object.freeze([]), defaulted: Object.freeze([]), phases: Object.freeze(['response']) }),
+  encode: Object.freeze({ required: Object.freeze([]), defaulted: Object.freeze([]), phases: Object.freeze(['response']) }),
+  'set-header': Object.freeze({ required: Object.freeze(['set_headers']), defaulted: Object.freeze(['ensure']), phases: Object.freeze(['response']) }),
+  'remove-header': Object.freeze({ required: Object.freeze(['remove_headers']), defaulted: Object.freeze([]), phases: Object.freeze(['response']) }),
+  'harden-cookie': Object.freeze({ required: Object.freeze([]), defaulted: Object.freeze(['cookie_flags']), phases: Object.freeze(['response']) }),
 });
 
 export const LIMITS = Object.freeze({
@@ -145,6 +157,35 @@ export const GROUP_PARAMETER = 'rules';
 /** Is this condition a group? Groups carry no match of their own. */
 export function isGroup(condition) {
   return condition?.parameter === GROUP_PARAMETER && Array.isArray(condition?.rules);
+}
+
+/**
+ * @returns {string|null} why this condition is neither a well-formed group nor a well-formed leaf
+ *
+ * The engine takes the group branch only for `parameter: 'rules'` WITH a `rules` array, and that branch
+ * returns before it reads `match`. So `parameter: 'rules'` on its own resolves to a null value and tests
+ * nothing, and a group carrying a `match` has that match ignored — both are conditions a reviewer approves
+ * believing they do something.
+ */
+export function conditionShapeProblem(condition) {
+  if (!condition || typeof condition !== 'object') return 'condition is not an object';
+
+  const named = condition.parameter === GROUP_PARAMETER;
+  const nested = Array.isArray(condition.rules);
+
+  if (named && !nested) {
+    return `parameter "${GROUP_PARAMETER}" is a group and needs a "rules" array`;
+  }
+  if (nested && !named) {
+    return `condition carries nested rules but its parameter is ${JSON.stringify(condition.parameter)}; a group must be {"parameter":"${GROUP_PARAMETER}"}`;
+  }
+  if (named && nested) {
+    if (condition.match !== undefined) return 'a group carries no match of its own; the engine ignores it';
+    if (condition.mutations !== undefined) return 'a group carries no mutations of its own; the engine ignores them';
+    if (condition.rules.length === 0) return 'group has no conditions (would never match)';
+  }
+
+  return null;
 }
 
 /**
@@ -188,7 +229,11 @@ export function parameterProblem(parameter) {
 }
 
 function keyProblem(name, source, key) {
-  const bare = source.wildcard === true && key.endsWith('*') ? key.slice(0, -1) : key;
+  if (key.endsWith('*') && source.wildcard !== true) {
+    return `"${name}" does not fan out over a wildcard key`;
+  }
+
+  const bare = key.endsWith('*') ? key.slice(0, -1) : key;
 
   // An application field name cannot be enumerated, so any non-empty key is accepted.
   if (source.keys === 'any') return null;
@@ -265,18 +310,42 @@ export function whenProblem(when) {
       + 'and an unrecognised scope is ignored, so the rule would apply to every request';
   }
 
+  // The values, not only the names. A scope the engine cannot use fails in both directions: an empty string
+  // is falsy, so the check is skipped and the rule applies everywhere; an empty list or a non-string matches
+  // nothing, so the rule applies nowhere. Neither is what the author wrote.
+  if ('path' in when && !isNonEmptyString(when.path)) {
+    return 'when.path must be a non-empty string';
+  }
+
+  if ('method' in when) {
+    const methods = Array.isArray(when.method) ? when.method : [when.method];
+    if (methods.length === 0) return 'when.method is an empty list, so the rule would match no method';
+    if (!methods.every(isNonEmptyString)) return 'when.method must be a non-empty string, or a list of them';
+  }
+
   return null;
 }
 
-/** @returns {string|null} why this action's properties are incomplete, or null */
+function isNonEmptyString(value) {
+  return typeof value === 'string' && value.trim() !== '';
+}
+
+/** @returns {string|null} why this action cannot be carried out as written, or null */
 export function actionProblem(action, rule) {
   if (action === undefined || action === null) return null;
   if (!ACTIONS.includes(action)) return `unknown action "${action}"`;
 
-  for (const required of ACTION_PROPERTIES[action]?.required ?? []) {
+  const spec = ACTION_PROPERTIES[action];
+
+  for (const required of spec?.required ?? []) {
     if (rule?.[required] === undefined || rule?.[required] === null) {
       return `action "${action}" needs "${required}"`;
     }
+  }
+
+  const phase = rule?.phase ?? 'request';
+  if (spec !== undefined && !spec.phases.includes(phase)) {
+    return `action "${action}" is carried out on the ${spec.phases.join('/')} phase; on "${phase}" the rule blocks instead`;
   }
 
   return null;
@@ -307,7 +376,11 @@ export function ruleContract() {
     phases: [...PHASES],
     actions: [...ACTIONS],
     action_properties: Object.fromEntries(
-      Object.entries(ACTION_PROPERTIES).map(([k, v]) => [k, { required: [...v.required], optional: [...v.optional] }]),
+      Object.entries(ACTION_PROPERTIES).map(([k, v]) => [k, {
+        required: [...v.required],
+        defaulted: [...v.defaulted],
+        phases: [...v.phases],
+      }]),
     ),
     when_keys: [...WHEN_KEYS],
     rule_properties: [...RULE_PROPERTIES],

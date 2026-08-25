@@ -19,6 +19,7 @@ import {
   LIMITS as CONTRACT_LIMITS,
   PHASES as CONTRACT_PHASES,
   actionProblem,
+  conditionShapeProblem,
   isGroup,
   matchProblem,
   mutationsProblem,
@@ -110,18 +111,13 @@ function conditionsProblem(conditions, depth = 0) {
     return `more than ${LIMITS.maxConditionsPerRule} conditions`;
   }
   for (const c of conditions) {
-    if (!c || typeof c !== 'object') return 'condition is not an object';
+    const shapeReason = conditionShapeProblem(c);
+    if (shapeReason) return shapeReason;
 
-    // The engine recognises a group only as `{ parameter: 'rules', rules: [...] }`. Any other parameter
-    // beside a `rules` array is a condition the engine resolves and then finds no match object on, so its
-    // nested conditions are never evaluated.
     if (isGroup(c)) {
       const nested = conditionsProblem(c.rules, depth + 1);
       if (nested) return nested;
       continue; // a group carries no match of its own
-    }
-    if (Array.isArray(c.rules)) {
-      return `condition carries nested rules but its parameter is ${JSON.stringify(c.parameter)}; a group must be {"parameter":"rules"}`;
     }
     // The vocabulary checks. Without them the only question asked was whether `match.type` was a
     // non-empty string, so an invented source, an invented match type and an invented mutation all passed

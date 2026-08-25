@@ -1,6 +1,6 @@
 {
   "$comment": "Generated from src/protect/rules/contract.js by scripts/emit-rule-contract.mjs. Do not edit.",
-  "version": "2.0",
+  "version": "2.1",
   "sources": {
     "raw": {
       "keyed": false
@@ -27,11 +27,13 @@
     },
     "request": {
       "keyed": true,
-      "keys": "any"
+      "keys": "any",
+      "wildcard": true
     },
     "cookie": {
       "keyed": true,
-      "keys": "any"
+      "keys": "any",
+      "wildcard": true
     },
     "files": {
       "keyed": true,
@@ -123,7 +125,6 @@
     "inline_xss",
     "inline_js_xss",
     "internal_host",
-    "hostname",
     "cross_origin",
     "off_origin",
     "cors_reflected"
@@ -159,25 +160,57 @@
     "harden-cookie"
   ],
   "action_properties": {
+    "block": {
+      "required": [],
+      "defaulted": [],
+      "phases": [
+        "request",
+        "response",
+        "egress"
+      ]
+    },
+    "redact": {
+      "required": [],
+      "defaulted": [],
+      "phases": [
+        "response"
+      ]
+    },
+    "encode": {
+      "required": [],
+      "defaulted": [],
+      "phases": [
+        "response"
+      ]
+    },
     "set-header": {
       "required": [
         "set_headers"
       ],
-      "optional": [
+      "defaulted": [
         "ensure"
+      ],
+      "phases": [
+        "response"
       ]
     },
     "remove-header": {
       "required": [
         "remove_headers"
       ],
-      "optional": []
+      "defaulted": [],
+      "phases": [
+        "response"
+      ]
     },
     "harden-cookie": {
-      "required": [
+      "required": [],
+      "defaulted": [
         "cookie_flags"
       ],
-      "optional": []
+      "phases": [
+        "response"
+      ]
     }
   },
   "when_keys": [
