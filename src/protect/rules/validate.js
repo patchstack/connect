@@ -12,17 +12,22 @@
 // Fail-open in spirit: validation never throws, and a bundle whose rules are all rejected simply means
 // "no rules" (the app keeps serving) — never a crash.
 
-export const LIMITS = {
-  maxRules: 5000,
-  maxWhitelists: 2000,
-  maxConditionsPerRule: 250,
-  maxNestingDepth: 12,
-  maxRegexLength: 1000,
-  maxValueLength: 8192,
-};
+// The vocabulary and the bounds come from the shared contract, not from a copy kept here. They were kept
+// here, and the copy was the problem: the vocabulary this file checked was narrower than the one the engine
+// implements, so a rule naming a source the resolver cannot resolve passed every gate and screened nothing.
+import {
+  ACTIONS as CONTRACT_ACTIONS,
+  LIMITS as CONTRACT_LIMITS,
+  PHASES as CONTRACT_PHASES,
+  matchProblem,
+  mutationsProblem,
+  parameterProblem,
+} from './contract.js';
 
-const PHASES = new Set(['request', 'response', 'egress']);
-const ACTIONS = new Set(['block', 'redact', 'encode', 'set-header', 'remove-header', 'harden-cookie']);
+export const LIMITS = CONTRACT_LIMITS;
+
+const PHASES = new Set(CONTRACT_PHASES);
+const ACTIONS = new Set(CONTRACT_ACTIONS);
 
 /**
  * Validate a delivered bundle. Returns `{ bundle, rejected }` where `bundle` contains only rules that
@@ -99,9 +104,19 @@ function conditionsProblem(conditions, depth = 0) {
       if (nested) return nested;
       continue; // a group carries no match of its own
     }
+    // The vocabulary checks. Without them the only question asked was whether `match.type` was a
+    // non-empty string, so an invented source, an invented match type and an invented mutation all passed
+    // — and each of them produces a rule that is delivered, counted as protection, and never matches.
+    const parameterReason = parameterProblem(c.parameter);
+    if (parameterReason) return parameterReason;
+
+    const mutationReason = mutationsProblem(c.mutations);
+    if (mutationReason) return mutationReason;
+
+    const matchReason = matchProblem(c.match, c.parameter);
+    if (matchReason) return matchReason;
+
     const m = c.match;
-    if (!m || typeof m !== 'object') return 'condition has no match object';
-    if (typeof m.type !== 'string' || m.type === '') return 'match.type must be a non-empty string';
     if (m.type === 'regex') {
       if (typeof m.value !== 'string') return 'regex match.value must be a string';
       if (m.value.length > LIMITS.maxRegexLength) return `regex longer than ${LIMITS.maxRegexLength} chars`;
@@ -110,7 +125,11 @@ function conditionsProblem(conditions, depth = 0) {
     }
     if (m.match) {
       // array_key_value nests a sub-match; count it toward depth so a chain can't be unbounded.
-      const nested = conditionsProblem([{ match: m.match }], depth + 1);
+      //
+      // The PARENT's parameter is carried down. The sub-match has none of its own — it applies to whatever
+      // the key path navigated to — so validating it in isolation reported every one of them as a match
+      // type missing a parameter, which would have rejected a shipped capability as malformed.
+      const nested = conditionsProblem([{ parameter: c.parameter, match: m.match }], depth + 1);
       if (nested) return nested;
     }
   }

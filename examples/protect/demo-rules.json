@@ -26,7 +26,7 @@
       "title": "Path traversal in a file/path parameter",
       "category": "lfi",
       "rule_v2": [
-        { "parameter": ["get.file", "post.file", "raw.file", "get.path", "post.path"], "mutations": ["urldecode"], "match": { "type": "contains", "value": ".." } }
+        { "parameter": ["get.file", "post.file", "get.path", "post.path"], "mutations": ["urldecode"], "match": { "type": "contains", "value": ".." } }
       ],
       "_demo": {
         "desc": "../ sequence in a file parameter escapes the intended directory",
@@ -104,7 +104,7 @@
       "title": "SSRF via a url parameter (request-side)",
       "category": "ssrf",
       "rule_v2": [
-        { "parameter": ["get.url", "post.url", "raw.url"], "mutations": ["urldecode"], "match": { "type": "regex", "value": "/localhost|127\\.0\\.0\\.1|169\\.254\\.169\\.254|::1|metadata\\.google/i" } }
+        { "parameter": ["get.url", "post.url"], "mutations": ["urldecode"], "match": { "type": "regex", "value": "/localhost|127\\.0\\.0\\.1|169\\.254\\.169\\.254|::1|metadata\\.google/i" } }
       ],
       "_demo": {
         "desc": "url parameter points at the cloud metadata endpoint",

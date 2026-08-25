@@ -54,7 +54,7 @@
           "parameter": [
             "get.file",
             "post.file",
-            "raw.file",
+            
             "get.path",
             "post.path"
           ],
@@ -172,8 +172,7 @@
         {
           "parameter": [
             "get.url",
-            "post.url",
-            "raw.url"
+            "post.url"
           ],
           "mutations": [
             "urldecode"
