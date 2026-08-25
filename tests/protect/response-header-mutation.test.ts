@@ -76,6 +76,19 @@ describe('response header mutation', () => {
     expect(out.headers.get('x-frame-options')).toBe('DENY');
   });
 
+  it('serves the response when a rule names a header the platform rejects', async () => {
+    // Fail-open, on the header-mutation path. `Headers.get` throws on an invalid field name exactly as
+    // `set` does, and it ran first, outside the guard — so a rule carrying an unusable name crashed
+    // response screening instead of skipping the mutation. The contract refuses such a rule now, but a
+    // bundle written before it, or rules passed straight to `responseRules`, still arrive here.
+    for (const name of ['', 'x bad', 'x-bad\nInjected']) {
+      const p: any = await withRule({ phase: 'response', action: 'set-header', set_headers: { [name]: 'x' }, rule_v2: alwaysCond });
+      const out = await p.screenResponse(json({ 'x-keep': 'kept' }));
+      expect(out.status, name).toBe(200);
+      expect(out.headers.get('x-keep'), name).toBe('kept'); // and the rest of the response is intact
+    }
+  });
+
   it('does not mutate in dry-run (observe only)', async () => {
     const rule = { phase: 'response', action: 'remove-header', remove_headers: ['x-secret'], rule_v2: alwaysCond };
     const p: any = await withRule(rule, 'dry-run');

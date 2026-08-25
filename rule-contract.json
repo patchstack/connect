@@ -1,6 +1,6 @@
 {
   "$comment": "Generated from src/protect/rules/contract.js by scripts/emit-rule-contract.mjs. Do not edit.",
-  "version": "2.2",
+  "version": "2.3",
   "sources": {
     "raw": {
       "keyed": false
@@ -133,9 +133,16 @@
     "non-empty-string",
     "regex-literal",
     "string-or-string-list",
+    "scalar",
+    "string",
+    "numeric",
+    "scalar-or-non-empty-list",
+    "non-empty-list",
     "object",
     "non-empty-object",
-    "non-empty-string-list"
+    "non-empty-string-list",
+    "header-name-map",
+    "header-name-list"
   ],
   "match_operands": {
     "array_key_value": {
@@ -178,6 +185,70 @@
       ],
       "shapes": {
         "value": "non-empty-string"
+      }
+    },
+    "hostname": {
+      "required": [
+        "value"
+      ],
+      "shapes": {
+        "value": "non-empty-string"
+      }
+    },
+    "in_array": {
+      "required": [
+        "value"
+      ],
+      "shapes": {
+        "value": "scalar-or-non-empty-list"
+      }
+    },
+    "not_in_array": {
+      "required": [
+        "value"
+      ],
+      "shapes": {
+        "value": "scalar-or-non-empty-list"
+      }
+    },
+    "array_in_array": {
+      "required": [
+        "value"
+      ],
+      "shapes": {
+        "value": "non-empty-list"
+      }
+    },
+    "equals": {
+      "required": [
+        "value"
+      ],
+      "shapes": {
+        "value": "scalar"
+      }
+    },
+    "equals_strict": {
+      "required": [
+        "value"
+      ],
+      "shapes": {
+        "value": "string"
+      }
+    },
+    "less_than": {
+      "required": [
+        "value"
+      ],
+      "shapes": {
+        "value": "numeric"
+      }
+    },
+    "more_than": {
+      "required": [
+        "value"
+      ],
+      "shapes": {
+        "value": "numeric"
       }
     }
   },
@@ -241,7 +312,7 @@
         "response"
       ],
       "shapes": {
-        "set_headers": "non-empty-object"
+        "set_headers": "header-name-map"
       }
     },
     "remove-header": {
@@ -253,7 +324,7 @@
         "response"
       ],
       "shapes": {
-        "remove_headers": "non-empty-string-list"
+        "remove_headers": "header-name-list"
       }
     },
     "harden-cookie": {

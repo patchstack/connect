@@ -1190,9 +1190,12 @@ function rebuildResponse(response, body, redactedHeaders) {
       if (value === null || value === undefined) {
         try { headers.delete(name); } catch { /* skip */ } // header-mutation removal
       } else if (typeof value === 'string') {
-        if (headers.get(name) !== value) {
-          try { headers.set(name, value); } catch { /* invalid header name — skip */ }
-        }
+        // `get` has to be inside the guard too: it throws on an invalid field name just as `set` does,
+        // and it runs first — so an unusable name from a rule crashed response screening instead of
+        // being skipped, taking the fail-open guarantee with it.
+        try {
+          if (headers.get(name) !== value) headers.set(name, value);
+        } catch { /* invalid header name — skip */ }
       } else if (Array.isArray(value)) {
         // Re-emit each (possibly redacted) Set-Cookie separately (Headers collapses them otherwise).
         try {

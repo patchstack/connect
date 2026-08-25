@@ -6,6 +6,8 @@ import {
   MUTATIONS,
   SOURCES,
   PARAMETERLESS_MATCH_TYPES,
+  OPERANDLESS_MATCH_TYPES,
+  MATCH_OPERANDS,
   parameterProblem,
   matchProblem,
   mutationsProblem,
@@ -193,7 +195,7 @@ describe('what the contract refuses', () => {
 
   it('refuses hostname without the value it compares against', () => {
     // `hostname` tests `url.hostname === match.value`, so with no value it can only be false.
-    expect(matchProblem({ type: 'hostname' }, 'server.HTTP_HOST')).toMatch(/needs a value/);
+    expect(matchProblem({ type: 'hostname' }, 'server.HTTP_HOST')).toMatch(/needs "value"/);
     expect(matchProblem({ type: 'hostname', value: 'evil.test' }, 'server.HTTP_HOST')).toBeNull();
   });
 
@@ -340,7 +342,7 @@ describe('what the delivered-bundle validator does with it', () => {
     expect(reasonFor({ parameter: 'rules' })).toMatch(/needs a "rules" array/);
     expect(reasonFor({ parameter: 'rules', rules: [leaf], match: { type: 'isset' } })).toMatch(/carries no match/);
     expect(reasonFor({ parameter: 'egress.hos*', match: { type: 'isset' } })).toMatch(/does not fan out/);
-    expect(reasonFor({ parameter: 'server.HTTP_HOST', match: { type: 'hostname' } })).toMatch(/needs a value/);
+    expect(reasonFor({ parameter: 'server.HTTP_HOST', match: { type: 'hostname' } })).toMatch(/needs "value"/);
   });
 
   it('rejects the group source used as a parameter, at the gate', () => {
@@ -394,6 +396,64 @@ describe('what the delivered-bundle validator does with it', () => {
     expect(reasonFor({ parameter: 'get.q', match: { type: 'equals', value: '' } })).toBeNull();
   });
 
+  it('rejects an unusable operand on every matcher that reads one, at the gate', () => {
+    // The same property as the substring matchers, applied to the rest of the operand-bearing set, so
+    // "every required operand has a usable shape" holds for the whole vocabulary rather than the part
+    // that had been looked at. Measured against the engine:
+    //   hostname '':        compares to `new URL(v).hostname`, so it equals only the empty hostname of
+    //                       an opaque-scheme URL (file:, mailto:, data:) — never a host, and a false
+    //                       positive on those. Not inert, which is why it is worth refusing.
+    //   in_array []:        inert.
+    //   not_in_array []:    true for EVERY value — the blocks-all-traffic direction again.
+    //   array_in_array []:  inert; a bare scalar never matches either, since it compares array to array.
+    expect(reasonFor({ parameter: 'get.q', match: { type: 'hostname', value: '' } })).toMatch(/must be a non-empty string/);
+    expect(reasonFor({ parameter: 'get.list', match: { type: 'in_array', value: [] } })).toMatch(/must be a scalar, or a non-empty list/);
+    expect(reasonFor({ parameter: 'get.list', match: { type: 'not_in_array', value: [] } })).toMatch(/must be a scalar, or a non-empty list/);
+    expect(reasonFor({ parameter: 'get.list', match: { type: 'array_in_array', value: [] } })).toMatch(/must be a non-empty list of scalars/);
+    expect(reasonFor({ parameter: 'get.list', match: { type: 'array_in_array', value: 'admin' } })).toMatch(/must be a non-empty list of scalars/);
+
+    // The shapes stay no stricter than the runtime. Every one of these matches today: the membership
+    // matchers stringify their entries, so numbers and booleans are usable; a bare scalar is wrapped
+    // into a one-element list; and `['']` is a real signature — "this parameter is empty".
+    expect(reasonFor({ parameter: 'get.q', match: { type: 'hostname', value: 'evil.test' } })).toBeNull();
+    expect(reasonFor({ parameter: 'get.list', match: { type: 'in_array', value: [1, 2] } })).toBeNull();
+    expect(reasonFor({ parameter: 'get.list', match: { type: 'in_array', value: [true] } })).toBeNull();
+    expect(reasonFor({ parameter: 'get.list', match: { type: 'in_array', value: 'admin' } })).toBeNull();
+    expect(reasonFor({ parameter: 'get.list', match: { type: 'in_array', value: [''] } })).toBeNull();
+    expect(reasonFor({ parameter: 'get.list', match: { type: 'not_in_array', value: ['user'] } })).toBeNull();
+    expect(reasonFor({ parameter: 'get.list', match: { type: 'array_in_array', value: [1] } })).toBeNull();
+
+    // The comparison family, which the completeness check below is what surfaced. Measured:
+    //   equals_strict 10 vs q=10 -> false, while '10' -> true. The subject is stringified before the
+    //     type-strict compare, so a number operand is unconditionally inert.
+    //   less_than/more_than 'abc' -> false in BOTH directions: `Number('abc')` is NaN.
+    expect(reasonFor({ parameter: 'get.q', match: { type: 'equals_strict', value: 10 } })).toMatch(/type-strict/);
+    expect(reasonFor({ parameter: 'get.q', match: { type: 'less_than', value: 'abc' } })).toMatch(/must be a number/);
+    expect(reasonFor({ parameter: 'get.q', match: { type: 'more_than', value: 'abc' } })).toMatch(/must be a number/);
+    expect(reasonFor({ parameter: 'get.q', match: { type: 'equals', value: {} } })).toMatch(/must be a string, number or boolean/);
+
+    // `equals` coerces, so a number operand there DOES match a numeric string — refusing it would
+    // break a working rule. And `more_than: ''` is `> 0`, a real threshold, so `numeric` admits it.
+    expect(reasonFor({ parameter: 'get.q', match: { type: 'equals', value: 10 } })).toBeNull();
+    expect(reasonFor({ parameter: 'get.q', match: { type: 'equals_strict', value: '10' } })).toBeNull();
+    expect(reasonFor({ parameter: 'get.q', match: { type: 'less_than', value: 10 } })).toBeNull();
+    expect(reasonFor({ parameter: 'get.q', match: { type: 'more_than', value: '' } })).toBeNull();
+  });
+
+  it('leaves no operand-bearing matcher without a declared shape', () => {
+    // The reason the previous round missed `hostname` and the membership family: the shapes were added
+    // one reported matcher at a time. This closes over the vocabulary instead — a match type that reads
+    // an operand and has no shape is the next hole, so it fails here rather than in review.
+    const readsAnOperand = MATCH_TYPES.filter((type) => !OPERANDLESS_MATCH_TYPES.includes(type));
+    const undeclared = readsAnOperand.filter((type) => {
+      const shapes = MATCH_OPERANDS[type]?.shapes;
+      return !shapes || Object.keys(shapes).length === 0;
+    });
+
+    expect(undeclared, `these match types read an operand with no shape declared: ${undeclared.join(', ')}`)
+      .toEqual([]);
+  });
+
   it('rejects a header action whose payload mutates nothing, at the gate', () => {
     // The action name is the claim; the payload is the mutation. An empty one leaves a rule that
     // matches, reports a detection, and changes no header.
@@ -404,11 +464,26 @@ describe('what the delivered-bundle validator does with it', () => {
     expect(ruleReasonFor({ phase: 'response', action: 'set-header', set_headers: ['X-Frame-Options'], rule_v2: [cond] }))
       .toMatch(/"set_headers" must be an object/);
     expect(ruleReasonFor({ phase: 'response', action: 'remove-header', remove_headers: [], rule_v2: [cond] }))
-      .toMatch(/"remove_headers" must be a non-empty list of non-empty strings/);
-    expect(ruleReasonFor({ phase: 'response', action: 'remove-header', remove_headers: [''], rule_v2: [cond] }))
-      .toMatch(/"remove_headers" must be a non-empty list/);
+      .toMatch(/"remove_headers" must be a non-empty list of HTTP header names/);
     expect(ruleReasonFor({ phase: 'response', action: 'harden-cookie', cookie_flags: 'httponly', rule_v2: [cond] }))
       .toMatch(/"cookie_flags" must be an object/);
+
+    // A non-empty payload is not enough: the NAME has to be one the platform's `Headers` accepts. An
+    // invalid one makes get/set/delete throw, the runtime skips the mutation, and a reviewed hardening
+    // rule is served while changing nothing. `\n` is the worst of them — it reads as header injection
+    // and is silently dropped instead.
+    for (const name of ['', 'x bad', 'x:bad', 'x-bad\nInjected', 'x(bad)', 'x/bad']) {
+      expect(ruleReasonFor({ phase: 'response', action: 'set-header', set_headers: { [name]: 'x' }, rule_v2: [cond] }), name)
+        .toMatch(/names an invalid HTTP header/);
+      expect(ruleReasonFor({ phase: 'response', action: 'remove-header', remove_headers: [name], rule_v2: [cond] }), name)
+        .toMatch(/names an invalid HTTP header/);
+    }
+
+    // ...and the token characters a real header name may contain stay accepted.
+    for (const name of ['X-Frame-Options', 'x-powered-by', 'Content-Security-Policy-Report-Only', "x'weird*chars!"]) {
+      expect(ruleReasonFor({ phase: 'response', action: 'set-header', set_headers: { [name]: 'x' }, rule_v2: [cond] }), name).toBeNull();
+      expect(ruleReasonFor({ phase: 'response', action: 'remove-header', remove_headers: [name], rule_v2: [cond] }), name).toBeNull();
+    }
 
     // The working payloads stay working — including `harden-cookie` with no `cookie_flags` at all,
     // which the runtime defaults.

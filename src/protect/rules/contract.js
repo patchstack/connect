@@ -12,7 +12,7 @@
 // `rule-contract.json` is the published form. `tests/protect/rule-contract.test.ts` reads the engine's own
 // source and asserts these descriptions match what it implements.
 
-export const CONTRACT_VERSION = '2.2';
+export const CONTRACT_VERSION = '2.3';
 
 /**
  * Every parameter source, and what it accepts after the dot.
@@ -99,14 +99,36 @@ export const OPERANDLESS_MATCH_TYPES = Object.freeze([
  *                         pattern compiler accepts. An undelimited value, or `//`, compiles to nothing
  *                         and the condition can never match.
  * `string-or-string-list` one non-empty string, or a non-empty list of them
+ * `scalar-or-non-empty-list` one scalar, or a non-empty list of them. The list membership matchers
+ *                         stringify every entry, so a number or boolean entry is as usable as a
+ *                         string, and a lone `''` is a real signature ("this parameter is empty").
+ *                         Only the EMPTY list is degenerate.
+ * `non-empty-list`        a non-empty array of scalars. Distinct from the above because
+ *                         `array_in_array` compares array against array and never matches a bare one.
+ * `scalar`                one string, number or boolean. `''` is allowed: "this parameter is empty" is
+ *                         a real signature, so emptiness alone is not the defect here.
+ * `string`                a string specifically — for the type-strict comparison, whose subject is
+ *                         always stringified first, so a number operand can never equal it.
+ * `numeric`               a scalar that coerces to a finite number. The comparators coerce with
+ *                         `Number()`, so an operand that yields NaN makes every comparison false.
  * `object`                a plain object
  * `non-empty-object`      a plain object with at least one entry
  * `non-empty-string-list` a non-empty array of non-empty strings
+ * `header-name-map`       a non-empty object whose every key is a valid HTTP field name
+ * `header-name-list`      a non-empty array of valid HTTP field names
  */
 export const OPERAND_SHAPES = Object.freeze([
-  'non-empty-string', 'regex-literal', 'string-or-string-list', 'object', 'non-empty-object',
-  'non-empty-string-list',
+  'non-empty-string', 'regex-literal', 'string-or-string-list', 'scalar', 'string', 'numeric',
+  'scalar-or-non-empty-list', 'non-empty-list', 'object', 'non-empty-object', 'non-empty-string-list',
+  'header-name-map', 'header-name-list',
 ]);
+
+/**
+ * An HTTP field name, as the platform's `Headers` accepts it (RFC 9110 token). A name outside this set
+ * makes `Headers.get`/`set`/`delete` throw, and the runtime skips the mutation — so a reviewed
+ * hardening rule is served and changes nothing.
+ */
+export const HEADER_NAME = /^[!#$%&'*+\-.^_`|~0-9A-Za-z]+$/;
 
 /** Mirrors the engine's pattern compiler: `/body/flags`, body non-empty, only its supported flags. */
 export const REGEX_LITERAL = /^\/(.+?)\/([gimsuy]*)$/s;
@@ -120,11 +142,28 @@ export const MATCH_OPERANDS = Object.freeze({
   contains: Object.freeze({ required: Object.freeze(['value']), shapes: Object.freeze({ value: 'non-empty-string' }) }),
   stripos: Object.freeze({ required: Object.freeze(['value']), shapes: Object.freeze({ value: 'non-empty-string' }) }),
   not_contains: Object.freeze({ required: Object.freeze(['value']), shapes: Object.freeze({ value: 'non-empty-string' }) }),
+  // A hostname is compared to `new URL(value).hostname`, so an empty one only ever equals the empty
+  // hostname of an opaque-scheme URL (`file:`, `mailto:`, `data:`) — never a host, and a false positive
+  // on those. The other three are the list-membership family: an empty list makes `in_array` and
+  // `array_in_array` inert and `not_in_array` true for every value.
+  hostname: Object.freeze({ required: Object.freeze(['value']), shapes: Object.freeze({ value: 'non-empty-string' }) }),
+  in_array: Object.freeze({ required: Object.freeze(['value']), shapes: Object.freeze({ value: 'scalar-or-non-empty-list' }) }),
+  not_in_array: Object.freeze({ required: Object.freeze(['value']), shapes: Object.freeze({ value: 'scalar-or-non-empty-list' }) }),
+  array_in_array: Object.freeze({ required: Object.freeze(['value']), shapes: Object.freeze({ value: 'non-empty-list' }) }),
+  // The comparison family. `equals` coerces, so any scalar can match. `equals_strict` does not, and its
+  // subject is always a string by the time it is compared — so a number operand is unconditionally
+  // inert, which is the trap the engine's own note about `'1' !== 1` describes.
+  equals: Object.freeze({ required: Object.freeze(['value']), shapes: Object.freeze({ value: 'scalar' }) }),
+  equals_strict: Object.freeze({ required: Object.freeze(['value']), shapes: Object.freeze({ value: 'string' }) }),
+  less_than: Object.freeze({ required: Object.freeze(['value']), shapes: Object.freeze({ value: 'numeric' }) }),
+  more_than: Object.freeze({ required: Object.freeze(['value']), shapes: Object.freeze({ value: 'numeric' }) }),
 });
 
 /** @returns {string|null} why this operand cannot serve that shape, or null */
 export function operandShapeProblem(shape, value) {
   const isFilledString = (v) => typeof v === 'string' && v.trim() !== '';
+  const isScalar = (v) => typeof v === 'string' || typeof v === 'number' || typeof v === 'boolean';
+  const isHeaderName = (v) => typeof v === 'string' && HEADER_NAME.test(v);
 
   switch (shape) {
     case 'non-empty-string':
@@ -138,6 +177,32 @@ export function operandShapeProblem(shape, value) {
       if (isFilledString(value)) return null;
       if (Array.isArray(value) && value.length > 0 && value.every(isFilledString)) return null;
       return 'must be a non-empty string, or a non-empty list of them';
+    case 'scalar':
+      return isScalar(value) ? null : 'must be a string, number or boolean';
+    case 'string':
+      return typeof value === 'string' ? null : 'must be a string (this comparison is type-strict)';
+    case 'numeric':
+      return isScalar(value) && Number.isFinite(Number(value)) ? null : 'must be a number';
+    case 'scalar-or-non-empty-list':
+      if (isScalar(value)) return null;
+      if (Array.isArray(value) && value.length > 0 && value.every(isScalar)) return null;
+      return 'must be a scalar, or a non-empty list of them';
+    case 'non-empty-list':
+      return Array.isArray(value) && value.length > 0 && value.every(isScalar)
+        ? null
+        : 'must be a non-empty list of scalars';
+    case 'header-name-map': {
+      if (value === null || typeof value !== 'object' || Array.isArray(value)) return 'must be an object';
+      const names = Object.keys(value);
+      if (names.length === 0) return 'must be an object with at least one entry';
+      const bad = names.find((name) => !isHeaderName(name));
+      return bad === undefined ? null : `names an invalid HTTP header, ${JSON.stringify(bad)}`;
+    }
+    case 'header-name-list': {
+      if (!Array.isArray(value) || value.length === 0) return 'must be a non-empty list of HTTP header names';
+      const bad = value.find((name) => !isHeaderName(name));
+      return bad === undefined ? null : `names an invalid HTTP header, ${JSON.stringify(bad)}`;
+    }
     case 'object':
       return value !== null && typeof value === 'object' && !Array.isArray(value) ? null : 'must be an object';
     case 'non-empty-object':
@@ -198,13 +263,13 @@ export const ACTION_PROPERTIES = Object.freeze({
     required: Object.freeze(['set_headers']),
     defaulted: Object.freeze(['ensure']),
     phases: Object.freeze(['response']),
-    shapes: Object.freeze({ set_headers: 'non-empty-object' }),
+    shapes: Object.freeze({ set_headers: 'header-name-map' }),
   }),
   'remove-header': Object.freeze({
     required: Object.freeze(['remove_headers']),
     defaulted: Object.freeze([]),
     phases: Object.freeze(['response']),
-    shapes: Object.freeze({ remove_headers: 'non-empty-string-list' }),
+    shapes: Object.freeze({ remove_headers: 'header-name-list' }),
   }),
   'harden-cookie': Object.freeze({
     required: Object.freeze([]),
