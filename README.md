@@ -28,7 +28,7 @@ That's it. `setup`:
 2. POSTs the package list to Patchstack with **no** UUID.
 3. Patchstack provisions a fresh site and returns its UUID.
 4. The connector writes the UUID to `.patchstackrc.json` so the next `scan` targets the same site.
-5. The connector installs the disclosure widget's `<script>` tag into your root HTML shell (see *The disclosure widget* below) so the "Report a vulnerability" button shows up on the next preview reload.
+5. The connector installs the disclosure widget's `<script>` tag into your root HTML shell (see *The disclosure widget* below) so the "Report a vulnerability" button shows up on the next preview reload. On a server-rendered root it also adds the production marker, which is what tells the widget to switch from build mode to visitor report intake on the published site.
 6. Installs the runtime guard after provisioning, bakes the site UUID into it, and verifies the framework seam. Known server stacks are auto-wired; unmatched or conflicting layouts get a generic scaffold and exact manual checks.
 7. Adds `postinstall: patchstack-connect scan`, preserving any existing command, so dependencies added during a sandbox session and build-less production installs are reported immediately.
 8. Wires `scan` before builds and `mark-build` after builds, preserving existing commands and using direct build chaining for Bun.
@@ -51,8 +51,10 @@ patchstack-connect scan   [options]                Scan the lockfile and POST to
                                                    If no UUID is configured the server provisions
                                                    one and the connector persists it. After a
                                                    successful post, adds/updates the disclosure
-                                                   widget tag in the root HTML shell (opt out
-                                                   with "widget": false in .patchstackrc.json)
+                                                   widget tag in the root HTML shell. Also adds the
+                                                   production marker to a JSX root shell, before the
+                                                   post (opt out of both with "widget": false in
+                                                   .patchstackrc.json)
 patchstack-connect setup  [options]                Run scan, manage the widget, and idempotently
                                                    install + verify runtime protection and wire
                                                    dependency/build scans. Never runs the build
@@ -190,11 +192,13 @@ The widget is a floating "Report a vulnerability" button — a disclosure channe
   <script src="https://cdn.patchstack.com/patchstack-widget.js" data-site-uuid="<SITE_UUID>" defer data-patchstack-connect-widget="true"></script>
   ```
 
-  Re-runs update the tag in place (the `data-patchstack-connect-widget` attribute marks it as connector-managed); a pre-existing manual widget tag is left untouched. `--dry-run` and failed posts never edit anything. Projects whose root layout is code rather than HTML (Next.js, Nuxt, Astro, …) get the exact snippet and target file printed instead — `guide` shows framework-specific placement.
+- **`scan`** also adds the production marker when the root shell is JSX rather than HTML (`src/routes/__root.tsx`, `app/layout.tsx`, …), above the widget tag and guarded by the framework's production expression. A server-rendered app emits no built HTML for `mark-build` to stamp, so without it the widget reads the published site as build mode and shows the claim flow to visitors instead of the report form.
+
+  Re-runs update the tag in place (the `data-patchstack-connect-widget` attribute marks it as connector-managed); a pre-existing manual widget tag is left untouched. `--dry-run` never edits anything; a failed post still skips the widget tag (it needs the site UUID) but the production marker may already have been written, since it runs before the post. Projects whose root layout is code rather than HTML (Next.js, Nuxt, Astro, …) get the exact snippet and target file printed instead — `guide` shows framework-specific placement.
 
 - **`mark-build`** ensures the same tag in built HTML output, covering builds whose source shell the connector couldn't edit, and stamps `window.__PATCHSTACK_PROD__` so the widget hides the claim/login UI on the published site (owners reach it by appending `#patchstack` to the live URL).
 
-- **Opting out:** persist `"widget": false` in `.patchstackrc.json` to disable both passes (dependency scanning only). Without it, the next successful scan re-adds the managed tag.
+- **Opting out:** persist `"widget": false` in `.patchstackrc.json` to disable both the widget tag and the production marker (dependency scanning only). Without it, the next successful scan re-adds the managed tag, and the next scan re-adds the marker on a JSX root.
 
 ## Programmatic API
 
