@@ -1174,11 +1174,17 @@ function applyHeaderMutation(headers, rule) {
   }
 }
 
+// `SameSite` takes exactly three values, and the flag is interpolated into the header — so anything
+// else is either ignored by the browser or appends further cookie attributes (`Lax; Domain=…`). The
+// contract refuses such a rule, and this drops it if one arrives anyway.
+const SAME_SITE = ['Strict', 'Lax', 'None'];
+
 function hardenCookie(cookie, { httpOnly = true, secure = true, sameSite = 'Lax' } = {}) {
   let out = String(cookie);
   if (httpOnly && !/;\s*httponly/i.test(out)) out += '; HttpOnly';
   if (secure && !/;\s*secure/i.test(out)) out += '; Secure';
-  if (sameSite && !/;\s*samesite\s*=/i.test(out)) out += `; SameSite=${sameSite}`;
+  const canonical = SAME_SITE.find((v) => typeof sameSite === 'string' && v.toLowerCase() === sameSite.toLowerCase());
+  if (canonical && !/;\s*samesite\s*=/i.test(out)) out += `; SameSite=${canonical}`;
   return out;
 }
 

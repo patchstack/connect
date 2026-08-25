@@ -12,7 +12,7 @@
 // `rule-contract.json` is the published form. `tests/protect/rule-contract.test.ts` reads the engine's own
 // source and asserts these descriptions match what it implements.
 
-export const CONTRACT_VERSION = '2.3';
+export const CONTRACT_VERSION = '2.4';
 
 /**
  * Every parameter source, and what it accepts after the dot.
@@ -116,12 +116,22 @@ export const OPERANDLESS_MATCH_TYPES = Object.freeze([
  * `non-empty-string-list` a non-empty array of non-empty strings
  * `header-name-map`       a non-empty object whose every key is a valid HTTP field name
  * `header-name-list`      a non-empty array of valid HTTP field names
+ * `cookie-flags`          a `harden-cookie` configuration that still hardens something. Each flag may
+ *                         be turned off individually, but turning off all three leaves an action that
+ *                         matches, reports, and rewrites the cookie to itself. `sameSite` is
+ *                         interpolated into the header verbatim, so it is held to the three values the
+ *                         attribute actually takes — anything else is either ignored by the browser or
+ *                         appends further cookie attributes.
  */
 export const OPERAND_SHAPES = Object.freeze([
   'non-empty-string', 'regex-literal', 'string-or-string-list', 'scalar', 'string', 'numeric',
   'scalar-or-non-empty-list', 'non-empty-list', 'object', 'non-empty-object', 'non-empty-string-list',
-  'header-name-map', 'header-name-list',
+  'header-name-map', 'header-name-list', 'cookie-flags',
 ]);
+
+/** The flags `harden-cookie` understands, and the values `SameSite` takes. */
+export const COOKIE_FLAGS = Object.freeze(['httpOnly', 'secure', 'sameSite']);
+export const SAME_SITE_VALUES = Object.freeze(['Strict', 'Lax', 'None']);
 
 /**
  * An HTTP field name, as the platform's `Headers` accepts it (RFC 9110 token). A name outside this set
@@ -203,6 +213,35 @@ export function operandShapeProblem(shape, value) {
       const bad = value.find((name) => !isHeaderName(name));
       return bad === undefined ? null : `names an invalid HTTP header, ${JSON.stringify(bad)}`;
     }
+    case 'cookie-flags': {
+      if (value === null || typeof value !== 'object' || Array.isArray(value)) return 'must be an object';
+
+      // An unknown key is silently ignored by the runtime — including a near-miss like `httponly`,
+      // which reads as disabling a flag and leaves it on. A rule has to mean what it says.
+      const unknown = Object.keys(value).filter((key) => !COOKIE_FLAGS.includes(key));
+      if (unknown.length > 0) return `has no flag named ${unknown.map((k) => JSON.stringify(k)).join(', ')}`;
+
+      for (const flag of ['httpOnly', 'secure']) {
+        if (value[flag] !== undefined && typeof value[flag] !== 'boolean') {
+          // The runtime only tests truthiness, so the string 'false' would turn the flag ON.
+          return `flag "${flag}" must be true or false`;
+        }
+      }
+
+      const sameSite = value.sameSite;
+      const sameSiteOff = sameSite === false;
+      if (sameSite !== undefined && !sameSiteOff) {
+        if (typeof sameSite !== 'string' || !SAME_SITE_VALUES.some((v) => v.toLowerCase() === sameSite.toLowerCase())) {
+          return `flag "sameSite" must be false, or one of ${SAME_SITE_VALUES.join(', ')}`;
+        }
+      }
+
+      // Each default may be turned off on its own; all of them together is the no-op.
+      if (value.httpOnly === false && value.secure === false && sameSiteOff) {
+        return 'turns off every flag, so it would harden nothing';
+      }
+      return null;
+    }
     case 'object':
       return value !== null && typeof value === 'object' && !Array.isArray(value) ? null : 'must be an object';
     case 'non-empty-object':
@@ -275,7 +314,7 @@ export const ACTION_PROPERTIES = Object.freeze({
     required: Object.freeze([]),
     defaulted: Object.freeze(['cookie_flags']),
     phases: Object.freeze(['response']),
-    shapes: Object.freeze({ cookie_flags: 'object' }),
+    shapes: Object.freeze({ cookie_flags: 'cookie-flags' }),
   }),
 });
 

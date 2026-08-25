@@ -468,6 +468,46 @@ describe('what the delivered-bundle validator does with it', () => {
     expect(ruleReasonFor({ phase: 'response', action: 'harden-cookie', cookie_flags: 'httponly', rule_v2: [cond] }))
       .toMatch(/"cookie_flags" must be an object/);
 
+    // `harden-cookie` names three flags and every one can be turned off, so an object-shaped payload is
+    // not evidence the action does anything. Measured against `hardenCookie` — with all three off, the
+    // cookie comes out byte-identical: `sid=abc; Path=/` in, `sid=abc; Path=/` out.
+    expect(ruleReasonFor({ phase: 'response', action: 'harden-cookie', cookie_flags: { httpOnly: false, secure: false, sameSite: false }, rule_v2: [cond] }))
+      .toMatch(/turns off every flag, so it would harden nothing/);
+
+    // Each flag must say what it means. The runtime only tests truthiness, so `'false'` — or any other
+    // non-boolean — would turn a flag ON while reading as off.
+    expect(ruleReasonFor({ phase: 'response', action: 'harden-cookie', cookie_flags: { httpOnly: 'false' }, rule_v2: [cond] }))
+      .toMatch(/flag "httpOnly" must be true or false/);
+    expect(ruleReasonFor({ phase: 'response', action: 'harden-cookie', cookie_flags: { secure: 0 }, rule_v2: [cond] }))
+      .toMatch(/flag "secure" must be true or false/);
+
+    // An unknown key is silently ignored, so a near-miss reads as disabling a flag and leaves it on.
+    expect(ruleReasonFor({ phase: 'response', action: 'harden-cookie', cookie_flags: { httponly: false }, rule_v2: [cond] }))
+      .toMatch(/has no flag named "httponly"/);
+    expect(ruleReasonFor({ phase: 'response', action: 'harden-cookie', cookie_flags: { sameSite: 'Lax', extra: true }, rule_v2: [cond] }))
+      .toMatch(/has no flag named "extra"/);
+
+    // `sameSite` is interpolated into the header, so an unrecognised value is ignored by the browser
+    // and a value carrying `;` appends further cookie attributes.
+    expect(ruleReasonFor({ phase: 'response', action: 'harden-cookie', cookie_flags: { sameSite: 'Banana' }, rule_v2: [cond] }))
+      .toMatch(/flag "sameSite" must be false, or one of Strict, Lax, None/);
+    expect(ruleReasonFor({ phase: 'response', action: 'harden-cookie', cookie_flags: { sameSite: 'Lax; Domain=evil.test' }, rule_v2: [cond] }))
+      .toMatch(/flag "sameSite"/);
+    expect(ruleReasonFor({ phase: 'response', action: 'harden-cookie', cookie_flags: { sameSite: true }, rule_v2: [cond] }))
+      .toMatch(/flag "sameSite"/);
+
+    // Turning off SOME defaults stays valid — that is a reviewer's call, and something still hardens.
+    for (const flags of [
+      { httpOnly: false, secure: false },        // -> SameSite=Lax only
+      { httpOnly: true, secure: false, sameSite: false }, // -> HttpOnly only
+      { sameSite: false },                       // -> HttpOnly; Secure
+      {},                                        // -> all three defaults
+      { sameSite: 'Strict' }, { sameSite: 'None' }, { sameSite: 'lax' },
+    ]) {
+      expect(ruleReasonFor({ phase: 'response', action: 'harden-cookie', cookie_flags: flags, rule_v2: [cond] }), JSON.stringify(flags))
+        .toBeNull();
+    }
+
     // A non-empty payload is not enough: the NAME has to be one the platform's `Headers` accepts. An
     // invalid one makes get/set/delete throw, the runtime skips the mutation, and a reviewed hardening
     // rule is served while changing nothing. `\n` is the worst of them — it reads as header injection

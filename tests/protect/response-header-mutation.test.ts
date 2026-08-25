@@ -89,6 +89,24 @@ describe('response header mutation', () => {
     }
   });
 
+  it('emits SameSite only for a value the attribute actually takes', async () => {
+    // The flag is interpolated into Set-Cookie, so an unrecognised value is a header the browser
+    // ignores, and one carrying `;` appends further cookie attributes — `Lax; Domain=evil.test` becomes
+    // a Domain the rule never declared. The contract refuses both, and this is the runtime's own guard
+    // for rules written before it, or handed straight to `responseRules`.
+    const harden = async (cookie_flags: any) => {
+      const p: any = await withRule({ phase: 'response', action: 'harden-cookie', cookie_flags, rule_v2: alwaysCond });
+      const out = await p.screenResponse(json({ 'set-cookie': 'sid=abc; Path=/' }));
+      return out.headers.getSetCookie()[0];
+    };
+
+    expect(await harden({ sameSite: 'Lax; Domain=evil.test' })).toBe('sid=abc; Path=/; HttpOnly; Secure');
+    expect(await harden({ sameSite: 'Banana' })).toBe('sid=abc; Path=/; HttpOnly; Secure');
+    expect(await harden({ sameSite: 'Strict' })).toBe('sid=abc; Path=/; HttpOnly; Secure; SameSite=Strict');
+    expect(await harden({ sameSite: 'none' })).toBe('sid=abc; Path=/; HttpOnly; Secure; SameSite=None');
+    expect(await harden(undefined)).toBe('sid=abc; Path=/; HttpOnly; Secure; SameSite=Lax');
+  });
+
   it('does not mutate in dry-run (observe only)', async () => {
     const rule = { phase: 'response', action: 'remove-header', remove_headers: ['x-secret'], rule_v2: alwaysCond };
     const p: any = await withRule(rule, 'dry-run');

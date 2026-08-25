@@ -1,6 +1,6 @@
 {
   "$comment": "Generated from src/protect/rules/contract.js by scripts/emit-rule-contract.mjs. Do not edit.",
-  "version": "2.3",
+  "version": "2.4",
   "sources": {
     "raw": {
       "keyed": false
@@ -142,7 +142,8 @@
     "non-empty-object",
     "non-empty-string-list",
     "header-name-map",
-    "header-name-list"
+    "header-name-list",
+    "cookie-flags"
   ],
   "match_operands": {
     "array_key_value": {
@@ -336,7 +337,7 @@
         "response"
       ],
       "shapes": {
-        "cookie_flags": "object"
+        "cookie_flags": "cookie-flags"
       }
     }
   },
