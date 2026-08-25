@@ -1,6 +1,6 @@
 {
   "$comment": "Generated from src/protect/rules/contract.js by scripts/emit-rule-contract.mjs. Do not edit.",
-  "version": "2.1",
+  "version": "2.2",
   "sources": {
     "raw": {
       "keyed": false
@@ -129,12 +129,56 @@
     "off_origin",
     "cors_reflected"
   ],
+  "operand_shapes": [
+    "non-empty-string",
+    "regex-literal",
+    "string-or-string-list",
+    "object",
+    "non-empty-object",
+    "non-empty-string-list"
+  ],
   "match_operands": {
     "array_key_value": {
       "required": [
         "key",
         "match"
-      ]
+      ],
+      "shapes": {
+        "key": "string-or-string-list",
+        "match": "object"
+      }
+    },
+    "regex": {
+      "required": [
+        "value"
+      ],
+      "shapes": {
+        "value": "regex-literal"
+      }
+    },
+    "contains": {
+      "required": [
+        "value"
+      ],
+      "shapes": {
+        "value": "non-empty-string"
+      }
+    },
+    "stripos": {
+      "required": [
+        "value"
+      ],
+      "shapes": {
+        "value": "non-empty-string"
+      }
+    },
+    "not_contains": {
+      "required": [
+        "value"
+      ],
+      "shapes": {
+        "value": "non-empty-string"
+      }
     }
   },
   "mutations": [
@@ -167,21 +211,24 @@
         "request",
         "response",
         "egress"
-      ]
+      ],
+      "shapes": {}
     },
     "redact": {
       "required": [],
       "defaulted": [],
       "phases": [
         "response"
-      ]
+      ],
+      "shapes": {}
     },
     "encode": {
       "required": [],
       "defaulted": [],
       "phases": [
         "response"
-      ]
+      ],
+      "shapes": {}
     },
     "set-header": {
       "required": [
@@ -192,7 +239,10 @@
       ],
       "phases": [
         "response"
-      ]
+      ],
+      "shapes": {
+        "set_headers": "non-empty-object"
+      }
     },
     "remove-header": {
       "required": [
@@ -201,7 +251,10 @@
       "defaulted": [],
       "phases": [
         "response"
-      ]
+      ],
+      "shapes": {
+        "remove_headers": "non-empty-string-list"
+      }
     },
     "harden-cookie": {
       "required": [],
@@ -210,7 +263,10 @@
       ],
       "phases": [
         "response"
-      ]
+      ],
+      "shapes": {
+        "cookie_flags": "object"
+      }
     }
   },
   "when_keys": [

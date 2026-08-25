@@ -12,7 +12,7 @@
 // `rule-contract.json` is the published form. `tests/protect/rule-contract.test.ts` reads the engine's own
 // source and asserts these descriptions match what it implements.
 
-export const CONTRACT_VERSION = '2.1';
+export const CONTRACT_VERSION = '2.2';
 
 /**
  * Every parameter source, and what it accepts after the dot.
@@ -87,14 +87,71 @@ export const OPERANDLESS_MATCH_TYPES = Object.freeze([
 ]);
 
 /**
- * Match types needing operands beyond `value`.
+ * Operand shapes that have to hold for a match to be able to do anything.
  *
- * `array_key_value` navigates `key` and evaluates `match` against what it finds. Either one missing is a
- * condition that resolves a value and tests nothing.
+ * Presence is not enough. An operand of the wrong shape leaves a condition that resolves a value and then
+ * answers the same way for every request — inert in most cases, and for the substring matchers, true for
+ * ALL of them: `contains` with an empty value matches every request, which is a rule that blocks all
+ * traffic while reading as one targeted signature.
+ *
+ * `non-empty-string`      a string with something in it
+ * `regex-literal`         a delimited `/pattern/flags` whose pattern is non-empty — what the engine's
+ *                         pattern compiler accepts. An undelimited value, or `//`, compiles to nothing
+ *                         and the condition can never match.
+ * `string-or-string-list` one non-empty string, or a non-empty list of them
+ * `object`                a plain object
+ * `non-empty-object`      a plain object with at least one entry
+ * `non-empty-string-list` a non-empty array of non-empty strings
  */
+export const OPERAND_SHAPES = Object.freeze([
+  'non-empty-string', 'regex-literal', 'string-or-string-list', 'object', 'non-empty-object',
+  'non-empty-string-list',
+]);
+
+/** Mirrors the engine's pattern compiler: `/body/flags`, body non-empty, only its supported flags. */
+export const REGEX_LITERAL = /^\/(.+?)\/([gimsuy]*)$/s;
+
 export const MATCH_OPERANDS = Object.freeze({
-  array_key_value: Object.freeze({ required: Object.freeze(['key', 'match']) }),
+  array_key_value: Object.freeze({
+    required: Object.freeze(['key', 'match']),
+    shapes: Object.freeze({ key: 'string-or-string-list', match: 'object' }),
+  }),
+  regex: Object.freeze({ required: Object.freeze(['value']), shapes: Object.freeze({ value: 'regex-literal' }) }),
+  contains: Object.freeze({ required: Object.freeze(['value']), shapes: Object.freeze({ value: 'non-empty-string' }) }),
+  stripos: Object.freeze({ required: Object.freeze(['value']), shapes: Object.freeze({ value: 'non-empty-string' }) }),
+  not_contains: Object.freeze({ required: Object.freeze(['value']), shapes: Object.freeze({ value: 'non-empty-string' }) }),
 });
+
+/** @returns {string|null} why this operand cannot serve that shape, or null */
+export function operandShapeProblem(shape, value) {
+  const isFilledString = (v) => typeof v === 'string' && v.trim() !== '';
+
+  switch (shape) {
+    case 'non-empty-string':
+      return isFilledString(value) ? null : 'must be a non-empty string';
+    case 'regex-literal':
+      // Length is not checked here: `maxRegexLength` is enforced once, at the gate, so the limit has a
+      // single owner and one message.
+      if (!isFilledString(value)) return 'must be a non-empty string';
+      return REGEX_LITERAL.test(value) ? null : 'must be a delimited pattern, as in /pattern/i';
+    case 'string-or-string-list':
+      if (isFilledString(value)) return null;
+      if (Array.isArray(value) && value.length > 0 && value.every(isFilledString)) return null;
+      return 'must be a non-empty string, or a non-empty list of them';
+    case 'object':
+      return value !== null && typeof value === 'object' && !Array.isArray(value) ? null : 'must be an object';
+    case 'non-empty-object':
+      return value !== null && typeof value === 'object' && !Array.isArray(value) && Object.keys(value).length > 0
+        ? null
+        : 'must be an object with at least one entry';
+    case 'non-empty-string-list':
+      return Array.isArray(value) && value.length > 0 && value.every(isFilledString)
+        ? null
+        : 'must be a non-empty list of non-empty strings';
+    default:
+      return null;
+  }
+}
 
 /** Mutations the resolver applies. Anything else is a silent no-op. */
 export const MUTATIONS = Object.freeze([
@@ -137,9 +194,24 @@ export const ACTION_PROPERTIES = Object.freeze({
   block: Object.freeze({ required: Object.freeze([]), defaulted: Object.freeze([]), phases: Object.freeze(['request', 'response', 'egress']) }),
   redact: Object.freeze({ required: Object.freeze([]), defaulted: Object.freeze([]), phases: Object.freeze(['response']) }),
   encode: Object.freeze({ required: Object.freeze([]), defaulted: Object.freeze([]), phases: Object.freeze(['response']) }),
-  'set-header': Object.freeze({ required: Object.freeze(['set_headers']), defaulted: Object.freeze(['ensure']), phases: Object.freeze(['response']) }),
-  'remove-header': Object.freeze({ required: Object.freeze(['remove_headers']), defaulted: Object.freeze([]), phases: Object.freeze(['response']) }),
-  'harden-cookie': Object.freeze({ required: Object.freeze([]), defaulted: Object.freeze(['cookie_flags']), phases: Object.freeze(['response']) }),
+  'set-header': Object.freeze({
+    required: Object.freeze(['set_headers']),
+    defaulted: Object.freeze(['ensure']),
+    phases: Object.freeze(['response']),
+    shapes: Object.freeze({ set_headers: 'non-empty-object' }),
+  }),
+  'remove-header': Object.freeze({
+    required: Object.freeze(['remove_headers']),
+    defaulted: Object.freeze([]),
+    phases: Object.freeze(['response']),
+    shapes: Object.freeze({ remove_headers: 'non-empty-string-list' }),
+  }),
+  'harden-cookie': Object.freeze({
+    required: Object.freeze([]),
+    defaulted: Object.freeze(['cookie_flags']),
+    phases: Object.freeze(['response']),
+    shapes: Object.freeze({ cookie_flags: 'object' }),
+  }),
 });
 
 export const LIMITS = Object.freeze({
@@ -208,6 +280,13 @@ export function parameterProblem(parameter) {
 
   if (typeof parameter !== 'string' || parameter === '') return 'parameter must be a non-empty string';
 
+  // Reached only for a LEAF: a whole group is recognised before this and never validated as a parameter.
+  // So `rules` here — bare, or as a member of a list — is a leaf naming the group source, which the
+  // resolver answers with a null value.
+  if (parameter === GROUP_PARAMETER) {
+    return `"${GROUP_PARAMETER}" is the group source and is only valid as a whole group, not as a parameter`;
+  }
+
   const dot = parameter.indexOf('.');
   const name = dot === -1 ? parameter : parameter.slice(0, dot);
   const source = SOURCES[name];
@@ -272,6 +351,11 @@ export function matchProblem(match, parameter) {
       if (match[required] === undefined || match[required] === null) {
         return `match type "${match.type}" needs "${required}"`;
       }
+    }
+    for (const [operand, shape] of Object.entries(operands.shapes ?? {})) {
+      if (match[operand] === undefined) continue;
+      const problem = operandShapeProblem(shape, match[operand]);
+      if (problem) return `match type "${match.type}" operand "${operand}" ${problem}`;
     }
   } else if (!OPERANDLESS_MATCH_TYPES.includes(match.type) && match.value === undefined) {
     return `match type "${match.type}" needs a value`;
@@ -343,6 +427,12 @@ export function actionProblem(action, rule) {
     }
   }
 
+  for (const [property, shape] of Object.entries(spec?.shapes ?? {})) {
+    if (rule?.[property] === undefined || rule?.[property] === null) continue;
+    const problem = operandShapeProblem(shape, rule[property]);
+    if (problem) return `action "${action}" property "${property}" ${problem}`;
+  }
+
   const phase = rule?.phase ?? 'request';
   if (spec !== undefined && !spec.phases.includes(phase)) {
     return `action "${action}" is carried out on the ${spec.phases.join('/')} phase; on "${phase}" the rule blocks instead`;
@@ -371,7 +461,10 @@ export function ruleContract() {
     match_types: [...MATCH_TYPES],
     parameterless_match_types: [...PARAMETERLESS_MATCH_TYPES],
     operandless_match_types: [...OPERANDLESS_MATCH_TYPES],
-    match_operands: Object.fromEntries(Object.entries(MATCH_OPERANDS).map(([k, v]) => [k, { required: [...v.required] }])),
+    operand_shapes: [...OPERAND_SHAPES],
+    match_operands: Object.fromEntries(
+      Object.entries(MATCH_OPERANDS).map(([k, v]) => [k, { required: [...v.required], shapes: { ...(v.shapes ?? {}) } }]),
+    ),
     mutations: [...MUTATIONS],
     phases: [...PHASES],
     actions: [...ACTIONS],
@@ -380,6 +473,7 @@ export function ruleContract() {
         required: [...v.required],
         defaulted: [...v.defaulted],
         phases: [...v.phases],
+        shapes: { ...(v.shapes ?? {}) },
       }]),
     ),
     when_keys: [...WHEN_KEYS],

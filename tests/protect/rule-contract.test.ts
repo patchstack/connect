@@ -229,8 +229,11 @@ describe('what the contract refuses', () => {
 describe('what the contract accepts', () => {
   it('accepts the keyless sources', () => {
     for (const [name, spec] of Object.entries(SOURCES)) {
-      if (spec.keyed !== true) expect(parameterProblem(name), name).toBeNull();
+      // The group source is keyless but is not a parameter: it names a group, and the resolver has no
+      // value for it. It is validated as a group shape instead — see the group tests.
+      if (spec.keyed !== true && spec.group !== true) expect(parameterProblem(name), name).toBeNull();
     }
+    expect(Object.values(SOURCES).filter((spec) => spec.group === true)).toHaveLength(1);
   });
 
   it('accepts a keyed source with a key', () => {
@@ -336,9 +339,83 @@ describe('what the delivered-bundle validator does with it', () => {
     expect(ruleReasonFor({ when: { method: [] }, rule_v2: [leaf] })).toMatch(/empty list/);
     expect(reasonFor({ parameter: 'rules' })).toMatch(/needs a "rules" array/);
     expect(reasonFor({ parameter: 'rules', rules: [leaf], match: { type: 'isset' } })).toMatch(/carries no match/);
-    expect(reasonFor({ parameter: 'get.q*' })).not.toBeNull();
     expect(reasonFor({ parameter: 'egress.hos*', match: { type: 'isset' } })).toMatch(/does not fan out/);
     expect(reasonFor({ parameter: 'server.HTTP_HOST', match: { type: 'hostname' } })).toMatch(/needs a value/);
+  });
+
+  it('rejects the group source used as a parameter, at the gate', () => {
+    // `rules` names a group, and the resolver answers it with nothing. As a leaf parameter it is a
+    // condition that resolves no value and tests it — inert. Beside a real parameter it is worse: the
+    // working sibling carries the match, so the dead half is invisible.
+    const match = { type: 'contains', value: '<script' };
+
+    // Bare, it is rejected one step earlier — as a group missing its `rules` array.
+    expect(reasonFor({ parameter: 'rules', match })).toMatch(/is a group and needs a "rules" array/);
+    // Inside a list there is no group shape to recognise, so this is the case the parameter rule covers.
+    expect(reasonFor({ parameter: ['get.q', 'rules'], match })).toMatch(/only valid as a whole group/);
+    expect(reasonFor({ parameter: ['rules'], match })).toMatch(/only valid as a whole group/);
+
+    // ...and the real group form is untouched by that. This is the regression guard for the above:
+    // a group is recognised before parameter validation, so rejecting `rules` there must not reach it.
+    expect(reasonFor({ parameter: 'rules', rules: [{ parameter: 'get.q', match }] })).toBeNull();
+  });
+
+  it('rejects operands that cannot match, and operands that match everything, at the gate', () => {
+    // Presence of the operand is not the property that matters — usability is. Each of these was
+    // accepted by the required-fields-only gate, and each was measured against the engine:
+    //   inert (never fires):        array_key_value key [], regex '', regex '//', undelimited regex
+    //   fires on ALL traffic:       contains '', stripos ''
+    // The second group is the dangerous direction: an empty substring is contained in every value, so
+    // the rule blocks every request while reading as one targeted signature.
+    expect(reasonFor({ parameter: 'post.a', match: { type: 'array_key_value', key: [], match: { type: 'contains', value: 'x' } } }))
+      .toMatch(/operand "key" must be a non-empty string, or a non-empty list of them/);
+    expect(reasonFor({ parameter: 'post.a', match: { type: 'array_key_value', key: ['a', ''], match: { type: 'contains', value: 'x' } } }))
+      .toMatch(/operand "key"/);
+    expect(reasonFor({ parameter: 'post.a', match: { type: 'array_key_value', key: 'a.b', match: 'not-an-object' } }))
+      .toMatch(/operand "match" must be an object/);
+
+    expect(reasonFor({ parameter: 'get.q', match: { type: 'regex', value: '' } })).toMatch(/must be a non-empty string/);
+    expect(reasonFor({ parameter: 'get.q', match: { type: 'regex', value: '//' } })).toMatch(/must be a delimited pattern/);
+    expect(reasonFor({ parameter: 'get.q', match: { type: 'regex', value: '<script' } })).toMatch(/must be a delimited pattern/);
+    // The length limit has its own owner at the gate — asserted here so the two checks stay compatible.
+    expect(reasonFor({ parameter: 'get.q', match: { type: 'regex', value: `/${'a'.repeat(1200)}/` } })).toMatch(/regex longer than 1000/);
+
+    for (const type of ['contains', 'stripos', 'not_contains']) {
+      expect(reasonFor({ parameter: 'get.q', match: { type, value: '' } })).toMatch(/must be a non-empty string/);
+      expect(reasonFor({ parameter: 'get.q', match: { type, value: '   ' } })).toMatch(/must be a non-empty string/);
+    }
+
+    // The shapes must not have moved past what the engine accepts: these all work today.
+    expect(reasonFor({ parameter: 'get.q', match: { type: 'regex', value: '/<script/i' } })).toBeNull();
+    expect(reasonFor({ parameter: 'get.q', match: { type: 'contains', value: '<script' } })).toBeNull();
+    expect(reasonFor({ parameter: 'post.a', match: { type: 'array_key_value', key: 'a.b', match: { type: 'contains', value: 'x' } } })).toBeNull();
+    expect(reasonFor({ parameter: 'post.a', match: { type: 'array_key_value', key: ['a.b', 'c'], match: { type: 'contains', value: 'x' } } })).toBeNull();
+    // `equals` against an empty value is a real signature (the parameter IS empty), not a degenerate one.
+    expect(reasonFor({ parameter: 'get.q', match: { type: 'equals', value: '' } })).toBeNull();
+  });
+
+  it('rejects a header action whose payload mutates nothing, at the gate', () => {
+    // The action name is the claim; the payload is the mutation. An empty one leaves a rule that
+    // matches, reports a detection, and changes no header.
+    const cond = { parameter: 'response.status', match: { type: 'isset' } };
+
+    expect(ruleReasonFor({ phase: 'response', action: 'set-header', set_headers: {}, rule_v2: [cond] }))
+      .toMatch(/"set_headers" must be an object with at least one entry/);
+    expect(ruleReasonFor({ phase: 'response', action: 'set-header', set_headers: ['X-Frame-Options'], rule_v2: [cond] }))
+      .toMatch(/"set_headers" must be an object/);
+    expect(ruleReasonFor({ phase: 'response', action: 'remove-header', remove_headers: [], rule_v2: [cond] }))
+      .toMatch(/"remove_headers" must be a non-empty list of non-empty strings/);
+    expect(ruleReasonFor({ phase: 'response', action: 'remove-header', remove_headers: [''], rule_v2: [cond] }))
+      .toMatch(/"remove_headers" must be a non-empty list/);
+    expect(ruleReasonFor({ phase: 'response', action: 'harden-cookie', cookie_flags: 'httponly', rule_v2: [cond] }))
+      .toMatch(/"cookie_flags" must be an object/);
+
+    // The working payloads stay working — including `harden-cookie` with no `cookie_flags` at all,
+    // which the runtime defaults.
+    expect(ruleReasonFor({ phase: 'response', action: 'set-header', set_headers: { 'X-Frame-Options': 'DENY' }, rule_v2: [cond] })).toBeNull();
+    expect(ruleReasonFor({ phase: 'response', action: 'remove-header', remove_headers: ['X-Powered-By'], rule_v2: [cond] })).toBeNull();
+    expect(ruleReasonFor({ phase: 'response', action: 'harden-cookie', rule_v2: [cond] })).toBeNull();
+    expect(ruleReasonFor({ phase: 'response', action: 'harden-cookie', cookie_flags: { httpOnly: true }, rule_v2: [cond] })).toBeNull();
   });
 
   it('rejects a scope the engine would ignore, at the gate', () => {
@@ -394,6 +471,13 @@ describe('what the delivered-bundle validator does with it', () => {
     // too much is found by a customer whose rule silently stopped being enforced.
     expect(reasonFor({ parameter: 'get.q', match: { type: 'contains', value: 'x' } })).toBeNull();
     expect(reasonFor({ parameter: ['get.file', 'post.file'], match: { type: 'contains', value: 'x' } })).toBeNull();
+
+    // The positive half of the wildcard rule. These carry a complete match on purpose: written without
+    // one they are rejected for the missing match and would "pass" a `not.toBeNull()` check while
+    // saying nothing about wildcards. Every source declaring `wildcard` has to survive the gate.
+    for (const source of ['get', 'post', 'request', 'cookie', 'files']) {
+      expect(reasonFor({ parameter: `${source}.q*`, match: { type: 'contains', value: 'x' } })).toBeNull();
+    }
     expect(reasonFor({ parameter: 'raw', mutations: ['urldecode', 'htmlentitydecode'], match: { type: 'regex', value: '/x/i' } })).toBeNull();
     expect(reasonFor({ match: { type: 'cross_origin' } })).toBeNull();
     expect(reasonFor({ parameter: 'response.body', match: { type: 'array_key_value', key: 'a.b', match: { type: 'contains', value: 'x' } } })).toBeNull();
