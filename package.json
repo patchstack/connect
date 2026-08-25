@@ -54,7 +54,9 @@
     "prepare": "npm run build",
     "prepublishOnly": "npm run typecheck && npm test && npm run build",
     "capabilities": "node scripts/emit-capabilities.mjs",
-    "capabilities:check": "node scripts/emit-capabilities.mjs --check && node scripts/check-capability-version.mjs"
+    "capabilities:check": "node scripts/emit-capabilities.mjs --check && node scripts/check-capability-version.mjs",
+    "rule-contract": "node scripts/emit-rule-contract.mjs",
+    "rule-contract:check": "node scripts/emit-rule-contract.mjs --check"
   },
   "engines": {
     "node": ">=18"

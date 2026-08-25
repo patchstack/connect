@@ -20,6 +20,46 @@ function base64DecodeUtf8(value) {
   return new TextDecoder().decode(bytes);
 }
 
+/**
+ * Decode HTML entities, so a payload written as `&lt;script&gt;` is screened as `<script>`.
+ *
+ * The mutation was documented, used by a shipped rule, and not implemented — so it was applied as a silent
+ * no-op. Implemented here to make the name mean what it says, NOT to close a coverage gap: `normalizer.js`
+ * already decodes entities across the whole request before matching, iteratively, which is why the
+ * entity-encoded payloads that rule exists for were being caught anyway. Anyone reading this should not
+ * conclude that entity coverage depended on this mutation; it did not, and the contract test is what turned
+ * "the name does nothing" into something visible.
+ *
+ * Named entities are limited to the ones that matter for injection contexts plus the handful every encoder
+ * emits. A full entity table would be a dependency, and the gap it leaves is a payload encoded with an
+ * exotic named entity — which no encoder in this path produces. Numeric forms are handled generally, both
+ * decimal and hex, because those are what an attacker writes by hand.
+ */
+const NAMED_ENTITIES = {
+  lt: '<', gt: '>', amp: '&', quot: '"', apos: "'", '#39': "'",
+  nbsp: '\u00a0', sol: '/', bsol: '\\', colon: ':', lpar: '(', rpar: ')', equals: '=', grave: '`',
+  Tab: '\t', NewLine: '\n', semi: ';', excl: '!', num: '#', dollar: '$', percnt: '%', ast: '*',
+};
+
+function decodeHtmlEntities(input) {
+  // One pass. Decoding repeatedly would turn `&amp;lt;` into `<`, which is not what a browser does — and a
+  // guard that decodes further than the sink does is a guard that blocks strings the app never sees.
+  return input.replace(/&(#[xX]?[0-9a-fA-F]+|[A-Za-z][A-Za-z0-9]*);?/g, (whole, body) => {
+    if (body[0] === '#') {
+      const hex = body[1] === 'x' || body[1] === 'X';
+      const code = Number.parseInt(hex ? body.slice(2) : body.slice(1), hex ? 16 : 10);
+      if (!Number.isFinite(code) || code < 0 || code > 0x10ffff) return whole;
+      try {
+        return String.fromCodePoint(code);
+      } catch {
+        return whole;
+      }
+    }
+
+    return Object.prototype.hasOwnProperty.call(NAMED_ENTITIES, body) ? NAMED_ENTITIES[body] : whole;
+  });
+}
+
 export class RequestResolver {
   #req;
   #cookies;
@@ -161,6 +201,9 @@ export class RequestResolver {
         } catch {
           return value;
         }
+
+      case 'htmlentitydecode':
+        return decodeHtmlEntities(String(value));
 
       case 'intval':
         return parseInt(String(value), 10) || 0;

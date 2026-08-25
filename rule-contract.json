@@ -1,0 +1,376 @@
+{
+  "$comment": "Generated from src/protect/rules/contract.js by scripts/emit-rule-contract.mjs. Do not edit.",
+  "version": "2.4",
+  "sources": {
+    "raw": {
+      "keyed": false
+    },
+    "all": {
+      "keyed": false
+    },
+    "false": {
+      "keyed": false
+    },
+    "rules": {
+      "keyed": false,
+      "group": true
+    },
+    "get": {
+      "keyed": true,
+      "keys": "any",
+      "wildcard": true
+    },
+    "post": {
+      "keyed": true,
+      "keys": "any",
+      "wildcard": true
+    },
+    "request": {
+      "keyed": true,
+      "keys": "any",
+      "wildcard": true
+    },
+    "cookie": {
+      "keyed": true,
+      "keys": "any",
+      "wildcard": true
+    },
+    "files": {
+      "keyed": true,
+      "keys": "any",
+      "optional_key_suffixes": [
+        "content",
+        "filename",
+        "type"
+      ],
+      "wildcard": true
+    },
+    "server": {
+      "keyed": true,
+      "keys": [
+        "REQUEST_URI",
+        "REQUEST_METHOD",
+        "HTTP_USER_AGENT",
+        "HTTP_REFERER",
+        "HTTP_HOST",
+        "REMOTE_ADDR",
+        "ip",
+        "CONTENT_TYPE",
+        "CONTENT_LENGTH"
+      ],
+      "key_prefixes": [
+        "HTTP_"
+      ]
+    },
+    "response": {
+      "keyed": true,
+      "keys": [
+        "status",
+        "body",
+        "headers"
+      ],
+      "key_prefixes": [
+        "header."
+      ]
+    },
+    "egress": {
+      "keyed": true,
+      "keys": [
+        "url",
+        "host",
+        "method"
+      ]
+    }
+  },
+  "group_parameter": "rules",
+  "match_types": [
+    "array_in_array",
+    "array_key_value",
+    "contains",
+    "cors_reflected",
+    "cross_origin",
+    "ctype_alnum",
+    "ctype_digit",
+    "ctype_special",
+    "equals",
+    "equals_strict",
+    "hostname",
+    "in_array",
+    "inline_js_xss",
+    "inline_xss",
+    "internal_host",
+    "is_numeric",
+    "isset",
+    "less_than",
+    "more_than",
+    "not_contains",
+    "not_in_array",
+    "off_origin",
+    "quotes",
+    "regex",
+    "stripos"
+  ],
+  "parameterless_match_types": [
+    "cross_origin",
+    "off_origin",
+    "cors_reflected"
+  ],
+  "operandless_match_types": [
+    "isset",
+    "quotes",
+    "is_numeric",
+    "ctype_alnum",
+    "ctype_digit",
+    "ctype_special",
+    "inline_xss",
+    "inline_js_xss",
+    "internal_host",
+    "cross_origin",
+    "off_origin",
+    "cors_reflected"
+  ],
+  "operand_shapes": [
+    "non-empty-string",
+    "regex-literal",
+    "string-or-string-list",
+    "scalar",
+    "string",
+    "numeric",
+    "scalar-or-non-empty-list",
+    "non-empty-list",
+    "object",
+    "non-empty-object",
+    "non-empty-string-list",
+    "header-name-map",
+    "header-name-list",
+    "cookie-flags"
+  ],
+  "match_operands": {
+    "array_key_value": {
+      "required": [
+        "key",
+        "match"
+      ],
+      "shapes": {
+        "key": "string-or-string-list",
+        "match": "object"
+      }
+    },
+    "regex": {
+      "required": [
+        "value"
+      ],
+      "shapes": {
+        "value": "regex-literal"
+      }
+    },
+    "contains": {
+      "required": [
+        "value"
+      ],
+      "shapes": {
+        "value": "non-empty-string"
+      }
+    },
+    "stripos": {
+      "required": [
+        "value"
+      ],
+      "shapes": {
+        "value": "non-empty-string"
+      }
+    },
+    "not_contains": {
+      "required": [
+        "value"
+      ],
+      "shapes": {
+        "value": "non-empty-string"
+      }
+    },
+    "hostname": {
+      "required": [
+        "value"
+      ],
+      "shapes": {
+        "value": "non-empty-string"
+      }
+    },
+    "in_array": {
+      "required": [
+        "value"
+      ],
+      "shapes": {
+        "value": "scalar-or-non-empty-list"
+      }
+    },
+    "not_in_array": {
+      "required": [
+        "value"
+      ],
+      "shapes": {
+        "value": "scalar-or-non-empty-list"
+      }
+    },
+    "array_in_array": {
+      "required": [
+        "value"
+      ],
+      "shapes": {
+        "value": "non-empty-list"
+      }
+    },
+    "equals": {
+      "required": [
+        "value"
+      ],
+      "shapes": {
+        "value": "scalar"
+      }
+    },
+    "equals_strict": {
+      "required": [
+        "value"
+      ],
+      "shapes": {
+        "value": "string"
+      }
+    },
+    "less_than": {
+      "required": [
+        "value"
+      ],
+      "shapes": {
+        "value": "numeric"
+      }
+    },
+    "more_than": {
+      "required": [
+        "value"
+      ],
+      "shapes": {
+        "value": "numeric"
+      }
+    }
+  },
+  "mutations": [
+    "base64_decode",
+    "getArrayValues",
+    "htmlentitydecode",
+    "intval",
+    "json_decode",
+    "json_encode",
+    "urldecode"
+  ],
+  "phases": [
+    "request",
+    "response",
+    "egress"
+  ],
+  "actions": [
+    "block",
+    "redact",
+    "encode",
+    "set-header",
+    "remove-header",
+    "harden-cookie"
+  ],
+  "action_properties": {
+    "block": {
+      "required": [],
+      "defaulted": [],
+      "phases": [
+        "request",
+        "response",
+        "egress"
+      ],
+      "shapes": {}
+    },
+    "redact": {
+      "required": [],
+      "defaulted": [],
+      "phases": [
+        "response"
+      ],
+      "shapes": {}
+    },
+    "encode": {
+      "required": [],
+      "defaulted": [],
+      "phases": [
+        "response"
+      ],
+      "shapes": {}
+    },
+    "set-header": {
+      "required": [
+        "set_headers"
+      ],
+      "defaulted": [
+        "ensure"
+      ],
+      "phases": [
+        "response"
+      ],
+      "shapes": {
+        "set_headers": "header-name-map"
+      }
+    },
+    "remove-header": {
+      "required": [
+        "remove_headers"
+      ],
+      "defaulted": [],
+      "phases": [
+        "response"
+      ],
+      "shapes": {
+        "remove_headers": "header-name-list"
+      }
+    },
+    "harden-cookie": {
+      "required": [],
+      "defaulted": [
+        "cookie_flags"
+      ],
+      "phases": [
+        "response"
+      ],
+      "shapes": {
+        "cookie_flags": "cookie-flags"
+      }
+    }
+  },
+  "when_keys": [
+    "path",
+    "method"
+  ],
+  "rule_properties": [
+    "id",
+    "rule_id",
+    "title",
+    "category",
+    "phase",
+    "action",
+    "rule_v2",
+    "when",
+    "message",
+    "enforcement",
+    "source_revision",
+    "prefilter",
+    "max_bytes",
+    "bypass_limit",
+    "set_headers",
+    "remove_headers",
+    "cookie_flags",
+    "ensure"
+  ],
+  "limits": {
+    "maxRules": 5000,
+    "maxWhitelists": 2000,
+    "maxConditionsPerRule": 250,
+    "maxNestingDepth": 12,
+    "maxRegexLength": 1000,
+    "maxValueLength": 8192
+  }
+}

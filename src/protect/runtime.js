@@ -1174,11 +1174,17 @@ function applyHeaderMutation(headers, rule) {
   }
 }
 
+// `SameSite` takes exactly three values, and the flag is interpolated into the header — so anything
+// else is either ignored by the browser or appends further cookie attributes (`Lax; Domain=…`). The
+// contract refuses such a rule, and this drops it if one arrives anyway.
+const SAME_SITE = ['Strict', 'Lax', 'None'];
+
 function hardenCookie(cookie, { httpOnly = true, secure = true, sameSite = 'Lax' } = {}) {
   let out = String(cookie);
   if (httpOnly && !/;\s*httponly/i.test(out)) out += '; HttpOnly';
   if (secure && !/;\s*secure/i.test(out)) out += '; Secure';
-  if (sameSite && !/;\s*samesite\s*=/i.test(out)) out += `; SameSite=${sameSite}`;
+  const canonical = SAME_SITE.find((v) => typeof sameSite === 'string' && v.toLowerCase() === sameSite.toLowerCase());
+  if (canonical && !/;\s*samesite\s*=/i.test(out)) out += `; SameSite=${canonical}`;
   return out;
 }
 
@@ -1190,9 +1196,12 @@ function rebuildResponse(response, body, redactedHeaders) {
       if (value === null || value === undefined) {
         try { headers.delete(name); } catch { /* skip */ } // header-mutation removal
       } else if (typeof value === 'string') {
-        if (headers.get(name) !== value) {
-          try { headers.set(name, value); } catch { /* invalid header name — skip */ }
-        }
+        // `get` has to be inside the guard too: it throws on an invalid field name just as `set` does,
+        // and it runs first — so an unusable name from a rule crashed response screening instead of
+        // being skipped, taking the fail-open guarantee with it.
+        try {
+          if (headers.get(name) !== value) headers.set(name, value);
+        } catch { /* invalid header name — skip */ }
       } else if (Array.isArray(value)) {
         // Re-emit each (possibly redacted) Set-Cookie separately (Headers collapses them otherwise).
         try {

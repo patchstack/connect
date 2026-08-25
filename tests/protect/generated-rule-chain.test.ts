@@ -3,6 +3,8 @@ import { readFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createProtection } from '../../src/protect/runtime.js';
+import { RuleEngine } from '../../src/protect/engine/index.js';
+import { fromFetchRequest } from '../../src/protect/engine/fetch.js';
 
 /**
  * The COORDINATE-PINNED rule chain: a rule generated from an app's own attack-surface map, served by
@@ -144,31 +146,60 @@ describe('generated coordinate-pinned rule, through Pulse and the HTTP guard', (
     p.stopRefresh?.();
   });
 
-  it('warns, and applies everywhere, when a scope names no key the engine knows', async () => {
-    // Not hypothetical: this is the shape the first draft of this test used. `when: { route }` is silently
-    // unscoped — the rule then applies to every request, which for a promoted rule is a false-positive
-    // surface across the whole app rather than one endpoint. Fail-open is right for a scope that cannot be
-    // EVALUATED; a scope that cannot be UNDERSTOOD is an authoring mistake, so the engine now says so once.
+  it('is refused at the gate when its scope names no key the engine knows', async () => {
+    // Not hypothetical: this is the shape the first draft of this test used. `when: { route }` names nothing
+    // the engine understands, and an unrecognised scope is ignored — so the rule would apply to every
+    // request, which for a promoted rule is a false-positive surface across the whole app rather than one
+    // endpoint. A rule authored to be narrow must not arrive wide.
+    //
+    // So it is rejected before delivery, with a reason, rather than enforced everywhere. That is the
+    // validator's own doctrine: a rule that cannot do what it says is reported, not run.
     delete process.env.PATCHSTACK_MODE;
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
     const { fetchMock } = mockPulse(misspelledScopeRule);
     vi.stubGlobal('fetch', fetchMock);
     const detections: unknown[] = [];
+    const errors: Error[] = [];
 
     const p = await createProtection({
       siteUuid: 'site-1',
       pulseRulesUrl: 'https://x.test/monitor/pulse',
       onDetect: (d: unknown) => detections.push(d),
+      onError: (e: Error) => errors.push(e),
     });
 
-    // The route it was meant to be scoped to, and one it was not: both detect.
+    // Neither the route it was meant for nor any other: the rule was never enforced.
     await p.fetch(appHandler)(req(SSRF));
     await p.fetch(appHandler)(req(OTHER_ROUTE));
-    expect(detections.length, 'an unrecognised scope key leaves the rule unscoped').toBe(2);
+    expect(detections.length, 'a rule with an unusable scope must not be enforced anywhere').toBe(0);
 
-    expect(warn.mock.calls.flat().join(' ')).toMatch(/scope|when/i);
+    // And the refusal is audible, naming the rule and the scope — a rule that vanishes silently is worse
+    // than one that applies too widely, because nobody goes looking for it. A live update reports through
+    // `onError`, because rejecting a whole update is a state the host has to be able to see.
+    const reported = errors.map((e) => e.message).join(' ');
+    expect(reported).toMatch(/failed validation/);
+    expect(reported).toMatch(/scope|when/i);
 
-    p.stopRefresh?.();
+    p.stop();
+  });
+
+  it('still applies everywhere if such a rule reaches the engine directly', async () => {
+    // The engine's own fail-open, kept as the last line rather than the first. Validation is what a
+    // delivered bundle passes through; a rule constructed in-process has not been through it, and the
+    // engine must still never silently suppress a rule whose scope it cannot evaluate.
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const engine = new RuleEngine({
+      firewall: [{ id: 'unscoped', phase: 'request', action: 'block', when: { route: '/admin' },
+        rule_v2: [{ parameter: 'get.q', match: { type: 'contains', value: 'boom' } }] }],
+      whitelists: [],
+    });
+
+    for (const path of ['/admin', '/somewhere-else']) {
+      const shaped = await fromFetchRequest(new Request(`https://app.test${path}?q=boom`));
+      expect(Boolean(engine.evaluate(shaped).blocked), path).toBe(true);
+    }
+
+    expect(warn.mock.calls.flat().join(' ')).toMatch(/scope/i);
   });
 
   it('is inert if the template reaches the app with its placeholders unbound', async () => {

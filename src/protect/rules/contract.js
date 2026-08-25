@@ -1,0 +1,587 @@
+// The engine's rule vocabulary and shape rules, as data.
+//
+// A rule document is produced in one place, forwarded through others, and executed here. Each of those
+// layers needs the same answer to "is this rule one the engine can run", and a layer that answers it more
+// loosely admits a rule that is delivered, counted as protection, and never matches.
+//
+// The data is richer than a set of name lists so that a consumer can DERIVE validation from it: which
+// sources take a key and what keys they take, what a condition group looks like, what operands each match
+// type needs, which keys a `when` scope understands, which properties belong to which action. Lists alone
+// leave every consumer to reimplement the rest in its own language, and those implementations diverge.
+//
+// `rule-contract.json` is the published form. `tests/protect/rule-contract.test.ts` reads the engine's own
+// source and asserts these descriptions match what it implements.
+
+export const CONTRACT_VERSION = '2.4';
+
+/**
+ * Every parameter source, and what it accepts after the dot.
+ *
+ * - `keyed: false` — used bare (`raw`), never with a key.
+ * - `keys: 'any'` — an application field name, which is per-app and cannot be enumerated.
+ * - `keys: [...]` — the only keys the resolver answers for.
+ * - `key_prefixes: [...]` — a key may instead begin with one of these.
+ * - `optional_key_suffixes: [...]` — a key may end with one of these to select part of the value.
+ * - `wildcard: true` — a key may end in `*` to fan out over matching fields.
+ */
+export const SOURCES = Object.freeze({
+  raw: Object.freeze({ keyed: false }),
+  all: Object.freeze({ keyed: false }),
+  false: Object.freeze({ keyed: false }),
+  rules: Object.freeze({ keyed: false, group: true }),
+
+  get: Object.freeze({ keyed: true, keys: 'any', wildcard: true }),
+  post: Object.freeze({ keyed: true, keys: 'any', wildcard: true }),
+  request: Object.freeze({ keyed: true, keys: 'any', wildcard: true }),
+  cookie: Object.freeze({ keyed: true, keys: 'any', wildcard: true }),
+
+  // A bare `files.<name>` resolves to the filename; an optional trailing attribute selects another part
+  // of the upload. Optional, not required — filename-scoped rules use the bare form.
+  files: Object.freeze({
+    keyed: true,
+    keys: 'any',
+    wildcard: true,
+    optional_key_suffixes: Object.freeze(['content', 'filename', 'type']),
+  }),
+
+  server: Object.freeze({
+    keyed: true,
+    keys: Object.freeze([
+      'REQUEST_URI', 'REQUEST_METHOD', 'HTTP_USER_AGENT', 'HTTP_REFERER', 'HTTP_HOST',
+      'REMOTE_ADDR', 'ip', 'CONTENT_TYPE', 'CONTENT_LENGTH',
+    ]),
+    key_prefixes: Object.freeze(['HTTP_']),
+  }),
+
+  response: Object.freeze({
+    keyed: true,
+    keys: Object.freeze(['status', 'body', 'headers']),
+    key_prefixes: Object.freeze(['header.']),
+  }),
+
+  egress: Object.freeze({ keyed: true, keys: Object.freeze(['url', 'host', 'method']) }),
+});
+
+/**
+ * Match types the engine evaluates.
+ *
+ * `file_contains` is absent: the engine returns false for it unconditionally, so a rule built on it can
+ * never match. Publishing it would invite a consumer to author one.
+ */
+export const MATCH_TYPES = Object.freeze([
+  'array_in_array', 'array_key_value', 'contains', 'cors_reflected', 'cross_origin',
+  'ctype_alnum', 'ctype_digit', 'ctype_special', 'equals', 'equals_strict',
+  'hostname', 'in_array', 'inline_js_xss', 'inline_xss', 'internal_host', 'is_numeric',
+  'isset', 'less_than', 'more_than', 'not_contains', 'not_in_array', 'off_origin',
+  'quotes', 'regex', 'stripos',
+]);
+
+/** Match types evaluated against the whole request or response, which therefore carry no parameter. */
+export const PARAMETERLESS_MATCH_TYPES = Object.freeze(['cross_origin', 'off_origin', 'cors_reflected']);
+
+/** Match types that read no operand: presence or a character-class test of the resolved value alone. */
+export const OPERANDLESS_MATCH_TYPES = Object.freeze([
+  'isset', 'quotes', 'is_numeric', 'ctype_alnum', 'ctype_digit', 'ctype_special',
+  'inline_xss', 'inline_js_xss', 'internal_host',
+  'cross_origin', 'off_origin', 'cors_reflected',
+]);
+
+/**
+ * Operand shapes that have to hold for a match to be able to do anything.
+ *
+ * Presence is not enough. An operand of the wrong shape leaves a condition that resolves a value and then
+ * answers the same way for every request — inert in most cases, and for the substring matchers, true for
+ * ALL of them: `contains` with an empty value matches every request, which is a rule that blocks all
+ * traffic while reading as one targeted signature.
+ *
+ * `non-empty-string`      a string with something in it
+ * `regex-literal`         a delimited `/pattern/flags` whose pattern is non-empty — what the engine's
+ *                         pattern compiler accepts. An undelimited value, or `//`, compiles to nothing
+ *                         and the condition can never match.
+ * `string-or-string-list` one non-empty string, or a non-empty list of them
+ * `scalar-or-non-empty-list` one scalar, or a non-empty list of them. The list membership matchers
+ *                         stringify every entry, so a number or boolean entry is as usable as a
+ *                         string, and a lone `''` is a real signature ("this parameter is empty").
+ *                         Only the EMPTY list is degenerate.
+ * `non-empty-list`        a non-empty array of scalars. Distinct from the above because
+ *                         `array_in_array` compares array against array and never matches a bare one.
+ * `scalar`                one string, number or boolean. `''` is allowed: "this parameter is empty" is
+ *                         a real signature, so emptiness alone is not the defect here.
+ * `string`                a string specifically — for the type-strict comparison, whose subject is
+ *                         always stringified first, so a number operand can never equal it.
+ * `numeric`               a scalar that coerces to a finite number. The comparators coerce with
+ *                         `Number()`, so an operand that yields NaN makes every comparison false.
+ * `object`                a plain object
+ * `non-empty-object`      a plain object with at least one entry
+ * `non-empty-string-list` a non-empty array of non-empty strings
+ * `header-name-map`       a non-empty object whose every key is a valid HTTP field name
+ * `header-name-list`      a non-empty array of valid HTTP field names
+ * `cookie-flags`          a `harden-cookie` configuration that still hardens something. Each flag may
+ *                         be turned off individually, but turning off all three leaves an action that
+ *                         matches, reports, and rewrites the cookie to itself. `sameSite` is
+ *                         interpolated into the header verbatim, so it is held to the three values the
+ *                         attribute actually takes — anything else is either ignored by the browser or
+ *                         appends further cookie attributes.
+ */
+export const OPERAND_SHAPES = Object.freeze([
+  'non-empty-string', 'regex-literal', 'string-or-string-list', 'scalar', 'string', 'numeric',
+  'scalar-or-non-empty-list', 'non-empty-list', 'object', 'non-empty-object', 'non-empty-string-list',
+  'header-name-map', 'header-name-list', 'cookie-flags',
+]);
+
+/** The flags `harden-cookie` understands, and the values `SameSite` takes. */
+export const COOKIE_FLAGS = Object.freeze(['httpOnly', 'secure', 'sameSite']);
+export const SAME_SITE_VALUES = Object.freeze(['Strict', 'Lax', 'None']);
+
+/**
+ * An HTTP field name, as the platform's `Headers` accepts it (RFC 9110 token). A name outside this set
+ * makes `Headers.get`/`set`/`delete` throw, and the runtime skips the mutation — so a reviewed
+ * hardening rule is served and changes nothing.
+ */
+export const HEADER_NAME = /^[!#$%&'*+\-.^_`|~0-9A-Za-z]+$/;
+
+/** Mirrors the engine's pattern compiler: `/body/flags`, body non-empty, only its supported flags. */
+export const REGEX_LITERAL = /^\/(.+?)\/([gimsuy]*)$/s;
+
+export const MATCH_OPERANDS = Object.freeze({
+  array_key_value: Object.freeze({
+    required: Object.freeze(['key', 'match']),
+    shapes: Object.freeze({ key: 'string-or-string-list', match: 'object' }),
+  }),
+  regex: Object.freeze({ required: Object.freeze(['value']), shapes: Object.freeze({ value: 'regex-literal' }) }),
+  contains: Object.freeze({ required: Object.freeze(['value']), shapes: Object.freeze({ value: 'non-empty-string' }) }),
+  stripos: Object.freeze({ required: Object.freeze(['value']), shapes: Object.freeze({ value: 'non-empty-string' }) }),
+  not_contains: Object.freeze({ required: Object.freeze(['value']), shapes: Object.freeze({ value: 'non-empty-string' }) }),
+  // A hostname is compared to `new URL(value).hostname`, so an empty one only ever equals the empty
+  // hostname of an opaque-scheme URL (`file:`, `mailto:`, `data:`) — never a host, and a false positive
+  // on those. The other three are the list-membership family: an empty list makes `in_array` and
+  // `array_in_array` inert and `not_in_array` true for every value.
+  hostname: Object.freeze({ required: Object.freeze(['value']), shapes: Object.freeze({ value: 'non-empty-string' }) }),
+  in_array: Object.freeze({ required: Object.freeze(['value']), shapes: Object.freeze({ value: 'scalar-or-non-empty-list' }) }),
+  not_in_array: Object.freeze({ required: Object.freeze(['value']), shapes: Object.freeze({ value: 'scalar-or-non-empty-list' }) }),
+  array_in_array: Object.freeze({ required: Object.freeze(['value']), shapes: Object.freeze({ value: 'non-empty-list' }) }),
+  // The comparison family. `equals` coerces, so any scalar can match. `equals_strict` does not, and its
+  // subject is always a string by the time it is compared — so a number operand is unconditionally
+  // inert, which is the trap the engine's own note about `'1' !== 1` describes.
+  equals: Object.freeze({ required: Object.freeze(['value']), shapes: Object.freeze({ value: 'scalar' }) }),
+  equals_strict: Object.freeze({ required: Object.freeze(['value']), shapes: Object.freeze({ value: 'string' }) }),
+  less_than: Object.freeze({ required: Object.freeze(['value']), shapes: Object.freeze({ value: 'numeric' }) }),
+  more_than: Object.freeze({ required: Object.freeze(['value']), shapes: Object.freeze({ value: 'numeric' }) }),
+});
+
+/** @returns {string|null} why this operand cannot serve that shape, or null */
+export function operandShapeProblem(shape, value) {
+  const isFilledString = (v) => typeof v === 'string' && v.trim() !== '';
+  const isScalar = (v) => typeof v === 'string' || typeof v === 'number' || typeof v === 'boolean';
+  const isHeaderName = (v) => typeof v === 'string' && HEADER_NAME.test(v);
+
+  switch (shape) {
+    case 'non-empty-string':
+      return isFilledString(value) ? null : 'must be a non-empty string';
+    case 'regex-literal':
+      // Length is not checked here: `maxRegexLength` is enforced once, at the gate, so the limit has a
+      // single owner and one message.
+      if (!isFilledString(value)) return 'must be a non-empty string';
+      return REGEX_LITERAL.test(value) ? null : 'must be a delimited pattern, as in /pattern/i';
+    case 'string-or-string-list':
+      if (isFilledString(value)) return null;
+      if (Array.isArray(value) && value.length > 0 && value.every(isFilledString)) return null;
+      return 'must be a non-empty string, or a non-empty list of them';
+    case 'scalar':
+      return isScalar(value) ? null : 'must be a string, number or boolean';
+    case 'string':
+      return typeof value === 'string' ? null : 'must be a string (this comparison is type-strict)';
+    case 'numeric':
+      return isScalar(value) && Number.isFinite(Number(value)) ? null : 'must be a number';
+    case 'scalar-or-non-empty-list':
+      if (isScalar(value)) return null;
+      if (Array.isArray(value) && value.length > 0 && value.every(isScalar)) return null;
+      return 'must be a scalar, or a non-empty list of them';
+    case 'non-empty-list':
+      return Array.isArray(value) && value.length > 0 && value.every(isScalar)
+        ? null
+        : 'must be a non-empty list of scalars';
+    case 'header-name-map': {
+      if (value === null || typeof value !== 'object' || Array.isArray(value)) return 'must be an object';
+      const names = Object.keys(value);
+      if (names.length === 0) return 'must be an object with at least one entry';
+      const bad = names.find((name) => !isHeaderName(name));
+      return bad === undefined ? null : `names an invalid HTTP header, ${JSON.stringify(bad)}`;
+    }
+    case 'header-name-list': {
+      if (!Array.isArray(value) || value.length === 0) return 'must be a non-empty list of HTTP header names';
+      const bad = value.find((name) => !isHeaderName(name));
+      return bad === undefined ? null : `names an invalid HTTP header, ${JSON.stringify(bad)}`;
+    }
+    case 'cookie-flags': {
+      if (value === null || typeof value !== 'object' || Array.isArray(value)) return 'must be an object';
+
+      // An unknown key is silently ignored by the runtime — including a near-miss like `httponly`,
+      // which reads as disabling a flag and leaves it on. A rule has to mean what it says.
+      const unknown = Object.keys(value).filter((key) => !COOKIE_FLAGS.includes(key));
+      if (unknown.length > 0) return `has no flag named ${unknown.map((k) => JSON.stringify(k)).join(', ')}`;
+
+      for (const flag of ['httpOnly', 'secure']) {
+        if (value[flag] !== undefined && typeof value[flag] !== 'boolean') {
+          // The runtime only tests truthiness, so the string 'false' would turn the flag ON.
+          return `flag "${flag}" must be true or false`;
+        }
+      }
+
+      const sameSite = value.sameSite;
+      const sameSiteOff = sameSite === false;
+      if (sameSite !== undefined && !sameSiteOff) {
+        if (typeof sameSite !== 'string' || !SAME_SITE_VALUES.some((v) => v.toLowerCase() === sameSite.toLowerCase())) {
+          return `flag "sameSite" must be false, or one of ${SAME_SITE_VALUES.join(', ')}`;
+        }
+      }
+
+      // Each default may be turned off on its own; all of them together is the no-op.
+      if (value.httpOnly === false && value.secure === false && sameSiteOff) {
+        return 'turns off every flag, so it would harden nothing';
+      }
+      return null;
+    }
+    case 'object':
+      return value !== null && typeof value === 'object' && !Array.isArray(value) ? null : 'must be an object';
+    case 'non-empty-object':
+      return value !== null && typeof value === 'object' && !Array.isArray(value) && Object.keys(value).length > 0
+        ? null
+        : 'must be an object with at least one entry';
+    case 'non-empty-string-list':
+      return Array.isArray(value) && value.length > 0 && value.every(isFilledString)
+        ? null
+        : 'must be a non-empty list of non-empty strings';
+    default:
+      return null;
+  }
+}
+
+/** Mutations the resolver applies. Anything else is a silent no-op. */
+export const MUTATIONS = Object.freeze([
+  'base64_decode', 'getArrayValues', 'htmlentitydecode', 'intval', 'json_decode', 'json_encode', 'urldecode',
+]);
+
+export const PHASES = Object.freeze(['request', 'response', 'egress']);
+
+export const ACTIONS = Object.freeze([
+  'block', 'redact', 'encode', 'set-header', 'remove-header', 'harden-cookie',
+]);
+
+/**
+ * Keys a `when` scope understands.
+ *
+ * A scope naming anything else is ignored and the rule applies to every request, so an unrecognised key
+ * silently widens a rule that was authored to be narrow.
+ */
+export const WHEN_KEYS = Object.freeze(['path', 'method']);
+
+/** Properties the engine or runtime reads on a rule. */
+export const RULE_PROPERTIES = Object.freeze([
+  'id', 'rule_id', 'title', 'category', 'phase', 'action', 'rule_v2', 'when',
+  'message', 'enforcement', 'source_revision', 'prefilter',
+  'max_bytes', 'bypass_limit',
+  'set_headers', 'remove_headers', 'cookie_flags', 'ensure',
+]);
+
+/**
+ * What each action needs, what it defaults, and which phases can carry it out.
+ *
+ * `required` is a property without which the action does nothing. `defaulted` is one the runtime supplies
+ * — `harden-cookie` applies HttpOnly, Secure and SameSite=Lax on its own, so requiring `cookie_flags`
+ * would drop a rule that works.
+ *
+ * `phases` matters as much: the header mutations are carried out on the response, and a request-phase rule
+ * carrying one is not a header mutation at all — it falls through to the blocking path and answers 403.
+ */
+export const ACTION_PROPERTIES = Object.freeze({
+  block: Object.freeze({ required: Object.freeze([]), defaulted: Object.freeze([]), phases: Object.freeze(['request', 'response', 'egress']) }),
+  redact: Object.freeze({ required: Object.freeze([]), defaulted: Object.freeze([]), phases: Object.freeze(['response']) }),
+  encode: Object.freeze({ required: Object.freeze([]), defaulted: Object.freeze([]), phases: Object.freeze(['response']) }),
+  'set-header': Object.freeze({
+    required: Object.freeze(['set_headers']),
+    defaulted: Object.freeze(['ensure']),
+    phases: Object.freeze(['response']),
+    shapes: Object.freeze({ set_headers: 'header-name-map' }),
+  }),
+  'remove-header': Object.freeze({
+    required: Object.freeze(['remove_headers']),
+    defaulted: Object.freeze([]),
+    phases: Object.freeze(['response']),
+    shapes: Object.freeze({ remove_headers: 'header-name-list' }),
+  }),
+  'harden-cookie': Object.freeze({
+    required: Object.freeze([]),
+    defaulted: Object.freeze(['cookie_flags']),
+    phases: Object.freeze(['response']),
+    shapes: Object.freeze({ cookie_flags: 'cookie-flags' }),
+  }),
+});
+
+export const LIMITS = Object.freeze({
+  maxRules: 5000,
+  maxWhitelists: 2000,
+  maxConditionsPerRule: 250,
+  maxNestingDepth: 12,
+  maxRegexLength: 1000,
+  maxValueLength: 8192,
+});
+
+/** The shape of a condition group: this parameter, and a nested `rules` array. */
+export const GROUP_PARAMETER = 'rules';
+
+/** Is this condition a group? Groups carry no match of their own. */
+export function isGroup(condition) {
+  return condition?.parameter === GROUP_PARAMETER && Array.isArray(condition?.rules);
+}
+
+/**
+ * @returns {string|null} why this condition is neither a well-formed group nor a well-formed leaf
+ *
+ * The engine takes the group branch only for `parameter: 'rules'` WITH a `rules` array, and that branch
+ * returns before it reads `match`. So `parameter: 'rules'` on its own resolves to a null value and tests
+ * nothing, and a group carrying a `match` has that match ignored — both are conditions a reviewer approves
+ * believing they do something.
+ */
+export function conditionShapeProblem(condition) {
+  if (!condition || typeof condition !== 'object') return 'condition is not an object';
+
+  const named = condition.parameter === GROUP_PARAMETER;
+  const nested = Array.isArray(condition.rules);
+
+  if (named && !nested) {
+    return `parameter "${GROUP_PARAMETER}" is a group and needs a "rules" array`;
+  }
+  if (nested && !named) {
+    return `condition carries nested rules but its parameter is ${JSON.stringify(condition.parameter)}; a group must be {"parameter":"${GROUP_PARAMETER}"}`;
+  }
+  if (named && nested) {
+    if (condition.match !== undefined) return 'a group carries no match of its own; the engine ignores it';
+    if (condition.mutations !== undefined) return 'a group carries no mutations of its own; the engine ignores them';
+    if (condition.rules.length === 0) return 'group has no conditions (would never match)';
+  }
+
+  return null;
+}
+
+/**
+ * Is this a parameter the resolver can resolve?
+ *
+ * @returns {string|null} why it cannot, or null when it can
+ */
+export function parameterProblem(parameter) {
+  if (parameter === undefined || parameter === null) return null;
+
+  if (Array.isArray(parameter)) {
+    if (parameter.length === 0) return 'parameter list is empty';
+    for (const member of parameter) {
+      const problem = parameterProblem(member);
+      if (problem !== null) return problem;
+    }
+
+    return null;
+  }
+
+  if (typeof parameter !== 'string' || parameter === '') return 'parameter must be a non-empty string';
+
+  // Reached only for a LEAF: a whole group is recognised before this and never validated as a parameter.
+  // So `rules` here — bare, or as a member of a list — is a leaf naming the group source, which the
+  // resolver answers with a null value.
+  if (parameter === GROUP_PARAMETER) {
+    return `"${GROUP_PARAMETER}" is the group source and is only valid as a whole group, not as a parameter`;
+  }
+
+  const dot = parameter.indexOf('.');
+  const name = dot === -1 ? parameter : parameter.slice(0, dot);
+  const source = SOURCES[name];
+
+  if (source === undefined) return `unknown parameter source "${name}"`;
+
+  if (dot === -1) {
+    return source.keyed === true
+      ? `source "${name}" needs a key, e.g. "${name}.fieldname"`
+      : null;
+  }
+
+  if (source.keyed !== true) return `source "${name}" takes no key`;
+
+  const key = parameter.slice(dot + 1);
+  if (key === '') return `source "${name}" needs a key after the dot`;
+
+  return keyProblem(name, source, key);
+}
+
+function keyProblem(name, source, key) {
+  if (key.endsWith('*') && source.wildcard !== true) {
+    return `"${name}" does not fan out over a wildcard key`;
+  }
+
+  const bare = key.endsWith('*') ? key.slice(0, -1) : key;
+
+  // An application field name cannot be enumerated, so any non-empty key is accepted.
+  if (source.keys === 'any') return null;
+
+  if (Array.isArray(source.keys) && source.keys.includes(bare)) return null;
+
+  for (const prefix of source.key_prefixes ?? []) {
+    if (bare.startsWith(prefix) && bare.length > prefix.length) return null;
+  }
+
+  const accepted = [
+    ...(Array.isArray(source.keys) ? source.keys : []),
+    ...(source.key_prefixes ?? []).map((p) => `${p}…`),
+  ].join(', ');
+
+  return `"${name}" has no key "${key}" (expected one of: ${accepted})`;
+}
+
+/** @returns {string|null} why this match is not one the engine evaluates, or null */
+export function matchProblem(match, parameter) {
+  if (!match || typeof match !== 'object') return 'condition has no match object';
+  if (typeof match.type !== 'string' || match.type === '') return 'match.type must be a non-empty string';
+  if (!MATCH_TYPES.includes(match.type)) return `unknown match type "${match.type}"`;
+
+  const parameterless = PARAMETERLESS_MATCH_TYPES.includes(match.type);
+  if (!parameterless && (parameter === undefined || parameter === null)) {
+    return `match type "${match.type}" needs a parameter`;
+  }
+  if (parameterless && parameter !== undefined && parameter !== null) {
+    return `match type "${match.type}" reads the whole request and takes no parameter`;
+  }
+
+  const operands = MATCH_OPERANDS[match.type];
+  if (operands) {
+    for (const required of operands.required) {
+      if (match[required] === undefined || match[required] === null) {
+        return `match type "${match.type}" needs "${required}"`;
+      }
+    }
+    for (const [operand, shape] of Object.entries(operands.shapes ?? {})) {
+      if (match[operand] === undefined) continue;
+      const problem = operandShapeProblem(shape, match[operand]);
+      if (problem) return `match type "${match.type}" operand "${operand}" ${problem}`;
+    }
+  } else if (!OPERANDLESS_MATCH_TYPES.includes(match.type) && match.value === undefined) {
+    return `match type "${match.type}" needs a value`;
+  }
+
+  return null;
+}
+
+/** @returns {string|null} why one of these mutations is not implemented, or null */
+export function mutationsProblem(mutations) {
+  if (mutations === undefined || mutations === null) return null;
+  if (!Array.isArray(mutations)) return 'mutations must be an array';
+
+  for (const mutation of mutations) {
+    if (typeof mutation !== 'string' || !MUTATIONS.includes(mutation)) {
+      return `unknown mutation "${String(mutation)}" — applied as a no-op, so the condition would test the untransformed value`;
+    }
+  }
+
+  return null;
+}
+
+/**
+ * @returns {string|null} why this scope would not narrow the rule, or null
+ */
+export function whenProblem(when) {
+  if (when === undefined || when === null) return null;
+  if (typeof when !== 'object' || Array.isArray(when)) return 'when must be an object';
+
+  const keys = Object.keys(when);
+  if (keys.length === 0) return 'when is empty — remove it, or name a path or method';
+
+  const unknown = keys.filter((key) => !WHEN_KEYS.includes(key));
+  if (unknown.length > 0) {
+    return `when names no supported key (${unknown.join(', ')}) — the engine understands ${WHEN_KEYS.join(' and ')}, `
+      + 'and an unrecognised scope is ignored, so the rule would apply to every request';
+  }
+
+  // The values, not only the names. A scope the engine cannot use fails in both directions: an empty string
+  // is falsy, so the check is skipped and the rule applies everywhere; an empty list or a non-string matches
+  // nothing, so the rule applies nowhere. Neither is what the author wrote.
+  if ('path' in when && !isNonEmptyString(when.path)) {
+    return 'when.path must be a non-empty string';
+  }
+
+  if ('method' in when) {
+    const methods = Array.isArray(when.method) ? when.method : [when.method];
+    if (methods.length === 0) return 'when.method is an empty list, so the rule would match no method';
+    if (!methods.every(isNonEmptyString)) return 'when.method must be a non-empty string, or a list of them';
+  }
+
+  return null;
+}
+
+function isNonEmptyString(value) {
+  return typeof value === 'string' && value.trim() !== '';
+}
+
+/** @returns {string|null} why this action cannot be carried out as written, or null */
+export function actionProblem(action, rule) {
+  if (action === undefined || action === null) return null;
+  if (!ACTIONS.includes(action)) return `unknown action "${action}"`;
+
+  const spec = ACTION_PROPERTIES[action];
+
+  for (const required of spec?.required ?? []) {
+    if (rule?.[required] === undefined || rule?.[required] === null) {
+      return `action "${action}" needs "${required}"`;
+    }
+  }
+
+  for (const [property, shape] of Object.entries(spec?.shapes ?? {})) {
+    if (rule?.[property] === undefined || rule?.[property] === null) continue;
+    const problem = operandShapeProblem(shape, rule[property]);
+    if (problem) return `action "${action}" property "${property}" ${problem}`;
+  }
+
+  const phase = rule?.phase ?? 'request';
+  if (spec !== undefined && !spec.phases.includes(phase)) {
+    return `action "${action}" is carried out on the ${spec.phases.join('/')} phase; on "${phase}" the rule blocks instead`;
+  }
+
+  return null;
+}
+
+/** The whole contract, for publishing and for a consumer to load. */
+export function ruleContract() {
+  const sources = Object.fromEntries(
+    Object.entries(SOURCES).map(([name, spec]) => [name, {
+      keyed: spec.keyed === true,
+      ...(spec.group === true ? { group: true } : {}),
+      ...(spec.keys !== undefined ? { keys: spec.keys === 'any' ? 'any' : [...spec.keys] } : {}),
+      ...(spec.key_prefixes ? { key_prefixes: [...spec.key_prefixes] } : {}),
+      ...(spec.optional_key_suffixes ? { optional_key_suffixes: [...spec.optional_key_suffixes] } : {}),
+      ...(spec.wildcard === true ? { wildcard: true } : {}),
+    }]),
+  );
+
+  return {
+    version: CONTRACT_VERSION,
+    sources,
+    group_parameter: GROUP_PARAMETER,
+    match_types: [...MATCH_TYPES],
+    parameterless_match_types: [...PARAMETERLESS_MATCH_TYPES],
+    operandless_match_types: [...OPERANDLESS_MATCH_TYPES],
+    operand_shapes: [...OPERAND_SHAPES],
+    match_operands: Object.fromEntries(
+      Object.entries(MATCH_OPERANDS).map(([k, v]) => [k, { required: [...v.required], shapes: { ...(v.shapes ?? {}) } }]),
+    ),
+    mutations: [...MUTATIONS],
+    phases: [...PHASES],
+    actions: [...ACTIONS],
+    action_properties: Object.fromEntries(
+      Object.entries(ACTION_PROPERTIES).map(([k, v]) => [k, {
+        required: [...v.required],
+        defaulted: [...v.defaulted],
+        phases: [...v.phases],
+        shapes: { ...(v.shapes ?? {}) },
+      }]),
+    ),
+    when_keys: [...WHEN_KEYS],
+    rule_properties: [...RULE_PROPERTIES],
+    limits: { ...LIMITS },
+  };
+}
