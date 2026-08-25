@@ -12,7 +12,7 @@
 // `rule-contract.json` is the published form. `tests/protect/rule-contract.test.ts` reads the engine's own
 // source and asserts these descriptions match what it implements.
 
-export const CONTRACT_VERSION = '2.4';
+export const CONTRACT_VERSION = '2.5';
 
 /**
  * Every parameter source, and what it accepts after the dot.
@@ -274,6 +274,22 @@ export const ACTIONS = Object.freeze([
  * A scope naming anything else is ignored and the rule applies to every request, so an unrecognised key
  * silently widens a rule that was authored to be narrow.
  */
+/**
+ * A property that is PRESENT and null is refused, wherever it appears on a rule.
+ *
+ * Absent and authored-null are different events, and only one of them is a statement of intent. Omitting a
+ * property means "whatever the engine defaults to" — a real and common thing to mean. Writing `null` means
+ * something upstream produced a value it did not have, and the two are indistinguishable to every layer
+ * that defaults an absent field. `phase: null` becomes the request phase, so a rule authored for egress
+ * evaluates on the wrong side of the request and never fires; `action: null` becomes a block on a rule that
+ * meant to redact.
+ *
+ * This was the engine's behaviour for `phase`, `rule_v2` and `max_bytes` and nothing else, which made it
+ * look like a property of those three fields rather than a rule about documents. Stated once, it applies to
+ * all of them — and a consumer reads `rule_properties` and this flag rather than keeping its own list.
+ */
+export const NULL_VALUED_PROPERTIES = 'refused';
+
 export const WHEN_KEYS = Object.freeze(['path', 'method']);
 
 /** Properties the engine or runtime reads on a rule. */
@@ -519,6 +535,22 @@ function isNonEmptyString(value) {
 }
 
 /** @returns {string|null} why this action cannot be carried out as written, or null */
+/**
+ * @returns {string|null} why a property authored as null is refused, or null when none is
+ */
+export function nullPropertyProblem(rule) {
+  if (!rule || typeof rule !== 'object') return null;
+
+  for (const property of RULE_PROPERTIES) {
+    if (property in rule && rule[property] === null) {
+      return `"${property}" is present but null; omit it to mean the default, since a null is a value that `
+        + 'was meant to be something and is not';
+    }
+  }
+
+  return null;
+}
+
 export function actionProblem(action, rule) {
   if (action === undefined || action === null) return null;
   if (!ACTIONS.includes(action)) return `unknown action "${action}"`;
@@ -581,6 +613,7 @@ export function ruleContract() {
       }]),
     ),
     when_keys: [...WHEN_KEYS],
+    null_valued_properties: NULL_VALUED_PROPERTIES,
     rule_properties: [...RULE_PROPERTIES],
     limits: { ...LIMITS },
   };

@@ -345,6 +345,42 @@ describe('what the delivered-bundle validator does with it', () => {
     expect(reasonFor({ parameter: 'server.HTTP_HOST', match: { type: 'hostname' } })).toMatch(/needs "value"/);
   });
 
+  it('rejects a property authored as null, while an omitted one still means the default', () => {
+    // Absent and authored-null are different events, and only one is a statement of intent. Omitting a
+    // property means "whatever the engine defaults to", which is a real thing to mean. A null means
+    // something upstream produced a value it did not have — and every layer that defaults an absent field
+    // defaults this one identically, so `phase: null` runs on the request phase and a rule authored for
+    // egress never fires.
+    //
+    // This was already the behaviour for `phase`, `rule_v2` and `max_bytes` and nothing else, which read as
+    // a quirk of those three fields rather than a rule about documents. It now covers all of them.
+    const leaf = { parameter: 'get.q', match: { type: 'contains', value: 'x' } };
+
+    for (const property of ruleContract().rule_properties) {
+      // `rule_v2` last would be overwritten by the spread, so the null goes last and wins for every one.
+      expect(ruleReasonFor({ rule_v2: [leaf], [property]: null }), property)
+        .toMatch(/present but null/);
+    }
+
+    // The other half, and the reason this is not simply "no nulls anywhere": omitting these is how a rule
+    // says "the default", and that has to keep working.
+    expect(ruleReasonFor({ rule_v2: [leaf] })).toBeNull();
+    expect(ruleReasonFor({ phase: 'request', action: 'block', rule_v2: [leaf] })).toBeNull();
+
+    // ...and it is a rule about the PROPERTY being present, not about nulls appearing anywhere in the
+    // document. A null inside a condition is judged by the condition's own rules.
+    expect(reasonFor({ parameter: 'get.q', match: { type: 'in_array', value: [1, null] } }))
+      .toMatch(/must be a scalar/);
+  });
+
+  it('publishes the null policy, so a consumer derives it instead of keeping its own list', () => {
+    // Two other codebases validate this same document. Each of them had to be told that authored-null is
+    // refused, and one had reached that conclusion on its own and been overruled by the contract accepting
+    // it. Published here, they read it.
+    expect(ruleContract().null_valued_properties).toBe('refused');
+    expect(ruleContract().rule_properties.length).toBeGreaterThan(10);
+  });
+
   it('rejects the group source used as a parameter, at the gate', () => {
     // `rules` names a group, and the resolver answers it with nothing. As a leaf parameter it is a
     // condition that resolves no value and tests it — inert. Beside a real parameter it is worse: the

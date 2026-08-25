@@ -25,6 +25,7 @@ import {
   mutationsProblem,
   parameterProblem,
   whenProblem,
+  nullPropertyProblem,
 } from './contract.js';
 
 export const LIMITS = CONTRACT_LIMITS;
@@ -86,6 +87,13 @@ function idOf(rule) {
 /** @returns {string|null} a reason the rule must be dropped, or null when it's acceptable. */
 function ruleProblem(rule) {
   if (!rule || typeof rule !== 'object') return 'not an object';
+
+  // Before anything reads a property: a property that is PRESENT and null is not an omission. Every layer
+  // that defaults an absent field would default this one too, so `phase: null` runs on the request phase and
+  // a rule authored for egress never fires. Checked first because the checks below default as they read.
+  const nullReason = nullPropertyProblem(rule);
+  if (nullReason) return nullReason;
+
   if (rule.phase !== undefined && !PHASES.has(rule.phase)) return `unknown phase "${rule.phase}"`;
 
   // The action's own properties, not just its name: `set-header` without `set_headers` matches and then

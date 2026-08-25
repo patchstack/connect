@@ -1,6 +1,6 @@
 {
   "$comment": "Generated from src/protect/rules/contract.js by scripts/emit-rule-contract.mjs. Do not edit.",
-  "version": "2.4",
+  "version": "2.5",
   "sources": {
     "raw": {
       "keyed": false
@@ -345,6 +345,7 @@
     "path",
     "method"
   ],
+  "null_valued_properties": "refused",
   "rule_properties": [
     "id",
     "rule_id",
