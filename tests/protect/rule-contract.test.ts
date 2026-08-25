@@ -4,13 +4,14 @@ import { validateBundle } from '../../src/protect/rules/validate.js';
 import {
   MATCH_TYPES,
   MUTATIONS,
-  KEYED_SOURCES,
-  EXACT_SOURCES,
+  SOURCES,
   PARAMETERLESS_MATCH_TYPES,
-  CLOSED_SOURCE_KEYS,
   parameterProblem,
   matchProblem,
   mutationsProblem,
+  whenProblem,
+  actionProblem,
+  isGroup,
   ruleContract,
 } from '../../src/protect/rules/contract.js';
 
@@ -39,17 +40,31 @@ function caseLabelsIn(source: string, marker: string, endMarker: string): string
 }
 
 describe('the match types the contract publishes', () => {
-  it('are the ones the engine implements', () => {
-    // Both directions. A type in the engine and not the contract is a capability nobody can use; a type in
-    // the contract and not the engine is a rule that passes validation and screens nothing.
-    const implemented = new Set(caseLabelsIn(ENGINE, 'function matchValue', '\nexport function walkLeaves'));
-    // The three whole-request primitives are handled before the switch, so they are not case labels.
+  it('are the ones the engine EVALUATES', () => {
+    // A `case` label is not a capability. `file_contains` has one and returns false unconditionally, so a
+    // rule built on it can never match — publishing it would invite somebody to author one. The label set is
+    // therefore the starting point and each member has to be shown to do something.
+    const labelled = new Set(caseLabelsIn(ENGINE, 'function matchValue', '\nexport function walkLeaves'));
     for (const type of PARAMETERLESS_MATCH_TYPES) {
       expect(ENGINE, `${type} should be implemented`).toContain(`match.type === '${type}'`);
-      implemented.add(type);
+      labelled.add(type);
     }
 
-    expect([...implemented].sort()).toEqual([...MATCH_TYPES].sort());
+    const inert = [...labelled].filter((type) => !MATCH_TYPES.includes(type));
+    expect(inert, 'every labelled type is either published or a documented no-match').toEqual(['file_contains']);
+    expect(ENGINE, 'file_contains should still be an explicit no-match').toMatch(/case 'file_contains':\s*\n\s*return false;/);
+
+    for (const type of MATCH_TYPES) {
+      expect(labelled.has(type), `${type} is published but has no branch`).toBe(true);
+    }
+  });
+
+  it('publishes no matcher that always answers false', () => {
+    // Behavioural, not a source read: a published type has to be able to say yes to something.
+    for (const type of ['contains', 'equals', 'regex', 'isset']) {
+      expect(MATCH_TYPES).toContain(type);
+    }
+    expect(MATCH_TYPES).not.toContain('file_contains');
   });
 });
 
@@ -62,34 +77,53 @@ describe('the mutations the contract publishes', () => {
 });
 
 describe('the parameter sources the contract publishes', () => {
-  it('are the ones the resolver switches on', () => {
-    const implemented = caseLabelsIn(RESOLVER, 'switch (source)', '\n  // Response-phase sources');
+  it('are the ones the resolver switches on, plus the keyless ones it special-cases', () => {
+    const keyed = caseLabelsIn(RESOLVER, 'switch (source)', '\n  // Response-phase sources');
+    const publishedKeyed = Object.entries(SOURCES).filter(([, spec]) => spec.keyed === true).map(([name]) => name).sort();
 
-    expect(implemented).toEqual([...KEYED_SOURCES].sort());
-  });
+    expect(keyed).toEqual(publishedKeyed);
 
-  it('include every keyless source the resolver special-cases', () => {
-    for (const source of EXACT_SOURCES) {
-      expect(RESOLVER, `${source} should be resolved`).toContain(`parameter === '${source}'`);
+    for (const [name, spec] of Object.entries(SOURCES)) {
+      if (spec.keyed !== true) expect(RESOLVER, `${name} should be resolved`).toContain(`parameter === '${name}'`);
     }
   });
 
-  it('name the closed key sets the resolver really has', () => {
-    for (const key of CLOSED_SOURCE_KEYS.egress) {
-      expect(RESOLVER).toContain(`key === '${key}'`);
-    }
-    for (const key of CLOSED_SOURCE_KEYS.response) {
-      expect(RESOLVER).toContain(`key === '${key}'`);
-    }
+  it('describe the closed key sets exactly, including their prefixes', () => {
+    // The prefix forms are the ones a plain list gets wrong in both directions: `response.header.<name>` is
+    // supported and an exact list refuses it, while `server.<anything>` is refused by the resolver and an
+    // open list accepts it.
+    for (const key of SOURCES.response.keys as string[]) expect(RESOLVER).toContain(`key === '${key}'`);
+    for (const prefix of SOURCES.response.key_prefixes as string[]) expect(RESOLVER).toContain(`key.startsWith('${prefix}')`);
+    for (const key of SOURCES.egress.keys as string[]) expect(RESOLVER).toContain(`key === '${key}'`);
+    for (const key of SOURCES.server.keys as string[]) expect(RESOLVER).toContain(`case '${key}':`);
+    for (const prefix of SOURCES.server.key_prefixes as string[]) expect(RESOLVER).toContain(`key.startsWith('${prefix}')`);
+  });
+});
+
+describe('the scope keys the contract publishes', () => {
+  it('are the ones the engine evaluates', () => {
+    expect(ENGINE).toContain('when.method');
+    expect(ENGINE).toContain('when.path');
+    expect(ruleContract().when_keys).toEqual(['path', 'method']);
+  });
+});
+
+describe('the group shape the contract publishes', () => {
+  it('is the one the engine recognises', () => {
+    expect(ENGINE).toContain("parameter === 'rules' && Array.isArray(condition.rules)");
+    expect(isGroup({ parameter: 'rules', rules: [] })).toBe(true);
+    expect(isGroup({ parameter: 'raw', rules: [] })).toBe(false);
   });
 });
 
 describe('what the contract refuses', () => {
   it('refuses a source the resolver has no case for', () => {
     // The reported vocabulary. Each of these resolves to nothing, so the rule ships and screens nothing.
-    expect(parameterProblem('raw.file')).toMatch(/unknown parameter source/);
-    expect(parameterProblem('raw.url')).toMatch(/unknown parameter source/);
-    expect(parameterProblem('raw.id')).toMatch(/unknown parameter source/);
+    // `raw` is real and keyless, so the precise complaint is the key, not the source.
+    expect(parameterProblem('raw.file')).toBe('source "raw" takes no key');
+    expect(parameterProblem('raw.url')).toBe('source "raw" takes no key');
+    expect(parameterProblem('raw.id')).toBe('source "raw" takes no key');
+    expect(parameterProblem('nonsense.field')).toMatch(/unknown parameter source/);
   });
 
   it('refuses a keyed source used without a key, and says what is missing', () => {
@@ -103,6 +137,28 @@ describe('what the contract refuses', () => {
   it('refuses a key a closed source does not have', () => {
     expect(parameterProblem('egress.hostname')).toMatch(/no key "hostname"/);
     expect(parameterProblem('response.cookies')).toMatch(/no key "cookies"/);
+    // The one an open list let through: the resolver answers for named keys and the `HTTP_` prefix only.
+    expect(parameterProblem('server.ANYTHING_AT_ALL')).toMatch(/no key "ANYTHING_AT_ALL"/);
+  });
+
+  it('refuses a scope that would silently widen the rule', () => {
+    expect(whenProblem({ route: '/admin' })).toMatch(/apply to every request/);
+    expect(whenProblem({})).toMatch(/when is empty/);
+  });
+
+  it('refuses an action whose own properties are missing', () => {
+    expect(actionProblem('set-header', {})).toBe('action "set-header" needs "set_headers"');
+    expect(actionProblem('remove-header', {})).toBe('action "remove-header" needs "remove_headers"');
+    expect(actionProblem('harden-cookie', {})).toBe('action "harden-cookie" needs "cookie_flags"');
+  });
+
+  it('refuses an incomplete array_key_value', () => {
+    expect(matchProblem({ type: 'array_key_value', key: 'a.b' }, 'raw')).toMatch(/needs "match"/);
+    expect(matchProblem({ type: 'array_key_value', match: { type: 'contains', value: 'x' } }, 'raw')).toMatch(/needs "key"/);
+  });
+
+  it('refuses a parameter on a whole-request primitive', () => {
+    expect(matchProblem({ type: 'cross_origin' }, 'raw')).toMatch(/takes no parameter/);
   });
 
   it('refuses a match type the engine does not implement', () => {
@@ -127,13 +183,31 @@ describe('what the contract refuses', () => {
 
 describe('what the contract accepts', () => {
   it('accepts the keyless sources', () => {
-    for (const source of EXACT_SOURCES) expect(parameterProblem(source)).toBeNull();
+    for (const [name, spec] of Object.entries(SOURCES)) {
+      if (spec.keyed !== true) expect(parameterProblem(name), name).toBeNull();
+    }
   });
 
   it('accepts a keyed source with a key', () => {
-    for (const parameter of ['get.q', 'post.title', 'request.id', 'cookie.session', 'server.HTTP_HOST', 'files.upload', 'egress.host', 'response.body']) {
+    for (const parameter of [
+      'get.q', 'post.title', 'request.id', 'cookie.session',
+      'server.HTTP_HOST', 'server.HTTP_X_CUSTOM', 'server.REQUEST_URI',
+      'files.upload', 'files.upload.content', 'files.docs*',
+      'egress.host', 'response.body',
+      // The prefix form an exact list refused.
+      'response.header.x-api-key',
+      // The wildcard form the resolver fans out over.
+      'get.field*',
+    ]) {
       expect(parameterProblem(parameter), parameter).toBeNull();
     }
+  });
+
+  it('accepts the scopes and actions the engine honours', () => {
+    expect(whenProblem({ path: '/admin' })).toBeNull();
+    expect(whenProblem({ path: '/api/*', method: ['POST', 'PUT'] })).toBeNull();
+    expect(actionProblem('block', {})).toBeNull();
+    expect(actionProblem('set-header', { set_headers: { 'X-Frame-Options': 'DENY' } })).toBeNull();
   });
 
   it('accepts a whole-request primitive with NO parameter', () => {
@@ -170,7 +244,7 @@ describe('the published contract document', () => {
     const contract = ruleContract();
 
     expect(contract.version).toMatch(/^\d+\.\d+$/);
-    for (const key of ['exact_sources', 'keyed_sources', 'match_types', 'parameterless_match_types', 'mutations', 'phases', 'actions', 'rule_properties']) {
+    for (const key of ['sources', 'match_types', 'parameterless_match_types', 'operandless_match_types', 'match_operands', 'mutations', 'phases', 'actions', 'action_properties', 'when_keys', 'rule_properties', 'limits']) {
       expect(contract, key).toHaveProperty(key);
       expect((contract as Record<string, unknown>)[key], key).not.toEqual([]);
     }
@@ -192,7 +266,7 @@ describe('what the delivered-bundle validator does with it', () => {
     // The wiring, not the definition. The contract functions can be perfect and unused: reverting
     // `validate.js` to its old shape-only check left every other test in this file green while the gate
     // accepted all of this again. So the assertion is on the validator's own answer.
-    expect(reasonFor({ parameter: 'raw.file', match: { type: 'contains', value: 'x' } })).toMatch(/unknown parameter source/);
+    expect(reasonFor({ parameter: 'raw.file', match: { type: 'contains', value: 'x' } })).toMatch(/takes no key/);
     expect(reasonFor({ parameter: 'get', match: { type: 'contains', value: 'x' } })).toMatch(/needs a key/);
     expect(reasonFor({ parameter: 'post', match: { type: 'contains', value: 'x' } })).toMatch(/needs a key/);
     expect(reasonFor({ parameter: 'raw', match: { type: 'not_a_type', value: 'x' } })).toMatch(/unknown match type/);
@@ -200,12 +274,56 @@ describe('what the delivered-bundle validator does with it', () => {
     expect(reasonFor({ parameter: 'egress.hostname', match: { type: 'internal_host' } })).toMatch(/no key "hostname"/);
   });
 
+  /** @returns the reason the RULE was rejected, or null. Rule-level properties, not one condition. */
+  function ruleReasonFor(rule: Record<string, unknown>): string | null {
+    const { bundle, rejected } = validateBundle({
+      firewall: [{ id: 'probe', ...rule }],
+      whitelists: [],
+    } as never);
+
+    return bundle.firewall.length === 1 ? null : (rejected[0]?.reason ?? 'rejected without a reason');
+  }
+
+  it('rejects a scope the engine would ignore, at the gate', () => {
+    // The gate, not the helper. Every guard added to the contract needs one of these: the functions can be
+    // correct and unreferenced, and a scope the engine ignores makes the rule apply to every request.
+    expect(ruleReasonFor({ when: { route: '/admin' }, rule_v2: [{ parameter: 'get.q', match: { type: 'contains', value: 'x' } }] }))
+      .toMatch(/apply to every request/);
+    expect(ruleReasonFor({ when: { path: '/admin' }, rule_v2: [{ parameter: 'get.q', match: { type: 'contains', value: 'x' } }] }))
+      .toBeNull();
+  });
+
+  it('rejects an action missing its own properties, at the gate', () => {
+    expect(ruleReasonFor({ action: 'set-header', rule_v2: [{ parameter: 'raw', match: { type: 'isset' } }] }))
+      .toMatch(/needs "set_headers"/);
+    expect(ruleReasonFor({ action: 'set-header', set_headers: { 'X-Frame-Options': 'DENY' }, rule_v2: [{ parameter: 'raw', match: { type: 'isset' } }] }))
+      .toBeNull();
+  });
+
+  it('rejects a group whose parameter is not the one the engine recognises', () => {
+    const nested = [{ parameter: 'get.q', match: { type: 'contains', value: 'x' } }];
+
+    expect(reasonFor({ parameter: 'raw', rules: nested })).toMatch(/a group must be/);
+    expect(reasonFor({ parameter: 'rules', rules: nested })).toBeNull();
+  });
+
+  it('rejects an incomplete array_key_value, at the gate', () => {
+    expect(reasonFor({ parameter: 'raw', match: { type: 'array_key_value', key: 'a.b' } })).toMatch(/needs "match"/);
+    expect(reasonFor({ parameter: 'raw', match: { type: 'array_key_value', match: { type: 'contains', value: 'x' } } })).toMatch(/needs "key"/);
+  });
+
+  it('accepts a valid prefixed source at the gate, and refuses an open one', () => {
+    expect(reasonFor({ parameter: 'response.header.x-api-key', match: { type: 'contains', value: 'sk-' } })).toBeNull();
+    expect(reasonFor({ parameter: 'server.HTTP_X_CUSTOM', match: { type: 'isset' } })).toBeNull();
+    expect(reasonFor({ parameter: 'server.ANYTHING_AT_ALL', match: { type: 'isset' } })).toMatch(/no key "ANYTHING_AT_ALL"/);
+  });
+
   it('rejects a bad member of a parameter LIST, even beside good ones', () => {
     // How the dead vocabulary survived in this package's own default rules: `raw.file` sat in a list with
     // `get.file` and `post.file`, so the condition still fired through its siblings and the dead entry
     // looked like coverage.
     expect(reasonFor({ parameter: ['get.file', 'post.file', 'raw.file'], match: { type: 'contains', value: 'x' } }))
-      .toMatch(/unknown parameter source/);
+      .toMatch(/takes no key/);
   });
 
   it('still accepts the shapes the engine runs', () => {
@@ -215,7 +333,7 @@ describe('what the delivered-bundle validator does with it', () => {
     expect(reasonFor({ parameter: ['get.file', 'post.file'], match: { type: 'contains', value: 'x' } })).toBeNull();
     expect(reasonFor({ parameter: 'raw', mutations: ['urldecode', 'htmlentitydecode'], match: { type: 'regex', value: '/x/i' } })).toBeNull();
     expect(reasonFor({ match: { type: 'cross_origin' } })).toBeNull();
-    expect(reasonFor({ parameter: 'response.body', match: { type: 'array_key_value', value: 'a.b', match: { type: 'contains', value: 'x' } } })).toBeNull();
+    expect(reasonFor({ parameter: 'response.body', match: { type: 'array_key_value', key: 'a.b', match: { type: 'contains', value: 'x' } } })).toBeNull();
   });
 
   it('accepts every rule in the shipped bundles through the real gate', () => {
@@ -228,4 +346,3 @@ describe('what the delivered-bundle validator does with it', () => {
     }
   });
 });
-

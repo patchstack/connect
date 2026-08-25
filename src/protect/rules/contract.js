@@ -1,96 +1,135 @@
-// The engine's rule vocabulary, as data, versioned, and shared.
+// The engine's rule vocabulary and shape rules, as data.
 //
-// A rule document travels Triage → Hub → SaaS → here, and until this existed every hop checked a
-// different, weaker thing. Connect's validator asked only that `match.type` be a non-empty string; SaaS
-// required a `parameter` on every condition, which the parameterless primitives do not have. So a rule
-// using a source the engine does not resolve — `raw.file`, a bare `get` — passed every gate, shipped, and
-// screened NOTHING: the resolver returns no values for it, so the condition never matches and the rule is
-// installed, reported, and inert. That is the same failure as a guard that reports itself wired and is not,
-// one layer down.
+// A rule document is produced in one place, forwarded through others, and executed here. Each of those
+// layers needs the same answer to "is this rule one the engine can run", and a layer that answers it more
+// loosely admits a rule that is delivered, counted as protection, and never matches.
 //
-// This file is the single description. It is DATA rather than a validator so the other repositories can
-// consume the same lists instead of re-deriving them: `capability.json` publishes it, Hub and SaaS check
-// against it, and the vPatch skill validates generated rules before they are ever imported.
+// The data is richer than a set of name lists so that a consumer can DERIVE validation from it: which
+// sources take a key and what keys they take, what a condition group looks like, what operands each match
+// type needs, which keys a `when` scope understands, which properties belong to which action. Lists alone
+// leave every consumer to reimplement the rest in its own language, and those implementations diverge.
 //
-// It is kept honest by `tests/protect/rule-contract.test.ts`, which reads the engine's own source and
-// asserts that these lists ARE the implemented sets. A hand-maintained copy of a vocabulary drifts from
-// the thing it describes; the test is what makes this a description rather than a second opinion.
+// `rule-contract.json` is the published form. `tests/protect/rule-contract.test.ts` reads the engine's own
+// source and asserts these descriptions match what it implements.
+
+export const CONTRACT_VERSION = '2.0';
 
 /**
- * Bumped when the vocabulary changes in a way a consumer must notice.
+ * Every parameter source, and what it accepts after the dot.
  *
- * Additive changes — a new match type, a new mutation — take the minor. Removing or renaming anything, or
- * changing what an existing name means, takes the major: a rule authored against the old meaning is still
- * out there in somebody's bundle.
+ * - `keyed: false` — used bare (`raw`), never with a key.
+ * - `keys: 'any'` — an application field name, which is per-app and cannot be enumerated.
+ * - `keys: [...]` — the only keys the resolver answers for.
+ * - `key_prefixes: [...]` — a key may instead begin with one of these.
+ * - `optional_key_suffixes: [...]` — a key may end with one of these to select part of the value.
+ * - `wildcard: true` — a key may end in `*` to fan out over matching fields.
  */
-export const CONTRACT_VERSION = '1.0';
+export const SOURCES = Object.freeze({
+  raw: Object.freeze({ keyed: false }),
+  all: Object.freeze({ keyed: false }),
+  false: Object.freeze({ keyed: false }),
+  rules: Object.freeze({ keyed: false, group: true }),
 
-/** Sources used WITHOUT a key. `parameter: 'raw'`, never `raw.something`. */
-export const EXACT_SOURCES = Object.freeze(['raw', 'all', 'rules', 'false']);
+  get: Object.freeze({ keyed: true, keys: 'any', wildcard: true }),
+  post: Object.freeze({ keyed: true, keys: 'any', wildcard: true }),
+  request: Object.freeze({ keyed: true, keys: 'any' }),
+  cookie: Object.freeze({ keyed: true, keys: 'any' }),
 
-/**
- * Sources used WITH a key: `get.q`, `server.HTTP_HOST`, `egress.host`.
- *
- * The key is not constrained here on purpose. `get`/`post`/`request`/`cookie` take an application field
- * name, which is per-app and unknowable; `server` takes a CGI-style name; `files` takes a field name. The
- * two that ARE closed sets carry theirs below, because naming a key the engine does not resolve is the
- * same silent failure as naming a source it does not have.
- */
-export const KEYED_SOURCES = Object.freeze([
-  'get', 'post', 'request', 'cookie', 'server', 'files', 'response', 'egress',
-]);
+  // A bare `files.<name>` resolves to the filename; an optional trailing attribute selects another part
+  // of the upload. Optional, not required — filename-scoped rules use the bare form.
+  files: Object.freeze({
+    keyed: true,
+    keys: 'any',
+    wildcard: true,
+    optional_key_suffixes: Object.freeze(['content', 'filename', 'type']),
+  }),
 
-/** Keys the engine resolves for the sources whose key space is closed. */
-export const CLOSED_SOURCE_KEYS = Object.freeze({
-  response: Object.freeze(['status', 'body', 'headers']),
-  egress: Object.freeze(['url', 'host', 'method']),
+  server: Object.freeze({
+    keyed: true,
+    keys: Object.freeze([
+      'REQUEST_URI', 'REQUEST_METHOD', 'HTTP_USER_AGENT', 'HTTP_REFERER', 'HTTP_HOST',
+      'REMOTE_ADDR', 'ip', 'CONTENT_TYPE', 'CONTENT_LENGTH',
+    ]),
+    key_prefixes: Object.freeze(['HTTP_']),
+  }),
+
+  response: Object.freeze({
+    keyed: true,
+    keys: Object.freeze(['status', 'body', 'headers']),
+    key_prefixes: Object.freeze(['header.']),
+  }),
+
+  egress: Object.freeze({ keyed: true, keys: Object.freeze(['url', 'host', 'method']) }),
 });
 
-/** Every match type the engine implements. */
+/**
+ * Match types the engine evaluates.
+ *
+ * `file_contains` is absent: the engine returns false for it unconditionally, so a rule built on it can
+ * never match. Publishing it would invite a consumer to author one.
+ */
 export const MATCH_TYPES = Object.freeze([
   'array_in_array', 'array_key_value', 'contains', 'cors_reflected', 'cross_origin',
-  'ctype_alnum', 'ctype_digit', 'ctype_special', 'equals', 'equals_strict', 'file_contains',
+  'ctype_alnum', 'ctype_digit', 'ctype_special', 'equals', 'equals_strict',
   'hostname', 'in_array', 'inline_js_xss', 'inline_xss', 'internal_host', 'is_numeric',
   'isset', 'less_than', 'more_than', 'not_contains', 'not_in_array', 'off_origin',
   'quotes', 'regex', 'stripos',
 ]);
 
-/**
- * Match types that need the request or response AS A WHOLE, not one resolved value.
- *
- * These carry no `parameter`, and a consumer that requires one refuses a valid rule — which is the mirror
- * of the problem above: SaaS did exactly that, so every CSRF and open-redirect template would have been
- * permanently unimportable while looking like a schema violation.
- */
+/** Match types evaluated against the whole request or response, which therefore carry no parameter. */
 export const PARAMETERLESS_MATCH_TYPES = Object.freeze(['cross_origin', 'off_origin', 'cors_reflected']);
 
-/** Every mutation the engine implements. Anything else is applied as a no-op, silently. */
+/** Match types that read no operand: presence or a character-class test of the resolved value alone. */
+export const OPERANDLESS_MATCH_TYPES = Object.freeze([
+  'isset', 'quotes', 'is_numeric', 'ctype_alnum', 'ctype_digit', 'ctype_special',
+  'inline_xss', 'inline_js_xss', 'internal_host', 'hostname',
+  'cross_origin', 'off_origin', 'cors_reflected',
+]);
+
+/**
+ * Match types needing operands beyond `value`.
+ *
+ * `array_key_value` navigates `key` and evaluates `match` against what it finds. Either one missing is a
+ * condition that resolves a value and tests nothing.
+ */
+export const MATCH_OPERANDS = Object.freeze({
+  array_key_value: Object.freeze({ required: Object.freeze(['key', 'match']) }),
+});
+
+/** Mutations the resolver applies. Anything else is a silent no-op. */
 export const MUTATIONS = Object.freeze([
   'base64_decode', 'getArrayValues', 'htmlentitydecode', 'intval', 'json_decode', 'json_encode', 'urldecode',
 ]);
 
 export const PHASES = Object.freeze(['request', 'response', 'egress']);
 
-/**
- * Every action the runtime implements.
- *
- * The response-header trio is easy to miss — it is handled in `runtime.js`, not the engine — and a contract
- * that omitted it would refuse three shipped capabilities as unknown. Read from there rather than assumed.
- */
 export const ACTIONS = Object.freeze([
   'block', 'redact', 'encode', 'set-header', 'remove-header', 'harden-cookie',
 ]);
 
-/** Top-level rule properties the engine reads. Anything else is authoring metadata, not behaviour. */
+/**
+ * Keys a `when` scope understands.
+ *
+ * A scope naming anything else is ignored and the rule applies to every request, so an unrecognised key
+ * silently widens a rule that was authored to be narrow.
+ */
+export const WHEN_KEYS = Object.freeze(['path', 'method']);
+
+/** Properties the engine or runtime reads on a rule. */
 export const RULE_PROPERTIES = Object.freeze([
   'id', 'rule_id', 'title', 'category', 'phase', 'action', 'rule_v2', 'when',
-  'max_bytes', 'bypass_limit', 'set_headers', 'ensure', 'prefilter', 'enforcement',
+  'message', 'enforcement', 'source_revision', 'prefilter',
+  'max_bytes', 'bypass_limit',
+  'set_headers', 'remove_headers', 'cookie_flags', 'ensure',
 ]);
 
-/**
- * The bounds the validator enforces. These are the numbers it already used; they live here so a consumer
- * can reject an over-large rule before it is ever delivered, rather than discovering the cap at runtime.
- */
+/** Properties each action reads, so a consumer can require the ones its action needs. */
+export const ACTION_PROPERTIES = Object.freeze({
+  'set-header': Object.freeze({ required: Object.freeze(['set_headers']), optional: Object.freeze(['ensure']) }),
+  'remove-header': Object.freeze({ required: Object.freeze(['remove_headers']), optional: Object.freeze([]) }),
+  'harden-cookie': Object.freeze({ required: Object.freeze(['cookie_flags']), optional: Object.freeze([]) }),
+});
+
 export const LIMITS = Object.freeze({
   maxRules: 5000,
   maxWhitelists: 2000,
@@ -100,18 +139,22 @@ export const LIMITS = Object.freeze({
   maxValueLength: 8192,
 });
 
+/** The shape of a condition group: this parameter, and a nested `rules` array. */
+export const GROUP_PARAMETER = 'rules';
+
+/** Is this condition a group? Groups carry no match of their own. */
+export function isGroup(condition) {
+  return condition?.parameter === GROUP_PARAMETER && Array.isArray(condition?.rules);
+}
+
 /**
- * Is this a parameter the resolver can actually resolve?
+ * Is this a parameter the resolver can resolve?
  *
  * @returns {string|null} why it cannot, or null when it can
  */
 export function parameterProblem(parameter) {
-  if (parameter === undefined || parameter === null) return null; // parameterless; the match decides
+  if (parameter === undefined || parameter === null) return null;
 
-  // A condition may name SEVERAL parameters, and the engine resolves each of them
-  // (`Array.isArray(parameter) ? parameter : [parameter]`). Every member has to be resolvable: one bad
-  // entry among good ones is a condition that still fires, via its siblings, while carrying a source that
-  // contributes nothing — which is how dead vocabulary survives in a rule that looks like it works.
   if (Array.isArray(parameter)) {
     if (parameter.length === 0) return 'parameter list is empty';
     for (const member of parameter) {
@@ -123,39 +166,70 @@ export function parameterProblem(parameter) {
   }
 
   if (typeof parameter !== 'string' || parameter === '') return 'parameter must be a non-empty string';
-  if (EXACT_SOURCES.includes(parameter)) return null;
 
   const dot = parameter.indexOf('.');
+  const name = dot === -1 ? parameter : parameter.slice(0, dot);
+  const source = SOURCES[name];
+
+  if (source === undefined) return `unknown parameter source "${name}"`;
+
   if (dot === -1) {
-    // The reported case: `get` and `post` alone. They look like sources and resolve to nothing, because
-    // the resolver needs a key to look up.
-    return KEYED_SOURCES.includes(parameter)
-      ? `source "${parameter}" needs a key, e.g. "${parameter}.fieldname"`
-      : `unknown parameter source "${parameter}"`;
+    return source.keyed === true
+      ? `source "${name}" needs a key, e.g. "${name}.fieldname"`
+      : null;
   }
 
-  const source = parameter.slice(0, dot);
+  if (source.keyed !== true) return `source "${name}" takes no key`;
+
   const key = parameter.slice(dot + 1);
-  if (!KEYED_SOURCES.includes(source)) return `unknown parameter source "${source}"`;
-  if (key === '') return `source "${source}" needs a key after the dot`;
+  if (key === '') return `source "${name}" needs a key after the dot`;
 
-  const closed = CLOSED_SOURCE_KEYS[source];
-  if (closed && !closed.includes(key)) {
-    return `"${source}" has no key "${key}" (expected one of: ${closed.join(', ')})`;
-  }
-
-  return null;
+  return keyProblem(name, source, key);
 }
 
-/** @returns {string|null} why this match is not one the engine implements, or null */
+function keyProblem(name, source, key) {
+  const bare = source.wildcard === true && key.endsWith('*') ? key.slice(0, -1) : key;
+
+  // An application field name cannot be enumerated, so any non-empty key is accepted.
+  if (source.keys === 'any') return null;
+
+  if (Array.isArray(source.keys) && source.keys.includes(bare)) return null;
+
+  for (const prefix of source.key_prefixes ?? []) {
+    if (bare.startsWith(prefix) && bare.length > prefix.length) return null;
+  }
+
+  const accepted = [
+    ...(Array.isArray(source.keys) ? source.keys : []),
+    ...(source.key_prefixes ?? []).map((p) => `${p}…`),
+  ].join(', ');
+
+  return `"${name}" has no key "${key}" (expected one of: ${accepted})`;
+}
+
+/** @returns {string|null} why this match is not one the engine evaluates, or null */
 export function matchProblem(match, parameter) {
   if (!match || typeof match !== 'object') return 'condition has no match object';
   if (typeof match.type !== 'string' || match.type === '') return 'match.type must be a non-empty string';
   if (!MATCH_TYPES.includes(match.type)) return `unknown match type "${match.type}"`;
 
-  const needsNoParameter = PARAMETERLESS_MATCH_TYPES.includes(match.type);
-  if (!needsNoParameter && (parameter === undefined || parameter === null)) {
+  const parameterless = PARAMETERLESS_MATCH_TYPES.includes(match.type);
+  if (!parameterless && (parameter === undefined || parameter === null)) {
     return `match type "${match.type}" needs a parameter`;
+  }
+  if (parameterless && parameter !== undefined && parameter !== null) {
+    return `match type "${match.type}" reads the whole request and takes no parameter`;
+  }
+
+  const operands = MATCH_OPERANDS[match.type];
+  if (operands) {
+    for (const required of operands.required) {
+      if (match[required] === undefined || match[required] === null) {
+        return `match type "${match.type}" needs "${required}"`;
+      }
+    }
+  } else if (!OPERANDLESS_MATCH_TYPES.includes(match.type) && match.value === undefined) {
+    return `match type "${match.type}" needs a value`;
   }
 
   return null;
@@ -168,10 +242,40 @@ export function mutationsProblem(mutations) {
 
   for (const mutation of mutations) {
     if (typeof mutation !== 'string' || !MUTATIONS.includes(mutation)) {
-      // Named separately from an unknown match type because the consequence differs: an unknown mutation
-      // is applied as a no-op, so the condition still runs — against the untransformed value, which is a
-      // rule that quietly checks something other than what it says.
-      return `unknown mutation "${String(mutation)}" (applied as a no-op, so the condition would run against the untransformed value)`;
+      return `unknown mutation "${String(mutation)}" — applied as a no-op, so the condition would test the untransformed value`;
+    }
+  }
+
+  return null;
+}
+
+/**
+ * @returns {string|null} why this scope would not narrow the rule, or null
+ */
+export function whenProblem(when) {
+  if (when === undefined || when === null) return null;
+  if (typeof when !== 'object' || Array.isArray(when)) return 'when must be an object';
+
+  const keys = Object.keys(when);
+  if (keys.length === 0) return 'when is empty — remove it, or name a path or method';
+
+  const unknown = keys.filter((key) => !WHEN_KEYS.includes(key));
+  if (unknown.length > 0) {
+    return `when names no supported key (${unknown.join(', ')}) — the engine understands ${WHEN_KEYS.join(' and ')}, `
+      + 'and an unrecognised scope is ignored, so the rule would apply to every request';
+  }
+
+  return null;
+}
+
+/** @returns {string|null} why this action's properties are incomplete, or null */
+export function actionProblem(action, rule) {
+  if (action === undefined || action === null) return null;
+  if (!ACTIONS.includes(action)) return `unknown action "${action}"`;
+
+  for (const required of ACTION_PROPERTIES[action]?.required ?? []) {
+    if (rule?.[required] === undefined || rule?.[required] === null) {
+      return `action "${action}" needs "${required}"`;
     }
   }
 
@@ -180,16 +284,32 @@ export function mutationsProblem(mutations) {
 
 /** The whole contract, for publishing and for a consumer to load. */
 export function ruleContract() {
+  const sources = Object.fromEntries(
+    Object.entries(SOURCES).map(([name, spec]) => [name, {
+      keyed: spec.keyed === true,
+      ...(spec.group === true ? { group: true } : {}),
+      ...(spec.keys !== undefined ? { keys: spec.keys === 'any' ? 'any' : [...spec.keys] } : {}),
+      ...(spec.key_prefixes ? { key_prefixes: [...spec.key_prefixes] } : {}),
+      ...(spec.optional_key_suffixes ? { optional_key_suffixes: [...spec.optional_key_suffixes] } : {}),
+      ...(spec.wildcard === true ? { wildcard: true } : {}),
+    }]),
+  );
+
   return {
     version: CONTRACT_VERSION,
-    exact_sources: [...EXACT_SOURCES],
-    keyed_sources: [...KEYED_SOURCES],
-    closed_source_keys: Object.fromEntries(Object.entries(CLOSED_SOURCE_KEYS).map(([k, v]) => [k, [...v]])),
+    sources,
+    group_parameter: GROUP_PARAMETER,
     match_types: [...MATCH_TYPES],
     parameterless_match_types: [...PARAMETERLESS_MATCH_TYPES],
+    operandless_match_types: [...OPERANDLESS_MATCH_TYPES],
+    match_operands: Object.fromEntries(Object.entries(MATCH_OPERANDS).map(([k, v]) => [k, { required: [...v.required] }])),
     mutations: [...MUTATIONS],
     phases: [...PHASES],
     actions: [...ACTIONS],
+    action_properties: Object.fromEntries(
+      Object.entries(ACTION_PROPERTIES).map(([k, v]) => [k, { required: [...v.required], optional: [...v.optional] }]),
+    ),
+    when_keys: [...WHEN_KEYS],
     rule_properties: [...RULE_PROPERTIES],
     limits: { ...LIMITS },
   };

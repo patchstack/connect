@@ -6,8 +6,13 @@
 // package's source, and each of them was checking a different, weaker thing — so a rule naming a source the
 // resolver cannot resolve passed every gate and screened nothing.
 //
-// Committed, like capabilities.json, so a vocabulary change is a reviewable diff rather than something that
-// appears silently in dist. `tests/protect/rule-contract-artifact.test.ts` fails if it drifts from source.
+// Committed, like capabilities.json, so a change to the contract is a reviewable diff rather than something
+// that appears silently in dist. `tests/protect/rule-contract-artifact.test.ts` fails if it drifts.
+//
+// Deliberately NOT in package.json `files`: consumers vendor this file from the repository and record which
+// version they copied, which is what makes the version field load-bearing. Shipping it in the tarball would
+// invite reading it at runtime from an installed copy, where its version says nothing about the engine the
+// consumer is actually talking to.
 import { writeFileSync, readFileSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';

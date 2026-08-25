@@ -12,16 +12,18 @@
 // Fail-open in spirit: validation never throws, and a bundle whose rules are all rejected simply means
 // "no rules" (the app keeps serving) — never a crash.
 
-// The vocabulary and the bounds come from the shared contract, not from a copy kept here. They were kept
-// here, and the copy was the problem: the vocabulary this file checked was narrower than the one the engine
-// implements, so a rule naming a source the resolver cannot resolve passed every gate and screened nothing.
+// Vocabulary, shape and bounds all come from the shared contract, so this file and the layers upstream of
+// it are checking one description of what the engine runs.
 import {
   ACTIONS as CONTRACT_ACTIONS,
   LIMITS as CONTRACT_LIMITS,
   PHASES as CONTRACT_PHASES,
+  actionProblem,
+  isGroup,
   matchProblem,
   mutationsProblem,
   parameterProblem,
+  whenProblem,
 } from './contract.js';
 
 export const LIMITS = CONTRACT_LIMITS;
@@ -84,7 +86,17 @@ function idOf(rule) {
 function ruleProblem(rule) {
   if (!rule || typeof rule !== 'object') return 'not an object';
   if (rule.phase !== undefined && !PHASES.has(rule.phase)) return `unknown phase "${rule.phase}"`;
-  if (rule.action !== undefined && !ACTIONS.has(rule.action)) return `unknown action "${rule.action}"`;
+
+  // The action's own properties, not just its name: `set-header` without `set_headers` matches and then
+  // does nothing, which reads as a rule that is enforced.
+  const actionReason = actionProblem(rule.action, rule);
+  if (actionReason) return actionReason;
+
+  // An unrecognised scope key is IGNORED by the engine, so the rule applies to every request — a scope
+  // authored to narrow a rule that instead widens it to everything.
+  const scopeReason = whenProblem(rule.when);
+  if (scopeReason) return scopeReason;
+
   const capOverride = rule.max_bytes;
   if (capOverride !== undefined && !(Number(capOverride) > 0)) return 'max_bytes must be a positive number';
   return conditionsProblem(rule.rule_v2);
@@ -99,10 +111,17 @@ function conditionsProblem(conditions, depth = 0) {
   }
   for (const c of conditions) {
     if (!c || typeof c !== 'object') return 'condition is not an object';
-    if (Array.isArray(c.rules)) {
+
+    // The engine recognises a group only as `{ parameter: 'rules', rules: [...] }`. Any other parameter
+    // beside a `rules` array is a condition the engine resolves and then finds no match object on, so its
+    // nested conditions are never evaluated.
+    if (isGroup(c)) {
       const nested = conditionsProblem(c.rules, depth + 1);
       if (nested) return nested;
       continue; // a group carries no match of its own
+    }
+    if (Array.isArray(c.rules)) {
+      return `condition carries nested rules but its parameter is ${JSON.stringify(c.parameter)}; a group must be {"parameter":"rules"}`;
     }
     // The vocabulary checks. Without them the only question asked was whether `match.type` was a
     // non-empty string, so an invented source, an invented match type and an invented mutation all passed
