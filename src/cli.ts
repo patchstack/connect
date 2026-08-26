@@ -51,8 +51,8 @@ import {
 } from './guide.js';
 import { login, readPendingLogin, redeemIfApproved, startLogin, waitForApproval } from './login.js';
 import { runProtect, runVerify } from './protect/install/index.js';
-import { buildInputMap } from './map/index.js';
-import { isProvenFlow } from './map/coordinates.js';
+import { runMap } from './map-command.js';
+import { getStringFlag } from './flags.js';
 import { setupProtection, wireBuildScripts } from './setup.js';
 import { detectStack, type StackDescriptor } from './stack.js';
 import { PatchstackError } from './types.js';
@@ -214,10 +214,7 @@ function parseArgs(argv: string[]): ParsedArgs {
   };
 }
 
-function getStringFlag(flags: Map<string, string | true>, name: string): string | undefined {
-  const value = flags.get(name);
-  return typeof value === 'string' ? value : undefined;
-}
+
 
 async function runInit(args: ParsedArgs): Promise<number> {
   const uuid = args.positional[0];
@@ -343,101 +340,6 @@ async function runLogin(args: ParsedArgs): Promise<number> {
   console.error(`\n  ${result.message ?? 'Login failed.'}\n`);
 
   return 1;
-}
-
-async function runMap(args: ParsedArgs): Promise<number> {
-  const cwd = getStringFlag(args.flags, 'dir') ?? process.cwd();
-  const { map, error } = await buildInputMap(cwd, {
-    followSymlinks: args.flags.get('follow-symlinks') === true,
-  });
-  if (!map) {
-    console.error(`patchstack: ${error}`);
-    return 1;
-  }
-  // Human summary → stderr; the JSON → stdout (so it can be piped / written). Report PROVEN flows
-  // separately from the inventories: only a proven tier is evidence that an input reaches a sink.
-  const inputs = map.endpoints.reduce((n, e) => n + e.inputs.length, 0);
-  const sinks = map.endpoints.reduce((n, e) => n + e.sinks.length, 0);
-  const proven = map.endpoints.reduce((n, e) => n + e.flows.filter((f) => isProvenFlow(f.confidence)).length, 0);
-  const c = map.coverage;
-  console.error(
-    `patchstack: ${map.endpoints.length} entry point(s), ${inputs} input(s), ${sinks} sink(s), ` +
-      `${proven} proven input→sink flow(s) [${map.framework}].`,
-  );
-  console.error(
-    // All three buckets, explicitly: "6/66 parsed" reads as "91% unanalysed" when the other 60 files
-    // simply contain no server entry point (most of a project is client code). Only `skipped` is a
-    // failure to analyse.
-    `patchstack: ${c.filesDiscovered} file(s) found — ${c.filesParsed} analysed, ` +
-      `${c.filesPreFiltered} skipped (no server entry point)` +
-      (c.filesSkipped ? `, ${c.filesSkipped} could not be analysed` : '') +
-      `. DETECTED surface only — static analysis is best-effort; every flow carries the tier it was ` +
-      `established at ("exact-local" and "transformed-local" are proven; "imported", "heuristic" and ` +
-      `"unknown" are not).`,
-  );
-  const invoked = map.apiInvocations ?? [];
-  if (invoked.length > 0) {
-    const c = map.coverage as unknown as Record<string, number>;
-    const dependency = c.callsDependency ?? 0;
-    const ambiguous = c.callsAmbiguous ?? 0;
-    // Resolver quality, NOT "share of all calls": local helpers are excluded from both terms, because
-    // declining to attribute `res.json()` to a package is a correct answer rather than a miss.
-    const denominator = dependency + ambiguous;
-    const quality = denominator > 0 ? Math.round((100 * dependency) / denominator) : 100;
-    console.error(
-      `patchstack: ${invoked.length} dependency API call(s) resolved across ${new Set(invoked.map((i) => i.package)).size} package(s) ` +
-        `from ${c.callsTotal ?? 0} call site(s) — ${quality}% of dependency-candidate receivers resolved ` +
-        `(${c.callsLocal ?? 0} local, ${ambiguous} ambiguous). Positive evidence only: absence here never ` +
-        `means an API is not called.`,
-    );
-  }
-  const imported = map.imports ?? [];
-  if (imported.length > 0) {
-    // The unmodelled count is the honest headline: it is how much of the dependency surface this map
-    // cannot speak to at all, and a reader who only sees flows would never learn it.
-    const unmodelled = imported.filter((d) => d.recognizedSinkKinds.length === 0).length;
-    console.error(
-      `patchstack: ${imported.length} package(s) imported — ${unmodelled} with no recognized sink family, ` +
-        `so a vulnerability in those cannot be judged reachable or unreachable from this map.`,
-    );
-  }
-  const json = JSON.stringify(map, null, 2);
-  const out = getStringFlag(args.flags, 'out');
-  if (out) {
-    writeFileSync(out, json);
-    console.error(`patchstack: wrote ${out}`);
-  } else if (args.flags.get('upload') !== true) {
-    // With --upload the map goes to Patchstack instead of stdout: printing a full structural document
-    // AND sending it is noise, and the interesting output becomes what the server did with it.
-    console.log(json);
-  }
-
-  // Opt-in, never implied. This is the only path that sends anything derived from source code, so it
-  // takes an explicit flag rather than happening because a site UUID exists.
-  if (args.flags.get('upload') === true) {
-    if (map.endpoints.length === 0) {
-      console.error('patchstack: nothing to upload — no server entry points were detected.');
-      return 0;
-    }
-    // Same resolution order as every other network path: CLI flags, then env, then `.patchstackrc.json`.
-    const config = await resolveConfig({
-      cwd,
-      cliSiteUuid: getStringFlag(args.flags, 'site-uuid'),
-      cliEndpoint: getStringFlag(args.flags, 'endpoint'),
-    });
-    const outcome = await postInputMap(config, map);
-    if (outcome.result === 'stored') {
-      console.error(`patchstack: uploaded the attack surface (revision ${outcome.revision}).`);
-    } else if (outcome.result === 'unchanged') {
-      console.error(`patchstack: attack surface unchanged since revision ${outcome.revision} — nothing to store.`);
-    } else if (outcome.result === 'skipped') {
-      console.error(`patchstack: did not upload the attack surface — ${outcome.message}`);
-    } else {
-      // Fail-open: this runs inside someone's build, so a Patchstack problem must not fail it.
-      console.error(`patchstack: could not upload the attack surface — ${outcome.message}`);
-    }
-  }
-  return 0;
 }
 
 async function runScan(
@@ -1110,7 +1012,7 @@ async function main(): Promise<number> {
     case 'setup':
       return runSetup(args);
     case 'map':
-      return runMap(args);
+      return runMap(args.flags);
     case 'login':
       return runLogin(args);
     default:
