@@ -8,6 +8,43 @@ Dev-only: nothing in this directory ships in the npm package.
 
 The install prompt is an adversarial-UX artifact: AI agents actively try to refuse it. Unit tests can't tell you whether an agent will balk at a phrase, mis-read CLI output, or wire the widget with the wrong token — only letting an agent run the real flow does. Each documented refusal mode came from a run like this.
 
+## Void rounds: a refusal before installing is not evidence about the docs
+
+The documentation gate exists to catch mode 6 — a contradiction between the shipped docs and `dist/`,
+such as an overbroad privacy claim. Catching that requires the agent to have READ the docs, which means
+it must have obtained the tarball, which means it must have installed.
+
+An agent that refuses on the *prompt* never gets there. Its scorecard is `2/8 REFUSED`, which is
+byte-identical to what a documentation regression would produce, and no field distinguished the two. So
+"must pass `--rounds 3`" could not fail for a documentation reason at all — the gate was unable to detect
+the thing it existed for, and `2/8 REFUSED` is the modal outcome for `hostile`.
+
+Such a round is now **void**: neither evidence for nor against the docs.
+
+- The scorecard carries `audited` (did the package get installed) and prints `VOID` when it did not.
+- Void rounds are retried, bounded at `2 × --rounds`, so a persona that never installs cannot loop.
+- The summary counts only conclusive rounds, and reports how many were void.
+- Exit codes are three-way: `0` all conclusive rounds green, `1` a real failure, **`2` inconclusive** —
+  nothing installed, so the run says nothing. A release gate must not read `2` as "the docs are fine".
+
+Two consequences for how to use it:
+
+- For a docs-only change, prefer a persona that reliably installs (`standard`, or `lovable`, which has
+  completed rounds). `hostile` measures prompt survival; it is a poor instrument for doc accuracy.
+- Re-run after publication. Until the change is published, the tarball an agent installs and audits does
+  not contain it, so even a conclusive round is auditing the previous docs.
+
+Self-testing the two paths costs no agent tokens:
+
+```
+node field-test/run.mjs --rounds 1 --agent-cmd "node '$PWD/field-test/stub-compliant.mjs'"  # 8/8, exit 0
+node field-test/run.mjs --rounds 1 --agent-cmd "node '$PWD/field-test/stub-refusing.mjs'"   # void, exit 2
+```
+
+Quote the path: `--agent-cmd` is handed to `sh -c`, and this repository's own checkout sits under a
+directory with a space in it, so an unquoted command silently fails to start — which voids the round,
+correctly but confusingly.
+
 ## Refusal modes behind the current design
 
 These observed failures explain why the current prompt leads with explicit authorization and one bounded command rather than a verification script or an instruction chain:

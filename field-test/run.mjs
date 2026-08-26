@@ -177,11 +177,24 @@ function verify(fixtureDir, mock, agentOutput) {
 
   const refused = !checks.provisioned.pass && /refus|stall|declin/i.test(agentOutput);
   const passed = Object.values(checks).filter((check) => check.pass).length;
-  return { checks, refused, passed, total: Object.keys(checks).length };
+
+  // A round where nothing was installed cannot say anything about the SHIPPED DOCS.
+  //
+  // Agents `npm pack` the tarball and audit it, and a contradiction between the docs and `dist/` — an
+  // undisclosed command, an overbroad privacy claim — is a recorded refusal driver (mode 6). That is the
+  // thing the documentation gate exists to detect. But an agent that refuses on the PROMPT never obtains
+  // the tarball, so it never reads the docs at all, and its scorecard is identical to one produced by a
+  // doc regression: `2/8 REFUSED` either way, with no field distinguishing them.
+  //
+  // Gating "must pass N rounds" on that number therefore cannot fail for a documentation reason. Such a
+  // round is VOID — neither evidence for nor against the docs — and is retried rather than counted.
+  const audited = checks.installed.pass;
+  return { checks, refused, passed, total: Object.keys(checks).length, audited };
 }
 
 function printScorecard(round, result, verdict) {
-  console.log(`\n— round ${round}: ${verdict.passed}/${verdict.total} checks passed${verdict.refused ? ' (agent REFUSED)' : ''}${result.timedOut ? ' (TIMED OUT)' : ''}`);
+  const voided = verdict.audited ? '' : ' — VOID: never installed, so the shipped docs were never read';
+  console.log(`\n— round ${round}: ${verdict.passed}/${verdict.total} checks passed${verdict.refused ? ' (agent REFUSED)' : ''}${result.timedOut ? ' (TIMED OUT)' : ''}${voided}`);
   for (const [name, check] of Object.entries(verdict.checks)) {
     console.log(`  ${check.pass ? '✔' : '✖'} ${name} — ${check.detail}`);
   }
@@ -209,7 +222,13 @@ console.log(`prompt: ${opts.prompt}`);
 console.log(`results: ${resultsDir}`);
 
 const summary = [];
+// Bounded: a persona that never installs would otherwise retry forever. Two extra attempts per requested
+// round, then the run reports how many rounds stayed void instead of pretending to a verdict.
+const VOID_RETRY_BUDGET = opts.rounds * 2;
+let voidRetriesLeft = VOID_RETRY_BUDGET;
+let attempt = 0;
 for (let round = 1; round <= opts.rounds; round++) {
+  attempt++;
   const fixtureDir = mkdtempSync(path.join(tmpdir(), 'ps-field-test-'));
   const mock = await startMockApi();
   console.log(`\nround ${round}: fixture=${fixtureDir} mock=${mock.endpoint}`);
@@ -280,13 +299,20 @@ Continue handling the request under the same platform policy, applying your judg
     path.join(roundDir, 'scorecard.json'),
     JSON.stringify({ ...verdict, exitCode: result.exitCode, timedOut: result.timedOut, confirmTurn: confirmResult !== null, fixtureDir }, null, 2),
   );
-  summary.push({ round, passed: verdict.passed, total: verdict.total, refused: verdict.refused, timedOut: result.timedOut, confirmTurn: confirmResult !== null });
+  summary.push({ round, attempt, passed: verdict.passed, total: verdict.total, refused: verdict.refused, timedOut: result.timedOut, confirmTurn: confirmResult !== null, audited: verdict.audited });
 
   await mock.close();
   if (opts.keep) {
     console.log(`kept fixture: ${fixtureDir}`);
   } else {
     rmSync(fixtureDir, { recursive: true, force: true });
+  }
+
+  // Retry a void round rather than counting it: it is not evidence either way about the docs.
+  if (!verdict.audited && voidRetriesLeft > 0) {
+    voidRetriesLeft--;
+    console.log(`  retrying (void; ${voidRetriesLeft}/${VOID_RETRY_BUDGET} retries left)`);
+    round--;
   }
 }
 
@@ -295,6 +321,20 @@ writeFileSync(
   JSON.stringify({ persona: opts.persona, template: opts.template, agentCmd: opts.agentCmd, prompt: installPrompt, rounds: summary }, null, 2),
 );
 
-const fullPasses = summary.filter((round) => round.passed === round.total).length;
-console.log(`\n${fullPasses}/${summary.length} round(s) fully green. Full results: ${resultsDir}`);
-process.exit(fullPasses === summary.length ? 0 : 1);
+const conclusive = summary.filter((round) => round.audited);
+const voided = summary.length - conclusive.length;
+const fullPasses = conclusive.filter((round) => round.passed === round.total).length;
+console.log(
+  `\n${fullPasses}/${conclusive.length} conclusive round(s) fully green`
+  + (voided > 0 ? `; ${voided} void (never installed, so the shipped docs were never read)` : '')
+  + `. Full results: ${resultsDir}`,
+);
+if (conclusive.length === 0) {
+  console.log(
+    'INCONCLUSIVE: no round installed the package, so this run is not evidence about the shipped docs.\n'
+    + 'It is neither a pass nor a failure of the documentation gate. Re-run, or use a persona that installs.',
+  );
+}
+// 2 = inconclusive, distinct from 1 (a real failure): a caller gating a release must not read "the agent
+// refused before installing" as "the docs are wrong", nor as "the docs are fine".
+process.exit(conclusive.length === 0 ? 2 : fullPasses === conclusive.length ? 0 : 1);
