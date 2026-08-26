@@ -113,6 +113,69 @@ describe('install locations on the wire', () => {
   });
 });
 
+describe('a location never names the machine', () => {
+  // The same invariant that a sibling change got wrong: a path relativized against the wrong root escapes
+  // to `../../home/runner/...`, and this payload is uploaded. Asserted over every source that can produce
+  // one, because the failure is silent — an escaped path is still a string and every other assertion
+  // about it passes.
+  const sources: Array<{ what: string; files: Record<string, string> }> = [
+    {
+      what: 'an npm v3 lockfile',
+      files: {
+        'package.json': JSON.stringify({ name: 'root', dependencies: { lodash: '^4.17.21' } }),
+        'package-lock.json': JSON.stringify({
+          name: 'root',
+          lockfileVersion: 3,
+          packages: { '': { name: 'root' }, 'node_modules/lodash': { version: '4.17.21' }, 'apps/api/node_modules/lodash': { version: '4.17.11' } },
+        }),
+      },
+    },
+    {
+      what: 'an npm v1 lockfile',
+      files: {
+        'package.json': JSON.stringify({ name: 'root', dependencies: { debug: '^4.0.0' } }),
+        'package-lock.json': JSON.stringify({
+          name: 'root',
+          lockfileVersion: 1,
+          dependencies: { debug: { version: '4.3.4', dependencies: { ms: { version: '2.1.2' } } } },
+        }),
+      },
+    },
+    {
+      what: 'the node_modules walk',
+      files: {
+        'package.json': JSON.stringify({ name: 'root', dependencies: { lodash: '^4.17.21' } }),
+        'bun.lockb': 'binary-stub',
+        'node_modules/lodash/package.json': JSON.stringify({ name: 'lodash', version: '4.17.21' }),
+        'node_modules/debug/node_modules/ms/package.json': JSON.stringify({ name: 'ms', version: '2.1.2' }),
+      },
+    },
+  ];
+
+  for (const { what, files } of sources) {
+    it(`stays repo-relative from ${what}`, async () => {
+      const dir = mkdtempSync(path.join(tmpdir(), 'ps-abs-'));
+      for (const [rel, body] of Object.entries(files)) {
+        mkdirSync(path.join(dir, path.dirname(rel)), { recursive: true });
+        writeFileSync(path.join(dir, rel), body);
+      }
+      try {
+        const { payload } = buildWirePayload(await scanLockfile(dir));
+        const all = payload.packages.flatMap((pkg) => pkg.paths ?? []);
+
+        expect(all.length).toBeGreaterThan(0);
+        for (const location of all) {
+          expect(path.isAbsolute(location)).toBe(false);
+          expect(location.split('/')).not.toContain('..');
+        }
+        expect(JSON.stringify(payload)).not.toContain(dir);
+      } finally {
+        rmSync(dir, { recursive: true, force: true });
+      }
+    });
+  }
+});
+
 describe('a location is POSIX-style whatever platform produced it', () => {
   it('normalizes a Windows separator', () => {
     // Lockfile paths are POSIX-style on every platform, and the server compares against them. On Windows
