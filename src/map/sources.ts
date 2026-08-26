@@ -107,11 +107,17 @@ export interface WalkStats {
    */
   unwalked: number;
   /**
-   * Directories the walk skipped BY NAME that were found to hold source files, repo-relative.
+   * Directories the walk skipped BY NAME that were found to hold source files.
    *
    * Positive evidence, and the reason it exists: a skip by name moves no other counter, so an app whose
    * server lives under `vendor/` looked identical to one with no such directory. Naming them lets a
    * reader see which guess to check, instead of re-running the scan and reading the same silence.
+   *
+   * ABSOLUTE paths; the caller relativizes, as it already does for unreadable files. Relativizing here
+   * would have to use `boundary`, which is a REALPATH while the walk descends from `cwd` — on a machine
+   * where those differ (macOS `/var` vs `/private/var`) that produces a `../..` escape, and relativizing
+   * a second time at the caller resolves it against `process.cwd()` and lands somewhere else entirely.
+   * One relativization, against the same root every other path in the document uses.
    */
   skippedWithSource: string[];
   /**
@@ -153,7 +159,7 @@ export function collectSources(
       // source by convention, and probing `node_modules` would cost more than the whole walk.
       if (e.isDirectory() && SKIP_DIRS.has(e.name) && !SKIP_IS_DEFINITIONAL.has(e.name) && !e.name.startsWith('.')) {
         const held = probeForSource(join(dir, e.name), probeBudget);
-        if (held === true) stats.skippedWithSource.push(relative(boundary, join(dir, e.name)) || e.name);
+        if (held === true) stats.skippedWithSource.push(join(dir, e.name));
         else if (held === 'unknown') stats.skippedUnknown++;
       }
       continue;

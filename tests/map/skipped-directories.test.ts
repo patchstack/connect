@@ -1,8 +1,9 @@
 import { describe, expect, it } from 'vitest';
-import { chmodSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { chmodSync, mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { buildInputMap } from '../../src/map/index.js';
+import { collectSources } from '../../src/map/sources.js';
 
 /**
  * A directory skipped BY NAME must not silently license a negative.
@@ -53,11 +54,19 @@ describe('a guessed skip that hid source', () => {
       // Named, not just counted: a reader has to know WHICH guess to check, or the only move left is to
       // re-run the scan and read the identical silence.
       expect(map!.coverage.notes.join(' ')).toContain('vendor');
-      // And named REPO-RELATIVELY. The walk compares against a realpath, so the obvious relativization
-      // produced a `../../..` escape carrying the user's home directory — which this document is uploaded
-      // to a server. Asserting only that 'vendor' appears passes either way, so assert the leak instead:
-      // no value anywhere in the document may contain the absolute fixture path.
+      // And named REPO-RELATIVELY. The walk compares against `boundary`, a realpath, while it descends
+      // from `cwd`; where those differ the obvious relativization produces a `../..` escape carrying the
+      // user's home directory into a document that gets uploaded. Relativizing twice — once in the walk,
+      // once at the caller — cancelled out on the machine this was written on and escaped on CI, which is
+      // the worst possible failure shape: green locally, wrong in the artifact that ships.
+      //
+      // Asserting only that 'vendor' appears passes either way, so assert the shape that cannot be
+      // platform-dependent: no escape, and nothing absolute.
       expect(JSON.stringify(map)).not.toContain(dir);
+      for (const d of map!.coverage.importCoverageGaps?.skippedDirsWithSource ?? []) {
+        expect(d.split('/')).not.toContain('..');
+        expect(path.isAbsolute(d)).toBe(false);
+      }
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
@@ -89,6 +98,60 @@ describe('a guessed skip that hid source', () => {
       expect(map!.coverage.importCoverageGaps?.skippedDirsWithSource).toEqual([]);
     } finally {
       rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
+
+describe('the reported path', () => {
+  it('leaves the walk ABSOLUTE, so it can only be relativized once', () => {
+    // The contract that makes the CI failure impossible, asserted where it is decidable.
+    //
+    // The walk compares against `boundary` (a realpath) while descending from `cwd`. Relativizing inside
+    // the walk therefore uses the wrong root whenever those differ, and the caller then relativizes the
+    // result a SECOND time — `path.relative` resolves a relative argument against `process.cwd()`, so the
+    // value lands somewhere unrelated. On this machine the two roots coincide inside the map path and the
+    // double relativization cancels out; on CI it did not, and the document carried
+    // `../../home/runner/work/connect/connect/vendor` — an escape naming the runner's filesystem, in a
+    // document that gets uploaded.
+    //
+    // Green locally and wrong in the shipped artifact is the worst failure shape available, and no
+    // end-to-end assertion can catch it on a machine where the roots happen to agree. So the invariant is
+    // pinned one level down, where it holds regardless of environment: what leaves the walk is absolute.
+    // Relativizing twice is then not a subtle bug, it is a type error in spirit.
+    const dir = project({ 'src/server.ts': VISIBLE_SERVER, 'vendor/server.ts': HIDDEN_SERVER });
+    try {
+      const stats = { discovered: 0, unwalked: 0, skippedWithSource: [] as string[], skippedUnknown: 0 };
+      collectSources(dir, realpathSync(dir), {}, [], new Set(), stats);
+
+      expect(stats.skippedWithSource).toHaveLength(1);
+      expect(path.isAbsolute(stats.skippedWithSource[0]!)).toBe(true);
+      expect(stats.skippedWithSource[0]!.endsWith(`${path.sep}vendor`)).toBe(true);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('stays repo-relative when the project is reached through a symlink', async () => {
+    // The condition that matters is `realpathSync(cwd) !== cwd`, and a symlinked project path forces it
+    // on every platform. Without it this is environment-dependent: the walk compares against `boundary`
+    // (a realpath) while descending from `cwd`, and where those happen to be equal a relativization
+    // against the wrong one is invisible. On CI they were not equal, and a value relativized twice — once
+    // in the walk, once at the caller — escaped to `../../home/runner/work/connect/connect/vendor`, an
+    // absolute-in-effect path naming the machine, in a document that gets uploaded.
+    //
+    // Green locally and wrong in the shipped artifact is the worst failure shape there is, so the
+    // difference is made deterministic here rather than left to whatever the runner's tmpdir looks like.
+    const real = project({ 'src/server.ts': VISIBLE_SERVER, 'vendor/server.ts': HIDDEN_SERVER });
+    const link = path.join(path.dirname(real), `link-${path.basename(real)}`);
+    try {
+      symlinkSync(real, link, 'dir');
+      const { map } = await buildInputMap(link, {});
+
+      expect(map!.coverage.importCoverageGaps?.skippedDirsWithSource).toEqual(['vendor']);
+      expect(JSON.stringify(map)).not.toContain(real);
+    } finally {
+      rmSync(link, { recursive: true, force: true });
+      rmSync(real, { recursive: true, force: true });
     }
   });
 });
