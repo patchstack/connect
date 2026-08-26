@@ -77,6 +77,14 @@ jobs:
       - name: Build
         run: npm run build
 
+      # After the build, because it drives the built bin. npm installs a bin as a SYMLINK, so this is the
+      # only invocation shape that catches an entry point which runs when called directly and does nothing
+      # when installed — silently, with exit 0.
+      - name: Packaged bin runs when invoked through a symlink
+        run: npx vitest run tests/bin-invocation.test.ts
+        env:
+          PS_REQUIRE_BIN_CHECK: '1'
+
       - name: Verify package contents
         run: npm pack --dry-run
 
