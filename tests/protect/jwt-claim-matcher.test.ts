@@ -6,10 +6,9 @@ import { jwtClaimSpans } from '../../src/protect/engine/engine.js';
  * `jwt_claim_equals` decides on a JWT's decoded payload, and yields the matching token spans so
  * `redact` masks those tokens instead of withholding the whole response.
  *
- * It replaces a rule that masked EVERY JWT in a response body. That rule was wrong in both directions,
- * measured before this change: it masked the Supabase `anon` key — public by design — and it masked a
- * user's own `access_token`, so an app proxying Supabase auth had its login response mangled. A normal
- * login response is the proof that "a JWT in a response" is not inherently a leak.
+ * A JWT in a response body is not inherently a leak: the Supabase `anon` key is public by design, and a
+ * login response carries the user's own access token. Only `service_role` must never leave, so the rule
+ * decides on the decoded payload rather than on the shape of the token.
  *
  * Every key here is SYNTHETIC. Nothing in this path verifies signatures, so a fake signature exercises
  * the same branches a real one would.
@@ -48,7 +47,7 @@ describe('the service_role key is masked, and only it', () => {
   });
 
   it("leaves a user's own session token alone", async () => {
-    // The case that proves a JWT in a response is not inherently a leak: this IS the login response.
+    // This IS the login response — the case that shows a JWT in a response is not inherently a leak.
     const body = JSON.stringify({ access_token: SESSION, token_type: 'bearer', user: { id: 'u1' } });
     expect((await screen(body)).text).toBe(body);
   });
@@ -62,9 +61,8 @@ describe('the service_role key is masked, and only it', () => {
 
 describe('redact masks the span rather than withholding the response', () => {
   it('serves the rest of the body, with a 200', async () => {
-    // The reason the matcher has to produce spans. A predicate-only matcher leaves `redact` with
-    // nothing to mask, so the rule falls back to withholding the WHOLE response — turning a one-token
-    // leak into an outage.
+    // Why the matcher has to produce spans: with nothing to mask, `redact` falls back to withholding
+    // the whole response, turning a one-token leak into an outage.
     const { text, status } = await screen(JSON.stringify({ greeting: 'hello', key: SERVICE, n: 42 }));
     expect(status).toBe(200);
     expect(text).toContain('hello');
@@ -170,8 +168,8 @@ describe('only a positive identification matches', () => {
 
 describe('detection and masking cannot disagree', () => {
   it('reports exactly what it masks', async () => {
-    // Both halves derive from the same `jwtClaimSpans`. If they were computed separately, a token
-    // could be reported as redacted while the body still carried it.
+    // Both halves derive from the same `jwtClaimSpans`, so a token cannot be reported as redacted
+    // while the body still carries it.
     const detections: any[] = [];
     const p: any = await createProtection({
       rules: { firewall: [], whitelists: [], whitelist_keys: {} },
