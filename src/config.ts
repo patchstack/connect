@@ -2,6 +2,7 @@ import { readFile, writeFile, chmod } from 'node:fs/promises';
 import path from 'node:path';
 import { PatchstackError, type Config, type Environment } from './types.js';
 import { DEFAULT_ENDPOINT, DEFAULT_TIMEOUT_MS } from './client.js';
+import { detectSiteUrl, normaliseSiteUrl } from './site-url.js';
 
 const CONFIG_FILENAME = '.patchstackrc.json';
 
@@ -35,6 +36,12 @@ interface ConfigFile {
   timeoutMs?: number;
   environment?: string;
   widget?: boolean;
+  /**
+   * Where this app is published. Committed with the UUID rather than kept secret — it is the address
+   * the site already serves to everyone. Set it for platforms whose build environment does not say
+   * which deployment is the production one.
+   */
+  url?: string;
 }
 
 export interface ResolveConfigOptions {
@@ -100,10 +107,16 @@ export async function resolveConfig(options: ResolveConfigOptions): Promise<Conf
   // without re-provisioning: today both hold the same credential.
   const pulseAuthRaw = fromEnv.pulseAuth ?? fromSecretFile.pulseAuth ?? fromFile.pulseAuth ?? apiKeyRaw;
 
+  // A person naming their own site outranks any inference from the build environment; detection only
+  // answers for the platforms that publish a production URL of their own.
+  const siteUrl =
+    normaliseSiteUrl(fromEnv.url ?? fromFile.url) ?? detectSiteUrl(process.env)?.url ?? null;
+
   return {
     siteUuid: siteUuid === null || siteUuid.length === 0 ? null : siteUuid,
     apiKey: apiKeyRaw === null || apiKeyRaw.length === 0 ? null : apiKeyRaw,
     pulseAuth: pulseAuthRaw === null || pulseAuthRaw.length === 0 ? null : pulseAuthRaw,
+    siteUrl,
     endpoint,
     timeoutMs,
     environment,
@@ -373,6 +386,7 @@ function readEnv(): ConfigFile {
   const environmentRaw = process.env.PATCHSTACK_ENVIRONMENT;
   return {
     siteUuid: process.env.PATCHSTACK_SITE_UUID ?? undefined,
+    url: process.env.PATCHSTACK_SITE_URL ?? undefined,
     apiKey: process.env.PATCHSTACK_API_KEY ?? undefined,
     pulseAuth: process.env.PATCHSTACK_PULSE_AUTH ?? undefined,
     endpoint: process.env.PATCHSTACK_ENDPOINT ?? undefined,

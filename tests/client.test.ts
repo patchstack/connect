@@ -308,6 +308,53 @@ describe('postManifest', () => {
     expect(body.ecosystem).toBe('npm');
   });
 
+  it('sends where the app is published, so a placeholder site can learn its address', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(
+      new Response(JSON.stringify({ stored: true }), { status: 200 }),
+    );
+    vi.stubGlobal('fetch', fetchMock);
+
+    await postManifest(
+      {
+        siteUuid: 'uuid',
+        siteUrl: 'https://shop.example.com',
+        endpoint: 'https://example.com',
+        timeoutMs: 30_000,
+        widget: true,
+        environment: 'production',
+      },
+      { ecosystem: 'npm', packages: [{ name: 'lodash', version: '4.17.21' }] },
+    );
+
+    const [, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+    const body = JSON.parse(init.body as string) as { url?: string };
+    expect(body.url).toBe('https://shop.example.com');
+  });
+
+  it('omits the url entirely when the build knows of none', async () => {
+    // Not sent as null or an empty string: the server treats an absent url as "nothing to say about
+    // this site's address", and a present-but-empty one as a value to consider.
+    const fetchMock = vi.fn().mockResolvedValue(
+      new Response(JSON.stringify({ stored: true }), { status: 200 }),
+    );
+    vi.stubGlobal('fetch', fetchMock);
+
+    await postManifest(
+      {
+        siteUuid: 'uuid',
+        siteUrl: null,
+        endpoint: 'https://example.com',
+        timeoutMs: 30_000,
+        widget: true,
+        environment: 'production',
+      },
+      { ecosystem: 'npm', packages: [{ name: 'lodash', version: '4.17.21' }] },
+    );
+
+    const [, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+    expect(JSON.parse(init.body as string)).not.toHaveProperty('url');
+  });
+
   it('throws SITE_NOT_FOUND on 404', async () => {
     vi.stubGlobal(
       'fetch',
