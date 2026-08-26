@@ -48,6 +48,52 @@ const SKIP_DIRS = new Set([
   'vendor', 'tmp', 'temp', '__pycache__',
 ]);
 
+/**
+ * The one skip whose exclusion is DEFINITIONAL rather than a guess.
+ *
+ * The import inventory answers "which packages does the app's own code import". Dependency-internal
+ * imports are a different question with its own answer, so not walking `node_modules` cannot make this
+ * inventory wrong. Every other name above is a guess about where app source lives — `dist` is usually
+ * generated, `vendor` is usually not ours — and a guess that is wrong must not silently license a
+ * negative. A server committed under `vendor/` importing a vulnerable package produced
+ * `importsComplete: true` and an inventory that did not name the package, which is exactly the
+ * "confident false negative" this document is built to make impossible.
+ */
+const SKIP_IS_DEFINITIONAL = new Set(['node_modules']);
+
+/**
+ * Entries read while probing a skipped directory for source, across all such probes.
+ *
+ * The probe exits at the FIRST source file, so a directory holding app code is cheap to detect. The cap
+ * bounds the other case — a large generated or vendored tree with no source in it at all. Exhausting it
+ * is reported as a gap rather than as "no source", because "we stopped looking" is not an answer.
+ */
+const PROBE_BUDGET = 4096;
+
+/**
+ * Does this directory hold a source file? `'unknown'` when the probe ran out of budget first.
+ *
+ * Dot-directories and `node_modules` are not descended into even here: the question is whether the skip
+ * hid APP source, and neither can hold any by convention.
+ */
+export function probeForSource(dir: string, budget: { left: number }): boolean | 'unknown' {
+  let entries;
+  try { entries = readdirSync(dir, { withFileTypes: true }); } catch { return 'unknown'; }
+  const dirs: string[] = [];
+  for (const e of entries) {
+    if (budget.left-- <= 0) return 'unknown';
+    if (e.isDirectory()) {
+      if (!e.name.startsWith('.') && e.name !== 'node_modules') dirs.push(join(dir, e.name));
+    } else if (isSourceFile(e.name)) return true;
+  }
+  // Breadth-first: source at a shallow depth is the common case, and finding it ends the probe.
+  for (const sub of dirs) {
+    const found = probeForSource(sub, budget);
+    if (found !== false) return found;
+  }
+  return false;
+}
+
 export interface WalkStats {
   discovered: number;
   /**
@@ -60,6 +106,19 @@ export interface WalkStats {
    * can import anything. Any non-zero value here forfeits that claim.
    */
   unwalked: number;
+  /**
+   * Directories the walk skipped BY NAME that were found to hold source files, repo-relative.
+   *
+   * Positive evidence, and the reason it exists: a skip by name moves no other counter, so an app whose
+   * server lives under `vendor/` looked identical to one with no such directory. Naming them lets a
+   * reader see which guess to check, instead of re-running the scan and reading the same silence.
+   */
+  skippedWithSource: string[];
+  /**
+   * Skipped directories whose contents could not be settled — the probe hit its budget, or the directory
+   * could not be read. Counted as a gap: "we stopped looking" is not the same answer as "nothing there".
+   */
+  skippedUnknown: number;
 }
 
 /**
@@ -74,7 +133,8 @@ export function collectSources(
   opts: { followOutside?: boolean },
   out: string[] = [],
   seen = new Set<string>(),
-  stats: WalkStats = { discovered: 0, unwalked: 0 },
+  stats: WalkStats = { discovered: 0, unwalked: 0, skippedWithSource: [], skippedUnknown: 0 },
+  probeBudget: { left: number } = { left: PROBE_BUDGET },
 ): string[] {
   let key: string;
   try { key = realpathSync(dir); } catch { stats.unwalked++; return out; }
@@ -88,9 +148,18 @@ export function collectSources(
   // any machine — otherwise a rebuild in CI looks like a changed app and cuts a pointless new revision.
   entries.sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0));
   for (const e of entries) {
-    if (SKIP_DIRS.has(e.name) || (e.name.startsWith('.') && e.name !== '.')) continue;
+    if (SKIP_DIRS.has(e.name) || (e.name.startsWith('.') && e.name !== '.')) {
+      // A skip that is a GUESS gets checked. Dot-directories and `node_modules` do not: neither holds app
+      // source by convention, and probing `node_modules` would cost more than the whole walk.
+      if (e.isDirectory() && SKIP_DIRS.has(e.name) && !SKIP_IS_DEFINITIONAL.has(e.name) && !e.name.startsWith('.')) {
+        const held = probeForSource(join(dir, e.name), probeBudget);
+        if (held === true) stats.skippedWithSource.push(relative(boundary, join(dir, e.name)) || e.name);
+        else if (held === 'unknown') stats.skippedUnknown++;
+      }
+      continue;
+    }
     const full = join(dir, e.name);
-    if (e.isDirectory()) collectSources(full, boundary, opts, out, seen, stats);
+    if (e.isDirectory()) collectSources(full, boundary, opts, out, seen, stats, probeBudget);
     else if (e.isSymbolicLink()) {
       let st, real;
       try { st = statSync(full); real = realpathSync(full); } catch { stats.unwalked++; continue; }
@@ -101,7 +170,7 @@ export function collectSources(
         if (st.isDirectory() || isSourceFile(e.name)) stats.unwalked++;
         continue;
       }
-      if (st.isDirectory()) collectSources(full, boundary, opts, out, seen, stats);
+      if (st.isDirectory()) collectSources(full, boundary, opts, out, seen, stats, probeBudget);
       else if (st.isFile() && isSourceFile(e.name)) { out.push(full); stats.discovered++; }
     } else if (isSourceFile(e.name)) { out.push(full); stats.discovered++; }
   }
