@@ -19,6 +19,23 @@ describe('resolveConfig', () => {
     delete process.env.PATCHSTACK_ENDPOINT;
     delete process.env.PATCHSTACK_TIMEOUT_MS;
     delete process.env.PATCHSTACK_ENVIRONMENT;
+    delete process.env.PATCHSTACK_SITE_URL;
+    // The build-environment variables the site URL is inferred from, so a developer's own shell (or a
+    // CI runner that happens to be one of these platforms) cannot decide what these tests see.
+    for (const key of [
+      'VERCEL_ENV',
+      'VERCEL_PROJECT_PRODUCTION_URL',
+      'NETLIFY',
+      'CONTEXT',
+      'URL',
+      'RENDER',
+      'RENDER_EXTERNAL_URL',
+      'IS_PULL_REQUEST',
+      'RAILWAY_ENVIRONMENT_NAME',
+      'RAILWAY_PUBLIC_DOMAIN',
+    ]) {
+      delete process.env[key];
+    }
   });
 
   afterEach(async () => {
@@ -174,5 +191,69 @@ describe('credential resolution', () => {
     process.env.PATCHSTACK_PULSE_AUTH = 'env-2';
 
     expect((await resolveConfig({ cwd })).pulseAuth).toBe('env-2');
+  });
+});
+
+describe('resolveConfig: where the app is published', () => {
+  let cwd: string;
+  const originalEnv = { ...process.env };
+
+  beforeEach(async () => {
+    cwd = await mkdtemp(path.join(tmpdir(), 'patchstack-connect-url-'));
+    delete process.env.PATCHSTACK_SITE_URL;
+    delete process.env.VERCEL_ENV;
+    delete process.env.VERCEL_PROJECT_PRODUCTION_URL;
+  });
+
+  afterEach(async () => {
+    process.env = { ...originalEnv };
+    await rm(cwd, { recursive: true, force: true });
+  });
+
+  it('reports nothing from a laptop build', async () => {
+    await writeConfigFile(cwd, { siteUuid: VALID_UUID });
+    const config = await resolveConfig({ cwd });
+    expect(config.siteUrl).toBeNull();
+  });
+
+  it('reads an explicit url from the committed config', async () => {
+    await writeConfigFile(cwd, { siteUuid: VALID_UUID, url: 'https://shop.example.com/home' });
+    const config = await resolveConfig({ cwd });
+    expect(config.siteUrl).toBe('https://shop.example.com');
+  });
+
+  it('infers the production url from the build environment', async () => {
+    await writeConfigFile(cwd, { siteUuid: VALID_UUID });
+    process.env.VERCEL_ENV = 'production';
+    process.env.VERCEL_PROJECT_PRODUCTION_URL = 'shop.example.com';
+
+    const config = await resolveConfig({ cwd });
+    expect(config.siteUrl).toBe('https://shop.example.com');
+  });
+
+  it('prefers what a person configured over what the build environment reports', async () => {
+    await writeConfigFile(cwd, { siteUuid: VALID_UUID, url: 'https://www.example.com' });
+    process.env.VERCEL_ENV = 'production';
+    process.env.VERCEL_PROJECT_PRODUCTION_URL = 'shop-abc.vercel.app';
+
+    const config = await resolveConfig({ cwd });
+    expect(config.siteUrl).toBe('https://www.example.com');
+  });
+
+  it('lets the environment variable override the committed config', async () => {
+    await writeConfigFile(cwd, { siteUuid: VALID_UUID, url: 'https://old.example.com' });
+    process.env.PATCHSTACK_SITE_URL = 'https://new.example.com';
+
+    const config = await resolveConfig({ cwd });
+    expect(config.siteUrl).toBe('https://new.example.com');
+  });
+
+  it('falls through to the build environment when the configured url is unusable', async () => {
+    await writeConfigFile(cwd, { siteUuid: VALID_UUID, url: 'http://localhost:3000' });
+    process.env.VERCEL_ENV = 'production';
+    process.env.VERCEL_PROJECT_PRODUCTION_URL = 'shop.example.com';
+
+    const config = await resolveConfig({ cwd });
+    expect(config.siteUrl).toBe('https://shop.example.com');
   });
 });

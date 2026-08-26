@@ -220,11 +220,19 @@ Lower-level pieces are also exported: `scanLockfile`, `buildWirePayload`, `postM
     { "name": "axios",  "version": "1.6.0" },
     { "name": "lodash", "version": "4.17.15" },
     { "name": "lodash", "version": "4.17.21" }
-  ]
+  ],
+  "url": "https://your-app.example.com"
 }
 ```
 
-That's the entire payload. No source code, no environment variable values, no file paths — just the package names and versions from your lockfile. (The `map` command reads source files locally to report your attack surface; it transmits nothing unless you pass `--upload`, which sends that structural description — route paths, parameter names, the dependency behind each sink, and file/line locations, never file contents — to your own site's endpoint so rules can be pinned to your real parameter names.) Duplicate names with different versions are preserved so transitive vulnerabilities aren't missed. (`mark-build` separately stamps built HTML with a stack descriptor that may include hosting-related env variable *names* — e.g. `VERCEL` — never their values.)
+That's the entire payload: the package names and versions from your lockfile, plus your site's own public
+address. No source code, no file paths, no secrets. The address is included so the site in your dashboard
+shows where it lives instead of a placeholder, and so Patchstack can check the published page still carries
+what was scanned. It is taken from `url` in `.patchstackrc.json` (or `PATCHSTACK_SITE_URL`) if you set one;
+otherwise from the one variable a host publishes to name its own production URL — `VERCEL_PROJECT_PRODUCTION_URL`
+on a Vercel production deployment, Netlify's `URL` in the production context, `RENDER_EXTERNAL_URL`,
+`RAILWAY_PUBLIC_DOMAIN` in a production environment. No other environment variable's value is read, and
+`url` is left out entirely when none of those says anything — a build on your own machine sends no address. (The `map` command reads source files locally to report your attack surface; it transmits nothing unless you pass `--upload`, which sends that structural description — route paths, parameter names, the dependency behind each sink, and file/line locations, never file contents — to your own site's endpoint so rules can be pinned to your real parameter names.) Duplicate names with different versions are preserved so transitive vulnerabilities aren't missed. (`mark-build` separately stamps built HTML with a stack descriptor that may include hosting-related env variable *names* — e.g. `VERCEL` — never their values.)
 
 ## Supported lockfiles
 

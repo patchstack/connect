@@ -284,7 +284,16 @@ export async function postManifest(
         Accept: 'application/json',
         'User-Agent': '@patchstack/connect',
       },
-      body: JSON.stringify({ ...payload, environment: config.environment }),
+      // `url` rides along on every push, not just the provisioning one: a site created from a laptop
+      // scan holds a placeholder address until a deployed build reports a real one. Patchstack only
+      // adopts it over that placeholder, and only because this request carried the site's credential.
+      body: JSON.stringify({
+        ...payload,
+        environment: config.environment,
+        ...(typeof config.siteUrl === 'string' && config.siteUrl !== ''
+          ? { url: config.siteUrl }
+          : {}),
+      }),
       signal: AbortSignal.timeout(timeoutMs),
     });
   } catch (cause) {

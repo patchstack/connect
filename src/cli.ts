@@ -505,6 +505,12 @@ async function runScan(
     console.log('No site UUID configured — provisioning a new Patchstack site from this manifest…');
   }
 
+  // Said out loud because it is the one value in the payload a person might disagree with, and a site
+  // that ends up pointing somewhere else is otherwise a silent wrong answer in their dashboard.
+  if (config.siteUrl !== null) {
+    console.log(`Reporting this app's address as ${config.siteUrl}.`);
+  }
+
   const response = await postManifest(config, payload);
 
   // The server always returns the UUID. If we didn't have one, persist it so

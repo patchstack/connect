@@ -45,6 +45,12 @@ export interface Config {
    * Falls back to `apiKey` when unset. Prefer `PATCHSTACK_PULSE_AUTH`.
    */
   pulseAuth: string | null;
+  /**
+   * Where this app is published, reported alongside the manifest so a site provisioned without an
+   * address can learn one from a push that carries its credential. `null` when nothing reliable is
+   * known — a laptop build, or a platform that publishes no production URL.
+   */
+  siteUrl: string | null;
   endpoint: string;
   timeoutMs: number;
   /** Environment to report the manifest under. Defaults to 'production'. */
