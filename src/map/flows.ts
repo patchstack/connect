@@ -14,6 +14,12 @@ function spaceOfKey(key: string | undefined): AddressSpace | undefined {
   if (key === 'body') return 'post';
   // `data` / `input` / `payload`: a server-function argument, which the guard feeds through as the body.
   if (key === 'data' || key === 'input' || key === 'payload') return 'post';
+  // Without these, a read off a destructured `({ headers })` carried NO space — and a space of `undefined`
+  // matches any input of the same name, so a header read could lend its evidence to a body field called
+  // `token`. Keeping the spaces distinct is what stops a rule being pinned to the wrong parameter.
+  if (key === 'headers') return 'server';
+  if (key === 'cookies') return 'cookie';
+  if (key === 'files') return 'files';
   return undefined;
 }
 
