@@ -12,7 +12,7 @@
 // `rule-contract.json` is the published form. `tests/protect/rule-contract.test.ts` reads the engine's own
 // source and asserts these descriptions match what it implements.
 
-export const CONTRACT_VERSION = '2.4';
+export const CONTRACT_VERSION = '2.6';
 
 /**
  * Every parameter source, and what it accepts after the dot.
@@ -94,6 +94,11 @@ export const OPERANDLESS_MATCH_TYPES = Object.freeze([
  * ALL of them: `contains` with an empty value matches every request, which is a rule that blocks all
  * traffic while reading as one targeted signature.
  *
+ * `positive-number`       a finite positive JSON number. Not a string that looks like one, and not
+ *                         `Infinity`: the response cap is only raised when the value is FINITE, so a
+ *                         non-finite one validates as "no limit" and delivers the default.
+ * `boolean`               exactly true or false. The runtime tests these by identity, so `"true"` is not
+ *                         a truthy spelling of true — it is the same as false, silently.
  * `non-empty-string`      a string with something in it
  * `regex-literal`         a delimited `/pattern/flags` whose pattern is non-empty — what the engine's
  *                         pattern compiler accepts. An undelimited value, or `//`, compiles to nothing
@@ -124,7 +129,7 @@ export const OPERANDLESS_MATCH_TYPES = Object.freeze([
  *                         appends further cookie attributes.
  */
 export const OPERAND_SHAPES = Object.freeze([
-  'non-empty-string', 'regex-literal', 'string-or-string-list', 'scalar', 'string', 'numeric',
+  'positive-number', 'boolean', 'non-empty-string', 'regex-literal', 'string-or-string-list', 'scalar', 'string', 'numeric',
   'scalar-or-non-empty-list', 'non-empty-list', 'object', 'non-empty-object', 'non-empty-string-list',
   'header-name-map', 'header-name-list', 'cookie-flags',
 ]);
@@ -176,6 +181,15 @@ export function operandShapeProblem(shape, value) {
   const isHeaderName = (v) => typeof v === 'string' && HEADER_NAME.test(v);
 
   switch (shape) {
+    case 'positive-number':
+      // A JSON number, not a string that parses as one. Both sides of that distinction are real: the cap
+      // calculation coerces, so `"1048576"` does raise it, while the three layers that validate a document
+      // disagreed about whether to accept it. One rule is worth more than the coercion.
+      return typeof value === 'number' && Number.isFinite(value) && value > 0
+        ? null
+        : 'must be a finite positive number';
+    case 'boolean':
+      return typeof value === 'boolean' ? null : 'must be true or false';
     case 'non-empty-string':
       return isFilledString(value) ? null : 'must be a non-empty string';
     case 'regex-literal':
@@ -274,6 +288,56 @@ export const ACTIONS = Object.freeze([
  * A scope naming anything else is ignored and the rule applies to every request, so an unrecognised key
  * silently widens a rule that was authored to be narrow.
  */
+/**
+ * A property that is PRESENT and null is refused, wherever it appears on a rule.
+ *
+ * Absent and authored-null are different events, and only one of them is a statement of intent. Omitting a
+ * property means "whatever the engine defaults to" — a real and common thing to mean. Writing `null` means
+ * something upstream produced a value it did not have, and the two are indistinguishable to every layer
+ * that defaults an absent field. `phase: null` becomes the request phase, so a rule authored for egress
+ * evaluates on the wrong side of the request and never fires; `action: null` becomes a block on a rule that
+ * meant to redact.
+ *
+ * This was the engine's behaviour for `phase`, `rule_v2` and `max_bytes` and nothing else, which made it
+ * look like a property of those three fields rather than a rule about documents. Stated once, it applies to
+ * all of them — and a consumer reads `rule_properties` and this flag rather than keeping its own list.
+ */
+export const NULL_VALUED_PROPERTIES = 'refused';
+
+/**
+ * The shape each rule-level property has to have, beyond not being null.
+ *
+ * Every one of these is read by the runtime in a way the old validator did not check, and each failure is
+ * silent in the same direction — the document says one thing and the guard does another:
+ *
+ *   `bypass_limit` is tested `=== true`, so `"true"`, `1` and `"yes"` all validate as "remove the response
+ *   screening cap" and remove nothing. The leak is still served.
+ *
+ *   `enforcement` is tested `=== 'dry-run'`, so `"dryrun"` validates and means "follow the bundle" — a rule
+ *   authored to observe only BLOCKS when the bundle is in block mode.
+ *
+ *   `ensure` is tested `=== true`, so a `set-header` rule meant to preserve an existing header overwrites it.
+ *
+ *   `max_bytes` raises the cap only when finite, so `Infinity` and `"Infinity"` validate as "no limit" and
+ *   deliver the default. That one is the sharpest: it is the only value whose intent is the largest possible
+ *   raise, and its effect is no raise at all. `bypass_limit: true` is how that intent is expressed.
+ */
+export const RULE_PROPERTY_SHAPES = Object.freeze({
+  max_bytes: 'positive-number',
+  bypass_limit: 'boolean',
+  ensure: 'boolean',
+  prefilter: 'non-empty-string-list',
+});
+
+/**
+ * The only enforcement value that means anything: a rule can narrow to detect-only, never opt INTO blocking.
+ *
+ * Published for a reviewer's benefit, and deliberately NOT enforced — see `rulePropertyProblem`. Anything
+ * else is read as "follow the site", which never weakens protection and keeps an older guard working when a
+ * newer server sends a value it has not learned.
+ */
+export const ENFORCEMENT_VALUES = Object.freeze(['dry-run']);
+
 export const WHEN_KEYS = Object.freeze(['path', 'method']);
 
 /** Properties the engine or runtime reads on a rule. */
@@ -519,6 +583,49 @@ function isNonEmptyString(value) {
 }
 
 /** @returns {string|null} why this action cannot be carried out as written, or null */
+/**
+ * @returns {string|null} why a property authored as null is refused, or null when none is
+ */
+export function nullPropertyProblem(rule) {
+  if (!rule || typeof rule !== 'object') return null;
+
+  for (const property of RULE_PROPERTIES) {
+    if (property in rule && rule[property] === null) {
+      return `"${property}" is present but null; omit it to mean the default, since a null is a value that `
+        + 'was meant to be something and is not';
+    }
+  }
+
+  return null;
+}
+
+/**
+ * @returns {string|null} why a rule-level property cannot do what it says, or null
+ */
+export function rulePropertyProblem(rule) {
+  if (!rule || typeof rule !== 'object') return null;
+
+  for (const [property, shape] of Object.entries(RULE_PROPERTY_SHAPES)) {
+    if (rule[property] === undefined || rule[property] === null) continue;
+    const problem = operandShapeProblem(shape, rule[property]);
+    if (problem) return `"${property}" ${problem}`;
+  }
+
+  // `enforcement` is deliberately NOT checked here, and this is the one place in the contract where a
+  // value the runtime does not recognise is left alone on purpose.
+  //
+  // The engine reads an unknown enforcement as "follow the site", which is the conservative reading for a
+  // protection control — it never turns blocking off. That is also what makes it forward compatible: a
+  // NEWER server may send a value this guard has not learned, and the rule must still protect. Refusing the
+  // rule here would drop it instead, so an older guard would lose the protection entirely the moment the
+  // vocabulary grew. Trading real enforcement for a stricter reading of a field that already fails safe is
+  // the wrong way round.
+  //
+  // A typo'd enforcement is still worth catching — but as a question about what the author meant, which is
+  // review's job, not as a claim that the guard cannot run the document.
+  return null;
+}
+
 export function actionProblem(action, rule) {
   if (action === undefined || action === null) return null;
   if (!ACTIONS.includes(action)) return `unknown action "${action}"`;
@@ -581,6 +688,9 @@ export function ruleContract() {
       }]),
     ),
     when_keys: [...WHEN_KEYS],
+    null_valued_properties: NULL_VALUED_PROPERTIES,
+    rule_property_shapes: { ...RULE_PROPERTY_SHAPES },
+    enforcement_values: [...ENFORCEMENT_VALUES],
     rule_properties: [...RULE_PROPERTIES],
     limits: { ...LIMITS },
   };

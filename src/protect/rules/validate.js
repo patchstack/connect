@@ -25,6 +25,8 @@ import {
   mutationsProblem,
   parameterProblem,
   whenProblem,
+  nullPropertyProblem,
+  rulePropertyProblem,
 } from './contract.js';
 
 export const LIMITS = CONTRACT_LIMITS;
@@ -86,6 +88,13 @@ function idOf(rule) {
 /** @returns {string|null} a reason the rule must be dropped, or null when it's acceptable. */
 function ruleProblem(rule) {
   if (!rule || typeof rule !== 'object') return 'not an object';
+
+  // Before anything reads a property: a property that is PRESENT and null is not an omission. Every layer
+  // that defaults an absent field would default this one too, so `phase: null` runs on the request phase and
+  // a rule authored for egress never fires. Checked first because the checks below default as they read.
+  const nullReason = nullPropertyProblem(rule);
+  if (nullReason) return nullReason;
+
   if (rule.phase !== undefined && !PHASES.has(rule.phase)) return `unknown phase "${rule.phase}"`;
 
   // The action's own properties, not just its name: `set-header` without `set_headers` matches and then
@@ -98,8 +107,12 @@ function ruleProblem(rule) {
   const scopeReason = whenProblem(rule.when);
   if (scopeReason) return scopeReason;
 
-  const capOverride = rule.max_bytes;
-  if (capOverride !== undefined && !(Number(capOverride) > 0)) return 'max_bytes must be a positive number';
+  // The rule-level properties the RUNTIME reads by identity or coercion. `Number(x) > 0` used to stand in
+  // for the cap check, and it accepted `Infinity` — which the cap calculation then ignores for not being
+  // finite, so the rule validated as "no limit" and delivered the default.
+  const propertyReason = rulePropertyProblem(rule);
+  if (propertyReason) return propertyReason;
+
   return conditionsProblem(rule.rule_v2);
 }
 
