@@ -216,15 +216,20 @@ Lower-level pieces are also exported: `scanLockfile`, `buildWirePayload`, `postM
 ```json
 {
   "ecosystem": "npm",
+  "installPathsComplete": true,
   "packages": [
-    { "name": "axios",  "version": "1.6.0" },
-    { "name": "lodash", "version": "4.17.15" },
-    { "name": "lodash", "version": "4.17.21" }
+    { "name": "axios",  "version": "1.6.0",   "paths": ["node_modules/axios"] },
+    { "name": "lodash", "version": "4.17.15", "paths": ["apps/api/node_modules/lodash"] },
+    { "name": "lodash", "version": "4.17.21", "paths": ["node_modules/lodash"] }
   ]
 }
 ```
 
-That's the entire payload. No source code, no environment variable values, no file paths — just the package names and versions from your lockfile. (The `map` command reads source files locally to report your attack surface; it transmits nothing unless you pass `--upload`, which sends that structural description — route paths, parameter names, the dependency behind each sink, and file/line locations, never file contents — to your own site's endpoint so rules can be pinned to your real parameter names.) Duplicate names with different versions are preserved so transitive vulnerabilities aren't missed. (`mark-build` separately stamps built HTML with a stack descriptor that may include hosting-related env variable *names* — e.g. `VERCEL` — never their values.)
+That's the entire payload. No source code, no environment variable values, no source file paths — the package names and versions from your lockfile, plus where each one is installed in the dependency tree.
+
+**About `paths`.** They are repo-relative locations built from `node_modules` segments, plus a workspace directory name when a workspace pins its own copy. They come from the lockfile (whose keys already *are* these paths) or from the `node_modules` walk — never from your source tree. `installPathsComplete` is `false` when the lockfile format cannot supply them at all: a `yarn.lock` is flat, because hoisting is decided at install time and the file does not record it. When it is `false`, a missing `paths` means "not recorded", not "not installed there".
+
+They are sent because the same package is routinely installed twice at different versions — see the two `lodash` entries above, which is not a contrived example. An advisory affecting only `4.17.15` cannot otherwise be matched to the copy your code actually loads: Node resolves an import by walking up from the importing file, so the location is what separates "you are running the vulnerable copy" from "the vulnerable copy is installed but nothing reaches it". Without it every installed version has to be treated as if the app used it, which means warnings about code you never call and protection rules pinned to routes that run the safe copy. (The `map` command reads source files locally to report your attack surface; it transmits nothing unless you pass `--upload`, which sends that structural description — route paths, parameter names, the dependency behind each sink, and file/line locations, never file contents — to your own site's endpoint so rules can be pinned to your real parameter names.) Duplicate names with different versions are preserved so transitive vulnerabilities aren't missed. (`mark-build` separately stamps built HTML with a stack descriptor that may include hosting-related env variable *names* — e.g. `VERCEL` — never their values.)
 
 ## Supported lockfiles
 
