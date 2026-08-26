@@ -53,13 +53,30 @@ const SKIP_DIRS = new Set([
  *
  * The import inventory answers "which packages does the app's own code import". Dependency-internal
  * imports are a different question with its own answer, so not walking `node_modules` cannot make this
- * inventory wrong. Every other name above is a guess about where app source lives — `dist` is usually
- * generated, `vendor` is usually not ours — and a guess that is wrong must not silently license a
- * negative. A server committed under `vendor/` importing a vulnerable package produced
- * `importsComplete: true` and an inventory that did not name the package, which is exactly the
- * "confident false negative" this document is built to make impossible.
+ * inventory wrong. It is also never probed: probing it would cost more than the entire walk.
  */
 const SKIP_IS_DEFINITIONAL = new Set(['node_modules']);
+
+/**
+ * Skips that hold DERIVED or CLIENT-SIDE content rather than app server source.
+ *
+ * These are probed and reported, but they do not clear `importsComplete`, and the distinction is the
+ * whole reason this set exists. `dist`, `build`, `out` and `coverage` are generated FROM source the walk
+ * did read, so their imports are already represented; `public`, `static` and `assets` hold client assets,
+ * which are not additional server surface. Charging them would clear the flag for essentially every
+ * project that has ever run a build — this package's own repo included, measured — and a flag that is
+ * always false conveys nothing and gets ignored, which is precisely how the defect it exists to prevent
+ * stays alive. That is the same argument that exempts `node_modules`, applied consistently.
+ *
+ * They are still reported, because "a bundle in `dist/` may import something the source does not" is a
+ * real if narrow gap, and silence about it would be the same mistake one level down.
+ *
+ * What is left charging the flag are the skips that are a genuine guess about NON-derived content:
+ * `vendor`, `tmp`, `temp`, `__pycache__`. A server committed under `vendor/` importing a vulnerable
+ * package produced `importsComplete: true` and an inventory that did not name it — the confident false
+ * negative this document is built to make impossible.
+ */
+const SKIP_IS_DERIVED = new Set(['dist', 'build', 'out', 'coverage', 'public', 'static', 'assets']);
 
 /**
  * Entries read while probing a skipped directory for source, across all such probes.
@@ -121,8 +138,16 @@ export interface WalkStats {
    */
   skippedWithSource: string[];
   /**
+   * Skipped directories holding source that are DERIVED from walked source (`dist`, `build`) or hold
+   * client assets (`public`) — reported, but not counted against completeness. See `SKIP_IS_DERIVED`.
+   */
+  skippedDerivedWithSource: string[];
+  /**
    * Skipped directories whose contents could not be settled — the probe hit its budget, or the directory
    * could not be read. Counted as a gap: "we stopped looking" is not the same answer as "nothing there".
+   *
+   * Only for directories that WOULD have counted. A derived directory the probe could not read is not a
+   * gap, because reading it would not have changed the answer either.
    */
   skippedUnknown: number;
 }
@@ -139,7 +164,7 @@ export function collectSources(
   opts: { followOutside?: boolean },
   out: string[] = [],
   seen = new Set<string>(),
-  stats: WalkStats = { discovered: 0, unwalked: 0, skippedWithSource: [], skippedUnknown: 0 },
+  stats: WalkStats = { discovered: 0, unwalked: 0, skippedWithSource: [], skippedDerivedWithSource: [], skippedUnknown: 0 },
   probeBudget: { left: number } = { left: PROBE_BUDGET },
 ): string[] {
   let key: string;
@@ -158,9 +183,11 @@ export function collectSources(
       // A skip that is a GUESS gets checked. Dot-directories and `node_modules` do not: neither holds app
       // source by convention, and probing `node_modules` would cost more than the whole walk.
       if (e.isDirectory() && SKIP_DIRS.has(e.name) && !SKIP_IS_DEFINITIONAL.has(e.name) && !e.name.startsWith('.')) {
+        const derived = SKIP_IS_DERIVED.has(e.name);
         const held = probeForSource(join(dir, e.name), probeBudget);
-        if (held === true) stats.skippedWithSource.push(join(dir, e.name));
-        else if (held === 'unknown') stats.skippedUnknown++;
+        if (held === true) (derived ? stats.skippedDerivedWithSource : stats.skippedWithSource).push(join(dir, e.name));
+        // An unsettled DERIVED directory is not a gap: settling it would not have changed the answer.
+        else if (held === 'unknown' && !derived) stats.skippedUnknown++;
       }
       continue;
     }

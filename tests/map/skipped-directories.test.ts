@@ -76,12 +76,12 @@ describe('a guessed skip that hid source', () => {
     const dir = project({
       'src/server.ts': VISIBLE_SERVER,
       'vendor/server.ts': HIDDEN_SERVER,
-      'build/nested/deep/handler.js': HIDDEN_SERVER,
+      'tmp/nested/deep/handler.js': HIDDEN_SERVER,
     });
     try {
       const { map } = await buildInputMap(dir, {});
 
-      expect(map!.coverage.importCoverageGaps?.skippedDirsWithSource?.sort()).toEqual(['build', 'vendor']);
+      expect(map!.coverage.importCoverageGaps?.skippedDirsWithSource?.sort()).toEqual(['tmp', 'vendor']);
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
@@ -183,6 +183,43 @@ describe('a skip that is not a guess', () => {
       const { map } = await buildInputMap(dir, {});
 
       expect(map!.coverage.importsComplete).toBe(true);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('does not forfeit completeness for a build output that DOES hold source', async () => {
+    // Measured on this package's own repo: `dist/` holds built `.js`, so charging it reported
+    // `importsComplete: false` for the repository the analyser ships from. Essentially every built
+    // project has one — and a flag that is false for everyone conveys nothing and gets ignored, which is
+    // exactly how the defect this suite exists to prevent stays alive. `dist` is generated FROM source
+    // the walk did read, so its imports are already represented; the same reasoning that exempts
+    // `node_modules`, applied consistently.
+    //
+    // Reported all the same: a bundle could in principle import something its source does not, and
+    // silence about that would be the same mistake one level down.
+    const dir = project({ 'src/server.ts': VISIBLE_SERVER, 'dist/server.js': HIDDEN_SERVER });
+    try {
+      const { map } = await buildInputMap(dir, {});
+      const gaps = map!.coverage.importCoverageGaps;
+
+      expect(map!.coverage.importsComplete).toBe(true);
+      expect(gaps?.skippedDirsWithSource).toEqual([]);
+      expect(gaps?.skippedDerivedDirsWithSource).toEqual(['dist']);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('does not forfeit completeness for a client-asset directory holding source', async () => {
+    // A bundled `public/app.js` is client-side. It is not additional server surface, so it cannot make
+    // the server-import inventory wrong.
+    const dir = project({ 'src/server.ts': VISIBLE_SERVER, 'public/app.js': HIDDEN_SERVER });
+    try {
+      const { map } = await buildInputMap(dir, {});
+
+      expect(map!.coverage.importsComplete).toBe(true);
+      expect(map!.coverage.importCoverageGaps?.skippedDerivedDirsWithSource).toEqual(['public']);
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }

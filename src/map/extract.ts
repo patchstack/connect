@@ -39,7 +39,7 @@ export async function extractInputMap(cwd: string, ts: TsModule, options: Extrac
   try { boundary = realpathSync(cwd); } catch { /* use cwd as-is */ }
 
   const graph = createModuleGraph(ts, { cwd, boundary, followOutside: options.followSymlinks }); // shared cache
-  const stats: WalkStats = { discovered: 0, unwalked: 0, skippedWithSource: [], skippedUnknown: 0 };
+  const stats: WalkStats = { discovered: 0, unwalked: 0, skippedWithSource: [], skippedDerivedWithSource: [], skippedUnknown: 0 };
   const files = collectSources(cwd, boundary, { followOutside: options.followSymlinks }, [], new Set(), stats);
   const imports = createImportInventory(readPathAliases(cwd));
   const invocations = createInvocationInventory();
@@ -190,6 +190,7 @@ export async function extractInputMap(cwd: string, ts: TsModule, options: Extrac
   // Relativized once: `WalkStats` carries these as absolute paths (see its doc), and both the coverage
   // field and the note below would otherwise ship the user's filesystem layout to the server.
   const skippedDirsWithSource = stats.skippedWithSource.map((d) => relative(cwd, d));
+  const skippedDerivedDirsWithSource = stats.skippedDerivedWithSource.map((d) => relative(cwd, d));
   const importCoverageGaps = {
     unreadableFiles: failed.length,
     unscannableFiles: importScanFailures,
@@ -199,6 +200,7 @@ export async function extractInputMap(cwd: string, ts: TsModule, options: Extrac
     // this an app whose server lived under `vendor/` was indistinguishable from one with no such
     // directory — and the inventory still claimed to be complete.
     skippedDirsWithSource,
+    skippedDerivedDirsWithSource,
     skippedDirsUnsettled: stats.skippedUnknown,
   };
   const environmentalGaps =

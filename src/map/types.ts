@@ -450,6 +450,16 @@ export interface Coverage {
      */
     skippedDirsWithSource?: string[];
     /**
+     * Skipped directories holding source that are DERIVED from source the walk did read (`dist`, `build`,
+     * `out`, `coverage`) or hold client assets (`public`, `static`, `assets`).
+     *
+     * Reported but NOT counted against completeness. Their imports are already represented, or they are
+     * not server surface at all — and charging them would clear `importsComplete` for every project that
+     * has ever run a build, making the flag worthless. Diagnostic: a bundle here could in principle import
+     * something its source does not, so the list is surfaced rather than suppressed.
+     */
+    skippedDerivedDirsWithSource?: string[];
+    /**
      * Skipped directories whose contents could not be settled — the source probe hit its budget, or the
      * directory could not be read. A gap, because "we stopped looking" is not "nothing there".
      */
