@@ -75,13 +75,23 @@ export const DEFAULT_RESPONSE_RULES = [
     rule_v2: [{ parameter: 'response.body', match: { type: 'regex', value: '/\\bsb_secret_[A-Za-z0-9_-]{22}_[A-Za-z0-9_-]{8}(?![A-Za-z0-9_-])/' } }]
   },
   {
-    id: 'resp-jwt',
-    title: 'JWT in response body',
+    id: 'resp-supabase-service-role-key',
+    title: 'Supabase service_role key in response body',
     phase: 'response',
     category: 'secret-exposure',
     action: 'redact',
+    // Scoped to the one role that must never leave: `service_role` bypasses Row Level Security
+    // entirely. A JWT in a response body is not inherently a leak — the Supabase `anon` key is public
+    // by design and a login response carries the user's own access token — so this decides on the
+    // decoded payload rather than on the shape of the token.
+    //
+    // `jwt_claim_equals` also yields the matching token spans, which is what lets `redact` mask those
+    // tokens and serve the rest of the response.
+    //
+    // A broad any-JWT rule is a reasonable thing to want; it belongs in the managed hardening bundle as
+    // an opt-in, observe-only rule rather than an on-by-default mask.
     prefilter: ['eyJ'],
-    rule_v2: [{ parameter: 'response.body', match: { type: 'regex', value: '/\\beyJ[A-Za-z0-9_-]{8,}\\.eyJ[A-Za-z0-9_-]{8,}\\.[A-Za-z0-9_-]{8,}\\b/' } }]
+    rule_v2: [{ parameter: 'response.body', match: { type: 'jwt_claim_equals', claim: 'role', value: 'service_role' } }]
   },
   {
     id: 'resp-db-connection-string',

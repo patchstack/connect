@@ -1,6 +1,6 @@
 {
   "$comment": "Generated from src/protect/rules/contract.js by scripts/emit-rule-contract.mjs. Do not edit.",
-  "version": "2.6",
+  "version": "2.7",
   "sources": {
     "raw": {
       "keyed": false
@@ -101,6 +101,7 @@
     "internal_host",
     "is_numeric",
     "isset",
+    "jwt_claim_equals",
     "less_than",
     "more_than",
     "not_contains",
@@ -156,6 +157,16 @@
       "shapes": {
         "key": "string-or-string-list",
         "match": "object"
+      }
+    },
+    "jwt_claim_equals": {
+      "required": [
+        "claim",
+        "value"
+      ],
+      "shapes": {
+        "claim": "non-empty-string",
+        "value": "non-empty-string"
       }
     },
     "regex": {

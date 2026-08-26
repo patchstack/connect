@@ -35,7 +35,10 @@ describe('response phase — redaction depth', () => {
       ['private-key', '-----BEGIN RSA PRIVATE KEY-----\nMIIabc'],
       ['aws', 'key=AKIAIOSFODNN7EXAMPLE'],
       ['gcp', 'k=AIzaSyD1234567890abcdefghij1234567890xy'],
-      ['jwt', 'eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.dozjgNryP4J3jVmNHl0w5N'],
+      // A `service_role` JWT, not any JWT. This case used to be the generic token below, which the
+      // default rule masked on shape alone — and that masked the Supabase anon key and users' own
+      // access tokens along with it. Synthetic payload: {"role":"service_role"}.
+      ['supabase-service-role', 'eyJhbGciOiJIUzI1NiJ9.eyJyb2xlIjoic2VydmljZV9yb2xlIn0.c2ln'],
       ['db', 'mongodb://user:secret@db.host:27017/app'],
       ['stack', 'oops\n    at handler (/srv/app/index.js:42:13)'],
     ];
@@ -44,6 +47,24 @@ describe('response phase — redaction depth', () => {
       const body = await bodyOf(r);
       expect(r.status, label).toBe(200);
       expect(body.includes('[REDACTED]'), `${label} masked`).toBe(true);
+    }
+  });
+
+  it('does NOT redact a JWT that is not a leak', async () => {
+    // The other half of the rule above, and the reason it is stated positively. A login response
+    // carries the user's own access token; masking it broke auth in exchange for nothing. Synthetic
+    // payloads: {"sub":"1234567890"} and {"role":"anon"} — an ordinary token and the Supabase anon
+    // key, which is public by design.
+    const p = await createProtection({ mode: 'block' });
+    for (const [label, token] of [
+      ['ordinary token', 'eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.dozjgNryP4J3jVmNHl0w5N'],
+      ['supabase anon key', 'eyJhbGciOiJIUzI1NiJ9.eyJyb2xlIjoiYW5vbiJ9.c2ln'],
+    ] as Array<[string, string]>) {
+      const r: any = await p.fetch(resp(`{"x":"${token}"}`, 'text/plain'))(req());
+      const body = await bodyOf(r);
+      expect(r.status, label).toBe(200);
+      expect(body.includes('[REDACTED]'), `${label} must not be masked`).toBe(false);
+      expect(body.includes(token), `${label} must be served intact`).toBe(true);
     }
   });
 
