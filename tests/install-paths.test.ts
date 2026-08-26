@@ -27,12 +27,51 @@ function manifest(packages: Manifest['packages']): Manifest {
   return { ecosystem: 'npm', packages };
 }
 
+describe('locations are off unless asked for', () => {
+  // The package's standing promise is that `scan` sends names and versions and no paths of any kind.
+  // Locations widen that, so they are an explicit upload choice rather than something an upgrade turns
+  // on for every existing installation.
+  const twoInstalls = () => manifest([
+    { name: 'lodash', version: '4.17.21', path: 'node_modules/lodash' },
+    { name: 'lodash', version: '4.17.11', path: 'apps/api/node_modules/lodash' },
+  ]);
+
+  it('sends no location by default, even when the scan found one', () => {
+    const { payload } = buildWirePayload(twoInstalls());
+
+    for (const pkg of payload.packages) expect(pkg.paths).toBeUndefined();
+    expect(JSON.stringify(payload)).not.toContain('node_modules');
+  });
+
+  it('does not claim completeness when locations were not requested', () => {
+    // The distinction the flag must not blur: "no locations here" has to read as "not recorded", never as
+    // "installed nowhere else". Claiming completeness over an empty set would license exactly that.
+    expect(buildWirePayload(twoInstalls()).payload.installPathsComplete).toBe(false);
+  });
+
+  it('still reports every package and version by default', () => {
+    // Gating the locations must not gate the vulnerability matching that already worked.
+    const { payload } = buildWirePayload(twoInstalls());
+
+    expect(payload.packages.map((p) => `${p.name}@${p.version}`))
+      .toEqual(['lodash@4.17.11', 'lodash@4.17.21']);
+  });
+
+  it('leaves the checksum identical whether locations are asked for or not', () => {
+    // Otherwise turning the flag on would read server-side as a changed build.
+    const off = buildWirePayload(twoInstalls()).payload.packages;
+    const on = buildWirePayload(twoInstalls(), { installPaths: true }).payload.packages;
+
+    expect(computeManifestChecksum(off)).toBe(computeManifestChecksum(on));
+  });
+});
+
 describe('install locations on the wire', () => {
   it('keeps a location for each distinct version of the same package', () => {
     const { payload } = buildWirePayload(manifest([
       { name: 'lodash', version: '4.17.21', path: 'node_modules/lodash', direct: true },
       { name: 'lodash', version: '4.17.11', path: 'apps/api/node_modules/lodash', direct: false },
-    ]));
+    ]), { installPaths: true });
 
     expect(payload.packages).toEqual([
       { name: 'lodash', version: '4.17.11', paths: ['apps/api/node_modules/lodash'] },
@@ -49,7 +88,7 @@ describe('install locations on the wire', () => {
       { name: 'ms', version: '2.1.3', path: 'node_modules/ms' },
       { name: 'ms', version: '2.1.3', path: 'node_modules/debug/node_modules/ms' },
       { name: 'ms', version: '2.1.3', path: 'apps/web/node_modules/ms' },
-    ]));
+    ]), { installPaths: true });
 
     expect(payload.packages).toHaveLength(1);
     expect(payload.packages[0]!.paths).toEqual([
@@ -65,11 +104,11 @@ describe('install locations on the wire', () => {
     const forward = buildWirePayload(manifest([
       { name: 'ms', version: '1.0.0', path: 'node_modules/a/node_modules/ms' },
       { name: 'ms', version: '1.0.0', path: 'node_modules/ms' },
-    ]));
+    ]), { installPaths: true });
     const reverse = buildWirePayload(manifest([
       { name: 'ms', version: '1.0.0', path: 'node_modules/ms' },
       { name: 'ms', version: '1.0.0', path: 'node_modules/a/node_modules/ms' },
-    ]));
+    ]), { installPaths: true });
 
     expect(JSON.stringify(forward.payload)).toBe(JSON.stringify(reverse.payload));
   });
@@ -81,7 +120,7 @@ describe('install locations on the wire', () => {
     const { payload } = buildWirePayload(manifest([
       { name: 'lodash', version: '4.17.21', path: 'node_modules/lodash' },
       { name: 'ms', version: '2.1.3' },
-    ]));
+    ]), { installPaths: true });
 
     expect(payload.installPathsComplete).toBe(false);
     expect(payload.packages.find((p) => p.name === 'ms')?.paths).toBeUndefined();
@@ -93,7 +132,7 @@ describe('install locations on the wire', () => {
   it('does not claim completeness for an empty package list', () => {
     // Vacuous truth is the wrong answer here: "every entry has a location" of nothing would report a
     // complete inventory of locations for a scan that found no packages at all.
-    expect(buildWirePayload(manifest([])).payload.installPathsComplete).toBe(false);
+    expect(buildWirePayload(manifest([]), { installPaths: true }).payload.installPathsComplete).toBe(false);
   });
 
   it('leaves the manifest checksum byte-identical', () => {
@@ -102,11 +141,11 @@ describe('install locations on the wire', () => {
     const withPaths = buildWirePayload(manifest([
       { name: 'lodash', version: '4.17.21', path: 'node_modules/lodash' },
       { name: 'ms', version: '2.1.3', path: 'node_modules/ms' },
-    ]));
+    ]), { installPaths: true });
     const without = buildWirePayload(manifest([
       { name: 'lodash', version: '4.17.21' },
       { name: 'ms', version: '2.1.3' },
-    ]));
+    ]), { installPaths: true });
 
     expect(computeManifestChecksum(withPaths.payload.packages))
       .toBe(computeManifestChecksum(without.payload.packages));
@@ -117,7 +156,7 @@ describe('a location never names the machine', () => {
   // The same invariant that a sibling change got wrong: a path relativized against the wrong root escapes
   // to `../../home/runner/...`, and this payload is uploaded. Asserted over every source that can produce
   // one, because the failure is silent — an escaped path is still a string and every other assertion
-  // about it passes.
+  // about it passes. A v1 lockfile is absent here because it deliberately produces no location at all.
   const sources: Array<{ what: string; files: Record<string, string> }> = [
     {
       what: 'an npm v3 lockfile',
@@ -127,17 +166,6 @@ describe('a location never names the machine', () => {
           name: 'root',
           lockfileVersion: 3,
           packages: { '': { name: 'root' }, 'node_modules/lodash': { version: '4.17.21' }, 'apps/api/node_modules/lodash': { version: '4.17.11' } },
-        }),
-      },
-    },
-    {
-      what: 'an npm v1 lockfile',
-      files: {
-        'package.json': JSON.stringify({ name: 'root', dependencies: { debug: '^4.0.0' } }),
-        'package-lock.json': JSON.stringify({
-          name: 'root',
-          lockfileVersion: 1,
-          dependencies: { debug: { version: '4.3.4', dependencies: { ms: { version: '2.1.2' } } } },
         }),
       },
     },
@@ -160,7 +188,7 @@ describe('a location never names the machine', () => {
         writeFileSync(path.join(dir, rel), body);
       }
       try {
-        const { payload } = buildWirePayload(await scanLockfile(dir));
+        const { payload } = buildWirePayload(await scanLockfile(dir), { installPaths: true });
         const all = payload.packages.flatMap((pkg) => pkg.paths ?? []);
 
         expect(all.length).toBeGreaterThan(0);
@@ -217,7 +245,7 @@ describe('the sources that can supply a location', () => {
       }),
     });
     try {
-      const { payload } = buildWirePayload(await scanLockfile(dir));
+      const { payload } = buildWirePayload(await scanLockfile(dir), { installPaths: true });
       const lodash = payload.packages.filter((p) => p.name === 'lodash');
 
       expect(lodash).toEqual([
@@ -230,11 +258,15 @@ describe('the sources that can supply a location', () => {
     }
   });
 
-  it('derives them from a v1 lockfile, whose NESTING is the layout', async () => {
-    // v1 has no path keys, but a nested `dependencies` map is literally the `node_modules` directory
-    // inside its parent. Without deriving it, the same repo produced a payload that could correlate an
-    // import to an instance or one that could not, depending only on which npm wrote the lockfile — and
-    // nothing in the result showed which had happened.
+  it('refuses to invent them from a v1 lockfile, whose nesting is the GRAPH and not the layout', async () => {
+    // A v1 lockfile's nested `dependencies` map describes the dependency graph. npm hoists and dedupes,
+    // so a package nested under `debug` there is usually installed at the top level and the nesting only
+    // survives where a version conflict forced it. Reading the graph as the layout invents a path that is
+    // wrong in the common case — and a confident wrong location binds an advisory to the wrong instance,
+    // which is the very failure `paths` exists to prevent, reached from the other side.
+    //
+    // An earlier version of this change did exactly that, and claimed `installPathsComplete: true` over
+    // it. No path at all is the honest answer; the walk is what can supply one for a v1 project.
     const dir = project({
       'package.json': JSON.stringify({ name: 'root', dependencies: { debug: '^4.0.0' } }),
       'package-lock.json': JSON.stringify({
@@ -247,13 +279,13 @@ describe('the sources that can supply a location', () => {
       }),
     });
     try {
-      const { payload } = buildWirePayload(await scanLockfile(dir));
+      const { payload } = buildWirePayload(await scanLockfile(dir), { installPaths: true });
 
-      expect(payload.installPathsComplete).toBe(true);
-      expect(payload.packages.find((p) => p.version === '2.1.2')?.paths)
-        .toEqual(['node_modules/debug/node_modules/ms']);
-      expect(payload.packages.find((p) => p.version === '2.1.3')?.paths)
-        .toEqual(['node_modules/ms']);
+      expect(payload.installPathsComplete).toBe(false);
+      for (const pkg of payload.packages) expect(pkg.paths).toBeUndefined();
+      // The versions are still reported — dropping the location does not drop the package.
+      expect(payload.packages.map((p) => `${p.name}@${p.version}`).sort())
+        .toEqual(['debug@4.3.4', 'ms@2.1.2', 'ms@2.1.3']);
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }

@@ -16,8 +16,13 @@ export interface WirePackage {
    * Node resolves an import by walking up from the importing file, so the map's import sites plus these
    * paths together answer the question. Neither half answers it alone.
    *
-   * Absent when the scan source does not record locations — see `installPathsComplete`, which is what
-   * separates "not installed there" from "we were not told".
+   * OPT-IN. Absent unless the caller asks for locations (`scan --install-paths`), and absent even then
+   * when the scan source does not record them — see `installPathsComplete`, which is what separates
+   * "not installed there" from "we were not told".
+   *
+   * Off by default because it changes what leaves the machine. The package's standing promise is that
+   * `scan` sends names and versions and no paths of any kind; locations are a real widening of that, and
+   * an upload that widens it should be an explicit choice rather than a consequence of upgrading.
    */
   paths?: string[];
 }
@@ -28,10 +33,14 @@ export interface WirePayload {
   /**
    * Whether every entry's `paths` is the complete set of locations for it.
    *
-   * False when the scan source cannot supply locations at all (a yarn.lock is flat — hoisting is decided
-   * at install time and the file does not record it) or supplied them for only some entries. A consumer
-   * MUST NOT read a missing or short `paths` as "installed nowhere else" while this is false; absence is
-   * then "not recorded", which is not an answer.
+   * False when locations were not requested at all, when the scan source cannot supply them (a yarn.lock
+   * is flat — hoisting is decided at install time and the file does not record it; a v1 npm lockfile
+   * describes the dependency graph, not the tree), or when only some entries had one. A consumer MUST NOT
+   * read a missing or short `paths` as "installed nowhere else" while this is false; absence is then "not
+   * recorded", which is not an answer.
+   *
+   * The default is therefore `false`, and that is the safe direction: the field withholds a negative
+   * rather than granting one.
    */
   installPathsComplete: boolean;
 }
@@ -47,7 +56,16 @@ export interface NormalizeResult {
   stats: NormalizeStats;
 }
 
-export function buildWirePayload(manifest: Manifest): NormalizeResult {
+export interface WireOptions {
+  /**
+   * Include each package's install location. Off by default — see `WirePackage.paths`: it widens what
+   * `scan` transmits, so it is the caller's explicit choice, not a side effect of upgrading.
+   */
+  installPaths?: boolean;
+}
+
+export function buildWirePayload(manifest: Manifest, options: WireOptions = {}): NormalizeResult {
+  const withPaths = options.installPaths === true;
   const seen = new Map<string, Set<string>>();
   const wirePackages: WirePackage[] = [];
   // One entry per name+version, as before — but the duplicate entries that used to be dropped outright
@@ -58,11 +76,12 @@ export function buildWirePayload(manifest: Manifest): NormalizeResult {
 
   for (const entry of manifest.packages) {
     const identity = `${entry.name}@${entry.version}`;
-    if (entry.path === undefined || entry.path === '') entriesWithoutPath++;
+    const location = withPaths && entry.path !== undefined && entry.path !== '' ? entry.path : undefined;
+    if (location === undefined) entriesWithoutPath++;
 
     const existing = byIdentity.get(identity);
     if (existing) {
-      if (entry.path !== undefined && entry.path !== '') addPath(existing, entry.path);
+      if (location !== undefined) addPath(existing, location);
       continue;
     }
 
@@ -73,7 +92,7 @@ export function buildWirePayload(manifest: Manifest): NormalizeResult {
       seen.set(entry.name, new Set([entry.version]));
     }
     const wire: WirePackage = { name: entry.name, version: entry.version };
-    if (entry.path !== undefined && entry.path !== '') addPath(wire, entry.path);
+    if (location !== undefined) addPath(wire, location);
     byIdentity.set(identity, wire);
     wirePackages.push(wire);
   }
@@ -103,6 +122,10 @@ export function buildWirePayload(manifest: Manifest): NormalizeResult {
       // Every entry had a location, so a missing path anywhere means the package is not installed there.
       // One entry without one forfeits that for the whole payload: a consumer reading a short `paths` has
       // no way to tell which entry was the incomplete one.
+      //
+      // No separate check for "locations were not requested": with them off every entry counts as without
+      // one, so this is already false — which is the default, and the safe direction. An explicit
+      // `withPaths &&` here was a guard no test could distinguish from its absence.
       installPathsComplete: entriesWithoutPath === 0 && manifest.packages.length > 0,
     },
     stats: {

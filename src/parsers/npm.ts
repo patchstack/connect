@@ -80,26 +80,32 @@ function extractFromV2(packages: Record<string, LockfileV2Package>): PackageEntr
 }
 
 /**
- * A v1 lockfile has no path keys — but its NESTING is the install layout, so the path is derivable:
- * a nested `dependencies` map is literally the `node_modules` directory inside its parent.
+ * A v1 lockfile reports NO install location, deliberately.
  *
- * Deriving it matters because the v2 format supplies paths and v1 did not, so the same repo produced a
- * payload that could correlate an import to an installed instance or one that could not, depending only
- * on which npm wrote the lockfile — and the difference was invisible in the result.
+ * Its nested `dependencies` map describes the dependency GRAPH, not the physical tree. npm hoists and
+ * dedupes, so a package nested under `debug` in the lockfile is usually installed at the top level, and
+ * the nesting only appears where a version conflict forced it. Reading the graph as the layout therefore
+ * invents a path that is wrong in the common case.
+ *
+ * An invented path is worse than no path: `paths` exists so an advisory can be bound to the installed
+ * instance the app's import actually resolves to, and a confident wrong location binds it to the wrong
+ * one. That is the same failure the field exists to prevent, arrived at from the other side. So v1 emits
+ * nothing here, `installPathsComplete` goes false for the whole payload, and a consumer reads "not
+ * recorded" rather than a fabrication.
+ *
+ * Locations for a v1 project have to come from the `node_modules` walk, which reads the real tree.
  */
 function extractFromV1(
   deps: Record<string, LockfileV1Dependency>,
   acc: PackageEntry[] = [],
   depth = 0,
-  prefix = '',
 ): PackageEntry[] {
   for (const [name, dep] of Object.entries(deps)) {
-    const installPath = `${prefix}node_modules/${name}`;
     if (typeof dep.version === 'string' && dep.version.length > 0) {
-      acc.push({ name, version: dep.version, path: installPath, direct: depth === 0 });
+      acc.push({ name, version: dep.version, direct: depth === 0 });
     }
     if (dep.dependencies) {
-      extractFromV1(dep.dependencies, acc, depth + 1, `${installPath}/`);
+      extractFromV1(dep.dependencies, acc, depth + 1);
     }
   }
   return acc;
