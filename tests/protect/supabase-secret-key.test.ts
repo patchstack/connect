@@ -54,16 +54,30 @@ describe('the Supabase secret key does not leave the app', () => {
     }
   });
 
-  it('masks it whatever the delimiter around it', async () => {
-    for (const body of [
-      `{"k":"${SECRET}"}`,
-      `k=${SECRET}&next=1`,
-      `key: ${SECRET}\nother: 1`,
-      `<div data-k='${SECRET}'>x</div>`,
-      `[${SECRET}]`,
-      `fn(${SECRET});`,
-    ]) {
-      expect(await screen(body, 'text/plain'), `not masked in: ${body}`).not.toContain(SECRET);
+  it('masks it whatever the delimiter around it, and leaves that delimiter alone', async () => {
+    // Both halves matter, and asserting only the first hid a real defect: an earlier pattern matched
+    // "everything up to a natural delimiter" and ate `&next=1` along with the key — and this test
+    // passed, because the secret had indeed disappeared. Redaction masks the offending span and leaves
+    // the response otherwise intact; a rule that destroys neighbouring fields is not doing that.
+    const cases: Array<[string, string[]]> = [
+      [`{"k":"${SECRET}"}`, ['{"k":"', '"}']],
+      [`k=${SECRET}&next=1`, ['k=', '&next=1']],
+      [`a=${SECRET}&b=2&c=3`, ['&b=2&c=3']],
+      [`url?token=${SECRET}#frag`, ['url?token=', '#frag']],
+      [`key: ${SECRET}\nother: 1`, ['key: ', '\nother: 1']],
+      [`<div data-k='${SECRET}'>x</div>`, ["'>x</div>"]],
+      [`[${SECRET}]`, ['[', ']']],
+      [`fn(${SECRET});`, ['fn(', ');']],
+      [`x=${SECRET}==`, ['==']],
+      [`${SECRET}|next`, ['|next']],
+    ];
+
+    for (const [body, survivors] of cases) {
+      const out = await screen(body, 'text/plain');
+      expect(out, `not masked in: ${body}`).not.toContain(SECRET);
+      for (const survivor of survivors) {
+        expect(out, `masking ate ${JSON.stringify(survivor)} in: ${body}`).toContain(survivor);
+      }
     }
   });
 });

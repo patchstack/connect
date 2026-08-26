@@ -68,14 +68,23 @@ export const DEFAULT_RESPONSE_RULES = [
     // Both key systems are live at once (creating new keys leaves the legacy `anon` / `service_role`
     // JWTs working), so this rule and the JWT rules cover different halves of the same problem.
     //
-    // The suffix is matched as "everything up to a natural delimiter" rather than as a character
-    // class, because Supabase does not document the alphabet. A class that guessed too narrowly would
-    // stop at the first unexpected character and mask only a PREFIX of the key — serving the rest,
-    // while reporting a redaction. Over-matching a trailing delimiter is harmless; under-matching
-    // leaks. The 16-char floor keeps the bare prefix in prose or documentation from matching, and the
-    // ceiling bounds the span.
+    // The suffix is the base64url alphabet. An earlier version matched "everything up to a natural
+    // delimiter" on the reasoning that under-matching leaks while over-matching is harmless — and that
+    // second half was wrong, measured: `k=<key>&next=1` masked `&next=1` along with the key, and
+    // `a=<key>&b=2&c=3` destroyed two more fields. Redaction is supposed to mask the offending span and
+    // leave the response otherwise intact, so eating adjacent syntax is its own defect, not a rounding
+    // error.
+    //
+    // Supabase does not document the alphabet, so this is a stated trade rather than a proof: if a key
+    // ever contains a character outside base64url, this masks the leading run and leaves the tail. The
+    // tests pin both directions — the whole key gone, and neighbouring fields untouched — so widening
+    // the class later shows immediately what it costs. `=` is excluded deliberately: as base64 padding
+    // it carries no secret, and including it re-opened the `x=<key>==` over-match.
+    //
+    // The 16-char floor keeps the bare prefix in prose or documentation from matching; the ceiling
+    // bounds the span.
     prefilter: ['sb_secret_'],
-    rule_v2: [{ parameter: 'response.body', match: { type: 'regex', value: '/\\bsb_secret_[^\\s"\'`<>,;)\\]}]{16,200}/' } }]
+    rule_v2: [{ parameter: 'response.body', match: { type: 'regex', value: '/\\bsb_secret_[A-Za-z0-9_-]{16,200}/' } }]
   },
   {
     id: 'resp-jwt',
