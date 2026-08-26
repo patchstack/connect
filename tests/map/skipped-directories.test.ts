@@ -188,38 +188,33 @@ describe('a skip that is not a guess', () => {
     }
   });
 
-  it('does not forfeit completeness for a build output that DOES hold source', async () => {
-    // Measured on this package's own repo: `dist/` holds built `.js`, so charging it reported
-    // `importsComplete: false` for the repository the analyser ships from. Essentially every built
-    // project has one — and a flag that is false for everyone conveys nothing and gets ignored, which is
-    // exactly how the defect this suite exists to prevent stays alive. `dist` is generated FROM source
-    // the walk did read, so its imports are already represented; the same reasoning that exempts
-    // `node_modules`, applied consistently.
+  it('DOES forfeit completeness for a build output holding source — "derived" is an assumption', async () => {
+    // An earlier version exempted `dist`, `build`, `public` and friends, reasoning that they are generated
+    // from source the walk did read. That is an assumption about the checkout, not evidence about it: a
+    // production or Docker image legitimately contains only the compiled server and no `src/` at all, and
+    // there the exemption recreates the exact failure this suite exists to prevent.
     //
-    // Reported all the same: a bundle could in principle import something its source does not, and
-    // silence about that would be the same mistake one level down.
-    const dir = project({ 'src/server.ts': VISIBLE_SERVER, 'dist/server.js': HIDDEN_SERVER });
+    // Scanning them instead is not a way out: bundling ERASES imports, so a bundle with a package inlined
+    // contains no import of it and an import scan cannot establish absence. No budget buys a negative.
+    const dir = project({ 'dist/server.js': HIDDEN_SERVER });
     try {
       const { map } = await buildInputMap(dir, {});
-      const gaps = map!.coverage.importCoverageGaps;
 
-      expect(map!.coverage.importsComplete).toBe(true);
-      expect(gaps?.skippedDirsWithSource).toEqual([]);
-      expect(gaps?.skippedDerivedDirsWithSource).toEqual(['dist']);
+      expect((map!.imports ?? []).map((i) => i.package)).not.toContain('node-serialize');
+      expect(map!.coverage.importsComplete).toBe(false);
+      expect(map!.coverage.importCoverageGaps?.skippedDirsWithSource).toEqual(['dist']);
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
   });
 
-  it('does not forfeit completeness for a client-asset directory holding source', async () => {
-    // A bundled `public/app.js` is client-side. It is not additional server surface, so it cannot make
-    // the server-import inventory wrong.
+  it('forfeits completeness for a client-asset directory holding source too', async () => {
     const dir = project({ 'src/server.ts': VISIBLE_SERVER, 'public/app.js': HIDDEN_SERVER });
     try {
       const { map } = await buildInputMap(dir, {});
 
-      expect(map!.coverage.importsComplete).toBe(true);
-      expect(map!.coverage.importCoverageGaps?.skippedDerivedDirsWithSource).toEqual(['public']);
+      expect(map!.coverage.importsComplete).toBe(false);
+      expect(map!.coverage.importCoverageGaps?.skippedDirsWithSource).toEqual(['public']);
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
@@ -240,6 +235,44 @@ describe('a skip that is not a guess', () => {
       expect(map!.coverage.importCoverageGaps?.skippedDirsWithSource).toEqual([]);
     } finally {
       rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
+
+describe('a symlink where a skipped directory was expected', () => {
+  it('is unsettled rather than assumed empty — the skipped directory itself', async () => {
+    // `isDirectory()` is false for a symlink pointing at a directory, and its name is not a source file
+    // name, so it fell through every branch: not probed, no counter moved, completeness retained. A link
+    // named `vendor` pointing at a tree of handlers hid them perfectly.
+    const dir = project({ 'src/server.ts': VISIBLE_SERVER });
+    const target = mkdtempSync(path.join(tmpdir(), 'ps-target-'));
+    try {
+      writeFileSync(path.join(target, 'server.ts'), HIDDEN_SERVER);
+      symlinkSync(target, path.join(dir, 'vendor'), 'dir');
+      const { map } = await buildInputMap(dir, {});
+
+      expect(map!.coverage.importCoverageGaps?.skippedDirsUnsettled).toBeGreaterThan(0);
+      expect(map!.coverage.importsComplete).toBe(false);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+      rmSync(target, { recursive: true, force: true });
+    }
+  });
+
+  it('is unsettled rather than assumed empty — a link INSIDE a skipped directory', async () => {
+    // The same hole one level down, inside the probe's own walk.
+    const dir = project({ 'src/server.ts': VISIBLE_SERVER, 'vendor/readme.txt': 'x' });
+    const target = mkdtempSync(path.join(tmpdir(), 'ps-target-'));
+    try {
+      writeFileSync(path.join(target, 'server.ts'), HIDDEN_SERVER);
+      symlinkSync(target, path.join(dir, 'vendor', 'linked'), 'dir');
+      const { map } = await buildInputMap(dir, {});
+
+      expect(map!.coverage.importCoverageGaps?.skippedDirsUnsettled).toBeGreaterThan(0);
+      expect(map!.coverage.importsComplete).toBe(false);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+      rmSync(target, { recursive: true, force: true });
     }
   });
 });
