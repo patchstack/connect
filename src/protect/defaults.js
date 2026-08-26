@@ -55,6 +55,29 @@ export const DEFAULT_RESPONSE_RULES = [
     rule_v2: [{ parameter: 'response.body', match: { type: 'regex', value: '/\\b(?:sk_live_[0-9A-Za-z]{16,}|rk_live_[0-9A-Za-z]{16,}|gh[opsu]_[0-9A-Za-z]{36}|github_pat_[0-9A-Za-z_]{60,}|glpat-[0-9A-Za-z_-]{20,}|xox[baprs]-[0-9A-Za-z-]{10,}|sk-ant-[0-9A-Za-z_-]{20,}|ya29\\.[0-9A-Za-z_-]{20,}|npm_[0-9A-Za-z]{36})(?![0-9A-Za-z])/' } }]
   },
   {
+    id: 'resp-supabase-secret-key',
+    title: 'Supabase secret key in response body',
+    phase: 'response',
+    category: 'secret-exposure',
+    action: 'redact',
+    // Supabase's NEW key format is an opaque string, not a JWT, so nothing above caught it: a
+    // `sb_secret_` key was served through unfiltered. It is the elevated one — Supabase documents it
+    // as full access, bypassing Row Level Security, backend-only — while `sb_publishable_` is meant
+    // for public clients. Only the secret prefix is matched; the publishable one must pass untouched.
+    //
+    // Both key systems are live at once (creating new keys leaves the legacy `anon` / `service_role`
+    // JWTs working), so this rule and the JWT rules cover different halves of the same problem.
+    //
+    // The suffix is matched as "everything up to a natural delimiter" rather than as a character
+    // class, because Supabase does not document the alphabet. A class that guessed too narrowly would
+    // stop at the first unexpected character and mask only a PREFIX of the key — serving the rest,
+    // while reporting a redaction. Over-matching a trailing delimiter is harmless; under-matching
+    // leaks. The 16-char floor keeps the bare prefix in prose or documentation from matching, and the
+    // ceiling bounds the span.
+    prefilter: ['sb_secret_'],
+    rule_v2: [{ parameter: 'response.body', match: { type: 'regex', value: '/\\bsb_secret_[^\\s"\'`<>,;)\\]}]{16,200}/' } }]
+  },
+  {
     id: 'resp-jwt',
     title: 'JWT in response body',
     phase: 'response',
