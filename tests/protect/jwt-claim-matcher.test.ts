@@ -91,11 +91,25 @@ describe('only a positive identification matches', () => {
     ['a role that is a different value', jwt({ role: 'anon' })],
     ['a role that merely contains the value', jwt({ role: 'not_service_role_really' })],
     ['two segments rather than three', `${b64({ alg: 'HS256' })}.${b64({ role: 'service_role' })}`],
+    // A four-part string is not a JWT, and matching its first three segments would judge the author as
+    // though they had written one. Same for a token that is itself a continuation of something longer.
+    ['a four-segment continuation', `${SERVICE}.extra`],
+    ['a five-segment continuation', `${SERVICE}.a.b`],
+    ['a token preceded by another segment', `AAA.${SERVICE}`],
+    ['a token glued to a preceding word', `prefix${SERVICE}`],
   ];
 
   it.each(cases)('does not match: %s', async (_name, token) => {
     const body = JSON.stringify({ token });
     expect((await screen(body)).text).toBe(body);
+  });
+
+  it('still matches a token that merely sits next to punctuation', () => {
+    // The boundary rejects a CONTINUATION, not any adjacent dot. A leak at the end of a sentence, or in
+    // a URL path, is still a leak — rejecting those would have traded one blind spot for another.
+    for (const body of [`${SERVICE}.`, `${SERVICE}. next`, `/api/${SERVICE}/x`, `Bearer ${SERVICE}`, `"${SERVICE}"`]) {
+      expect(jwtClaimSpans(body, 'role', 'service_role'), `missed in: ${body}`).toEqual([SERVICE]);
+    }
   });
 
   it('does not read the claim off the prototype', () => {

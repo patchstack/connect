@@ -334,11 +334,21 @@ function expandIPv6(host) {
 // Bounded scan for three-part JWT candidates. `eyJ` anchors the header: a JWT header is base64url of a
 // JSON object, and every object starting `{"` encodes to `eyJ`, so it is a cheap and precise filter.
 // The segment bounds keep a hostile body from turning this into an unbounded decode.
-// The bounds are the whole size limit: a payload segment longer than 8192 chars never becomes a
-// candidate, so nothing oversized reaches the decoder. The pattern also fixes the segment count, so a
-// candidate always splits into exactly three parts — an explicit re-check of either would be a branch
-// no input can reach.
-const JWT_CANDIDATE = /eyJ[A-Za-z0-9_-]{2,2048}\.[A-Za-z0-9_-]{2,8192}\.[A-Za-z0-9_-]{0,2048}/g;
+// A candidate is an EXACT three-segment token, not a three-segment prefix of something longer. Without
+// the boundaries the pattern happily matched `<jwt>.extra` by discarding the fourth segment, and
+// `AAA.<jwt>` by ignoring what came before — so a four-part string was judged as though the author had
+// written a JWT. `jwt_claim_equals` promises positive identification, and "the first three segments of
+// this looked like a token" is not that.
+//
+// The boundaries reject a CONTINUATION rather than any adjacent dot: a token followed by a sentence
+// period, or sitting in a URL path, is still a token, so only `.` FOLLOWED BY token characters ends the
+// match. Same on the left.
+//
+// The segment bounds are also the whole size limit — a payload longer than 8192 chars never becomes a
+// candidate, so nothing oversized reaches the decoder — and they fix the segment count, so a candidate
+// always splits into exactly three parts. An explicit re-check of either would be unreachable.
+const JWT_CANDIDATE =
+  /(?<![A-Za-z0-9_-])(?<![A-Za-z0-9_-]\.)eyJ[A-Za-z0-9_-]{2,2048}\.[A-Za-z0-9_-]{2,8192}\.[A-Za-z0-9_-]{0,2048}(?![A-Za-z0-9_-])(?!\.[A-Za-z0-9_-])/g;
 
 // base64url → base64. `atob` rejects `-` and `_`, and Node's leniency differs, so the conversion is
 // explicit: the node and edge paths must agree about what decodes, or a rule masks on one runtime and
