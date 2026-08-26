@@ -75,13 +75,27 @@ export const DEFAULT_RESPONSE_RULES = [
     rule_v2: [{ parameter: 'response.body', match: { type: 'regex', value: '/\\bsb_secret_[A-Za-z0-9_-]{22}_[A-Za-z0-9_-]{8}(?![A-Za-z0-9_-])/' } }]
   },
   {
-    id: 'resp-jwt',
-    title: 'JWT in response body',
+    id: 'resp-supabase-service-role-key',
+    title: 'Supabase service_role key in response body',
     phase: 'response',
     category: 'secret-exposure',
     action: 'redact',
+    // This replaces a rule that masked EVERY JWT in a response body. That rule was wrong in both
+    // directions, measured: it masked the Supabase `anon` key — public by design, meant to reach the
+    // browser — and it masked a user's own `access_token`, so an app proxying Supabase auth had its
+    // login response mangled. A normal login response is the proof that "a JWT in a response" is not
+    // inherently a leak, so the rule is stated positively instead: the one role that must never leave
+    // is `service_role`, which bypasses Row Level Security entirely.
+    //
+    // `jwt_claim_equals` decides on the DECODED payload rather than the token's shape, and produces
+    // the matching token spans so `redact` masks only those JWTs instead of withholding the response.
+    // Anything not positively identified — undecodable, not JSON, no `role` claim, `anon`,
+    // `authenticated`, anything else — is left alone by this rule.
+    //
+    // A broad "any JWT in a response" rule is still a reasonable thing to WANT; it belongs in the
+    // managed hardening bundle as an opt-in, observe-only rule, not as an on-by-default mask.
     prefilter: ['eyJ'],
-    rule_v2: [{ parameter: 'response.body', match: { type: 'regex', value: '/\\beyJ[A-Za-z0-9_-]{8,}\\.eyJ[A-Za-z0-9_-]{8,}\\.[A-Za-z0-9_-]{8,}\\b/' } }]
+    rule_v2: [{ parameter: 'response.body', match: { type: 'jwt_claim_equals', claim: 'role', value: 'service_role' } }]
   },
   {
     id: 'resp-db-connection-string',

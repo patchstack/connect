@@ -10,7 +10,7 @@ const fileAttribute = (f, attr) => (f && typeof f === 'object' ? f[attr] : attr 
 // WinterCG-safe base64 decode: use Buffer on Node, fall back to atob/TextDecoder on
 // edge runtimes (Cloudflare Workers, Deno, Bun) where Buffer may be absent. Keeps the
 // engine hot path free of Node-only APIs (per the ADR engine-language decision).
-function base64DecodeUtf8(value) {
+export function base64DecodeUtf8(value) {
   const str = String(value);
   if (typeof Buffer !== 'undefined') {
     return Buffer.from(str, 'base64').toString('utf-8');

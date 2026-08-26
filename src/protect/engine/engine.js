@@ -1,6 +1,7 @@
 import { RequestResolver } from './request.js';
 import { notify } from '../notify.js';
 import { normalizeRequest } from './normalizer.js';
+import { base64DecodeUtf8 } from './request.js';
 
 // Catastrophic-backtracking shapes. Broad on purpose: a group whose inner content is quantified
 // (+, *, or {n,}) and is itself quantified — (a+)+, (\w+)+, (.*)*, ([a-z]+)*, (ab+)+ — or an
@@ -330,6 +331,69 @@ function expandIPv6(host) {
   return out;
 }
 
+// Bounded scan for three-part JWT candidates. `eyJ` anchors the header: a JWT header is base64url of a
+// JSON object, and every object starting `{"` encodes to `eyJ`, so it is a cheap and precise filter.
+// The segment bounds keep a hostile body from turning this into an unbounded decode.
+// The bounds are the whole size limit: a payload segment longer than 8192 chars never becomes a
+// candidate, so nothing oversized reaches the decoder. The pattern also fixes the segment count, so a
+// candidate always splits into exactly three parts — an explicit re-check of either would be a branch
+// no input can reach.
+const JWT_CANDIDATE = /eyJ[A-Za-z0-9_-]{2,2048}\.[A-Za-z0-9_-]{2,8192}\.[A-Za-z0-9_-]{0,2048}/g;
+
+// base64url → base64. `atob` rejects `-` and `_`, and Node's leniency differs, so the conversion is
+// explicit: the node and edge paths must agree about what decodes, or a rule masks on one runtime and
+// not the other.
+function base64UrlToBase64(segment) {
+  const padded = segment.length % 4 === 0 ? segment : segment + '='.repeat(4 - (segment.length % 4));
+  return padded.replace(/-/g, '+').replace(/_/g, '/');
+}
+
+/**
+ * Every distinct JWT in `text` whose payload carries an OWN, TOP-LEVEL `claim` exactly equal to `value`.
+ *
+ * One implementation, used for both detection and redaction. If the matcher and the redactor decided
+ * separately, a token could be reported and not masked — a detection that says "redacted" over a body
+ * that still carries the secret — or masked without being reported.
+ *
+ * Everything that is not a positive identification is a no-match: not three segments, a payload that
+ * does not decode or does not parse, a payload that is not a plain object, an oversized payload, a
+ * missing claim, a claim that is not a string, or any other value. `hasOwnProperty` is what makes
+ * "own" true — without it `constructor` or `toString` would read off the prototype and match nothing
+ * the token actually said.
+ *
+ * No signature verification: the question is what the token CLAIMS to be, not whether it is authentic.
+ * A forged claim gains an attacker nothing here — this decides whether OUR secret is leaving.
+ */
+export function jwtClaimSpans(text, claim, value) {
+  const found = new Set();
+  if (typeof text !== 'string' || typeof claim !== 'string' || claim === '') return [];
+  const wanted = String(value);
+
+  for (const [token] of text.matchAll(JWT_CANDIDATE)) {
+    const parts = token.split('.');
+
+    let payload;
+    try {
+      payload = JSON.parse(base64DecodeUtf8(base64UrlToBase64(parts[1])));
+    } catch {
+      continue; // undecodable or not JSON — not identified, so not matched
+    }
+    // `null` matters more than it looks: `hasOwnProperty.call(null, …)` THROWS, and an exception here
+    // would leave the engine's per-rule catch to fail the rule open — a leak served because a
+    // neighbouring token had the payload `null`. Arrays and primitives simply cannot carry a claim.
+    if (payload === null || typeof payload !== 'object' || Array.isArray(payload)) continue;
+    // "Own" is load-bearing only when something has polluted Object.prototype with a string-valued
+    // property — then a payload carrying no `role` at all would otherwise read one off the prototype
+    // and be judged on a value the token never contained.
+    if (!Object.prototype.hasOwnProperty.call(payload, claim)) continue;
+
+    const actual = payload[claim];
+    if (typeof actual === 'string' && actual === wanted) found.add(token);
+  }
+
+  return [...found];
+}
+
 // Report a `when` block that names nothing this engine understands. Fail-open is correct for a scope that
 // cannot be EVALUATED, but a scope that cannot be UNDERSTOOD is an authoring mistake with the opposite
 // consequence: the rule silently applies to every request instead of one route, which for a blocking rule
@@ -651,6 +715,11 @@ export function matchValue(type, value, matchVal, matchObj) {
       const stripped = strValue.replace(/[ _\-,]/g, '');
       return ctypeResult(strValue, /^[\w$-￿]*$/.test(stripped), matchVal);
     }
+
+    case 'jwt_claim_equals':
+      // Detection and redaction share `jwtClaimSpans`, so a token is reported exactly when it is
+      // masked. `redact` derives its spans from the same call — see `extractRedactors`.
+      return jwtClaimSpans(strValue, matchObj?.claim, matchVal).length > 0;
 
     case 'array_key_value':
       // Navigate `match.key` (dot-path, or array of paths) inside the decoded value and

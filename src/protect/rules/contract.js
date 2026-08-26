@@ -12,7 +12,7 @@
 // `rule-contract.json` is the published form. `tests/protect/rule-contract.test.ts` reads the engine's own
 // source and asserts these descriptions match what it implements.
 
-export const CONTRACT_VERSION = '2.6';
+export const CONTRACT_VERSION = '2.7';
 
 /**
  * Every parameter source, and what it accepts after the dot.
@@ -72,7 +72,7 @@ export const MATCH_TYPES = Object.freeze([
   'array_in_array', 'array_key_value', 'contains', 'cors_reflected', 'cross_origin',
   'ctype_alnum', 'ctype_digit', 'ctype_special', 'equals', 'equals_strict',
   'hostname', 'in_array', 'inline_js_xss', 'inline_xss', 'internal_host', 'is_numeric',
-  'isset', 'less_than', 'more_than', 'not_contains', 'not_in_array', 'off_origin',
+  'isset', 'jwt_claim_equals', 'less_than', 'more_than', 'not_contains', 'not_in_array', 'off_origin',
   'quotes', 'regex', 'stripos',
 ]);
 
@@ -152,6 +152,14 @@ export const MATCH_OPERANDS = Object.freeze({
   array_key_value: Object.freeze({
     required: Object.freeze(['key', 'match']),
     shapes: Object.freeze({ key: 'string-or-string-list', match: 'object' }),
+  }),
+  // Decides on a JWT's DECODED payload rather than its shape, and yields the matching token spans so
+  // `redact` masks only those tokens. `claim` names an own, top-level claim; `value` is compared with
+  // exact string equality. Anything not positively identified — undecodable, not JSON, not an object,
+  // oversized, claim missing, claim not a string, or a different value — is a no-match.
+  jwt_claim_equals: Object.freeze({
+    required: Object.freeze(['claim', 'value']),
+    shapes: Object.freeze({ claim: 'non-empty-string', value: 'non-empty-string' }),
   }),
   regex: Object.freeze({ required: Object.freeze(['value']), shapes: Object.freeze({ value: 'regex-literal' }) }),
   contains: Object.freeze({ required: Object.freeze(['value']), shapes: Object.freeze({ value: 'non-empty-string' }) }),

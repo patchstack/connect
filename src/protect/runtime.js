@@ -16,7 +16,7 @@
 // every runtime an AI builder deploys to.
 // Vendored node-waf engine (this package is self-contained — no @patchstack/node-waf dep).
 import { RuleEngine } from './engine/index.js';
-import { matchValue, walkLeaves, safeRegExp } from './engine/engine.js';
+import { matchValue, walkLeaves, safeRegExp, jwtClaimSpans } from './engine/engine.js';
 import { PulseRuleClient } from './engine/pulse-client.js';
 import { fromFetchRequest } from './engine/fetch.js';
 import { fromNodeRequest } from './engine/node.js';
@@ -987,6 +987,12 @@ function extractRedactors(rule) {
         }
       } else if ((m.type === 'contains' || m.type === 'stripos') && m.value != null) {
         out.push({ literal: String(m.value) });
+      } else if (m.type === 'jwt_claim_equals' && typeof m.claim === 'string') {
+        // A span-producing target, not a predicate. A boolean-only matcher would leave `redact` with
+        // no span to mask, so the rule would fall back to withholding the WHOLE response — turning a
+        // one-token leak into an outage. The spans come from the same `jwtClaimSpans` the matcher
+        // used, so what is reported and what is masked cannot diverge.
+        out.push({ jwtClaim: { claim: m.claim, value: String(m.value ?? '') } });
       } else if (m.type === 'array_key_value' && m.match && isBodyParam(c.parameter)) {
         // Structural redaction: mask the value at a JSON path (fanning out over arrays) rather than
         // a text span — e.g. key "orders.customers.email" masks that field in every array element.
@@ -1015,7 +1021,14 @@ function applyRedactors(body, redactors, mask, transform) {
   let out = body;
   for (const r of redactors) {
     if (r.re) out = out.replace(r.re, transform ? (m) => transform(m) : mask);
-    else if (r.literal) {
+    else if (r.jwtClaim) {
+      // Spans are computed against the body as it stands, then each distinct token is replaced
+      // literally — so a response carrying two matching tokens loses both, and a token that appears
+      // twice loses both copies.
+      for (const token of jwtClaimSpans(out, r.jwtClaim.claim, r.jwtClaim.value)) {
+        out = out.split(token).join(transform ? transform(token) : mask);
+      }
+    } else if (r.literal) {
       // Detection (matchValue for contains/stripos) is case-insensitive, so mask case-insensitively
       // too — otherwise a `contains: "SECRET"` redactor detects `secret` but masks nothing, serving
       // the leak while reporting a redaction. Escape the literal so it matches literally, not as regex.
