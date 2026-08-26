@@ -15,8 +15,11 @@ import { DEFAULT_RESPONSE_RULES } from '../../src/protect/defaults.js';
  *
  * Every key in this file is SYNTHETIC.
  */
-const SECRET = 'sb_secret_' + 'Xk9Lm2Qp7Rt4Vw8Z' + 'aB3cD6eF';
-const PUBLISHABLE = 'sb_publishable_' + 'Yj8Kn1Po6Qs3Uv7Y' + 'zA2bC5dE';
+// Supabase's documented grammar: 22 base64url characters, `_`, then an 8-character base64url checksum.
+const RANDOM = 'Xk9Lm2Qp7Rt4Vw8ZaB3cD6';
+const CHECKSUM = 'eF7hJ2kM';
+const SECRET = `sb_secret_${RANDOM}_${CHECKSUM}`;
+const PUBLISHABLE = `sb_publishable_${RANDOM}_${CHECKSUM}`;
 
 async function screen(body: string, contentType = 'application/json'): Promise<string> {
   const p: any = await createProtection({
@@ -42,23 +45,20 @@ describe('the Supabase secret key does not leave the app', () => {
   });
 
   it('masks the WHOLE key, not a prefix of it', async () => {
-    // The failure that would look like success. Supabase does not document the key alphabet, so a
-    // character class that guessed too narrowly would stop at the first unexpected character and mask
-    // only the leading part — serving the remainder while the log says "redacted". Assert that no
-    // substring long enough to matter survives.
+    // "The key is not present verbatim" is also true when only its leading run was masked, so assert
+    // that no run of it long enough to matter survives from either end.
     const out = await screen(JSON.stringify({ key: SECRET }));
-    const suffix = SECRET.slice('sb_secret_'.length);
-    for (let take = 8; take <= suffix.length; take++) {
-      expect(out, `a ${take}-char run of the key survived`).not.toContain(suffix.slice(0, take));
-      expect(out, `a ${take}-char tail of the key survived`).not.toContain(suffix.slice(-take));
+    const body = SECRET.slice('sb_secret_'.length);
+    for (let take = 8; take <= body.length; take++) {
+      expect(out, `a ${take}-char run of the key survived`).not.toContain(body.slice(0, take));
+      expect(out, `a ${take}-char tail of the key survived`).not.toContain(body.slice(-take));
     }
   });
 
   it('masks it whatever the delimiter around it, and leaves that delimiter alone', async () => {
-    // Both halves matter, and asserting only the first hid a real defect: an earlier pattern matched
-    // "everything up to a natural delimiter" and ate `&next=1` along with the key — and this test
-    // passed, because the secret had indeed disappeared. Redaction masks the offending span and leaves
-    // the response otherwise intact; a rule that destroys neighbouring fields is not doing that.
+    // Both halves matter. Redaction masks the offending span and leaves the response otherwise intact,
+    // so a rule that destroys the field after the key is not doing its job — and "the secret is gone"
+    // is true of that broken behaviour too, which is why each case names what must survive.
     const cases: Array<[string, string[]]> = [
       [`{"k":"${SECRET}"}`, ['{"k":"', '"}']],
       [`k=${SECRET}&next=1`, ['k=', '&next=1']],
@@ -94,6 +94,41 @@ describe('the publishable key is not a secret', () => {
     const out = await screen(JSON.stringify({ pub: PUBLISHABLE, secret: SECRET }));
     expect(out).toContain(PUBLISHABLE);
     expect(out).not.toContain(SECRET);
+  });
+});
+
+describe('only the documented grammar is a key', () => {
+  // 22 base64url characters, `_`, 8-character checksum. Exactness is what keeps the mask off the
+  // response around the key and off a partially-matched one, so each way of departing from the grammar
+  // is a case here.
+  const notKeys: Array<[string, string]> = [
+    ['21 random characters', `sb_secret_${RANDOM.slice(0, -1)}_${CHECKSUM}`],
+    ['23 random characters', `sb_secret_${RANDOM}7_${CHECKSUM}`],
+    ['7-character checksum', `sb_secret_${RANDOM}_${CHECKSUM.slice(0, -1)}`],
+    ['9-character checksum', `sb_secret_${RANDOM}_${CHECKSUM}X`],
+    ['a dash where the separator belongs', `sb_secret_${RANDOM}-${CHECKSUM}`],
+    ['no separator at all', `sb_secret_${RANDOM}X${CHECKSUM}`],
+    ['a checksum character outside base64url', `sb_secret_${RANDOM}_${CHECKSUM.slice(0, -1)}!`],
+    ['a longer run of key characters', `${SECRET}ABCDEF`],
+  ];
+
+  it.each(notKeys)('does not fire on %s', async (_name, value) => {
+    const body = JSON.stringify({ k: value });
+    expect(await screen(body)).toBe(body);
+  });
+
+  it('fires on a valid key beside URL and query syntax, leaving that syntax intact', async () => {
+    for (const [body, survivors] of [
+      [`https://app.test/cb?token=${SECRET}&next=%2Fhome`, ['?token=', '&next=%2Fhome']],
+      [`https://app.test/${SECRET}/refresh`, ['https://app.test/', '/refresh']],
+      [`{"a":1,"key":"${SECRET}","b":2}`, ['"a":1', '"b":2']],
+    ] as Array<[string, string[]]>) {
+      const out = await screen(body, 'text/plain');
+      expect(out, `not masked in: ${body}`).not.toContain(SECRET);
+      for (const survivor of survivors) {
+        expect(out, `masking ate ${JSON.stringify(survivor)}`).toContain(survivor);
+      }
+    }
   });
 });
 

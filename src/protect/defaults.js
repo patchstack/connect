@@ -60,31 +60,19 @@ export const DEFAULT_RESPONSE_RULES = [
     phase: 'response',
     category: 'secret-exposure',
     action: 'redact',
-    // Supabase's NEW key format is an opaque string, not a JWT, so nothing above caught it: a
-    // `sb_secret_` key was served through unfiltered. It is the elevated one — Supabase documents it
-    // as full access, bypassing Row Level Security, backend-only — while `sb_publishable_` is meant
-    // for public clients. Only the secret prefix is matched; the publishable one must pass untouched.
+    // Supabase's opaque key format, which is not a JWT and so is not covered by the JWT rule below.
+    // `sb_secret_` is the elevated one — documented as full access, bypassing Row Level Security,
+    // backend-only — while `sb_publishable_` is meant for public clients and must pass untouched.
+    // Both key systems are live at once: new keys sit alongside the legacy `anon` / `service_role`
+    // JWTs rather than replacing them, so this rule and the JWT rule cover different halves.
     //
-    // Both key systems are live at once (creating new keys leaves the legacy `anon` / `service_role`
-    // JWTs working), so this rule and the JWT rules cover different halves of the same problem.
-    //
-    // The suffix is the base64url alphabet. An earlier version matched "everything up to a natural
-    // delimiter" on the reasoning that under-matching leaks while over-matching is harmless — and that
-    // second half was wrong, measured: `k=<key>&next=1` masked `&next=1` along with the key, and
-    // `a=<key>&b=2&c=3` destroyed two more fields. Redaction is supposed to mask the offending span and
-    // leave the response otherwise intact, so eating adjacent syntax is its own defect, not a rounding
-    // error.
-    //
-    // Supabase does not document the alphabet, so this is a stated trade rather than a proof: if a key
-    // ever contains a character outside base64url, this masks the leading run and leaves the tail. The
-    // tests pin both directions — the whole key gone, and neighbouring fields untouched — so widening
-    // the class later shows immediately what it costs. `=` is excluded deliberately: as base64 padding
-    // it carries no secret, and including it re-opened the `x=<key>==` over-match.
-    //
-    // The 16-char floor keeps the bare prefix in prose or documentation from matching; the ceiling
-    // bounds the span.
+    // The documented grammar is the prefix, 22 base64url characters, `_`, then an 8-character
+    // base64url checksum. Matching it exactly is what keeps the mask on the key and off the response
+    // around it: a variable-length suffix would either run past the key into adjacent syntax or stop
+    // short and leave the tail of a real key visible. The trailing guard rejects a longer run of key
+    // characters, which is not this format.
     prefilter: ['sb_secret_'],
-    rule_v2: [{ parameter: 'response.body', match: { type: 'regex', value: '/\\bsb_secret_[A-Za-z0-9_-]{16,200}/' } }]
+    rule_v2: [{ parameter: 'response.body', match: { type: 'regex', value: '/\\bsb_secret_[A-Za-z0-9_-]{22}_[A-Za-z0-9_-]{8}(?![A-Za-z0-9_-])/' } }]
   },
   {
     id: 'resp-jwt',
