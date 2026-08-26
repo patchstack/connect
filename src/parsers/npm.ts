@@ -79,17 +79,27 @@ function extractFromV2(packages: Record<string, LockfileV2Package>): PackageEntr
   return entries;
 }
 
+/**
+ * A v1 lockfile has no path keys — but its NESTING is the install layout, so the path is derivable:
+ * a nested `dependencies` map is literally the `node_modules` directory inside its parent.
+ *
+ * Deriving it matters because the v2 format supplies paths and v1 did not, so the same repo produced a
+ * payload that could correlate an import to an installed instance or one that could not, depending only
+ * on which npm wrote the lockfile — and the difference was invisible in the result.
+ */
 function extractFromV1(
   deps: Record<string, LockfileV1Dependency>,
   acc: PackageEntry[] = [],
   depth = 0,
+  prefix = '',
 ): PackageEntry[] {
   for (const [name, dep] of Object.entries(deps)) {
+    const installPath = `${prefix}node_modules/${name}`;
     if (typeof dep.version === 'string' && dep.version.length > 0) {
-      acc.push({ name, version: dep.version, direct: depth === 0 });
+      acc.push({ name, version: dep.version, path: installPath, direct: depth === 0 });
     }
     if (dep.dependencies) {
-      extractFromV1(dep.dependencies, acc, depth + 1);
+      extractFromV1(dep.dependencies, acc, depth + 1, `${installPath}/`);
     }
   }
   return acc;
