@@ -55,6 +55,26 @@ export const DEFAULT_RESPONSE_RULES = [
     rule_v2: [{ parameter: 'response.body', match: { type: 'regex', value: '/\\b(?:sk_live_[0-9A-Za-z]{16,}|rk_live_[0-9A-Za-z]{16,}|gh[opsu]_[0-9A-Za-z]{36}|github_pat_[0-9A-Za-z_]{60,}|glpat-[0-9A-Za-z_-]{20,}|xox[baprs]-[0-9A-Za-z-]{10,}|sk-ant-[0-9A-Za-z_-]{20,}|ya29\\.[0-9A-Za-z_-]{20,}|npm_[0-9A-Za-z]{36})(?![0-9A-Za-z])/' } }]
   },
   {
+    id: 'resp-supabase-secret-key',
+    title: 'Supabase secret key in response body',
+    phase: 'response',
+    category: 'secret-exposure',
+    action: 'redact',
+    // Supabase's opaque key format, which is not a JWT and so is not covered by the JWT rule below.
+    // `sb_secret_` is the elevated one — documented as full access, bypassing Row Level Security,
+    // backend-only — while `sb_publishable_` is meant for public clients and must pass untouched.
+    // Both key systems are live at once: new keys sit alongside the legacy `anon` / `service_role`
+    // JWTs rather than replacing them, so this rule and the JWT rule cover different halves.
+    //
+    // The documented grammar is the prefix, 22 base64url characters, `_`, then an 8-character
+    // base64url checksum. Matching it exactly is what keeps the mask on the key and off the response
+    // around it: a variable-length suffix would either run past the key into adjacent syntax or stop
+    // short and leave the tail of a real key visible. The trailing guard rejects a longer run of key
+    // characters, which is not this format.
+    prefilter: ['sb_secret_'],
+    rule_v2: [{ parameter: 'response.body', match: { type: 'regex', value: '/\\bsb_secret_[A-Za-z0-9_-]{22}_[A-Za-z0-9_-]{8}(?![A-Za-z0-9_-])/' } }]
+  },
+  {
     id: 'resp-jwt',
     title: 'JWT in response body',
     phase: 'response',
