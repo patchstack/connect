@@ -43,6 +43,17 @@ const FS_PACKAGES = ['fs-extra', 'graceful-fs', 'memfs'];
 const isFsPackage = (pkg: string) => /^node:fs(\/promises)?$/.test(pkg) || FS_PACKAGES.includes(pkg);
 const EXEC_PACKAGES = ['execa', 'cross-spawn', 'shelljs', 'zx'];
 const isExecPackage = (pkg: string) => pkg === 'node:child_process' || EXEC_PACKAGES.includes(pkg);
+// Deserialization that EXECUTES what it decodes, which makes it an `eval` sink rather than a parsing
+// step. `node-serialize`'s `unserialize` invokes an embedded `$$ND_FUNC$$` IIFE, so a request body
+// reaching it is remote code execution (CVE-2017-5941).
+//
+// Kept to APIs actually verified to execute, not every deserializer: `JSON.parse` does not execute, and
+// a serializer like `serialize-javascript` has an output-side flaw, not this one. Recognizing a package
+// here is a claim that untrusted input reaching this call runs code, and a wrong claim aims a rule at
+// something that is not the vulnerability.
+const DESERIALIZE_CALLS = /^unserialize$/;
+const DESERIALIZE_PACKAGES = ['node-serialize'];
+const isDeserializePackage = (pkg: string) => DESERIALIZE_PACKAGES.includes(pkg);
 
 /**
  * Which sink families this package can produce, per the recognizer tables above — i.e. what the map is
@@ -58,6 +69,7 @@ export function recognizedSinkKinds(pkg: string): SinkKind[] {
   if (isFsPackage(pkg)) kinds.push('fs');
   if (isExecPackage(pkg)) kinds.push('exec');
   if (isHttpPackage(pkg)) kinds.push('http');
+  if (isDeserializePackage(pkg)) kinds.push('eval');
   return kinds;
 }
 
@@ -271,6 +283,12 @@ function directSinks(node: any, ts: TsModule, bindings: Bindings, ctx?: SinkCont
           if (EXEC_CALLS.test(method) && b.pkg && isExecPackage(b.pkg)) {
             push({ kind: 'exec', package: b.pkg, op: method, attribution: 'import', ...spanOf(n) });
           }
+          // `serialize.unserialize(` — the usual shape, since the package exports an object. Same rule as
+          // fs/exec above: the receiver must resolve to a recognized package, because the method name on
+          // its own proves nothing.
+          if (DESERIALIZE_CALLS.test(method) && b.pkg && isDeserializePackage(b.pkg)) {
+            push({ kind: 'eval', provider: b.root, package: b.pkg, op: method, attribution: 'import', ...spanOf(n) });
+          }
           // http: any client whose binding resolves to a known http package (`axios.get`, `ky.post`,
           // `http.request`), else the classic identifiers by name as a heuristic.
           if (HTTP_MEMBER_METHODS.has(method)) {
@@ -308,6 +326,11 @@ function directSinks(node: any, ts: TsModule, bindings: Bindings, ctx?: SinkCont
           push({ kind: 'exec', package: pkg, op: name, attribution: 'import', ...spanOf(n) });
         }
         if (name === 'eval' && trueGlobal) push({ kind: 'eval', op: 'eval', attribution: 'global', ...spanOf(n) });
+        // A destructured import: `const { unserialize } = require('node-serialize')`. Never a global, so
+        // without a resolved package binding this is app code that happens to share the name.
+        if (DESERIALIZE_CALLS.test(name) && pkg && isDeserializePackage(pkg)) {
+          push({ kind: 'eval', package: pkg, op: name, attribution: 'import', ...spanOf(n) });
+        }
       }
     }
     if (ts.isNewExpression(n) && ts.isIdentifier(n.expression) && n.expression.text === 'Function'
@@ -372,6 +395,10 @@ export function argumentRoleOf(sinkKind: string, method: string | undefined, ind
   // `new Function(a, b, "return a+b")` — every argument but the LAST declares a parameter name; only the
   // last one is executable code. An index-based table cannot express that.
   if (sinkKind === 'eval' && method === 'Function') return index === total - 1 ? 'code' : 'args';
+  // `unserialize(payload)` — the payload IS the executed code, so argument 0 carries the `code` role and
+  // therefore the `code-injection` candidate family. Without this the flow lands on `unknown` and no rule
+  // can be compiled from it.
+  if (sinkKind === 'eval' && method === 'unserialize') return index === 0 ? 'code' : 'unknown';
   const table = method ? ARGUMENT_ROLES[sinkKind]?.[method] : undefined;
   return table?.[index] ?? 'unknown';
 }
