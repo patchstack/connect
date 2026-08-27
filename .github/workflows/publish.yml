@@ -52,6 +52,13 @@ jobs:
       - name: Build
         run: npm run build
 
+      # Before publishing anything: does the build about to ship block the exploit the canary is built
+      # around? `PS_REQUIRE_CANARY` refuses to skip, because a skipped canary reads as a passing one.
+      - name: Canary — the build about to ship blocks the exploit
+        run: npx vitest run tests/protect/canary-engine-proof.test.ts
+        env:
+          PS_REQUIRE_CANARY: '1'
+
       - name: Verify package contents
         run: npm pack --dry-run
 
@@ -104,3 +111,40 @@ jobs:
 
       - name: Publish to npm
         run: npm publish --access public --provenance
+
+      # The proof that matters most, and the only one that covers PACKAGING. Everything above tests a build
+      # in this checkout; this installs the published tarball from the registry and runs the same canary
+      # against the engine inside it. A file left out of `files`, a wrong `exports` map, or a bad entry
+      # point produces an artifact that passes every local check and cannot protect an application — which
+      # is indistinguishable from protection until an attack is not blocked.
+      #
+      # After the publish rather than before, because the tarball does not exist until then. A failure here
+      # cannot unpublish the version; it is a loud signal to deprecate it, which is the honest position:
+      # the alternative is not knowing.
+      - name: Canary — the PUBLISHED tarball blocks the exploit
+        run: |
+          set -euo pipefail
+          version='${{ steps.version.outputs.version }}'
+
+          # npm needs a moment before a fresh version resolves; a failure to install here is not a failure
+          # of the engine and must not be reported as one.
+          for attempt in 1 2 3 4 5; do
+            if npm pack "@patchstack/connect@${version}" --pack-destination /tmp >/dev/null 2>&1; then
+              break
+            fi
+            if [ "$attempt" = "5" ]; then
+              echo "::error::Could not fetch @patchstack/connect@${version} from the registry to verify it. The published engine is UNVERIFIED — this is not evidence that it works."
+              exit 1
+            fi
+            sleep 15
+          done
+
+          mkdir -p /tmp/published && tar -xzf /tmp/patchstack-connect-"${version}".tgz -C /tmp/published
+          engine=/tmp/published/package/dist/protect.js
+
+          if [ ! -f "$engine" ]; then
+            echo "::error::The published tarball has no dist/protect.js. Nothing that installs this package can protect anything."
+            exit 1
+          fi
+
+          PS_CANARY_ENGINE="$engine" PS_REQUIRE_CANARY=1 npx vitest run tests/protect/canary-engine-proof.test.ts
