@@ -70,7 +70,10 @@ jobs:
           - { label: npm 11.6.0, manager: npm, setup: 'npm@11.6.0' }
           - { label: pnpm 9.15.4, manager: pnpm, setup: 'pnpm@9.15.4' }
           - { label: Yarn Classic 1.22.22, manager: yarn, setup: 'yarn@1.22.22' }
-          - { label: Yarn Berry 4.18.0, manager: yarn, setup: '@yarnpkg/cli-dist@4.18.0' }
+          # The layout is in the label: this exercises Berry resolving the export map through
+          # `node_modules`, which is what the fixture pins. Plug'n'Play is a separate shape and is not
+          # covered, so the check must not read as "Berry works".
+          - { label: Yarn Berry 4.18.0 (node-modules), manager: yarn, setup: '@yarnpkg/cli-dist@4.18.0' }
           - { label: Bun 1.2.21, manager: bun, setup: '' }
     steps:
       - uses: actions/checkout@v4
