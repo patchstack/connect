@@ -119,7 +119,12 @@ function zodShape(node: any, ts: TsModule): Omit<FieldShape, 'name'> {
   return shape;
 }
 
-export const REQ_SOURCES = ['body', 'query', 'params'];
+// The request namespaces an input can be read from. `headers`, `cookies` and `files` were declared in
+// `InputSource` and in `ADDRESS_SPACES`, and the coordinate mapping for all three was already written —
+// only extraction never produced them, so a header-, cookie- or upload-borne vulnerability could never
+// get a coordinate and therefore never a pinned rule. A declared capability nothing can reach is worse
+// than an absent one: it reads as covered.
+export const REQ_SOURCES = ['body', 'query', 'params', 'headers', 'cookies', 'files'];
 
 // The request fields a handler reads, across the common idioms:
 //   req.body.x / req.query.x / req.params.x        (member access)
@@ -183,6 +188,20 @@ function requestMemberAccesses(
     if (ts.isPropertyAccessExpression(n) && isReqSourceExpr(n.expression)) {
       record(n.name.text, sourceOfExpr(n.expression));
     }
+    // <source>['<field>'] — the form a header read almost always takes, because a header name carries
+    // dashes and cannot be a property name. Only a STRING LITERAL key: `headers[name]` is a dynamic read
+    // whose field nobody knows, and inventing one would pin a rule to a parameter that may not exist.
+    if (ts.isElementAccessExpression(n) && isReqSourceExpr(n.expression)
+        && n.argumentExpression && ts.isStringLiteral(n.argumentExpression)) {
+      record(n.argumentExpression.text, sourceOfExpr(n.expression));
+    }
+    // `request.headers.get('x-token')` / `request.cookies.get('sid')` — the fetch-style twin of the two
+    // above. The namespace is one hop further out because `.get()` is a method on it.
+    if (ts.isCallExpression(n) && ts.isPropertyAccessExpression(n.expression)
+        && n.expression.name.text === 'get' && isReqSourceExpr(n.expression.expression)
+        && n.arguments.length === 1 && n.arguments[0] && ts.isStringLiteral(n.arguments[0])) {
+      record((n.arguments[0] as any).text, sourceOfExpr(n.expression.expression));
+    }
     if (ts.isVariableDeclaration(n) && n.initializer) {
       const init = unwrap(n.initializer);
       // const b = await request.json() → b is a request-input object from here on.
@@ -215,9 +234,10 @@ function requestMemberAccesses(
   function sourceOfExpr(e: any): InputSource {
     if (isPayloadExpr(e)) return 'server-fn-data';
     if (ts.isPropertyAccessExpression(e)) {
-      if (e.name.text === 'query') return 'query';
-      if (e.name.text === 'params') return 'route-param';
-      if (e.name.text === 'body') return 'body';
+      const named = namespaceSource(e.name.text);
+      // `namespaceSource` falls back to 'body', which would make any member access a body read. Only
+      // accept it when the name IS a namespace we recognise.
+      if (REQ_SOURCES.includes(e.name.text)) return named;
     }
     // The recorded namespace, so an ALIAS resolves correctly (`({ query: q }) => q.id` → query).
     if (ts.isIdentifier(e)) {
@@ -231,6 +251,9 @@ function requestMemberAccesses(
   function namespaceSource(key: string): InputSource {
     if (key === 'query') return 'query';
     if (key === 'params') return 'route-param';
+    if (key === 'headers') return 'header';
+    if (key === 'cookies') return 'cookie';
+    if (key === 'files') return 'file';
     return 'body';
   }
   function bodyReadSource(init: any): InputSource {
