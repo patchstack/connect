@@ -21,11 +21,26 @@ the thing it existed for, and `2/8 REFUSED` is the modal outcome for `hostile`.
 
 Such a round is now **void**: neither evidence for nor against the docs.
 
-- The scorecard carries `audited` (did the package get installed) and prints `VOID` when it did not.
+- The scorecard carries `audited`, and prints `VOID` when it is false.
+- `audited` means **the tarball was fetched and unpacked** — specifically, a non-empty
+  `node_modules/@patchstack/connect/AGENT-INSTALL.md` in the fixture. A dependency DECLARATION in
+  `package.json` is not enough and was the first version's mistake: an agent can add the declaration and
+  refuse before `npm install`, and several recorded refusal modes are exactly that shape (staging an edit
+  for the user instead of running a command). Such a round then scored as conclusive while the docs were
+  never on disk.
+- What that establishes is that the docs were **present for the agent to read**, not that it read them.
+  That is the strongest thing observable from outside the agent, and it is the right bar: a round where
+  the docs were on disk and the agent still refused *is* evidence about them; a round where they never
+  arrived is not.
+- The `installed` check now requires both halves, and its detail distinguishes the three states
+  (absent / declared but never unpacked / unpacked, with the doc's byte count).
 - Void rounds are retried, bounded at `2 × --rounds`, so a persona that never installs cannot loop.
+  Every attempt keeps its own `round-<n>-attempt-<m>/` directory — retries used to reuse the round
+  number and overwrite the void attempt's report, destroying the record a reviewer needs to tell a
+  prompt refusal from a doc regression.
 - The summary counts only conclusive rounds, and reports how many were void.
 - Exit codes are three-way: `0` all conclusive rounds green, `1` a real failure, **`2` inconclusive** —
-  nothing installed, so the run says nothing. A release gate must not read `2` as "the docs are fine".
+  nothing unpacked, so the run says nothing. A release gate must not read `2` as "the docs are fine".
 
 Two consequences for how to use it:
 
@@ -37,9 +52,20 @@ Two consequences for how to use it:
 Self-testing the two paths costs no agent tokens:
 
 ```
-node field-test/run.mjs --rounds 1 --agent-cmd "node '$PWD/field-test/stub-compliant.mjs'"  # 8/8, exit 0
-node field-test/run.mjs --rounds 1 --agent-cmd "node '$PWD/field-test/stub-refusing.mjs'"   # void, exit 2
+node field-test/run.mjs --rounds 1 --agent-cmd "node '$PWD/field-test/stub-compliant.mjs'"
+node field-test/run.mjs --rounds 1 --agent-cmd "node '$PWD/field-test/stub-refusing.mjs'"
+node field-test/run.mjs --rounds 1 --agent-cmd "node '$PWD/field-test/stub-declares-only.mjs'"
 ```
+
+| stub | what it models | expected |
+|---|---|---|
+| `stub-compliant` | performs the whole flow | `8/8`, `1/1 conclusive`, exit **0** |
+| `stub-refusing` | refuses before touching anything | 3 void rounds, INCONCLUSIVE, exit **2** |
+| `stub-declares-only` | writes the dependency, never installs | 3 void rounds, INCONCLUSIVE, exit **2** |
+
+`stub-declares-only` is the one that matters for the `audited` definition. With `audited` reading the
+package.json declaration, that run reported `0/1 conclusive` and exit **1** — a definitive failure verdict
+about documentation it had never obtained.
 
 Quote the path: `--agent-cmd` is handed to `sh -c`, and this repository's own checkout sits under a
 directory with a space in it, so an unquoted command silently fails to start — which voids the round,
