@@ -13,7 +13,6 @@
 //
 // Results land in field-test/results/<timestamp>/ (gitignored): the agent's
 // report, the mock API's request log, and a scorecard per round.
-import { spawn } from 'node:child_process';
 import { mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
@@ -21,6 +20,8 @@ import { fileURLToPath } from 'node:url';
 
 import { startMockApi } from './mock-api.mjs';
 import { makeFixture, TEMPLATES } from './fixture.mjs';
+import { composeAgentPrompt } from './persona.mjs';
+import { runAgent } from './agent.mjs';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 
@@ -57,31 +58,6 @@ function parseArgs(argv) {
     process.exit(1);
   }
   return opts;
-}
-
-function runAgent(agentCmd, promptText, fixtureDir, endpoint, timeoutMs) {
-  return new Promise((resolve) => {
-    const child = spawn('sh', ['-c', agentCmd], {
-      cwd: fixtureDir,
-      env: { ...process.env, PATCHSTACK_ENDPOINT: endpoint },
-      stdio: ['pipe', 'pipe', 'pipe'],
-    });
-    let out = '';
-    let err = '';
-    let timedOut = false;
-    const timer = setTimeout(() => {
-      timedOut = true;
-      child.kill('SIGKILL');
-    }, timeoutMs);
-    child.stdout.on('data', (chunk) => (out += chunk));
-    child.stderr.on('data', (chunk) => (err += chunk));
-    child.on('close', (code) => {
-      clearTimeout(timer);
-      resolve({ output: out, stderr: err, exitCode: code, timedOut });
-    });
-    child.stdin.write(promptText);
-    child.stdin.end();
-  });
 }
 
 /** Bounded search for `needle` in the fixture's source files (skips node_modules etc.). */
@@ -198,7 +174,7 @@ function verify(fixtureDir, mock, agentOutput) {
   // A round where the tarball never arrived cannot say anything about the SHIPPED DOCS.
   //
   // Agents `npm pack` the tarball and audit it, and a contradiction between the docs and `dist/` — an
-  // undisclosed command, an overbroad privacy claim — is a recorded refusal driver (mode 6). That is the
+  // undisclosed command, an overbroad privacy claim — is a recorded reason agents refuse. That is the
   // thing the documentation gate exists to detect. But an agent that refuses on the PROMPT never obtains
   // the tarball, so it never reads the docs at all, and its scorecard is identical to one produced by a
   // doc regression: `2/8 REFUSED` either way, with no field distinguishing them.
@@ -259,9 +235,10 @@ for (let round = 1; round <= opts.rounds; round++) {
   console.log('building fixture (npm install)…');
   makeFixture(fixtureDir, opts.template);
 
-  const agentPrompt = personaTemplate
-    .replaceAll('{{FIXTURE_DIR}}', fixtureDir)
-    .replaceAll('{{INSTALL_PROMPT}}', installPrompt);
+  // Through the composer, which strips the provenance block. Substituting here directly would send the
+  // block to the agent: it announces that this is an evaluation and gives the agent a reason to discount
+  // the policy it is meant to be applying, and a green run then proves nothing.
+  const agentPrompt = composeAgentPrompt({ persona: personaTemplate, fixtureDir, installPrompt });
 
   console.log('running agent…');
   const result = await runAgent(
