@@ -10,7 +10,7 @@
 // green while nothing can import the package. Each shape below states the consumption path it holds open.
 //
 // Run: node scripts/compat-matrix.mjs [--manager npm|pnpm|yarn|bun]
-import { execFileSync, execSync } from 'node:child_process';
+import { execFileSync } from 'node:child_process';
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync, existsSync, readdirSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
@@ -23,21 +23,34 @@ const manager = (() => {
 const ROOT = process.cwd();
 const WINDOWS = process.platform === 'win32';
 
+/** Quote one argument for the Windows interpreter: wrap it, and double any `"`, which is cmd's escape. */
+const quoteArg = (token) => `"${String(token).replace(/"/g, '""')}"`;
+
 /**
- * Quote one token for the Windows command interpreter.
+ * The command word, quoted only when it is a path.
  *
- * Every token is wrapped, because a Windows temp path contains spaces and an unquoted one is split into
- * two arguments. `"` doubles, which is cmd's own escape.
+ * A BARE name must stay unquoted. `npm` on Windows is `npm.cmd`, found through `PATH` and `PATHEXT`, and
+ * the shim resolves its own installation with `%~dp0` — the directory of the batch file it is running.
+ * Quoting the name changes how cmd resolves it, `%~dp0` becomes the working directory, and npm then looks
+ * for its own CLI under whatever project happens to be current.
+ *
+ * An ABSOLUTE path must be quoted: the binaries in `node_modules/.bin` are addressed by path, and a
+ * Windows temp or workspace path contains spaces.
  */
-const quoteForCmd = (token) => `"${String(token).replace(/"/g, '""')}"`;
+const quoteCommand = (cmd) => (path.isAbsolute(cmd) ? quoteArg(cmd) : cmd);
 
 /**
  * Run a tool and return its stdout.
  *
- * On Windows the package managers and the installed binaries are `.cmd` shims, and `execFileSync` cannot
- * launch one: it creates a process directly, and a batch file is not an executable image. So Windows goes
- * through the command interpreter with every token quoted, and every other platform keeps direct
- * execution — no shell, nothing to quote, nothing to escape wrongly.
+ * On Windows the package managers and installed binaries are `.cmd` shims. `execFileSync` creates a process
+ * directly and a batch file is not an executable image, so it cannot launch one — the interpreter has to be
+ * invoked explicitly. Every other platform executes directly: no shell, nothing to quote, nothing to escape
+ * wrongly.
+ *
+ * The Windows form is `cmd /d /s /c "<line>"` with `windowsVerbatimArguments`, which is the only
+ * combination that behaves predictably: `/s` makes cmd strip exactly the outermost quote pair and take the
+ * rest verbatim, and `windowsVerbatimArguments` stops Node re-escaping the line first. Without both, the
+ * quotes around individual arguments are rewritten and a path with a space breaks.
  *
  * See https://nodejs.org/api/child_process.html#spawning-bat-and-cmd-files-on-windows.
  */
@@ -46,7 +59,12 @@ function run(cmd, args, cwd, extraEnv = {}) {
 
   if (!WINDOWS) return execFileSync(cmd, args, options);
 
-  return execSync([cmd, ...args].map(quoteForCmd).join(' '), options);
+  const line = [quoteCommand(cmd), ...args.map(quoteArg)].join(' ');
+
+  return execFileSync(process.env.ComSpec || 'cmd.exe', ['/d', '/s', '/c', `"${line}"`], {
+    ...options,
+    windowsVerbatimArguments: true,
+  });
 }
 
 /** Install a local tarball. Each manager spells it differently, and their resolution differs — which is

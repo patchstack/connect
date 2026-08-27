@@ -41,7 +41,8 @@ async function bundleWith(conditions: string[]): Promise<{ ok: boolean; text: st
 
 describe('edge conditional-export resolution', () => {
   beforeAll(() => {
-    // The exports map points at dist/, so the artifacts must exist. CI runs tests before the build.
+    // The exports map points at dist/, so the artifacts must exist. CI builds first; this covers a local
+    // run in a fresh checkout, where building here is cheaper than skipping and reporting green.
     if (!existsSync(join(repo, 'dist', 'protect.edge.js')) || !existsSync(join(repo, 'dist', 'protect.js'))) {
       execFileSync('npm', ['run', 'build'], { cwd: repo, stdio: 'ignore' });
     }

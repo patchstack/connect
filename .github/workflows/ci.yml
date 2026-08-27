@@ -49,10 +49,16 @@ jobs:
   # condition resolves to, which declarations TypeScript reads beside it, whether `files` left something
   # out. A defect there leaves the source suite green while nothing can import the package.
   #
-  # Managers resolve differently, so npm's answer does not generalise — that is the whole reason to run
-  # more than one. Versions are PINNED: an unpinned manager silently changes what was exercised, and Yarn
-  # Classic and Berry differ enough that a pass under one is not a pass under the other, so both run.
-  # The script prints the version it saw, so the label and the artifact cannot disagree.
+  # Managers resolve differently, so npm's answer does not generalise — that is the whole reason to run more
+  # than one. Yarn Classic and Berry differ enough that a pass under one is not a pass under the other, so
+  # both are here.
+  #
+  # Every version is EXACT. A floating major silently changes what was exercised, and a run that passes for
+  # a reason nobody chose is not evidence. The script also prints the version it resolved, so the label and
+  # the artifact cannot disagree.
+  #
+  # Berry does not come from the `yarn` package on npm — that line stops at 2.x — so it is installed from
+  # `@yarnpkg/cli-dist`, which is the distribution that carries the `yarn` binary.
   consumers:
     name: 📦 Consumers on ${{ matrix.label }}
     runs-on: ubuntu-latest
@@ -61,11 +67,11 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - { label: npm 10, manager: npm, setup: npm@10 }
-          - { label: pnpm 9, manager: pnpm, setup: pnpm@9 }
-          - { label: Yarn Classic 1.22, manager: yarn, setup: yarn@1.22.22 }
-          - { label: Yarn Berry 4, manager: yarn, setup: yarn@4 }
-          - { label: Bun 1, manager: bun, setup: bun }
+          - { label: npm 11.6.0, manager: npm, setup: 'npm@11.6.0' }
+          - { label: pnpm 9.15.4, manager: pnpm, setup: 'pnpm@9.15.4' }
+          - { label: Yarn Classic 1.22.22, manager: yarn, setup: 'yarn@1.22.22' }
+          - { label: Yarn Berry 4.18.0, manager: yarn, setup: '@yarnpkg/cli-dist@4.18.0' }
+          - { label: Bun 1.2.21, manager: bun, setup: '' }
     steps:
       - uses: actions/checkout@v4
 
@@ -77,20 +83,15 @@ jobs:
       - if: matrix.manager == 'bun'
         uses: oven-sh/setup-bun@v2
         with:
-          bun-version: latest
+          bun-version: 1.2.21
 
-      - name: Pin the package manager
+      - name: Install the package manager at an exact version
         if: matrix.manager != 'bun'
-        run: npm install --global "${{ matrix.setup }}"
-
-      # Berry defaults to its own linker and refuses a bare `yarn add` outside a project it initialised.
-      # `node-modules` is the layout the other managers produce and the one a consumer of this package will
-      # have, so it is what the fixtures must exercise.
-      - name: Configure Yarn Berry for a node_modules layout
-        if: startsWith(matrix.label, 'Yarn Berry')
         run: |
-          yarn config set nodeLinker node-modules
-          yarn config set enableImmutableInstalls false
+          npm install --global "${{ matrix.setup }}"
+          # The version actually on PATH, before any fixture runs. An install that resolved to something
+          # else — or to nothing — must be visible here rather than inferred from a later failure.
+          ${{ matrix.manager }} --version
 
       - name: Install dependencies
         run: npm ci
@@ -148,11 +149,15 @@ jobs:
       - name: Typecheck
         run: npm run typecheck
 
-      - name: Test
-        run: npm test
-
+      # Before the tests. Several of them only run once `dist/` exists — the edge export-resolution and
+      # edge-safe checks among them — and in the other order they skip, which is indistinguishable from
+      # passing. Two dist-dependent checks are rerun explicitly below with a flag that refuses to skip;
+      # the rest rely on this ordering, so it is the ordering that has to be right.
       - name: Build
         run: npm run build
+
+      - name: Test
+        run: npm test
 
       # After the build, because it drives the built bin. npm installs a bin as a SYMLINK, so this is the
       # only invocation shape that catches an entry point which runs when called directly and does nothing
