@@ -39,7 +39,7 @@ export async function extractInputMap(cwd: string, ts: TsModule, options: Extrac
   try { boundary = realpathSync(cwd); } catch { /* use cwd as-is */ }
 
   const graph = createModuleGraph(ts, { cwd, boundary, followOutside: options.followSymlinks }); // shared cache
-  const stats: WalkStats = { discovered: 0, unwalked: 0 };
+  const stats: WalkStats = { discovered: 0, unwalked: 0, skippedWithSource: [], skippedUnknown: 0 };
   const files = collectSources(cwd, boundary, { followOutside: options.followSymlinks }, [], new Set(), stats);
   const imports = createImportInventory(readPathAliases(cwd));
   const invocations = createInvocationInventory();
@@ -187,18 +187,33 @@ export async function extractInputMap(cwd: string, ts: TsModule, options: Extrac
   // because no static pass can resolve it. Both make the inventory incomplete, so both clear the flag;
   // they are reported apart so a reviewer can tell "try again" from "this app cannot be answered
   // statically" instead of re-running against a permanent property of the source.
+  // Relativized once: `WalkStats` carries these as absolute paths (see its doc), and both the coverage
+  // field and the note below would otherwise ship the user's filesystem layout to the server.
+  const skippedDirsWithSource = stats.skippedWithSource.map((d) => relative(cwd, d));
   const importCoverageGaps = {
     unreadableFiles: failed.length,
     unscannableFiles: importScanFailures,
     unwalkedPaths: stats.unwalked,
     unresolvableImports,
+    // A directory skipped by NAME that turned out to hold source. It moved no other counter, so before
+    // this an app whose server lived under `vendor/` was indistinguishable from one with no such
+    // directory — and the inventory still claimed to be complete.
+    skippedDirsWithSource,
+    skippedDirsUnsettled: stats.skippedUnknown,
   };
-  const environmentalGaps = failed.length + importScanFailures + stats.unwalked;
+  const environmentalGaps =
+    failed.length + importScanFailures + stats.unwalked + stats.skippedWithSource.length + stats.skippedUnknown;
   const importsComplete = environmentalGaps === 0 && unresolvableImports === 0;
   notes.push('`imports` lists every package the app imports, from ALL source files — not only files holding an entry point. Absence of a SINK for a package is never evidence; absence of the PACKAGE is evidence only when coverage.importsComplete is true.');
   notes.push(`${unmodelled} of ${importList.length} imported package(s) have no recognized sink family (recognizedSinkKinds: []). The extractor models a small set of API families, so for those packages it cannot tell whether input reaches them: a vulnerability in one must stay "needs review" and can never be closed as unreachable using this map.`);
   if (environmentalGaps > 0) {
     notes.push(`The import inventory is INCOMPLETE: ${failed.length} file(s) could not be read, ${importScanFailures} could not be scanned, and ${stats.unwalked} path(s) could not be walked at all (unreadable directory, broken link, or a symlink leaving the project). A package may therefore be imported without appearing in \`imports\`. Do not read a package's absence as "not imported" while coverage.importsComplete is false.`);
+  }
+  if (stats.skippedWithSource.length > 0) {
+    notes.push(`${stats.skippedWithSource.length} director(ies) skipped by name hold source that was NOT analyzed: ${skippedDirsWithSource.slice(0, 10).join(', ')}${skippedDirsWithSource.length > 10 ? ', …' : ''}. The walk excludes these names because they are usually generated or vendored, which is a guess about where app source lives — and here the guess was wrong. Code in them can import, and serve, anything. Point the scan at the directory, or move the app source out of it, before reading any package's absence as evidence.`);
+  }
+  if (stats.skippedUnknown > 0) {
+    notes.push(`${stats.skippedUnknown} skipped director(ies) could not be settled either way — the probe for source hit its budget or the directory could not be read. Counted against completeness deliberately: "we stopped looking" is not the same answer as "nothing there".`);
   }
   if (unresolvableImports > 0) {
     notes.push(`The import inventory is INCOMPLETE for a reason no re-run can fix: ${unresolvableImports} import(s) do not name a resolvable module — either the specifier is computed at runtime (\`require(REGISTRY[kind])\`) or the loader itself was aliased (\`const r = require\`), so which package is loaded is not knowable from the source. Those imports appear NOWHERE in \`imports\` — not as an unresolved entry, simply absent — so a package's absence is not evidence of it being unused. This is a property of the application's code, not a scan failure. Reported conservatively: an aliased loader counts even if every call through it uses a literal.`);

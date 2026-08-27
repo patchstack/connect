@@ -435,6 +435,25 @@ export interface Coverage {
      * false "incomplete", which withholds a negative conclusion rather than granting a wrong one.
      */
     unresolvableImports: number;
+    /**
+     * Directories the walk skipped BY NAME that hold source, repo-relative.
+     *
+     * The walk excludes names like `dist`, `build`, `public` and `vendor` because they are usually
+     * generated or vendored. That is a GUESS about where app source lives, and unlike every other gap
+     * here a wrong guess moved no counter at all: an app whose server sat under `vendor/` looked exactly
+     * like an app with no such directory, and the inventory still reported itself complete. A consumer
+     * holding the documented contract would then read a vulnerable package's absence as "not imported"
+     * and close a live vulnerability.
+     *
+     * `node_modules` is deliberately not among these: excluding it is definitional, not a guess — this
+     * inventory is of the app's OWN imports, and dependency-internal imports are a separate question.
+     */
+    skippedDirsWithSource?: string[];
+    /**
+     * Skipped directories whose contents could not be settled — the source probe hit its budget, or the
+     * directory could not be read. A gap, because "we stopped looking" is not "nothing there".
+     */
+    skippedDirsUnsettled?: number;
   };
   /** Source roots analyzed, repo-relative. */
   roots: string[];

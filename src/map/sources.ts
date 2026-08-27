@@ -48,6 +48,84 @@ const SKIP_DIRS = new Set([
   'vendor', 'tmp', 'temp', '__pycache__',
 ]);
 
+/**
+ * The only two exclusions that are DEFINITIONAL rather than a guess.
+ *
+ * `node_modules`: the import inventory answers "which packages does the app's own code import".
+ * Dependency-internal imports are a different question with its own answer, so not walking it cannot
+ * make this inventory wrong. Probing it would also cost more than the entire walk.
+ *
+ * `.git`: an object database. Its contents are compressed objects and packfiles, not modules any runtime
+ * can load or serve, so nothing in it can be an import this inventory should have named.
+ *
+ * NOTHING ELSE qualifies, and dot-directories especially do not. `.output`, `.next`, `.svelte-kit`,
+ * `.vercel`, `.wrangler` are build output — and a Nuxt production image legitimately contains only
+ * `.output/server/*.mjs` and no `src/` at all, which is the same case that made the `dist` exemption
+ * indefensible. `.turbo` and `.cache` can hold copies of source outright. A dot in the name is a
+ * convention about visibility, not evidence about content.
+ */
+const SKIP_IS_DEFINITIONAL = new Set(['node_modules', '.git']);
+
+/**
+ * Why "derived" is not an exemption.
+ *
+ * An earlier version of this let `dist`, `build`, `out`, `public` and friends hold source without
+ * clearing `importsComplete`, on the reasoning that they are generated from source the walk did read.
+ * That reasoning is an assumption about the checkout, not evidence about it: a production or Docker image
+ * legitimately contains only the compiled server under `dist/` and no `src/` at all. There the exemption
+ * recreates the exact failure this code exists to prevent — a vulnerable import sitting in the only
+ * server present, while the map reports the import inventory complete.
+ *
+ * Scanning them instead is not a way out either. Bundling ERASES imports: a bundle with lodash inlined
+ * contains no `import 'lodash'`, so an import scan over build output cannot establish that a package is
+ * absent. No parsing budget makes a negative answer available there.
+ *
+ * So a skipped directory holding source clears the flag, whatever its name. That does mean a project
+ * with a committed build output reports `importsComplete: false` — correctly: the honest reading is "do
+ * not treat a package's absence as evidence here", and the named directory says where to look.
+ */
+
+/**
+ * Entries read while probing a skipped directory for source, across all such probes.
+ *
+ * The probe exits at the FIRST source file, so a directory holding app code is cheap to detect. The cap
+ * bounds the other case — a large generated or vendored tree with no source in it at all. Exhausting it
+ * is reported as a gap rather than as "no source", because "we stopped looking" is not an answer.
+ */
+const PROBE_BUDGET = 4096;
+
+/**
+ * Does this directory hold a source file? `'unknown'` when the probe ran out of budget first.
+ *
+ * The two definitional exclusions (`node_modules`, `.git`) are not descended into even here. Everything
+ * else is, dot-directories included — the question is whether the skip hid source that can be loaded and
+ * served, and a dot in the name says nothing about that.
+ */
+export function probeForSource(dir: string, budget: { left: number }): boolean | 'unknown' {
+  let entries;
+  try { entries = readdirSync(dir, { withFileTypes: true }); } catch { return 'unknown'; }
+  const dirs: string[] = [];
+  for (const e of entries) {
+    if (budget.left-- <= 0) return 'unknown';
+    if (e.isDirectory()) {
+      // Descend into everything but the definitional exclusions. Skipping dot-subdirectories here was the
+      // same bypass one level down: `vendor/.hidden/server.ts` probed as "no source".
+      if (!SKIP_IS_DEFINITIONAL.has(e.name)) dirs.push(join(dir, e.name));
+    } else if (isSourceFile(e.name)) return true;
+    // A symlink is neither: `isDirectory()` is false for one pointing at a directory, and its NAME is not
+    // a source file name, so it fell through both branches and a linked subtree full of handlers probed as
+    // "no source". Following it needs cycle protection and a boundary check that this cheap probe does not
+    // do, so it is reported as unsettled — the one answer that cannot license a negative.
+    else if (e.isSymbolicLink()) return 'unknown';
+  }
+  // Breadth-first: source at a shallow depth is the common case, and finding it ends the probe.
+  for (const sub of dirs) {
+    const found = probeForSource(sub, budget);
+    if (found !== false) return found;
+  }
+  return false;
+}
+
 export interface WalkStats {
   discovered: number;
   /**
@@ -60,6 +138,28 @@ export interface WalkStats {
    * can import anything. Any non-zero value here forfeits that claim.
    */
   unwalked: number;
+  /**
+   * Directories the walk skipped BY NAME that were found to hold source files.
+   *
+   * Positive evidence, and the reason it exists: a skip by name moves no other counter, so an app whose
+   * server lives under `vendor/` looked identical to one with no such directory. Naming them lets a
+   * reader see which guess to check, instead of re-running the scan and reading the same silence.
+   *
+   * ABSOLUTE paths; the caller relativizes, as it already does for unreadable files. Relativizing here
+   * would have to use `boundary`, which is a REALPATH while the walk descends from `cwd` — on a machine
+   * where those differ (macOS `/var` vs `/private/var`) that produces a `../..` escape, and relativizing
+   * a second time at the caller resolves it against `process.cwd()` and lands somewhere else entirely.
+   * One relativization, against the same root every other path in the document uses.
+   */
+  skippedWithSource: string[];
+  /**
+   * Skipped directories whose contents could not be settled — the probe hit its budget, or the directory
+   * could not be read. Counted as a gap: "we stopped looking" is not the same answer as "nothing there".
+   *
+   * Also covers a symlink where a skipped directory was expected: following it safely needs cycle
+   * protection this probe does not do, so it is unsettled rather than assumed empty.
+   */
+  skippedUnknown: number;
 }
 
 /**
@@ -74,7 +174,8 @@ export function collectSources(
   opts: { followOutside?: boolean },
   out: string[] = [],
   seen = new Set<string>(),
-  stats: WalkStats = { discovered: 0, unwalked: 0 },
+  stats: WalkStats = { discovered: 0, unwalked: 0, skippedWithSource: [], skippedUnknown: 0 },
+  probeBudget: { left: number } = { left: PROBE_BUDGET },
 ): string[] {
   let key: string;
   try { key = realpathSync(dir); } catch { stats.unwalked++; return out; }
@@ -88,9 +189,25 @@ export function collectSources(
   // any machine — otherwise a rebuild in CI looks like a changed app and cuts a pointless new revision.
   entries.sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0));
   for (const e of entries) {
-    if (SKIP_DIRS.has(e.name) || (e.name.startsWith('.') && e.name !== '.')) continue;
+    if (SKIP_DIRS.has(e.name) || (e.name.startsWith('.') && e.name !== '.')) {
+      // EVERY skip that is a guess gets checked — including dot-directories, and including ones not in
+      // `SKIP_DIRS` at all (the walk skips any name starting with a dot). Only the two definitional
+      // exclusions are exempt. A previous version also exempted every dot-directory, which left
+      // `.output/server/index.mjs` — a whole Nuxt server — invisible while the inventory claimed to be
+      // complete: the same hole as the `dist` exemption, behind a different convention.
+      const probeable = !SKIP_IS_DEFINITIONAL.has(e.name);
+      // A SYMLINK named like a skipped directory is not `isDirectory()`, so it was not probed at all and
+      // moved no counter — the same bypass as inside the probe, one level up.
+      if (probeable && !e.isDirectory() && e.isSymbolicLink()) stats.skippedUnknown++;
+      else if (probeable && e.isDirectory()) {
+        const held = probeForSource(join(dir, e.name), probeBudget);
+        if (held === true) stats.skippedWithSource.push(join(dir, e.name));
+        else if (held === 'unknown') stats.skippedUnknown++;
+      }
+      continue;
+    }
     const full = join(dir, e.name);
-    if (e.isDirectory()) collectSources(full, boundary, opts, out, seen, stats);
+    if (e.isDirectory()) collectSources(full, boundary, opts, out, seen, stats, probeBudget);
     else if (e.isSymbolicLink()) {
       let st, real;
       try { st = statSync(full); real = realpathSync(full); } catch { stats.unwalked++; continue; }
@@ -101,7 +218,7 @@ export function collectSources(
         if (st.isDirectory() || isSourceFile(e.name)) stats.unwalked++;
         continue;
       }
-      if (st.isDirectory()) collectSources(full, boundary, opts, out, seen, stats);
+      if (st.isDirectory()) collectSources(full, boundary, opts, out, seen, stats, probeBudget);
       else if (st.isFile() && isSourceFile(e.name)) { out.push(full); stats.discovered++; }
     } else if (isSourceFile(e.name)) { out.push(full); stats.discovered++; }
   }
