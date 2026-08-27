@@ -4,6 +4,8 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { buildInputMap } from '../../src/map/index.js';
 import { createProtection } from '../../src/protect/runtime.js';
+import { INPUT_SOURCES } from '../../src/map/capabilities.js';
+import { runtimeCoordinate } from '../../src/map/coordinates.js';
 
 /**
  * The coordinate the MAP emits is the coordinate the ENGINE resolves.
@@ -100,7 +102,8 @@ const multipart = (filename: string) => {
 };
 
 interface Case {
-  space: string;
+  /** The `InputSource` this case drives, so coverage can be compared against the vocabulary. */
+  source: (typeof INPUT_SOURCES)[number];
   input: string;
   expected: string;
   exploit: () => Request;
@@ -109,28 +112,28 @@ interface Case {
 
 const cases: Case[] = [
   {
-    space: 'body', input: 'note', expected: 'post.note',
+    source: 'body', input: 'note', expected: 'post.note',
     exploit: () => new Request(URL_BASE, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ note: EXPLOIT }) }),
     benign: () => new Request(URL_BASE, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ note: 'hello' }) }),
   },
   {
-    space: 'query', input: 'q', expected: 'get.q',
+    source: 'query', input: 'q', expected: 'get.q',
     exploit: () => new Request(`${URL_BASE}?q=${EXPLOIT}`),
     benign: () => new Request(`${URL_BASE}?q=hello`),
   },
   {
-    space: 'cookie', input: 'session', expected: 'cookie.session',
+    source: 'cookie', input: 'session', expected: 'cookie.session',
     exploit: () => new Request(URL_BASE, { headers: { cookie: `session=${EXPLOIT}` } }),
     benign: () => new Request(URL_BASE, { headers: { cookie: 'session=abc123' } }),
   },
   {
-    space: 'header', input: 'x-api-key', expected: 'server.HTTP_X_API_KEY',
+    source: 'header', input: 'x-api-key', expected: 'server.HTTP_X_API_KEY',
     exploit: () => new Request(URL_BASE, { headers: { 'x-api-key': EXPLOIT } }),
     benign: () => new Request(URL_BASE, { headers: { 'x-api-key': 'abc123' } }),
   },
   {
     // A bare `files.<field>` resolves to the FILENAME, so that is where the payload goes.
-    space: 'file', input: 'avatar', expected: 'files.avatar',
+    source: 'file', input: 'avatar', expected: 'files.avatar',
     exploit: () => multipart(`${EXPLOIT}.png`),
     benign: () => multipart('holiday.png'),
   },
@@ -138,7 +141,7 @@ const cases: Case[] = [
 
 describe('a coordinate the map emitted', () => {
   for (const c of cases) {
-    describe(`${c.space} (${c.input})`, () => {
+    describe(`${c.source} (${c.input})`, () => {
       it('is the coordinate this suite expects the engine to need', () => {
         // Guards the test itself: if extraction stopped emitting this input, every assertion below would
         // be skipped on an undefined coordinate and the space would silently lose its coverage.
@@ -155,9 +158,34 @@ describe('a coordinate the map emitted', () => {
     });
   }
 
-  it('covers every space the map can address', () => {
-    // Without this, adding a new addressable space to `coordinates.ts` leaves it unverified against the
-    // resolver, which is the state this suite exists to end.
-    expect(new Set(cases.map((c) => c.space))).toEqual(new Set(['body', 'query', 'cookie', 'header', 'file']));
+  it('covers every source the map can address, derived from the vocabulary', () => {
+    // The previous version compared one hard-coded set against another hard-coded set, so it asserted that
+    // this file agreed with itself. A sixth addressable source would not have failed it — which is exactly
+    // the gap it was written to close.
+    //
+    // The expectation is now computed from production: a source is addressable when `runtimeCoordinate`
+    // yields a parameter for it, and every addressable source must have a case here. Adding one to
+    // `INPUT_SOURCES` and giving it a coordinate now fails this until it is driven through the engine.
+    const addressable = INPUT_SOURCES.filter(
+      (source) => runtimeCoordinate(source, 'field').runtimeParameter !== null,
+    );
+    const covered = new Set(cases.map((c) => c.source));
+
+    // The body-shaped sources all resolve to `post.<path>`, so one case covers them; asserted explicitly
+    // rather than assumed, because a divergence would otherwise hide behind the grouping.
+    const bodyShaped = ['json-body', 'form-body', 'multipart', 'body', 'server-fn-data'] as const;
+    for (const source of bodyShaped) {
+      expect(runtimeCoordinate(source, 'field').runtimeParameter).toBe('post.field');
+    }
+
+    const needsItsOwnCase = addressable.filter((s) => !bodyShaped.includes(s as never));
+    expect(new Set([...needsItsOwnCase, 'body'])).toEqual(covered);
+
+    // And the unaddressable ones stay unaddressable: a coordinate appearing for a route parameter would
+    // compile a rule the resolver cannot resolve, which is the failure this whole file is about.
+    for (const source of INPUT_SOURCES.filter((s) => !addressable.includes(s))) {
+      expect(runtimeCoordinate(source, 'field').runtimeParameter).toBeNull();
+      expect(runtimeCoordinate(source, 'field').runtimeParameterReason).toBeTruthy();
+    }
   });
 });

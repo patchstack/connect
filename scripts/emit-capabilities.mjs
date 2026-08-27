@@ -47,6 +47,7 @@ const manifest = {
   autoPromotableConfidence: stringOf('AUTO_PROMOTABLE_CONFIDENCE'),
   attributions: arrayOf('ATTRIBUTIONS'),
   addressSpaces: arrayOf('ADDRESS_SPACES'),
+  inputSources: arrayOf('INPUT_SOURCES'),
   invocationKinds: arrayOf('INVOCATION_KINDS'),
   invocationResolutions: arrayOf('INVOCATION_RESOLUTIONS'),
 };
