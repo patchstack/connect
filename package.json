@@ -1,15 +1,24 @@
 {
   "name": "@patchstack/connect",
   "version": "0.3.6",
-  "description": "Patchstack connector for JavaScript applications. Scans your lockfile and reports installed packages to Patchstack for vulnerability monitoring.",
+  "description": "Runtime application security for JavaScript and Node.js: dependency inventory, attack-surface mapping, and an in-process guard that virtually patches known vulnerabilities and hardens responses.",
   "keywords": [
     "patchstack",
     "security",
+    "application-security",
+    "nodejs-security",
+    "runtime-security",
+    "rasp",
+    "virtual-patching",
+    "waf",
     "vulnerability",
     "cve",
-    "npm-audit",
     "sca",
-    "dependency-scanning"
+    "dependency-scanning",
+    "npm-audit",
+    "attack-surface",
+    "ssrf",
+    "secret-redaction"
   ],
   "license": "MIT",
   "type": "module",
@@ -60,6 +69,10 @@
   },
   "engines": {
     "node": ">=18"
+  },
+  "publishConfig": {
+    "access": "public",
+    "registry": "https://registry.npmjs.org/"
   },
   "devDependencies": {
     "@types/node": "^20.11.0",
