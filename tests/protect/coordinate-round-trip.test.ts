@@ -76,11 +76,27 @@ async function blocks(parameter: string, request: Request): Promise<boolean> {
   return response !== undefined && response !== null && response.status === 403;
 }
 
+// Hand-built rather than `new FormData()` + `new File()`: global `File` only exists from Node 20, and
+// this package supports 18 — the convenient version passed locally and failed one matrix leg with
+// `File is not defined`, which is a test silently covering less than it claims on the oldest runtime it
+// is meant to protect. The wire format is stable and short enough to write out.
+const BOUNDARY = '----psFieldBoundary7MA4YWxkTrZu0gW';
 const multipart = (filename: string) => {
-  const form = new FormData();
-  form.append('avatar', new File(['x'], filename, { type: 'image/png' }));
+  const body = [
+    `--${BOUNDARY}`,
+    `Content-Disposition: form-data; name="avatar"; filename="${filename}"`,
+    'Content-Type: image/png',
+    '',
+    'x',
+    `--${BOUNDARY}--`,
+    '',
+  ].join('\r\n');
 
-  return new Request(URL_BASE, { method: 'POST', body: form });
+  return new Request(URL_BASE, {
+    method: 'POST',
+    headers: { 'content-type': `multipart/form-data; boundary=${BOUNDARY}` },
+    body,
+  });
 };
 
 interface Case {
