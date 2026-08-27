@@ -63,9 +63,35 @@ describe('edge bundle', () => {
     for (const cond of ['workerd', 'worker', 'edge-light', 'deno', 'browser']) {
       expect(protect[cond]).toBe('./dist/protect.edge.js');
     }
-    expect(protect.import).toBe('./dist/protect.js'); // Node still gets the full build
+    // Node still gets the full build. Nested now, because the types differ per format: a CommonJS
+    // consumer resolving `require` must be handed the `.d.cts` declarations, or TypeScript reads the ESM
+    // ones, concludes the target is an ES module and refuses the `require` outright.
+    expect(protect.import).toEqual({ types: './dist/protect.d.ts', default: './dist/protect.js' });
+    expect(protect.require).toEqual({ types: './dist/protect.d.cts', default: './dist/protect.cjs' });
+
     // Condition order matters: an edge condition must be matched before the generic `import`.
     const keys = Object.keys(protect);
     expect(keys.indexOf('workerd')).toBeLessThan(keys.indexOf('import'));
+    // And `default` must be last, or it shadows everything after it.
+    expect(keys.indexOf('default')).toBe(keys.length - 1);
+  });
+
+  it('ships the declarations both format conditions point at', () => {
+    // The map can name a file that the build never produces, and the failure surfaces three layers away as
+    // "cannot find module" in a consumer's project. `protect.d.cts` did not exist at all while `require`
+    // was already being advertised.
+    const pkg = JSON.parse(readFileSync(root + 'package.json', 'utf8'));
+    const shipped = pkg.files as string[];
+
+    for (const entry of [pkg.exports['.'], pkg.exports['./protect']]) {
+      for (const condition of ['import', 'require'] as const) {
+        const target = entry[condition] as { types: string; default: string };
+        for (const file of [target.types, target.default]) {
+          // `files` is the allowlist: a path outside it resolves locally and is absent from the tarball.
+          expect(shipped.some((allowed) => file.startsWith(`./${allowed}`))).toBe(true);
+          expect(existsSync(root + file.replace(/^\.\//, '')), `${file} is exported but not built`).toBe(true);
+        }
+      }
+    }
   });
 });

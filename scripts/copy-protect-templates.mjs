@@ -10,4 +10,12 @@ console.log('copied protect templates -> dist/protect/templates');
 // Ship the hand-authored declarations for the `@patchstack/connect/protect` subpath (the runtime
 // is plain JS, so tsup doesn't emit these). Referenced by the "./protect" export's `types`.
 copyFileSync('src/protect/protect.d.ts', 'dist/protect.d.ts');
-console.log('copied protect types -> dist/protect.d.ts');
+// The same declarations under the CommonJS extension. A CJS TypeScript consumer resolves the `require`
+// condition, and TypeScript then reads the types beside it: given an ESM `.d.ts` it concludes the target is
+// an ES module and refuses the `require` outright (TS1479) — while the CJS runtime works perfectly. So the
+// package was unusable from CommonJS TypeScript and fine from CommonJS JavaScript.
+//
+// A copy rather than a second generated file, because tsup emits `index.d.ts` and `index.d.cts`
+// byte-identical for the root entry; there is nothing per-format to express.
+copyFileSync('src/protect/protect.d.ts', 'dist/protect.d.cts');
+console.log('copied protect types -> dist/protect.d.ts, dist/protect.d.cts');

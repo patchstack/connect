@@ -49,6 +49,12 @@ reads exactly like passing.
 - `npm run typecheck`, `npm test`, `npm run build` all clean.
 - `npm pack --dry-run` if you touched anything about packaging. `files` in `package.json` is the
   authoritative allowlist of what ships.
+- `npm run test:consumers` if you touched `exports`, `files`, the build config or anything about types. It
+  packs a real tarball, installs it into isolated consumer projects and checks every shape a consumer can
+  use — ESM and CommonJS, JavaScript and TypeScript, the installed bin, and that nothing outside `exports`
+  is reachable. Nothing else can see those: they are decided by the tarball's metadata rather than by the
+  code, so the source suite passes while a consumer cannot import the package at all. CI runs it across
+  npm, pnpm, Yarn and Bun, plus a Windows smoke test.
 - Read your own diff, commit messages and pull-request description against the boundary above. The
   pull-request template asks you to confirm this; it is the only control that covers prose, because secret
   scanning finds credentials and nothing finds a paragraph of architecture.

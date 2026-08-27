@@ -112,7 +112,17 @@ const HOSTING_ENV_PATTERNS: readonly RegExp[] = [
  * distinguish "deployed on Cloudflare" from "deployed on Vercel" without ever
  * disclosing a secret.
  */
-export function collectHostingEnvKeys(env: NodeJS.ProcessEnv = process.env): string[] {
+/**
+ * The shape of an environment, structurally.
+ *
+ * Not `NodeJS.ProcessEnv`: that type comes from `@types/node`, which this package does not declare as a
+ * dependency, so a consumer without it could not compile against these signatures at all — the published
+ * declarations referenced a namespace their project had never heard of. `process.env` satisfies this, and
+ * so does a plain object, which is what the tests pass.
+ */
+export type EnvLike = Record<string, string | undefined>;
+
+export function collectHostingEnvKeys(env: EnvLike = process.env): string[] {
   return Object.keys(env)
     .filter((key) => HOSTING_ENV_PATTERNS.some((pattern) => pattern.test(key)))
     .sort();
@@ -124,7 +134,7 @@ export function collectHostingEnvKeys(env: NodeJS.ProcessEnv = process.env): str
  */
 export function detectStack(
   packages: readonly WirePackage[],
-  env: NodeJS.ProcessEnv = process.env,
+  env: EnvLike = process.env,
 ): StackDescriptor {
   const present = new Set(packages.map((pkg) => pkg.name));
 

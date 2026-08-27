@@ -42,6 +42,66 @@ jobs:
         # unable to tell it is behind — the same silent drift the manifest exists to remove.
         run: node scripts/check-capability-version.mjs --base "origin/${{ github.base_ref || github.event.repository.default_branch }}"
 
+  # Does the PUBLISHED package work when a real consumer installs it?
+  #
+  # Everything in `validate` tests the source, or `dist/` from inside the repository. Neither can see the
+  # questions a consumer actually hits, because the tarball's METADATA decides them: which file an `exports`
+  # condition resolves to, which declarations TypeScript reads beside it, whether `files` left something
+  # out. Two such defects were already shipped and were found by writing this check.
+  #
+  # Four managers because their resolution genuinely differs, and npm's answer does not generalise — that
+  # is the whole reason to run more than one.
+  consumers:
+    name: 📦 Consumers on ${{ matrix.manager }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        manager: [npm, pnpm, yarn, bun]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22.x
+          cache: npm
+
+      - if: matrix.manager == 'pnpm'
+        uses: pnpm/action-setup@v4
+        with:
+          version: 9
+
+      - if: matrix.manager == 'bun'
+        uses: oven-sh/setup-bun@v2
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Consumer shapes against a packed tarball
+        run: node scripts/compat-matrix.mjs --manager ${{ matrix.manager }}
+
+  # The generated `.cmd` launcher and path handling are Windows-only code paths in npm's shim, not ours,
+  # and they are exactly what breaks a bin that works everywhere else. One smoke test rather than the whole
+  # matrix: the question is whether the launcher runs and resolves, not whether four managers agree.
+  windows-smoke:
+    name: 🪟 Windows bin and consumer smoke
+    runs-on: windows-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22.x
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Consumer shapes against a packed tarball
+        run: node scripts/compat-matrix.mjs --manager npm
+
   validate:
     name: Validate on Node ${{ matrix.node-version }}
     runs-on: ubuntu-latest

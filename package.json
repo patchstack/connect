@@ -27,19 +27,31 @@
   "types": "./dist/index.d.ts",
   "exports": {
     ".": {
-      "types": "./dist/index.d.ts",
-      "import": "./dist/index.js",
-      "require": "./dist/index.cjs"
+      "import": {
+        "types": "./dist/index.d.ts",
+        "default": "./dist/index.js"
+      },
+      "require": {
+        "types": "./dist/index.d.cts",
+        "default": "./dist/index.cjs"
+      },
+      "default": "./dist/index.js"
     },
     "./protect": {
-      "types": "./dist/protect.d.ts",
       "workerd": "./dist/protect.edge.js",
       "worker": "./dist/protect.edge.js",
       "edge-light": "./dist/protect.edge.js",
       "deno": "./dist/protect.edge.js",
       "browser": "./dist/protect.edge.js",
-      "import": "./dist/protect.js",
-      "require": "./dist/protect.cjs"
+      "import": {
+        "types": "./dist/protect.d.ts",
+        "default": "./dist/protect.js"
+      },
+      "require": {
+        "types": "./dist/protect.d.cts",
+        "default": "./dist/protect.cjs"
+      },
+      "default": "./dist/protect.js"
     }
   },
   "bin": {
@@ -56,6 +68,7 @@
     "verify:edge": "node scripts/verify-edge-platform.mjs",
     "dev": "tsup --watch",
     "test": "vitest run",
+    "test:consumers": "node scripts/compat-matrix.mjs",
     "test:manifest": "bun scripts/test-manifest.ts",
     "test:watch": "vitest",
     "typecheck": "tsc --noEmit && node scripts/typecheck-templates.mjs",
