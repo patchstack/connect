@@ -1,8 +1,10 @@
 import { describe, expect, it } from 'vitest';
-import { readFileSync, readdirSync } from 'node:fs';
+import { mkdtempSync, readFileSync, readdirSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { fileURLToPath } from 'node:url';
 import path from 'node:path';
 import { composeAgentPrompt, stripPersonaMeta, META_OPEN } from '../field-test/persona.mjs';
+import { runAgent } from '../field-test/agent.mjs';
 
 /**
  * The agent under test must never be told it is under test.
@@ -78,20 +80,94 @@ describe('persona provenance never reaches the agent', () => {
     expect(composed).toContain('<!-- keep me -->');
   });
 
-  it('drops the remainder of an unterminated block rather than leaking it', () => {
-    const composed = stripPersonaMeta('policy\n<!-- field-test:meta\nSECRET RATIONALE\nmore');
+  it('throws on an unterminated block rather than truncating the persona', () => {
+    // Truncating cannot leak, which is why it looked sufficient. It is not loud, though: a malformed block
+    // after both substitutions and enough policy text leaves a persona that passes every length and
+    // substitution check, and the harness then evaluates a silently incomplete policy — measuring a
+    // pressure nobody wrote.
+    const late = `You are an agent. Work in {{FIXTURE_DIR}}.\n${'Policy line.\n'.repeat(40)}{{INSTALL_PROMPT}}\n<!-- field-test:meta\nSECRET RATIONALE`;
 
-    expect(composed).not.toContain('SECRET RATIONALE');
+    expect(() => stripPersonaMeta(late)).toThrow(/Unterminated/);
+
+    // And the case that made truncation look adequate: composed output would otherwise have satisfied the
+    // shape checks, so those checks could not have caught it.
+    let composed = '';
+    try {
+      composed = composeAgentPrompt({ persona: late, fixtureDir: '/tmp/f', installPrompt: 'BODY' });
+    } catch {
+      composed = '';
+    }
+    expect(composed).toBe('');
+  });
+});
+
+/**
+ * What the child process actually receives.
+ *
+ * The previous version of this checked SOURCE STRINGS — that the runner mentions the composer and has no
+ * second `replaceAll`. That stays true while a later edit hands `runAgent` a raw persona, or a new call
+ * site skips the composer, and neither shows up anywhere else. Source text is not the seam;
+ * `child.stdin.write` is.
+ *
+ * So the guard now sits at the seam and this drives it directly: no fixture, no `npm install`, no network,
+ * which is what lets it run in the always-run suite rather than as a manual command.
+ */
+describe('the stdin the agent is actually given', () => {
+  const captureStub = path.join(here, '..', 'field-test', 'stub-capture.mjs');
+
+  async function capture(promptText: string): Promise<string> {
+    const dir = mkdtempSync(path.join(tmpdir(), 'ps-capture-'));
+    const target = path.join(dir, 'captured.txt');
+    try {
+      const result = await runAgent(
+        `PS_CAPTURE_STDIN=${target} node ${JSON.stringify(captureStub)}`,
+        promptText,
+        dir,
+        'http://127.0.0.1:1/mock',
+        20000,
+      );
+      expect(result.timedOut, `capture stub timed out: ${result.stderr}`).toBe(false);
+
+      return readFileSync(target, 'utf8');
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  }
+
+  it.each(personas)('%s reaches the agent with its policy and no provenance', async (file) => {
+    const persona = readFileSync(path.join(personaDir, file), 'utf8');
+    const composed = composeAgentPrompt({
+      persona,
+      fixtureDir: '/tmp/fixture',
+      installPrompt: 'INSTALL PROMPT BODY',
+    });
+
+    const seen = await capture(composed);
+
+    // Byte-for-byte: this is the only assertion that covers the write itself, so an encoding or truncation
+    // problem in the pipe shows up here rather than as a mysterious refusal in a real run.
+    expect(seen).toBe(composed);
+    expect(seen).not.toContain(META_OPEN);
+    for (const block of metaBlocks(persona)) {
+      for (const line of block.split('\n').map((l) => l.trim()).filter((l) => l.length > 12)) {
+        expect(seen, `provenance reached the agent from ${file}: ${line}`).not.toContain(line);
+      }
+    }
+    expect(seen).toContain('/tmp/fixture');
+    expect(seen).toContain('INSTALL PROMPT BODY');
   });
 
-  it('is what the runner actually uses', () => {
-    // Wiring, not definition. A perfect composer nothing calls is the shape of the original defect: the
-    // runner had its own `replaceAll` chain and never consulted anything.
-    const runner = readFileSync(path.join(here, '..', 'field-test', 'run.mjs'), 'utf8');
+  it('refuses to send a persona that skipped the composer', async () => {
+    // The exact mistake the source-string test could not see: a caller handing over the raw file. The
+    // refusal is at the seam, so it holds for every call site, including ones not written yet.
+    const raw = readFileSync(path.join(personaDir, 'lovable.md'), 'utf8');
 
-    expect(runner).toContain("from './persona.mjs'");
-    expect(runner).toContain('composeAgentPrompt({');
-    // And no second composition path that could bypass the strip.
-    expect(runner).not.toContain("replaceAll('{{INSTALL_PROMPT}}'");
+    expect(raw).toContain(META_OPEN);
+    await expect(capture(raw)).rejects.toThrow(/refusing to send persona provenance/);
+  });
+
+  it('refuses to send nothing at all', async () => {
+    // An agent given an empty prompt refuses, and that refusal is indistinguishable from a finding.
+    await expect(capture('')).rejects.toThrow(/empty prompt/);
   });
 });

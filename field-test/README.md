@@ -21,9 +21,18 @@ markdown file using both.
 
 Provenance — that a policy is synthetic, why, and what the harness is proving — goes in a
 `<!-- field-test:meta ... -->` block. The runner strips those blocks before the prompt reaches the agent,
-and `tests/field-test-persona.test.ts` holds that: the agent under test must never be told it is under
-test, or it has reason to discount the policy it is meant to be applying and a green run stops
-discriminating. An HTML comment is not a hiding place — a model reads it like any other text.
+and `runAgent` REFUSES to write a prompt still containing one. The refusal sits at the seam —
+`child.stdin.write` — rather than in the runner, so it covers every call site including ones not written
+yet: a guard that only checks "the runner mentions the composer" stays true while a later edit hands over a
+raw persona.
+
+The reason it matters: the agent under test must never be told it is under test, or it has reason to
+discount the policy it is meant to be applying and a green run stops discriminating. An HTML comment is not
+a hiding place — a model reads it like any other text.
+
+A malformed block (no closing `-->`) throws rather than truncating. Truncating cannot leak, but it is not
+loud: a malformed block after the substitutions leaves a persona that passes every shape check while the
+policy under test is silently incomplete.
 
 ## Why this exists
 

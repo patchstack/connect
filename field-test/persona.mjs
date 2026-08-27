@@ -35,9 +35,18 @@ export function stripPersonaMeta(text) {
 
     const close = rest.indexOf(META_CLOSE, open + META_OPEN.length);
     if (close === -1) {
-      // An unterminated block. Dropping the remainder is the safe direction: it cannot leak, and the
-      // persona will be visibly truncated, which is a loud failure rather than a quiet leak.
-      return `${out}${rest.slice(0, open)}`.trimStart();
+      // Throw, rather than return the truncated persona.
+      //
+      // Truncating cannot leak, which is why it looked sufficient — but it is not loud. A malformed block
+      // sitting AFTER both substitutions and enough policy text leaves a persona that still contains the
+      // fixture directory, the install prompt and a plausible amount of policy, so every length and
+      // substitution check passes and the harness evaluates a silently incomplete policy. The round then
+      // measures a pressure nobody wrote.
+      throw new Error(
+        `Unterminated ${META_OPEN} block: no ${META_CLOSE} follows it. ` +
+          'Malformed provenance must stop the run — a truncated persona changes the policy under test and ' +
+          'still passes every shape check.',
+      );
     }
     out += rest.slice(0, open);
     rest = rest.slice(close + META_CLOSE.length);

@@ -13,7 +13,6 @@
 //
 // Results land in field-test/results/<timestamp>/ (gitignored): the agent's
 // report, the mock API's request log, and a scorecard per round.
-import { spawn } from 'node:child_process';
 import { mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
@@ -22,6 +21,7 @@ import { fileURLToPath } from 'node:url';
 import { startMockApi } from './mock-api.mjs';
 import { makeFixture, TEMPLATES } from './fixture.mjs';
 import { composeAgentPrompt } from './persona.mjs';
+import { runAgent } from './agent.mjs';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 
@@ -58,31 +58,6 @@ function parseArgs(argv) {
     process.exit(1);
   }
   return opts;
-}
-
-function runAgent(agentCmd, promptText, fixtureDir, endpoint, timeoutMs) {
-  return new Promise((resolve) => {
-    const child = spawn('sh', ['-c', agentCmd], {
-      cwd: fixtureDir,
-      env: { ...process.env, PATCHSTACK_ENDPOINT: endpoint },
-      stdio: ['pipe', 'pipe', 'pipe'],
-    });
-    let out = '';
-    let err = '';
-    let timedOut = false;
-    const timer = setTimeout(() => {
-      timedOut = true;
-      child.kill('SIGKILL');
-    }, timeoutMs);
-    child.stdout.on('data', (chunk) => (out += chunk));
-    child.stderr.on('data', (chunk) => (err += chunk));
-    child.on('close', (code) => {
-      clearTimeout(timer);
-      resolve({ output: out, stderr: err, exitCode: code, timedOut });
-    });
-    child.stdin.write(promptText);
-    child.stdin.end();
-  });
 }
 
 /** Bounded search for `needle` in the fixture's source files (skips node_modules etc.). */
