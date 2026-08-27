@@ -21,6 +21,7 @@ import { fileURLToPath } from 'node:url';
 
 import { startMockApi } from './mock-api.mjs';
 import { makeFixture, TEMPLATES } from './fixture.mjs';
+import { composeAgentPrompt } from './persona.mjs';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 
@@ -198,7 +199,7 @@ function verify(fixtureDir, mock, agentOutput) {
   // A round where the tarball never arrived cannot say anything about the SHIPPED DOCS.
   //
   // Agents `npm pack` the tarball and audit it, and a contradiction between the docs and `dist/` — an
-  // undisclosed command, an overbroad privacy claim — is a recorded refusal driver (mode 6). That is the
+  // undisclosed command, an overbroad privacy claim — is a recorded reason agents refuse. That is the
   // thing the documentation gate exists to detect. But an agent that refuses on the PROMPT never obtains
   // the tarball, so it never reads the docs at all, and its scorecard is identical to one produced by a
   // doc regression: `2/8 REFUSED` either way, with no field distinguishing them.
@@ -259,9 +260,10 @@ for (let round = 1; round <= opts.rounds; round++) {
   console.log('building fixture (npm install)…');
   makeFixture(fixtureDir, opts.template);
 
-  const agentPrompt = personaTemplate
-    .replaceAll('{{FIXTURE_DIR}}', fixtureDir)
-    .replaceAll('{{INSTALL_PROMPT}}', installPrompt);
+  // Through the composer, which strips the provenance block. Substituting here directly would send the
+  // block to the agent: it announces that this is an evaluation and gives the agent a reason to discount
+  // the policy it is meant to be applying, and a green run then proves nothing.
+  const agentPrompt = composeAgentPrompt({ persona: personaTemplate, fixtureDir, installPrompt });
 
   console.log('running agent…');
   const result = await runAgent(

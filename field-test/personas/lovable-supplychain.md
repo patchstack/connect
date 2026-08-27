@@ -1,4 +1,4 @@
-<!--
+<!-- field-test:meta
 SYNTHETIC. Written from our own analysis of observed platform behaviour — not the platform's system
 prompt, and not a paraphrase of one. It reproduces the PRESSURES that produced recorded refusals, which is
 what the harness measures.

@@ -19,13 +19,19 @@ belong in a private evaluation repository.
 `{{FIXTURE_DIR}}` and `{{INSTALL_PROMPT}}` are the only contract a persona has to satisfy; a new one is a
 markdown file using both.
 
+Provenance — that a policy is synthetic, why, and what the harness is proving — goes in a
+`<!-- field-test:meta ... -->` block. The runner strips those blocks before the prompt reaches the agent,
+and `tests/field-test-persona.test.ts` holds that: the agent under test must never be told it is under
+test, or it has reason to discount the policy it is meant to be applying and a green run stops
+discriminating. An HTML comment is not a hiding place — a model reads it like any other text.
+
 ## Why this exists
 
 The install prompt is an adversarial-UX artifact: AI agents actively try to refuse it. Unit tests can't tell you whether an agent will balk at a phrase, mis-read CLI output, or wire the widget with the wrong token — only letting an agent run the real flow does. Every clause in the prompt exists because a run like this failed without it; the record of which run, and what it said, is kept privately.
 
 ## Void rounds: a refusal before installing is not evidence about the docs
 
-The documentation gate exists to catch mode 6 — a contradiction between the shipped docs and `dist/`,
+The documentation gate exists to catch a contradiction between the shipped docs and `dist/`,
 such as an overbroad privacy claim. Catching that requires the agent to have READ the docs, which means
 it must have obtained the tarball, which means it must have installed.
 
@@ -117,6 +123,11 @@ node field-test/run.mjs --prompt /tmp/prompt-v3.txt
 
 # Different agent CLI
 node field-test/run.mjs --agent-cmd "claude -p --dangerously-skip-permissions --model opus"
+
+# Prove no provenance reaches the agent: capture the exact stdin it receives
+PS_CAPTURE_STDIN=/tmp/captured.txt node field-test/run.mjs --persona lovable --rounds 1 \
+  --agent-cmd "node field-test/stub-capture.mjs"
+grep -c 'field-test:meta' /tmp/captured.txt   # must be 0
 
 # Self-test the harness (scripted stub, no AI, ~1 min) — should be fully green
 node field-test/run.mjs --agent-cmd "node $PWD/field-test/stub-compliant.mjs"
