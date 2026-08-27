@@ -4,6 +4,40 @@ npm package that connects a JS/Node project to Patchstack vulnerability monitori
 
 Editing any onboarding, prompt, or setup-guide content? Read `MAINTAINING.md` first — it maps which files are load-bearing and how to ship a change safely.
 
+## Public repository boundary
+
+This repository, its Git history, code comments, test output, issue content, commit messages, and
+pull-request titles and descriptions must be treated as public.
+
+Do not include information copied or inferred from private Patchstack systems unless it is already
+documented in this repository's public documentation or public API contract.
+
+This includes:
+
+- private repository names, paths, branches, pull requests, or source code;
+- internal service topology, database schemas, queues, credentials, endpoints, deployment details, or
+  operational runbooks;
+- customer, production, incident, or vulnerability-review data;
+- private reachability recipes, vPatch corpora, detection research, or rule-authoring rationale;
+- local filesystem paths, developer usernames, tokens, environment values, or private ticket contents.
+
+Use public product terminology such as "Patchstack SaaS," "Patchstack API," or "rules service." Describe
+only the public contract Connect depends on — not how private systems implement it.
+
+Code comments must explain the current invariant or externally observable behavior. Historical
+investigation, review conversations, mutation notes, internal implementation details, and "how we found
+this" belong in private engineering records, not source comments or public pull requests.
+
+Fixtures must be synthetic or explicitly public. Never copy fixtures or implementation details from a
+private repository merely to make a test realistic.
+
+Before committing or opening a pull request, inspect the complete staged diff, commit message, generated
+files, test output, and proposed PR description for public-boundary violations. If completing a task
+appears to require publishing private context, stop and ask for a public-safe abstraction.
+
+This is guidance, not enforcement. Secret scanning catches credentials; nothing catches a paragraph of
+architecture, so the review above is the only control that covers it.
+
 ## Commands
 
 - `npm test` — vitest suite
@@ -43,8 +77,9 @@ sentences, ordinary words, no jargon where a plain word works. Lead with what ch
 why it matters, then the detail. Assume the reader is capable but has not seen this code
 today.
 
-This repo is public. Nothing committed here — code, comments, docs or commit messages — may
-contain customer names, internal URLs or internal hostnames.
+See "Public repository boundary" above, which this section is a specific case of: a comment that
+narrates how a bug was found is both a poor comment and, when the finding came from a private system,
+a disclosure.
 
 ## Releasing
 

@@ -19,7 +19,7 @@ import path from 'node:path';
  *
  * CVE-2017-5941: `node-serialize`'s `unserialize` executes an embedded `$$ND_FUNC$$` function expression,
  * so a request body reaching it is remote code execution. Public, which is why the rule and the requests
- * can live here while the recipe stays private in hub.
+ * can live here while the recipe that produced it stays private.
  *
  * ## Why this runs against the BUILT engine
  *

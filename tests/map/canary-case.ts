@@ -1,12 +1,13 @@
 /**
  * The one app the cross-repo canary runs on.
  *
- * The canary is a single vertical slice through the whole product claim: a reviewed recipe in hub, a
- * verdict and a generated rule in saas, and the engine in this package blocking the exploit — proved as
- * one chain rather than three sets of green unit tests. CVE-2017-5941 is the slice, because
+ * The canary is a single vertical slice through the whole product claim: a reviewed advisory recipe, a
+ * verdict and a generated rule from Patchstack SaaS, and the engine in this package blocking the
+ * exploit — proved as one chain rather than three sets of green unit tests. CVE-2017-5941 is the slice,
+ * because
  * `node-serialize`'s `unserialize` executes an embedded `$$ND_FUNC$$` function expression, so a request
  * body reaching it is remote code execution, and because it is public: the app, the rule and the requests
- * can all live in the open, while the review rationale and detector recipe stay private in hub.
+ * can all live in the open, while the review rationale and the detector recipe stay private.
  *
  * Deliberately the SIMPLEST app that carries the vulnerability. Nothing here is decoration — a wrapper, a
  * validation step or a rename would move the flow off `exact-local` and the canary would then be proving
