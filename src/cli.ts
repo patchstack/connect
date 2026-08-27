@@ -139,6 +139,11 @@ Options (for scan, setup, status, and uninstall):
   --site-uuid <uuid>      Override the configured site UUID
   --endpoint <url>        Override the API endpoint
   --dry-run               (scan only) Show the payload without posting
+  --install-paths         (scan only) Also send where each package is installed
+                          in the dependency tree (node_modules/lodash, and the
+                          same under a workspace that pins its own copy), so an
+                          advisory can be matched to the copy your code actually
+                          loads. Off by default; never source file paths
 
 Options (for mark-build):
   --dir <path>            Build output directory (default: auto-detect
@@ -356,11 +361,22 @@ async function runScan(
   for (const warning of manifest.warnings ?? []) {
     console.warn(`patchstack: ${warning}`);
   }
-  const { payload, stats } = buildWirePayload(manifest);
+  // Off unless asked for: locations widen what leaves the machine, so the upload that carries them is an
+  // explicit choice rather than something an upgrade turns on.
+  const installPaths = args.flags.get('install-paths') === true;
+  const { payload, stats } = buildWirePayload(manifest, { installPaths });
 
   console.log(
     `Found ${payload.packages.length} unique package versions across ${stats.uniqueNames} package names (${manifest.ecosystem} ecosystem).`,
   );
+  if (installPaths) {
+    const located = payload.packages.filter((pkg) => pkg.paths !== undefined).length;
+    console.log(
+      payload.installPathsComplete
+        ? `Including each package's install location in the dependency tree (--install-paths), for all ${located}.`
+        : `Including install locations (--install-paths), for ${located} of ${payload.packages.length} — this lockfile format does not record them for the rest, which will be reported as "not recorded" rather than "not installed there".`,
+    );
+  }
   console.log(
     `Reporting under the ${config.environment} environment (override with PATCHSTACK_ENVIRONMENT).`,
   );

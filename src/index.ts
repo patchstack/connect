@@ -37,6 +37,11 @@ export {
 export interface ScanAndReportOptions {
   cwd?: string;
   config?: Config;
+  /**
+   * Include each package's install location in the uploaded payload. Off by default: it widens what
+   * leaves the machine, so it is an explicit choice rather than something an upgrade turns on.
+   */
+  installPaths?: boolean;
 }
 
 export interface ScanAndReportResult {
@@ -53,7 +58,8 @@ export async function scanAndReport(
   const cwd = options.cwd ?? process.cwd();
   const config = options.config ?? (await resolveConfig({ cwd }));
   const manifest = await scanLockfile(cwd);
-  const { payload, stats } = buildWirePayload(manifest);
+  // Opt-in, matching the CLI: a library caller does not get a widened payload by upgrading either.
+  const { payload, stats } = buildWirePayload(manifest, { installPaths: options.installPaths === true });
   const response = await postManifest(config, payload);
 
   // First-run convenience: if we didn't have a UUID and the server provisioned
