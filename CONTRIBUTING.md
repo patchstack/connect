@@ -23,20 +23,26 @@ realistic — write it.
 ## Setup
 
 ```bash
-nvm use            # reads .node-version (24). Consumers are supported from 18; see engines.node.
+# .node-version records the version releases are built with (24). fnm, nodenv and asdf read it directly;
+# nvm looks for .nvmrc, so it needs the file passed in.
+nvm use "$(cat .node-version)"     # or: fnm use / nodenv local
 npm ci
 ```
+
+Consumers are supported from Node 18 — `engines.node` is that contract, and it is a different question
+from the version this repository is developed and released on.
 
 ## The loop
 
 ```bash
 npm run typecheck  # tsc --noEmit, plus the guard templates, which are typechecked separately
-npm test           # vitest
 npm run build      # tsup -> dist/ (gitignored; built on publish)
+npm test           # vitest
 ```
 
-`dist/` is not committed. A few tests only run once it exists — they skip in a plain checkout and are
-required in CI, so run `npm run build` before trusting a green local run of the whole suite.
+Build before testing, in that order. `dist/` is not committed, and several tests only run once it exists —
+they skip in a plain checkout and are required in CI. Run in the other order and those tests skip, which
+reads exactly like passing.
 
 ## Before you open a pull request
 
@@ -59,15 +65,19 @@ leaves two files disagreeing, and the check that notices is not always the one t
 | artifact | generated from | regenerate with |
 |---|---|---|
 | `capabilities.json` | `src/map/capabilities.ts` | `node scripts/emit-capabilities.mjs` |
-| `rule-contract.json` | the engine's match types and actions | see `src/protect/rules/contract.js` |
+| `rule-contract.json` | the engine's match types and actions | `npm run rule-contract` |
 | the canary attack-surface map | `tests/map/canary-case.ts` | `PS_CANARY_EMIT_DIR=<dir> npx vitest run tests/map/canary-emit` |
 
-A vocabulary change to `capabilities.json` also needs `CAPABILITY_VERSION` moved; CI checks that.
+A vocabulary change to `capabilities.json` also needs `CAPABILITY_VERSION` moved. `npm run
+capabilities:check` and `npm run rule-contract:check` are what CI runs.
 
 ## Comments and prose
 
-- Comments describe the code that is there, not the code that used to be, and not how a fix was reasoned
-  about. That belongs in the pull request.
+- Comments describe the code that is there and the invariant it holds — not the code that used to be, and
+  not how a fix was reasoned about.
+- **The same applies to a pull-request description**, which is public. State what changed and the
+  externally observable reason it matters. "What used to happen", "how we found it" and the mutations you
+  tried belong in the private engineering record, not here — see the boundary in `AGENTS.md`.
 - No ticket references anywhere in the tree. They go in the pull-request title and description.
 - Plain words, short sentences. Lead with what changed and why it matters.
 
