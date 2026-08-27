@@ -49,13 +49,22 @@ const SKIP_DIRS = new Set([
 ]);
 
 /**
- * The one skip whose exclusion is DEFINITIONAL rather than a guess.
+ * The only two exclusions that are DEFINITIONAL rather than a guess.
  *
- * The import inventory answers "which packages does the app's own code import". Dependency-internal
- * imports are a different question with its own answer, so not walking `node_modules` cannot make this
- * inventory wrong. It is also never probed: probing it would cost more than the entire walk.
+ * `node_modules`: the import inventory answers "which packages does the app's own code import".
+ * Dependency-internal imports are a different question with its own answer, so not walking it cannot
+ * make this inventory wrong. Probing it would also cost more than the entire walk.
+ *
+ * `.git`: an object database. Its contents are compressed objects and packfiles, not modules any runtime
+ * can load or serve, so nothing in it can be an import this inventory should have named.
+ *
+ * NOTHING ELSE qualifies, and dot-directories especially do not. `.output`, `.next`, `.svelte-kit`,
+ * `.vercel`, `.wrangler` are build output — and a Nuxt production image legitimately contains only
+ * `.output/server/*.mjs` and no `src/` at all, which is the same case that made the `dist` exemption
+ * indefensible. `.turbo` and `.cache` can hold copies of source outright. A dot in the name is a
+ * convention about visibility, not evidence about content.
  */
-const SKIP_IS_DEFINITIONAL = new Set(['node_modules']);
+const SKIP_IS_DEFINITIONAL = new Set(['node_modules', '.git']);
 
 /**
  * Why "derived" is not an exemption.
@@ -88,8 +97,9 @@ const PROBE_BUDGET = 4096;
 /**
  * Does this directory hold a source file? `'unknown'` when the probe ran out of budget first.
  *
- * Dot-directories and `node_modules` are not descended into even here: the question is whether the skip
- * hid APP source, and neither can hold any by convention.
+ * The two definitional exclusions (`node_modules`, `.git`) are not descended into even here. Everything
+ * else is, dot-directories included — the question is whether the skip hid source that can be loaded and
+ * served, and a dot in the name says nothing about that.
  */
 export function probeForSource(dir: string, budget: { left: number }): boolean | 'unknown' {
   let entries;
@@ -98,7 +108,9 @@ export function probeForSource(dir: string, budget: { left: number }): boolean |
   for (const e of entries) {
     if (budget.left-- <= 0) return 'unknown';
     if (e.isDirectory()) {
-      if (!e.name.startsWith('.') && e.name !== 'node_modules') dirs.push(join(dir, e.name));
+      // Descend into everything but the definitional exclusions. Skipping dot-subdirectories here was the
+      // same bypass one level down: `vendor/.hidden/server.ts` probed as "no source".
+      if (!SKIP_IS_DEFINITIONAL.has(e.name)) dirs.push(join(dir, e.name));
     } else if (isSourceFile(e.name)) return true;
     // A symlink is neither: `isDirectory()` is false for one pointing at a directory, and its NAME is not
     // a source file name, so it fell through both branches and a linked subtree full of handlers probed as
@@ -178,9 +190,12 @@ export function collectSources(
   entries.sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0));
   for (const e of entries) {
     if (SKIP_DIRS.has(e.name) || (e.name.startsWith('.') && e.name !== '.')) {
-      // A skip that is a GUESS gets checked. Dot-directories and `node_modules` do not: neither holds app
-      // source by convention, and probing `node_modules` would cost more than the whole walk.
-      const probeable = SKIP_DIRS.has(e.name) && !SKIP_IS_DEFINITIONAL.has(e.name) && !e.name.startsWith('.');
+      // EVERY skip that is a guess gets checked — including dot-directories, and including ones not in
+      // `SKIP_DIRS` at all (the walk skips any name starting with a dot). Only the two definitional
+      // exclusions are exempt. A previous version also exempted every dot-directory, which left
+      // `.output/server/index.mjs` — a whole Nuxt server — invisible while the inventory claimed to be
+      // complete: the same hole as the `dist` exemption, behind a different convention.
+      const probeable = !SKIP_IS_DEFINITIONAL.has(e.name);
       // A SYMLINK named like a skipped directory is not `isDirectory()`, so it was not probed at all and
       // moved no counter — the same bypass as inside the probe, one level up.
       if (probeable && !e.isDirectory() && e.isSymbolicLink()) stats.skippedUnknown++;

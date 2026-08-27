@@ -157,6 +157,21 @@ describe('the reported path', () => {
 });
 
 describe('a skip that is not a guess', () => {
+  it('does not forfeit completeness for .git — an object database, not loadable modules', async () => {
+    // Definitional, like `node_modules`: git objects are compressed packfiles, not modules any runtime can
+    // load or serve, so nothing in there can be an import this inventory should have named. A `.js` inside
+    // it is a checked-out working file or a hook, never something the app imports.
+    const dir = project({ 'src/server.ts': VISIBLE_SERVER, '.git/hooks/pre-commit.js': HIDDEN_SERVER });
+    try {
+      const { map } = await buildInputMap(dir, {});
+
+      expect(map!.coverage.importsComplete).toBe(true);
+      expect(map!.coverage.importCoverageGaps?.skippedDirsWithSource).toEqual([]);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   it('does not forfeit completeness for node_modules', async () => {
     // Excluding `node_modules` is definitional: this inventory is of the app's OWN imports. If it counted,
     // `importsComplete` would be false for every project that has ever run `npm install` — a flag that is
@@ -170,19 +185,6 @@ describe('a skip that is not a guess', () => {
 
       expect(map!.coverage.importsComplete).toBe(true);
       expect(map!.coverage.importCoverageGaps?.skippedDirsWithSource).toEqual([]);
-    } finally {
-      rmSync(dir, { recursive: true, force: true });
-    }
-  });
-
-  it('does not forfeit completeness for a dot-directory', async () => {
-    // `.next`, `.output`, `.vercel`: build products by convention, and the walk skips every dot-directory
-    // wholesale. Pinned so the deliberate scope is visible rather than incidental.
-    const dir = project({ 'src/server.ts': VISIBLE_SERVER, '.next/server/app.js': HIDDEN_SERVER });
-    try {
-      const { map } = await buildInputMap(dir, {});
-
-      expect(map!.coverage.importsComplete).toBe(true);
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
@@ -203,6 +205,50 @@ describe('a skip that is not a guess', () => {
       expect((map!.imports ?? []).map((i) => i.package)).not.toContain('node-serialize');
       expect(map!.coverage.importsComplete).toBe(false);
       expect(map!.coverage.importCoverageGaps?.skippedDirsWithSource).toEqual(['dist']);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('DOES forfeit completeness for a build output in a DOT-directory', async () => {
+    // A dot in the name is a convention about visibility, not evidence about content. A Nuxt production
+    // image legitimately contains only `.output/server/index.mjs` and no `src/` at all — the same
+    // counter-example that made the `dist` exemption indefensible, behind a different convention.
+    const dir = project({ '.output/server/index.mjs': HIDDEN_SERVER });
+    try {
+      const { map } = await buildInputMap(dir, {});
+
+      expect((map!.imports ?? []).map((i) => i.package)).not.toContain('node-serialize');
+      expect(map!.coverage.importsComplete).toBe(false);
+      expect(map!.coverage.importCoverageGaps?.skippedDirsWithSource).toEqual(['.output']);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('forfeits completeness for a dot-directory that is not even in the skip list', async () => {
+    // The walk skips EVERY name beginning with a dot, not only the ones enumerated. So the exemption
+    // covered arbitrary hidden directories too, and any of them can hold a server.
+    const dir = project({ 'src/server.ts': VISIBLE_SERVER, '.private/server.ts': HIDDEN_SERVER });
+    try {
+      const { map } = await buildInputMap(dir, {});
+
+      expect(map!.coverage.importsComplete).toBe(false);
+      expect(map!.coverage.importCoverageGaps?.skippedDirsWithSource).toEqual(['.private']);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('finds source in a dot-subdirectory of a skipped tree', async () => {
+    // The same bypass one level down: the probe itself refused to descend into dot-directories, so
+    // `vendor/.hidden/server.ts` probed as "no source" and the flag survived.
+    const dir = project({ 'src/server.ts': VISIBLE_SERVER, 'vendor/.hidden/server.ts': HIDDEN_SERVER });
+    try {
+      const { map } = await buildInputMap(dir, {});
+
+      expect(map!.coverage.importsComplete).toBe(false);
+      expect(map!.coverage.importCoverageGaps?.skippedDirsWithSource).toEqual(['vendor']);
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
