@@ -6,18 +6,11 @@
 // metadata rather than by the code: which file an `exports` condition resolves to, which declarations
 // TypeScript reads beside it, whether `files` left something out, whether the bin is executable.
 //
-// Those failures are invisible from here and total for the consumer. Two were shipped and found by writing
-// this:
-//
-//   - `exports` had a single top-level `types` pointing at the ESM declarations, so a CommonJS TypeScript
-//     consumer resolved `require` for the runtime and ESM types for the shape. TypeScript concluded the
-//     target was an ES module and refused the `require` (TS1479) — while CommonJS JavaScript worked. The
-//     package was unusable from CommonJS TypeScript.
-//   - the published declarations referenced `NodeJS.ProcessEnv`, from `@types/node`, which this package
-//     does not depend on. A consumer without it could not compile against the types at all.
+// Such failures are invisible from inside the repository and total for the consumer: the source suite is
+// green while nothing can import the package. Each shape below states the consumption path it holds open.
 //
 // Run: node scripts/compat-matrix.mjs [--manager npm|pnpm|yarn|bun]
-import { execFileSync } from 'node:child_process';
+import { execFileSync, execSync } from 'node:child_process';
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync, existsSync, readdirSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
@@ -28,8 +21,33 @@ const manager = (() => {
 })();
 
 const ROOT = process.cwd();
-const run = (cmd, args, cwd, extraEnv = {}) =>
-  execFileSync(cmd, args, { cwd, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], env: { ...process.env, ...extraEnv } });
+const WINDOWS = process.platform === 'win32';
+
+/**
+ * Quote one token for the Windows command interpreter.
+ *
+ * Every token is wrapped, because a Windows temp path contains spaces and an unquoted one is split into
+ * two arguments. `"` doubles, which is cmd's own escape.
+ */
+const quoteForCmd = (token) => `"${String(token).replace(/"/g, '""')}"`;
+
+/**
+ * Run a tool and return its stdout.
+ *
+ * On Windows the package managers and the installed binaries are `.cmd` shims, and `execFileSync` cannot
+ * launch one: it creates a process directly, and a batch file is not an executable image. So Windows goes
+ * through the command interpreter with every token quoted, and every other platform keeps direct
+ * execution — no shell, nothing to quote, nothing to escape wrongly.
+ *
+ * See https://nodejs.org/api/child_process.html#spawning-bat-and-cmd-files-on-windows.
+ */
+function run(cmd, args, cwd, extraEnv = {}) {
+  const options = { cwd, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], env: { ...process.env, ...extraEnv } };
+
+  if (!WINDOWS) return execFileSync(cmd, args, options);
+
+  return execSync([cmd, ...args].map(quoteForCmd).join(' '), options);
+}
 
 /** Install a local tarball. Each manager spells it differently, and their resolution differs — which is
  *  the point of running all four rather than assuming npm's answer generalises. */
@@ -38,6 +56,18 @@ const INSTALL = {
   pnpm: (tgz, deps) => ['pnpm', ['add', '--silent', tgz, ...deps]],
   yarn: (tgz, deps) => ['yarn', ['add', tgz, ...deps]],
   bun: (tgz, deps) => ['bun', ['add', tgz, ...deps]],
+};
+
+/**
+ * What a fixture needs before its manager will treat it as its own project.
+ *
+ * Yarn Berry walks up from the working directory looking for a project root, and adopts any `package.json`
+ * it finds above — a temp directory is often inside one. An empty `yarn.lock` declares the fixture
+ * self-contained, which is Berry's own documented answer. Harmless under Classic, which would write one
+ * anyway.
+ */
+const PREPARE = {
+  yarn: (dir) => writeFileSync(path.join(dir, 'yarn.lock'), ''),
 };
 
 if (!INSTALL[manager]) {
@@ -63,8 +93,8 @@ const TSCONFIG = (module_, resolution, types) => JSON.stringify({
 /**
  * Each consumer shape, and what it is here to prove.
  *
- * `cjs-ts-no-node-types` is not redundant with `cjs-ts`: it is the only one that catches published
- * declarations depending on `@types/node` without declaring it, because every other fixture installs it.
+ * `cjs-ts-no-node-types` is not redundant with `cjs-ts`: every other TypeScript fixture installs
+ * `@types/node`, so it is the only one that holds the public declarations free of it.
  */
 const SHAPES = [
   {
@@ -111,14 +141,33 @@ const SHAPES = [
     name: 'encapsulation', why: 'nothing outside exports is reachable',
     pkg: { type: 'module' }, deps: [],
     files: {
-      'probe.mjs': "let leaked = [];\nfor (const p of ['@patchstack/connect/dist/cli.js', '@patchstack/connect/package.json', '@patchstack/connect/src/index.ts']) {\n  try { await import(p); leaked.push(p); } catch {}\n}\nif (leaked.length) throw new Error('reachable outside exports: ' + leaked.join(', '));\n",
+      // The positive control comes first and is not optional: every other assertion here expects an import
+      // to FAIL, so without it the case passes when the package is absent entirely.
+      'probe.mjs': [
+        "const root = await import('@patchstack/connect');",
+        "if (typeof root.buildWirePayload !== 'function') {",
+        "  throw new Error('control failed: the public root does not resolve, so nothing below proves encapsulation');",
+        '}',
+        '',
+        'const leaked = [];',
+        "for (const subpath of ['@patchstack/connect/dist/cli.js', '@patchstack/connect/package.json', '@patchstack/connect/src/index.ts']) {",
+        '  try {',
+        '    await import(subpath);',
+        '    leaked.push(subpath);',
+        "  } catch { /* expected: not named in `exports` */ }",
+        '}',
+        "if (leaked.length) throw new Error('reachable outside exports: ' + leaked.join(', '));",
+        '',
+      ].join('\n'),
     },
     check: (dir) => run('node', ['probe.mjs'], dir),
   },
 ];
 
-const tsc = (dir) => path.join(dir, 'node_modules', '.bin', process.platform === 'win32' ? 'tsc.cmd' : 'tsc');
-const bin = (dir) => path.join(dir, 'node_modules', '.bin', process.platform === 'win32' ? 'patchstack-connect.cmd' : 'patchstack-connect');
+// A local binary is addressed by path, so on Windows it needs the shim's extension spelled out.
+const localBin = (dir, name) => path.join(dir, 'node_modules', '.bin', WINDOWS ? `${name}.cmd` : name);
+const tsc = (dir) => localBin(dir, 'tsc');
+const bin = (dir) => localBin(dir, 'patchstack-connect');
 
 /** Pack the real artifact. `--ignore-scripts` is deliberately NOT passed: `prepare` builds `dist/`. */
 function packTarball(into) {
@@ -135,7 +184,16 @@ let failures = 0;
 
 try {
   const tarball = packTarball(work);
-  console.log(`packed ${path.basename(tarball)}; installing with ${manager}\n`);
+
+  // Which manager, at which version. The label alone says "Yarn", and Classic and Berry resolve
+  // differently enough that a pass under one is not a pass under the other.
+  let managerVersion = 'unknown';
+  try {
+    managerVersion = run(manager, ['--version'], ROOT).trim().split('\n').pop();
+  } catch { /* the install below fails loudly if the manager is missing */ }
+
+  console.log(`packed ${path.basename(tarball)}`);
+  console.log(`node ${process.version} · ${manager} ${managerVersion} · ${process.platform}\n`);
 
   for (const shape of SHAPES) {
     const dir = path.join(work, shape.name);
@@ -144,6 +202,7 @@ try {
     for (const [file, body] of Object.entries(shape.files ?? {})) writeFileSync(path.join(dir, file), body);
 
     try {
+      PREPARE[manager]?.(dir);
       const [cmd, args] = INSTALL[manager](tarball, shape.deps);
       run(cmd, args, dir);
       shape.check(dir);

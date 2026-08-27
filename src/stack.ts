@@ -107,21 +107,20 @@ const HOSTING_ENV_PATTERNS: readonly RegExp[] = [
 ];
 
 /**
+ * An environment, described structurally so it needs no ambient types.
+ *
+ * `@types/node` is not a dependency of this package, so nothing in its public surface may name
+ * `NodeJS.ProcessEnv`: a consumer without those types cannot compile against a signature that does.
+ * `process.env` satisfies this, and so does a plain object.
+ */
+export type EnvLike = Record<string, string | undefined>;
+
+/**
  * Return the sorted NAMES of hosting-related environment variables present in
  * `env`. Only names are surfaced — never values — so a build fingerprint can
  * distinguish "deployed on Cloudflare" from "deployed on Vercel" without ever
  * disclosing a secret.
  */
-/**
- * The shape of an environment, structurally.
- *
- * Not `NodeJS.ProcessEnv`: that type comes from `@types/node`, which this package does not declare as a
- * dependency, so a consumer without it could not compile against these signatures at all — the published
- * declarations referenced a namespace their project had never heard of. `process.env` satisfies this, and
- * so does a plain object, which is what the tests pass.
- */
-export type EnvLike = Record<string, string | undefined>;
-
 export function collectHostingEnvKeys(env: EnvLike = process.env): string[] {
   return Object.keys(env)
     .filter((key) => HOSTING_ENV_PATTERNS.some((pattern) => pattern.test(key)))

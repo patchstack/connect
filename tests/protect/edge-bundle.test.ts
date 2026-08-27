@@ -63,9 +63,9 @@ describe('edge bundle', () => {
     for (const cond of ['workerd', 'worker', 'edge-light', 'deno', 'browser']) {
       expect(protect[cond]).toBe('./dist/protect.edge.js');
     }
-    // Node still gets the full build. Nested now, because the types differ per format: a CommonJS
-    // consumer resolving `require` must be handed the `.d.cts` declarations, or TypeScript reads the ESM
-    // ones, concludes the target is an ES module and refuses the `require` outright.
+    // Node gets the full build, and the types are nested per format: a CommonJS consumer resolving
+    // `require` must be handed the `.d.cts` declarations, or TypeScript reads the ESM ones, concludes the
+    // target is an ES module and refuses the `require`.
     expect(protect.import).toEqual({ types: './dist/protect.d.ts', default: './dist/protect.js' });
     expect(protect.require).toEqual({ types: './dist/protect.d.cts', default: './dist/protect.cjs' });
 
@@ -77,9 +77,8 @@ describe('edge bundle', () => {
   });
 
   it('ships the declarations both format conditions point at', () => {
-    // The map can name a file that the build never produces, and the failure surfaces three layers away as
-    // "cannot find module" in a consumer's project. `protect.d.cts` did not exist at all while `require`
-    // was already being advertised.
+    // The map can name a file the build never produces, and the failure surfaces three layers away as
+    // "cannot find module" in a consumer's project.
     const pkg = JSON.parse(readFileSync(root + 'package.json', 'utf8'));
     const shipped = pkg.files as string[];
 
