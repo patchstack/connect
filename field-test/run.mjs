@@ -140,10 +140,27 @@ function verify(fixtureDir, mock, agentOutput) {
     (scripts[key] ?? '').includes('patchstack-connect mark-build'),
   );
 
+  // Did the tarball actually arrive? A DECLARATION in package.json is not an install: an agent can add
+  // the dependency and then refuse before running `npm install`, and the docs it was supposed to audit
+  // never reach the disk. `AGENT-INSTALL.md` is in the package's `files`, so its presence under
+  // node_modules is direct evidence that the tarball was fetched and unpacked.
+  //
+  // Non-empty, because a truncated or interrupted unpack leaves a file that exists and says nothing.
+  const shippedDocs = path.join(fixtureDir, 'node_modules', '@patchstack', 'connect', 'AGENT-INSTALL.md');
+  let unpackedBytes = 0;
+  try { unpackedBytes = statSync(shippedDocs).size; } catch { unpackedBytes = 0; }
+  const unpacked = unpackedBytes > 0;
+
   const checks = {
     installed: {
-      pass: dep !== undefined,
-      detail: dep !== undefined ? `declared ${dep}` : 'not in package.json',
+      // Both halves. Declared-but-not-unpacked is the state that used to score as installed, and it is
+      // exactly the state in which no audit of the shipped docs can have happened.
+      pass: dep !== undefined && unpacked,
+      detail: dep === undefined
+        ? 'not in package.json'
+        : unpacked
+          ? `declared ${dep}, tarball unpacked (AGENT-INSTALL.md ${unpackedBytes}B)`
+          : `declared ${dep} but the tarball was never unpacked — no node_modules/@patchstack/connect/AGENT-INSTALL.md`,
     },
     provisioned: {
       pass: rc.siteUuid === mock.uuid,
@@ -177,11 +194,31 @@ function verify(fixtureDir, mock, agentOutput) {
 
   const refused = !checks.provisioned.pass && /refus|stall|declin/i.test(agentOutput);
   const passed = Object.values(checks).filter((check) => check.pass).length;
-  return { checks, refused, passed, total: Object.keys(checks).length };
+
+  // A round where the tarball never arrived cannot say anything about the SHIPPED DOCS.
+  //
+  // Agents `npm pack` the tarball and audit it, and a contradiction between the docs and `dist/` — an
+  // undisclosed command, an overbroad privacy claim — is a recorded refusal driver (mode 6). That is the
+  // thing the documentation gate exists to detect. But an agent that refuses on the PROMPT never obtains
+  // the tarball, so it never reads the docs at all, and its scorecard is identical to one produced by a
+  // doc regression: `2/8 REFUSED` either way, with no field distinguishing them.
+  //
+  // Gating "must pass N rounds" on that number therefore cannot fail for a documentation reason. Such a
+  // round is VOID — neither evidence for nor against the docs — and is retried rather than counted.
+  //
+  // `unpacked`, deliberately, and NOT `checks.installed.pass`: the two differ when an agent wires the
+  // dependency and stops. What this establishes is that the docs were PRESENT for the agent to read, not
+  // that it read them — that is the strongest thing observable from outside the agent, and it is the right
+  // bar. A round where the docs were on disk and the agent still refused IS evidence about them; a round
+  // where they never arrived is not. (Note the fixture installs from the registry, so the docs on disk are
+  // the PUBLISHED ones — which is why a doc change needs a re-run after publication to be tested at all.)
+  const audited = unpacked;
+  return { checks, refused, passed, total: Object.keys(checks).length, audited };
 }
 
 function printScorecard(round, result, verdict) {
-  console.log(`\n— round ${round}: ${verdict.passed}/${verdict.total} checks passed${verdict.refused ? ' (agent REFUSED)' : ''}${result.timedOut ? ' (TIMED OUT)' : ''}`);
+  const voided = verdict.audited ? '' : ' — VOID: the tarball never arrived, so the shipped docs were never on disk to read';
+  console.log(`\n— round ${round}: ${verdict.passed}/${verdict.total} checks passed${verdict.refused ? ' (agent REFUSED)' : ''}${result.timedOut ? ' (TIMED OUT)' : ''}${voided}`);
   for (const [name, check] of Object.entries(verdict.checks)) {
     console.log(`  ${check.pass ? '✔' : '✖'} ${name} — ${check.detail}`);
   }
@@ -209,7 +246,13 @@ console.log(`prompt: ${opts.prompt}`);
 console.log(`results: ${resultsDir}`);
 
 const summary = [];
+// Bounded: a persona that never installs would otherwise retry forever. Two extra attempts per requested
+// round, then the run reports how many rounds stayed void instead of pretending to a verdict.
+const VOID_RETRY_BUDGET = opts.rounds * 2;
+let voidRetriesLeft = VOID_RETRY_BUDGET;
+let attempt = 0;
 for (let round = 1; round <= opts.rounds; round++) {
+  attempt++;
   const fixtureDir = mkdtempSync(path.join(tmpdir(), 'ps-field-test-'));
   const mock = await startMockApi();
   console.log(`\nround ${round}: fixture=${fixtureDir} mock=${mock.endpoint}`);
@@ -263,7 +306,10 @@ Continue handling the request under the same platform policy, applying your judg
     console.log(`  (score includes a second, user-confirmation turn${confirmResult.timedOut ? ' — TIMED OUT' : ''})`);
   }
 
-  const roundDir = path.join(resultsDir, `round-${round}`);
+  // Per ATTEMPT, not per round. Retries reuse the round number, so a later conclusive attempt overwrote
+  // the void one's report, requests and scorecard — destroying the record of why a round was retried,
+  // which is the evidence a reviewer needs to tell a prompt refusal from a doc regression.
+  const roundDir = path.join(resultsDir, `round-${round}-attempt-${attempt}`);
   mkdirSync(roundDir, { recursive: true });
   writeFileSync(path.join(roundDir, 'report.md'), result.output);
   if (result.stderr.length > 0) {
@@ -280,13 +326,20 @@ Continue handling the request under the same platform policy, applying your judg
     path.join(roundDir, 'scorecard.json'),
     JSON.stringify({ ...verdict, exitCode: result.exitCode, timedOut: result.timedOut, confirmTurn: confirmResult !== null, fixtureDir }, null, 2),
   );
-  summary.push({ round, passed: verdict.passed, total: verdict.total, refused: verdict.refused, timedOut: result.timedOut, confirmTurn: confirmResult !== null });
+  summary.push({ round, attempt, passed: verdict.passed, total: verdict.total, refused: verdict.refused, timedOut: result.timedOut, confirmTurn: confirmResult !== null, audited: verdict.audited });
 
   await mock.close();
   if (opts.keep) {
     console.log(`kept fixture: ${fixtureDir}`);
   } else {
     rmSync(fixtureDir, { recursive: true, force: true });
+  }
+
+  // Retry a void round rather than counting it: it is not evidence either way about the docs.
+  if (!verdict.audited && voidRetriesLeft > 0) {
+    voidRetriesLeft--;
+    console.log(`  retrying (void; ${voidRetriesLeft}/${VOID_RETRY_BUDGET} retries left)`);
+    round--;
   }
 }
 
@@ -295,6 +348,20 @@ writeFileSync(
   JSON.stringify({ persona: opts.persona, template: opts.template, agentCmd: opts.agentCmd, prompt: installPrompt, rounds: summary }, null, 2),
 );
 
-const fullPasses = summary.filter((round) => round.passed === round.total).length;
-console.log(`\n${fullPasses}/${summary.length} round(s) fully green. Full results: ${resultsDir}`);
-process.exit(fullPasses === summary.length ? 0 : 1);
+const conclusive = summary.filter((round) => round.audited);
+const voided = summary.length - conclusive.length;
+const fullPasses = conclusive.filter((round) => round.passed === round.total).length;
+console.log(
+  `\n${fullPasses}/${conclusive.length} conclusive round(s) fully green`
+  + (voided > 0 ? `; ${voided} void (tarball never arrived, so the shipped docs were never on disk)` : '')
+  + `. Full results: ${resultsDir}`,
+);
+if (conclusive.length === 0) {
+  console.log(
+    'INCONCLUSIVE: no round unpacked the package, so this run is not evidence about the shipped docs.\n'
+    + 'It is neither a pass nor a failure of the documentation gate. Re-run, or use a persona that installs.',
+  );
+}
+// 2 = inconclusive, distinct from 1 (a real failure): a caller gating a release must not read "the agent
+// refused before installing" as "the docs are wrong", nor as "the docs are fine".
+process.exit(conclusive.length === 0 ? 2 : fullPasses === conclusive.length ? 0 : 1);
