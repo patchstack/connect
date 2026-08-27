@@ -77,15 +77,26 @@ const INSTALL = {
 };
 
 /**
- * What a fixture needs before its manager will treat it as its own project.
+ * What a fixture needs before its manager will treat it as its own project, and resolve the way a
+ * consumer of this package does.
  *
- * Yarn Berry walks up from the working directory looking for a project root, and adopts any `package.json`
- * it finds above — a temp directory is often inside one. An empty `yarn.lock` declares the fixture
- * self-contained, which is Berry's own documented answer. Harmless under Classic, which would write one
- * anyway.
+ * Two things for Yarn, and both are stated rather than left to a default:
+ *
+ * `yarn.lock` — Berry walks up from the working directory looking for a project root and adopts any
+ * `package.json` above it, which a temp directory usually has. An empty lockfile declares the fixture
+ * self-contained, which is Berry's own documented answer. Harmless under Classic, which writes one anyway.
+ *
+ * `nodeLinker: node-modules` — this is the layout being tested, so it is pinned instead of inherited.
+ * Berry's linker otherwise depends on its version and on any `.yarnrc.yml` above the fixture, so the same
+ * script resolves differently on two machines, and a pass says nothing about which layout was exercised.
+ * Under Plug'n'Play nothing is in `node_modules` at all and a plain `node probe.mjs` cannot resolve the
+ * package — a real Berry configuration, and a separate shape this matrix does not cover.
  */
 const PREPARE = {
-  yarn: (dir) => writeFileSync(path.join(dir, 'yarn.lock'), ''),
+  yarn: (dir) => {
+    writeFileSync(path.join(dir, 'yarn.lock'), '');
+    writeFileSync(path.join(dir, '.yarnrc.yml'), 'nodeLinker: node-modules\n');
+  },
 };
 
 if (!INSTALL[manager]) {
