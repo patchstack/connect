@@ -20,7 +20,7 @@
  * member is breaking and bumps the MAJOR, because a consumer pinned to the old list will keep emitting a
  * value that can no longer match.
  */
-export const CAPABILITY_VERSION = '1.1.0';
+export const CAPABILITY_VERSION = '1.2.0';
 
 /** Sink families the extractor recognizes. A dangerous OPERATION, not a package. */
 export const SINK_KINDS = ['db', 'fs', 'http', 'exec', 'eval'] as const;
@@ -79,6 +79,21 @@ export const ATTRIBUTIONS = ['import', 'global', 'inferred'] as const;
 /** The request address spaces an input can live in — half of an input's identity. */
 export const ADDRESS_SPACES = ['post', 'get', 'cookie', 'files', 'server', 'route-param', 'unknown'] as const;
 
+/**
+ * Where an input is read from. The other half of an input's identity, and the axis that decides which
+ * address space — and therefore which engine parameter — can name it.
+ *
+ * A runtime array, like every other vocabulary here, because `InputSource` was a bare type union and a
+ * union cannot be enumerated at runtime. That is not a stylistic gap: a test asked to cover "every source
+ * the map can address" had no way to ask what those were, so it restated the list — and a restated list
+ * compared against another restated list passes forever, including after a sixth source is added.
+ */
+export const INPUT_SOURCES = [
+  'json-body', 'form-body', 'multipart', 'body',
+  'query', 'route-param', 'header', 'cookie', 'file',
+  'server-fn-data', 'unknown',
+] as const;
+
 /** The whole contract, as the other repos consume it. Key order is stable so the JSON is diffable. */
 export const CAPABILITY_MANIFEST = {
   version: CAPABILITY_VERSION,
@@ -90,6 +105,7 @@ export const CAPABILITY_MANIFEST = {
   autoPromotableConfidence: AUTO_PROMOTABLE_CONFIDENCE,
   attributions: ATTRIBUTIONS,
   addressSpaces: ADDRESS_SPACES,
+  inputSources: INPUT_SOURCES,
   invocationKinds: INVOCATION_KINDS,
   invocationResolutions: INVOCATION_RESOLUTIONS,
 } as const;

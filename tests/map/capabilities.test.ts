@@ -227,3 +227,40 @@ describe('every declared capability has a recognizer behind it', () => {
   }, 60_000);
 
 });
+/**
+ * Every vocabulary declared here must actually reach the manifest consumers vendor.
+ *
+ * This was found the hard way: `INPUT_SOURCES` was added to `CAPABILITY_MANIFEST` and did not appear in
+ * `capabilities.json`, because the emitter assembles the JSON from its OWN restated list of vocabulary
+ * names. `emit-capabilities --check` reported "up to date" the whole time — both sides omitted it, so they
+ * agreed. A member could be added, typed, used, and never ship, and the check designed to catch exactly
+ * that said nothing.
+ *
+ * Asserting over the source rather than over either list is the only version of this that cannot be
+ * satisfied by two files agreeing to be wrong together.
+ */
+describe('the emitted manifest covers every declared vocabulary', () => {
+  const source = readFileSync(join(root, 'src', 'map', 'capabilities.ts'), 'utf8');
+  const manifest = JSON.parse(readFileSync(manifestPath, 'utf8'));
+
+  // Exported `as const` arrays are the vocabularies. `CAPABILITY_MANIFEST` itself is the assembly, not a
+  // member, and the scalar pins are read separately by the emitter.
+  const declared = [...source.matchAll(/export const ([A-Z_]+) = \[/g)]
+    .map((m) => m[1])
+    .filter((name) => name !== 'CAPABILITY_MANIFEST');
+
+  it('finds the vocabularies to check, so an empty list cannot pass', () => {
+    expect(declared.length).toBeGreaterThanOrEqual(8);
+  });
+
+  it.each(declared)('%s appears in capabilities.json with the same members', (name) => {
+    // camelCase key, as the manifest names them: SINK_KINDS → sinkKinds.
+    const key = name.toLowerCase().replace(/_(.)/g, (_, c) => c.toUpperCase());
+    const members = [...(new RegExp(`export const ${name} = \\[([^\\]]*)\\] as const;`, 's').exec(source)?.[1] ?? '')
+      .matchAll(/'([^']+)'/g)].map((m) => m[1]);
+
+    expect(manifest, `${name} is declared but ${key} is absent from capabilities.json`).toHaveProperty(key);
+    expect(manifest[key]).toEqual(members);
+  });
+});
+

@@ -1,14 +1,7 @@
 // The closed vocabularies below are derived from `capabilities.ts` — the single versioned definition
 // shared with the rule-authoring and rule-binding layers. Declaring a union here too would be a copy,
 // and the failure mode of the two disagreeing is silent (a value that can never match).
-import {
-  ADDRESS_SPACES,
-  ARGUMENT_ROLES,
-  CANDIDATE_FAMILIES,
-  INVOCATION_KINDS,
-  INVOCATION_RESOLUTIONS,
-  SINK_KINDS,
-} from './capabilities.js';
+import { ADDRESS_SPACES, ARGUMENT_ROLES, CANDIDATE_FAMILIES, INPUT_SOURCES, INVOCATION_KINDS, INVOCATION_RESOLUTIONS, SINK_KINDS } from './capabilities.js';
 
 // The build-time input-flow ("attack surface") map. connect's `map` command walks the app's source
 // and emits this per-site: entry points → the inputs each reads → the sinks/dependencies they reach.
@@ -17,11 +10,13 @@ import {
 // Honesty is a first-class field: static analysis is best-effort, so `coverage` records what the
 // adapter could and couldn't see. Never present the map as "complete".
 
-/** Where an input is read from — determines which runtime parameter namespace can address it. */
-export type InputSource =
-  | 'json-body' | 'form-body' | 'multipart' | 'body'
-  | 'query' | 'route-param' | 'header' | 'cookie' | 'file'
-  | 'server-fn-data' | 'unknown';
+/**
+ * Where an input is read from — determines which runtime parameter namespace can address it.
+ *
+ * Derived from the runtime vocabulary rather than written out again, so the two cannot disagree and so a
+ * test can ask what the members ARE instead of restating them.
+ */
+export type InputSource = (typeof INPUT_SOURCES)[number];
 
 /**
  * Where an input lives in the request, as the rule engine addresses it. This — not the field name — is
