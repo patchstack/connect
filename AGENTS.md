@@ -31,6 +31,15 @@ this" belong in private engineering records, not source comments or public pull 
 Fixtures must be synthetic or explicitly public. Never copy fixtures or implementation details from a
 private repository merely to make a test realistic.
 
+Do not commit third-party confidential or proprietary material, including copied system prompts, private
+evaluation transcripts, unpublished documentation, or customer-provided integration details. Public
+availability elsewhere must be verified rather than assumed. Use synthetic fixtures unless the material is
+explicitly public and its license permits redistribution.
+
+This is a separate obligation from the one above, not a special case of it. Material can be entirely free
+of Patchstack internals and still be someone else's to publish — so a change can satisfy every rule above
+and still be a disclosure.
+
 Before committing or opening a pull request, inspect the complete staged diff, commit message, generated
 files, test output, and proposed PR description for public-boundary violations. If completing a task
 appears to require publishing private context, stop and ask for a public-safe abstraction.
@@ -43,3 +52,4 @@ architecture, so the review above is the only control that covers it.
 - `CLAUDE.md` — commands, the tested install prompt, comment and explanation style, releasing.
 - `MAINTAINING.md` — which onboarding and setup files are load-bearing, and how to change one safely.
 - `RELEASING.md` — how a version is cut and published.
+- `field-test/README.md` — the agent harness, its scoring contract, and why its personas are synthetic.

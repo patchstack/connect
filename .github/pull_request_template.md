@@ -12,6 +12,7 @@ capable but has not seen this code today.
 ---
 
 - [ ] I reviewed the code, comments, fixtures, commit messages, generated output, and PR description for private Patchstack or customer information.
+- [ ] Nothing here is third-party confidential or proprietary material — copied system prompts, private transcripts, unpublished documentation. Where I relied on something being public, I verified it rather than assumed it.
 
 <!--
 This repository is public, including its history and this description. See "Public repository boundary"
