@@ -72,12 +72,19 @@ files are load-bearing — and note that the install prompt is a tested artifact
 
 **`sideEffects: false` is not declared, deliberately.** It was measured, not assumed: `npm run
 test:bundled` builds both consumer shapes with and without the field, and it changes the bundle by zero
-bytes in each. The root entry already shakes down to 0.8 kB for a single-symbol import, because the
-modules have no import-time side effects — `npm run audit:side-effects` parses the published bundles and
-proves that rather than asserting it. So the field would buy nothing while standing as a permanent promise
-to every bundler that no module in the package ever needs evaluating; the day someone adds a top-level
-registration, consumers lose it silently in their own build. If you want to add the field, add the
-evidence first: a shape where it demonstrably saves bytes.
+bytes in each. The root entry already shakes down to 0.8 kB for a single-symbol import. So the field would
+buy nothing while standing as a permanent promise to every bundler that no module in the package ever
+needs evaluating; the day someone adds a top-level registration, consumers lose it silently in their own
+build. If you want to add the field, add the evidence first: a shape where it demonstrably saves bytes.
+
+`npm run audit:side-effects` supports that decision but does not settle it. It is a **tripwire**, not a
+proof: it walks the part of each published bundle that runs at import time and reports anything that can
+execute, deliberately over-reporting rather than recognising shapes it believes are safe. What it cannot
+see is what a called function does, so a clean report means "nothing here obviously executes" and never
+"safe to drop". `--selftest` pins its behaviour on 23 cases, several of which an earlier version of the
+script reported clean — `export default init()`, `class C extends init()` and a bare `import './x.js'` all
+look like plain declarations to an allowlist, and all three run code. The real evidence that the package
+survives a bundler is `npm run test:bundled`, which attacks the bundled guard.
 
 **`module` is kept even though nothing this repository tests reads it.** The bundled test shows removing
 it changes nothing, but that only means a bundler which understands `exports` ignores it — which is what

@@ -41,6 +41,11 @@ const result = await esbuild.build({
   platform: 'browser', // WinterCG: no Node globals assumed
   target: 'es2022',
   sourcemap: true,
+  // The map resolves a stack frame to file and line without carrying the source text, which is published
+  // in this repository anyway. `tsup.config.ts` sets the same thing for the other three artifacts, and
+  // `tests/source-maps.test.ts` checks every one of them — the setting living in two places is the reason
+  // that test exists.
+  sourcesContent: false,
   // Keep the stub inline so the artifact is a single self-contained file (an edge bundler should not
   // have to chase a chunk that only ever throws).
   splitting: false,
