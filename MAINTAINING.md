@@ -32,6 +32,8 @@ node field-test/run.mjs --persona hostile --rounds 3
 
 It runs a real AI agent through the full install in a throwaway fixture against a mocked API and scores the outcome. Read each round's `report.md` (the HESITATIONS / DECISION ANALYSIS sections) — anything an agent pauses on is a future refusal. See [`field-test/README.md`](field-test/README.md) for the improve-and-retest loop, the safety model, and what to do when the gate is red for environmental reasons (stale published docs, release freshness).
 
+What it establishes is **structural regression coverage**: the prompt still survives pressures that once broke it. The personas are synthetic — written from our own analysis, not from any platform's policy text — so a green run is not evidence that a live platform accepts the prompt, and should not be reported as though it were.
+
 Caveat: the fixture installs the **published** package, so an unpublished `guide`/CLI change can't be exercised end-to-end — publish first, or accept that the run validates only the prompt shape.
 
 ## Don'ts (these are refusal triggers, not style nits)
