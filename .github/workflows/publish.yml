@@ -119,6 +119,37 @@ jobs:
       - name: Publish to npm
         run: npm publish --access public --provenance
 
+  # Separated from `publish` deliberately, and the separation is the point.
+  #
+  # This runs AFTER the version exists on npm and cannot be unpublished, so its failure is a discovery
+  # about something already released rather than something preventable. Leaving it inside `publish` made
+  # the publish job fail on that discovery, which skipped `record-version` — and produced the one state
+  # this whole change exists to prevent: a version irreversibly on npm, a tag pointing at it, `main` still
+  # naming the previous version, and no pull request proposing the correction. Drift, arriving during the
+  # release where accurate state matters most.
+  #
+  # So publication ends when npm accepts the tarball. Verification and recording are both consequences of
+  # that, and neither blocks the other.
+  verify-published:
+    name: Verify the published tarball
+    needs: publish
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          ref: refs/tags/v${{ needs.publish.outputs.version }}
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24.x
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
       # The proof that matters most, and the only one that covers PACKAGING. Everything above tests a build
       # in this checkout; this installs the published tarball from the registry and runs the same canary
       # against the engine inside it. A file left out of `files`, a wrong `exports` map, or a bad entry
@@ -131,7 +162,7 @@ jobs:
       - name: Canary — the PUBLISHED tarball blocks the exploit
         run: |
           set -euo pipefail
-          version='${{ steps.version.outputs.version }}'
+          version='${{ needs.publish.outputs.version }}'
 
           # npm needs a moment before a fresh version resolves; a failure to install here is not a failure
           # of the engine and must not be reported as one.
@@ -170,11 +201,20 @@ jobs:
   # auto-merged.
   record-version:
     name: Record the published version on main
-    # No event guard. The recommended release path runs `gh workflow run publish.yml`, which arrives as
-    # `workflow_dispatch` and not as `release` — so a `release`-only condition skips this job on the very
-    # path that publishes most versions, while the workflow still reports success. `needs: publish` is the
-    # correct gate on its own: a dry-run dispatch skips `publish`, which skips this with it.
-    needs: publish
+    # Depends on both, and gated on the PUBLISH result alone.
+    #
+    # No event guard, because the recommended release path runs `gh workflow run publish.yml`, which
+    # arrives as `workflow_dispatch` and not as `release` — a `release`-only condition would skip this on
+    # the path that publishes most versions while the workflow still reported success.
+    #
+    # `if: always()` with an explicit check on `needs.publish.result` rather than a bare `needs:`, because
+    # a failed VERIFICATION must not prevent recording. The version is on npm either way; the repository
+    # naming a different one is a second problem, not a safeguard. `always()` also means a dry-run
+    # dispatch — where `publish` is skipped, not successful — is correctly excluded by the condition.
+    if: always() && needs.publish.result == 'success'
+    needs:
+      - publish
+      - verify-published
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -280,6 +320,20 @@ jobs:
             echo "version\` derives from them; no source changes."
             echo
             echo "**Version consistency check: ${{ steps.verify.outputs.result }}** (run inside the workflow)."
+            echo
+            echo "**Published tarball verification: ${{ needs['verify-published'].result }}.**"
+
+            # Said plainly and near the top of the body, because it changes what the reader should do
+            # rather than merely how they should feel. The tarball on npm cannot be unpublished; if the
+            # engine inside it does not block the exploit, the version needs deprecating and this pull
+            # request is not the urgent part.
+            if [ "${{ needs['verify-published'].result }}" != "success" ]; then
+              echo
+              echo "The published tarball did NOT pass its canary. \`${VERSION}\` is on npm and cannot be"
+              echo "unpublished — decide whether to deprecate it before treating this pull request as"
+              echo "routine. It is opened regardless, because a repository naming a version other than the"
+              echo "one that was released is a second problem rather than a safeguard against the first."
+            fi
             echo
             echo "A pull request opened with \`GITHUB_TOKEN\` does not start workflow runs, so the checks on"
             echo "this pull request may be empty. Two things cover that: the invariant above was verified"

@@ -75,12 +75,14 @@ describe('embedded workflow shell scripts', () => {
   });
 
   it('covers the jobs that only ever run on a release', () => {
-    // The specific reason this file exists. `record-version` and `publish` do not run on a pull request, so
-    // their scripts are never executed by the checks that gate a merge; naming them here means a rename
-    // cannot quietly drop them from coverage.
+    // The specific reason this file exists. None of these run on a pull request, so their scripts are never
+    // executed by the checks that gate a merge — the first time they run is during a release. Naming them
+    // means a rename or a split cannot quietly drop one from coverage.
     const jobs = new Set(scripts.map((s) => s.job));
 
-    expect([...jobs]).toEqual(expect.arrayContaining(['publish', 'record-version']));
+    expect([...jobs]).toEqual(
+      expect.arrayContaining(['publish', 'verify-published', 'record-version']),
+    );
   });
 
   it('states which scripts it does not check, rather than skipping them silently', () => {
