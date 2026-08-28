@@ -370,31 +370,50 @@ if (process.argv.includes('--selftest')) {
 }
 
 /**
- * Discover the emitted artifacts here rather than in the npm script.
+ * Every `.js` and `.cjs` anywhere under `dir`, recursively.
  *
- * The alternative was a shell pipeline through `xargs`, which an ordinary Windows shell does not have — so
- * a documented contributor command would have worked on Linux CI and failed on a Windows machine, which is
- * the kind of thing nobody discovers until they are already stuck.
+ * Recursive because the build emits into subdirectories: the scaffolder's guard templates live in
+ * `dist/protect/templates/`, and those are the files copied into a consumer's application and executed
+ * there. A non-recursive listing found eight of fourteen and reported on them as though that were the set,
+ * which is the failure this whole script is supposed to be looking for, one level up.
  *
- * Every `.js` and `.cjs` under `dist/`, chunks included: a stack frame landing in an unaudited chunk is the
- * case where the report says nothing about the code that ran.
+ * Done in Node rather than as a shell pipeline through `xargs`, which an ordinary Windows shell does not
+ * have — a documented contributor command that works on Linux CI and fails on Windows is the kind of thing
+ * nobody discovers until they are already stuck.
  */
-function emittedArtifacts(dir = 'dist') {
+function emittedArtifacts(dir) {
   if (!existsSync(dir)) {
     console.error(`  ${dir}/ does not exist — run \`npm run build\` first.`);
     process.exit(2);
   }
 
-  return readdirSync(dir)
-    .filter((f) => /\.(js|cjs)$/.test(f))
-    .sort()
-    .map((f) => path.posix.join(dir, f));
+  const out = [];
+  const walk = (current) => {
+    for (const entry of readdirSync(current, { withFileTypes: true })) {
+      const full = path.join(current, entry.name);
+      if (entry.isDirectory()) walk(full);
+      else if (/\.(js|cjs)$/.test(entry.name)) out.push(full.split(path.sep).join('/'));
+    }
+  };
+  walk(dir);
+
+  // Zero artifacts is not a clean report, it is the absence of one. An empty or half-written `dist/` would
+  // otherwise print a summary saying nothing executes anywhere, which reads exactly like a pass.
+  if (out.length === 0) {
+    console.error(`  ${dir}/ contains no .js or .cjs files — nothing was audited. Run \`npm run build\`.`);
+    process.exit(2);
+  }
+
+  return out.sort();
 }
 
 // No file arguments means "everything that was emitted" — what the npm script wants, and what someone
-// typing the command by hand almost certainly means too.
-const named = process.argv.slice(2).filter((a) => !a.startsWith('--'));
-const files = named.length > 0 ? named : emittedArtifacts();
+// typing the command by hand almost certainly means too. `--dir` exists so the tests can point this at a
+// directory they control instead of the real build.
+const args = process.argv.slice(2);
+const named = args.filter((a) => !a.startsWith('--'));
+const dirFlag = args.find((a) => a.startsWith('--dir='));
+const files = named.length > 0 ? named : emittedArtifacts(dirFlag?.slice('--dir='.length) ?? 'dist');
 
 /**
  * This REPORTS. It does not pass or fail on what it finds.
