@@ -46,9 +46,9 @@ jobs:
       - name: Typecheck
         run: npm run typecheck
 
-      # Build BEFORE test, matching the main CI. Several tests assert against `dist/` and return early
-      # when it is absent — the edge-safety check, the version surfaces, the canary — so testing first
-      # makes the release gate pass having silently skipped the checks that cover what actually ships.
+      # Build BEFORE test, matching the main CI. Several tests assert against `dist/` and return early when
+      # it is absent — the edge-safety check, the version surfaces, the canary — so this order is what
+      # makes the release gate cover what actually ships.
       - name: Build
         run: npm run build
 
@@ -119,17 +119,15 @@ jobs:
       - name: Publish to npm
         run: npm publish --access public --provenance
 
-  # Separated from `publish` deliberately, and the separation is the point.
+  # A job of its own, separate from `publish`, and the separation carries the invariant.
   #
-  # This runs AFTER the version exists on npm and cannot be unpublished, so its failure is a discovery
-  # about something already released rather than something preventable. Leaving it inside `publish` made
-  # the publish job fail on that discovery, which skipped `record-version` — and produced the one state
-  # this whole change exists to prevent: a version irreversibly on npm, a tag pointing at it, `main` still
-  # naming the previous version, and no pull request proposing the correction. Drift, arriving during the
-  # release where accurate state matters most.
+  # This runs after the version exists on npm and cannot be unpublished, so its failure is a discovery
+  # about something already released rather than something preventable. It must therefore not be able to
+  # stop `record-version`: the state to avoid is a version irreversibly on npm, a tag pointing at it,
+  # `main` naming a different version, and no pull request proposing the correction.
   #
-  # So publication ends when npm accepts the tarball. Verification and recording are both consequences of
-  # that, and neither blocks the other.
+  # Publication ends when npm accepts the tarball. Verification and recording are both consequences of
+  # that, and neither blocks the other. A failure here still turns the workflow red.
   verify-published:
     name: Verify the published tarball
     needs: publish
@@ -266,23 +264,27 @@ jobs:
       # itself: a pull request opened with GITHUB_TOKEN does not start workflow runs. The consistency
       # invariant is the whole content of this change, so it is checked here and the result stated in the
       # body rather than leaving a reviewer to approve two edited strings on trust.
+      #
+      # `continue-on-error`, because this check must not be able to prevent the pull request. A step that
+      # exits non-zero stops the job, and a later step whose condition contains no status function carries
+      # an implicit `success()` — between them enough to skip the recording at exactly the moment it
+      # matters. `steps.verify.outcome` carries the real result into the body, and the job is failed at the
+      # end, once the pull request exists.
       - name: Check the invariant this change exists to satisfy
         if: steps.apply.outputs.changed == 'true'
         id: verify
+        continue-on-error: true
         run: |
           set -euo pipefail
           npm ci
           npm run build
-          if npx vitest run tests/package-version.test.ts; then
-            echo 'result=passed' >> "$GITHUB_OUTPUT"
-          else
-            echo 'result=FAILED' >> "$GITHUB_OUTPUT"
-            echo "::error::The version surfaces disagree even after applying $VERSION. Do not merge without reading why."
-            exit 1
-          fi
+          npx vitest run tests/package-version.test.ts
 
+      # `!cancelled()` rather than a bare condition: a condition without a status function is implicitly
+      # ANDed with `success()`, which would skip this step whenever the check above failed — precisely when
+      # the pull request matters most.
       - name: Open or update the pull request
-        if: steps.apply.outputs.changed == 'true'
+        if: ${{ !cancelled() && steps.apply.outputs.changed == 'true' }}
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           TITLE: "Record published version ${{ env.VERSION }}"
@@ -319,7 +321,7 @@ jobs:
             echo "Prepared by the \`Publish\` workflow. Two version strings and the lockfile entries \`npm"
             echo "version\` derives from them; no source changes."
             echo
-            echo "**Version consistency check: ${{ steps.verify.outputs.result }}** (run inside the workflow)."
+            echo "**Version consistency check: ${{ steps.verify.outcome }}** (run inside the workflow)."
             echo
             echo "**Published tarball verification: ${{ needs['verify-published'].result }}.**"
 
@@ -333,6 +335,11 @@ jobs:
               echo "unpublished — decide whether to deprecate it before treating this pull request as"
               echo "routine. It is opened regardless, because a repository naming a version other than the"
               echo "one that was released is a second problem rather than a safeguard against the first."
+            fi
+            if [ "${{ steps.verify.outcome }}" != "success" ]; then
+              echo
+              echo "The version surfaces disagreed even after applying \`${VERSION}\`. Read the workflow run"
+              echo "before merging: this pull request may not be sufficient on its own."
             fi
             echo
             echo "A pull request opened with \`GITHUB_TOKEN\` does not start workflow runs, so the checks on"
@@ -368,3 +375,11 @@ jobs:
           else
             echo "::warning::Could not dispatch CI on $BRANCH. The pull request has no run of its own; close and reopen it to get one."
           fi
+
+      # Last, so failing is the final act rather than something that prevents the work above: the release
+      # is loud about a real problem and the correction has still been proposed.
+      - name: Fail if the invariant did not hold
+        if: ${{ !cancelled() && steps.verify.outcome == 'failure' }}
+        run: |
+          echo "::error::The version surfaces disagree even after applying ${VERSION}. The recording pull request was opened anyway — read it and the run before merging."
+          exit 1

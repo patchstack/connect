@@ -23,7 +23,7 @@ import { parse } from 'yaml';
  */
 const workflowDir = fileURLToPath(new URL('../.github/workflows/', import.meta.url));
 
-type Step = { run?: unknown; shell?: unknown; uses?: unknown; name?: unknown };
+type Step = { run?: unknown; shell?: unknown; uses?: unknown; name?: unknown; if?: unknown; 'continue-on-error'?: unknown };
 type Job = { steps?: Step[]; defaults?: { run?: { shell?: unknown } }; 'runs-on'?: unknown };
 type Workflow = { jobs?: Record<string, Job>; defaults?: { run?: { shell?: unknown } } };
 
@@ -64,6 +64,46 @@ function collectScripts(): Script[] {
 
   return out;
 }
+
+/**
+ * Steps that must run even when an earlier step in their job has failed.
+ *
+ * GitHub ANDs an implicit `success()` into any step condition that contains no status-check function. So a
+ * step whose `if` reads only `steps.x.outputs.y == 'true'` is silently also "and nothing has failed yet" —
+ * which is the opposite of what these two need. They exist to record and report a state that has already
+ * happened, and a failure earlier in the job is exactly when that recording matters.
+ *
+ * Named individually rather than checked as a rule, because "must run on failure" is a property of a
+ * step's purpose and not something derivable from its text.
+ */
+const MUST_SURVIVE_FAILURE = [
+  { workflow: 'publish.yml', job: 'record-version', step: 'Open or update the pull request' },
+  { workflow: 'publish.yml', job: 'record-version', step: 'Fail if the invariant did not hold' },
+];
+
+describe('steps that must not be skipped by an implicit success()', () => {
+  it.each(MUST_SURVIVE_FAILURE)('$step keeps a status function in its condition', ({ workflow, job, step }) => {
+    const parsed = parse(readFileSync(join(workflowDir, workflow), 'utf8')) as Workflow;
+    const found = (parsed.jobs?.[job]?.steps ?? []).find((s) => s.name === step);
+
+    expect(found, `${workflow} › ${job} › ${step} not found — renamed?`).toBeDefined();
+
+    const condition = String((found as { if?: unknown }).if ?? '');
+    // `cancelled()`, `always()` or `failure()` — any of them suppresses the implicit `success()`.
+    expect(condition, `condition was: ${condition || '(none)'}`).toMatch(/cancelled\(\)|always\(\)|failure\(\)/);
+  });
+
+  it('leaves the verification step free to fail without stopping the job', () => {
+    // The other half. Without `continue-on-error` the job stops at that step whatever the conditions below
+    // say, and the pull request is never opened.
+    const parsed = parse(readFileSync(join(workflowDir, 'publish.yml'), 'utf8')) as Workflow;
+    const verify = (parsed.jobs?.['record-version']?.steps ?? []).find(
+      (s) => s.name === 'Check the invariant this change exists to satisfy',
+    );
+
+    expect((verify as { 'continue-on-error'?: unknown })?.['continue-on-error']).toBe(true);
+  });
+});
 
 describe('embedded workflow shell scripts', () => {
   const scripts = collectScripts();
