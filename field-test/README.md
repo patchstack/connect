@@ -4,22 +4,29 @@ Runs a real AI coding agent against the [README install prompt](../README.md#ins
 
 Dev-only: nothing in this directory ships in the npm package.
 
-## The personas are synthetic
+## What this harness is, and what it is not
 
-Each persona reproduces the *pressures* that a class of platform applies to a request like this one —
+It is **structural regression coverage** for the install prompt. It does not establish that any real
+platform will accept the prompt, and no result from it should be reported as though it did.
+
+Each persona reproduces the *pressures* a class of platform applies to a request like this one — a
 non-technical user, supply-chain caution, a runtime that stages commands rather than running them — written
-from our own analysis of observed behaviour.
+from our own analysis of observed behaviour. They are not the platforms' system prompts and not paraphrases
+of them: third-party prompts are not ours to publish, whatever the tarball excludes.
 
-They are not the platforms' system prompts and not paraphrases of them: third-party prompts are not ours to
-publish, whatever the tarball excludes. That is a real trade. A synthetic persona is weaker evidence than
-the policy a product actually runs, so what this harness proves is that the prompt survives the SHAPE of
-the pressure. Higher-fidelity evaluation, and the detailed record of which refusals came from where,
-belong in a private evaluation repository.
+That trade is worth stating plainly rather than working around. A synthetic persona is weaker evidence than
+the policy a product actually runs, so a green run means the prompt still survives the SHAPE of a pressure
+that once broke it. It is a regression check, and its value is that the pressures encoded here are ones
+that produced real refusals — every clause in the prompt exists because a run like this failed without it.
+
+What it cannot tell you is whether a live platform's current policy accepts the prompt. A hosted product is
+(prompt × model × runtime × UI), and this reproduces one of the four. Treat a refusal reported from the
+field as new coverage to add, not as a failure of this harness to have predicted it.
 
 `{{FIXTURE_DIR}}` and `{{INSTALL_PROMPT}}` are the only contract a persona has to satisfy; a new one is a
 markdown file using both.
 
-Provenance — that a policy is synthetic, why, and what the harness is proving — goes in a
+Provenance — that a policy is synthetic, why, and what the persona is exercising — goes in a
 `<!-- field-test:meta ... -->` block. The runner strips those blocks before the prompt reaches the agent,
 and `runAgent` REFUSES to write a prompt still containing one. The refusal sits at the seam —
 `child.stdin.write` — rather than in the runner, so it covers every call site including ones not written
@@ -224,5 +231,5 @@ Until a publish lands and ages, use this ladder instead of burning hostile round
 
 ## Known limitations
 
-- The personas are synthetic and the matrix covers multiple model families, but a hosted platform is still (prompt × model × runtime × UI) — and neither the real policy text, the runtime, nor the UI layer is reproduced here. A green harness is necessary and not sufficient: a refusal has been found by a real user after this harness passed a prompt. Treat a real-world refusal report as a new persona — encode the pressure it applied into `personas/`, in your own words, so the regression stays covered.
+- The personas are synthetic and the matrix covers multiple model families, but a hosted platform is still (prompt × model × runtime × UI) — and neither the real policy text, the runtime, nor the UI layer is reproduced here. A green harness is necessary and not sufficient, and this is not hypothetical: a refusal has been found by a real user after this harness passed a prompt. Treat a real-world refusal report as a new persona — encode the pressure it applied into `personas/`, in your own words, so the regression stays covered. Do not describe a green run as evidence about a platform's policy.
 - The fixture installs the *published* package. An unpublished `guide`/CLI change can't be exercised end-to-end by the agent (it will install the registry version); publish first or accept that the run validates the prompt shape only.

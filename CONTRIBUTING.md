@@ -66,7 +66,8 @@ reads exactly like passing.
 
 Changing onboarding, the install prompt or the setup guide? Read `MAINTAINING.md` first — it maps which
 files are load-bearing — and note that the install prompt is a tested artifact with its own gate in
-`field-test/`.
+`field-test/`. That gate is structural regression coverage against synthetic personas, not evidence about
+any live platform's policy; `field-test/README.md` says what it does and does not establish.
 
 ## Two packaging decisions, and why they are what they are
 
