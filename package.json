@@ -69,6 +69,8 @@
     "dev": "tsup --watch",
     "test": "vitest run",
     "test:consumers": "node scripts/compat-matrix.mjs",
+    "test:bundled": "node scripts/bundled-consumer.mjs",
+    "audit:side-effects": "npm run build && node scripts/side-effect-audit.mjs --selftest && node scripts/side-effect-audit.mjs",
     "test:manifest": "bun scripts/test-manifest.ts",
     "test:watch": "vitest",
     "typecheck": "tsc --noEmit && node scripts/typecheck-templates.mjs",

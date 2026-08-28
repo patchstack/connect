@@ -102,6 +102,46 @@ jobs:
       - name: Consumer shapes against a packed tarball
         run: node scripts/compat-matrix.mjs --manager ${{ matrix.manager }}
 
+  # Most consumers of the runtime guard are BUNDLED — a Worker through wrangler, a Next edge middleware,
+  # a SvelteKit adapter build — and all of them tree-shake. A guard that has lost the part which screens
+  # requests still starts, still logs, and still looks installed, so the failure arrives through the
+  # consumer's build rather than ours and is invisible from here. This bundles a real edge guard and puts
+  # the published CVE-2017-5941 exploit through the bundled output, which is the only place a
+  # shaken-away branch can be observed.
+  bundled-consumer:
+    name: 🧩 Bundled edge guard blocks the exploit
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22.x
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      # `sideEffects: false` is deliberately NOT declared in `package.json`; it was measured to buy zero
+      # bytes on both consumer shapes, so declaring it would be a standing promise to bundlers with
+      # nothing bought for it.
+      #
+      # The self-test is the gating half: it checks the audit still recognises the constructs it is meant
+      # to, because a tripwire that cannot fire is the same defect as no tripwire.
+      - name: Check the side-effect audit against its own cases
+        run: node scripts/side-effect-audit.mjs --selftest
+
+      # The audit itself is a REPORT and exits zero on what it finds — a CommonJS bundle executes at module
+      # scope by construction and a bin is supposed to run, so there is no honest threshold to fail on. It
+      # is here to be read when someone considers declaring the field.
+      - name: Report what the emitted artifacts execute at import time
+        run: npm run audit:side-effects
+
+      - name: Bundle an edge guard and attack it
+        run: npm run test:bundled
+
   # The generated `.cmd` launcher and path handling are Windows-only code paths in npm's shim, not ours,
   # and they are exactly what breaks a bin that works everywhere else. One smoke test rather than the whole
   # matrix: the question is whether the launcher runs and resolves, not whether four managers agree.
@@ -203,3 +243,66 @@ jobs:
 
       - name: Audit published dependency tree
         run: npm audit --omit=dev --audit-level=moderate
+
+  # One status for branch protection to require.
+  #
+  # Requiring the jobs above directly means branch protection names a matrix label — `Consumers on npm
+  # 11.6.0`, `Validate on Node 24.x`. Those names change whenever a version is bumped, and a required
+  # check whose name no longer exists is not reported as missing: it is simply never satisfied, or worse,
+  # silently dropped from the set that gates the merge. Requiring this one job instead means the matrix can
+  # change freely and the gate keeps meaning "everything passed".
+  #
+  # `if: always()` is what makes it work. Without it this job would be SKIPPED when a dependency fails,
+  # and a skipped required check reads as success to branch protection — the gate would pass precisely
+  # when something was broken.
+  required:
+    name: Required CI gate
+    if: always()
+    needs:
+      - capability-contract
+      - consumers
+      - bundled-consumer
+      - windows-smoke
+      - validate
+      - production-audit
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Every required job must have succeeded
+        env:
+          # The whole `needs` context, so this cannot drift out of step with the list above: a job added
+          # to `needs` is covered without a second edit here.
+          RESULTS: ${{ toJSON(needs) }}
+        run: |
+          set -euo pipefail
+
+          # A matrix job contributes ONE result under its job id, so `consumers` covers every manager and
+          # `validate` covers every Node version, including 24.
+          # A floor on how many jobs this gate is standing on. Emptying the `needs` list above would
+          # otherwise leave a green required check that verifies nothing at all — the one failure mode a
+          # gate must not have, since it is indistinguishable from a working one.
+          count=$(printf '%s' "$RESULTS" | python3 -c 'import json, sys; print(len(json.load(sys.stdin)))')
+          if [ "$count" -lt 6 ]; then
+            echo "::error::This gate is standing on ${count} job(s); it is meant to require 6. A required check that verifies nothing passes exactly when something is broken."
+            exit 1
+          fi
+
+          failed=$(printf '%s' "$RESULTS" | python3 -c "
+          import json, sys
+          needs = json.load(sys.stdin)
+          bad = [name for name, job in needs.items() if job.get('result') != 'success']
+          print(' '.join(sorted(bad)))
+          ")
+
+          printf '%s' "$RESULTS" | python3 -c "
+          import json, sys
+          for name, job in sorted(json.load(sys.stdin).items()):
+              print(f\"{job.get('result', 'unknown'):>9}  {name}\")
+          "
+
+          if [ -n "$failed" ]; then
+            echo "::error::Not every required job succeeded: ${failed}"
+            exit 1
+          fi
+
+          echo 'All required jobs succeeded.'
