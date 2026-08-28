@@ -102,6 +102,38 @@ jobs:
       - name: Consumer shapes against a packed tarball
         run: node scripts/compat-matrix.mjs --manager ${{ matrix.manager }}
 
+  # Most consumers of the runtime guard are BUNDLED — a Worker through wrangler, a Next edge middleware,
+  # a SvelteKit adapter build — and all of them tree-shake. A guard that has lost the part which screens
+  # requests still starts, still logs, and still looks installed, so the failure arrives through the
+  # consumer's build rather than ours and is invisible from here. This bundles a real edge guard and puts
+  # the published CVE-2017-5941 exploit through the bundled output, which is the only place a
+  # shaken-away branch can be observed.
+  bundled-consumer:
+    name: 🧩 Bundled edge guard blocks the exploit
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22.x
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      # `sideEffects: false` is deliberately NOT declared in `package.json`; it was measured to buy zero
+      # bytes on both consumer shapes, so declaring it would be a standing promise to bundlers with
+      # nothing bought for it. This audit is what keeps that decision reviewable: if the field is ever
+      # added, the evidence has to be here first.
+      - name: Audit the published bundles for import-time side effects
+        run: npm run audit:side-effects
+
+      - name: Bundle an edge guard and attack it
+        run: npm run test:bundled
+
   # The generated `.cmd` launcher and path handling are Windows-only code paths in npm's shim, not ours,
   # and they are exactly what breaks a bin that works everywhere else. One smoke test rather than the whole
   # matrix: the question is whether the launcher runs and resolves, not whether four managers agree.

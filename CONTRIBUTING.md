@@ -55,6 +55,11 @@ reads exactly like passing.
   is reachable. Nothing else can see those: they are decided by the tarball's metadata rather than by the
   code, so the source suite passes while a consumer cannot import the package at all. CI runs it across
   npm, pnpm, Yarn and Bun, plus a Windows smoke test.
+- `npm run test:bundled` if you touched the runtime guard, the build config or `exports`. It bundles an
+  edge guard with esbuild through the `workerd` condition and then puts the real CVE-2017-5941 exploit
+  through the bundled output. Most consumers of the guard are bundled and every bundler tree-shakes, and a
+  guard that has lost the part which screens requests still starts, still logs and still looks installed —
+  so this is the only check that can see it. It also enforces a size ceiling on each shape.
 - Read your own diff, commit messages and pull-request description against the boundary above. The
   pull-request template asks you to confirm this; it is the only control that covers prose, because secret
   scanning finds credentials and nothing finds a paragraph of architecture.
@@ -62,6 +67,23 @@ reads exactly like passing.
 Changing onboarding, the install prompt or the setup guide? Read `MAINTAINING.md` first — it maps which
 files are load-bearing — and note that the install prompt is a tested artifact with its own gate in
 `field-test/`.
+
+## Two packaging decisions, and why they are what they are
+
+**`sideEffects: false` is not declared, deliberately.** It was measured, not assumed: `npm run
+test:bundled` builds both consumer shapes with and without the field, and it changes the bundle by zero
+bytes in each. The root entry already shakes down to 0.8 kB for a single-symbol import, because the
+modules have no import-time side effects — `npm run audit:side-effects` parses the published bundles and
+proves that rather than asserting it. So the field would buy nothing while standing as a permanent promise
+to every bundler that no module in the package ever needs evaluating; the day someone adds a top-level
+registration, consumers lose it silently in their own build. If you want to add the field, add the
+evidence first: a shape where it demonstrably saves bytes.
+
+**`module` is kept even though nothing this repository tests reads it.** The bundled test shows removing
+it changes nothing, but that only means a bundler which understands `exports` ignores it — which is what
+`exports` is for. Webpack 4 and older rollup setups predate `exports` and fall back to `module`. The test
+cannot see those, so a zero delta is not evidence that dropping it is safe, and one line is a cheap thing
+to be wrong about in the safe direction.
 
 ## Generated artifacts that must stay in step
 
