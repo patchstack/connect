@@ -107,12 +107,21 @@ const HOSTING_ENV_PATTERNS: readonly RegExp[] = [
 ];
 
 /**
+ * An environment, described structurally so it needs no ambient types.
+ *
+ * `@types/node` is not a dependency of this package, so nothing in its public surface may name
+ * `NodeJS.ProcessEnv`: a consumer without those types cannot compile against a signature that does.
+ * `process.env` satisfies this, and so does a plain object.
+ */
+export type EnvLike = Record<string, string | undefined>;
+
+/**
  * Return the sorted NAMES of hosting-related environment variables present in
  * `env`. Only names are surfaced — never values — so a build fingerprint can
  * distinguish "deployed on Cloudflare" from "deployed on Vercel" without ever
  * disclosing a secret.
  */
-export function collectHostingEnvKeys(env: NodeJS.ProcessEnv = process.env): string[] {
+export function collectHostingEnvKeys(env: EnvLike = process.env): string[] {
   return Object.keys(env)
     .filter((key) => HOSTING_ENV_PATTERNS.some((pattern) => pattern.test(key)))
     .sort();
@@ -124,7 +133,7 @@ export function collectHostingEnvKeys(env: NodeJS.ProcessEnv = process.env): str
  */
 export function detectStack(
   packages: readonly WirePackage[],
-  env: NodeJS.ProcessEnv = process.env,
+  env: EnvLike = process.env,
 ): StackDescriptor {
   const present = new Set(packages.map((pkg) => pkg.name));
 

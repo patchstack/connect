@@ -44,7 +44,9 @@ describe('protect runtime stays edge-safe', () => {
 
   it('the built protect bundle has no static Node-builtin import (when dist is fresh)', () => {
     const dist = fileURLToPath(new URL('../../dist/protect.js', import.meta.url));
-    if (!existsSync(dist)) return; // dist is gitignored and CI tests before building
+    // `dist/` is gitignored, so a fresh local checkout has nothing to assert against. CI builds before it
+    // tests, which is what makes this run there rather than returning green having checked nothing.
+    if (!existsSync(dist)) return;
     // Only assert against a build that reflects the current sources: a STALE dist (left by a build on
     // another branch) would otherwise fail this spuriously. The source-graph assertion above is the
     // real invariant and always runs.
