@@ -17,10 +17,9 @@ version is this?" — the manifest, the two places the lockfile records it, the
 tarball name `npm pack` derives, an SBOM built from a checkout, and
 `patchstack-connect --version`. Only the published tarball gets its answer from
 the tag; everything read out of the repository gets it from the committed
-manifest. While that manifest was a permanent placeholder, a git installation
-and `--version` both confidently reported a version two dozen releases old. For
-a package whose purpose is to shield known vulnerabilities, a wrong version is
-not untidiness: it is someone believing they have a fix they do not have.
+manifest. For a package whose purpose is to shield known vulnerabilities, a
+manifest naming the wrong version is not untidiness: it is someone believing
+they have a fix they do not have. Merging keeps the two in step.
 
 `tests/package-version.test.ts` pins the surfaces that can be checked from the
 repository, and the consumer matrix
