@@ -19,7 +19,8 @@
 //
 // `npm run audit:side-effects` runs the self-test and then reports on every emitted artifact.
 import ts from 'typescript';
-import { readFileSync, existsSync } from 'node:fs';
+import { existsSync, readFileSync, readdirSync } from 'node:fs';
+import path from 'node:path';
 
 /**
  * Constructors that build a value and touch nothing else — PROVIDED their arguments are local literals.
@@ -368,12 +369,32 @@ if (process.argv.includes('--selftest')) {
   process.exit(failures === 0 ? 0 : 1);
 }
 
-const files = process.argv.slice(2);
+/**
+ * Discover the emitted artifacts here rather than in the npm script.
+ *
+ * The alternative was a shell pipeline through `xargs`, which an ordinary Windows shell does not have — so
+ * a documented contributor command would have worked on Linux CI and failed on a Windows machine, which is
+ * the kind of thing nobody discovers until they are already stuck.
+ *
+ * Every `.js` and `.cjs` under `dist/`, chunks included: a stack frame landing in an unaudited chunk is the
+ * case where the report says nothing about the code that ran.
+ */
+function emittedArtifacts(dir = 'dist') {
+  if (!existsSync(dir)) {
+    console.error(`  ${dir}/ does not exist — run \`npm run build\` first.`);
+    process.exit(2);
+  }
 
-if (files.length === 0) {
-  console.error('usage: node scripts/side-effect-audit.mjs [--selftest] <file> [file ...]');
-  process.exit(2);
+  return readdirSync(dir)
+    .filter((f) => /\.(js|cjs)$/.test(f))
+    .sort()
+    .map((f) => path.posix.join(dir, f));
 }
+
+// No file arguments means "everything that was emitted" — what the npm script wants, and what someone
+// typing the command by hand almost certainly means too.
+const named = process.argv.slice(2).filter((a) => !a.startsWith('--'));
+const files = named.length > 0 ? named : emittedArtifacts();
 
 /**
  * This REPORTS. It does not pass or fail on what it finds.

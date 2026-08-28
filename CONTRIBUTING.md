@@ -78,9 +78,9 @@ needs evaluating; the day someone adds a top-level registration, consumers lose 
 build. If you want to add the field, add the evidence first: a shape where it demonstrably saves bytes.
 
 `npm run audit:side-effects` supports that decision but does not settle it, and it is a **report rather
-than a check** — it exits zero on what it finds. It walks the part of every emitted artifact that runs at
-import time and names anything that can execute, deliberately over-reporting rather than recognising
-shapes it believes are safe.
+than a check** — it exits zero on what it finds. It discovers every emitted `.js` and `.cjs` under `dist/`
+itself, walks the part of each that runs at import time, and names anything that can execute, deliberately
+over-reporting rather than recognising shapes it believes are safe. Pass file paths to narrow it.
 
 The exit code covers only what is unambiguously wrong — a missing file, or `--selftest` failing — because
 every version of a stricter gate was wrong: a CommonJS bundle executes at module scope by construction,
