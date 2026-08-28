@@ -82,17 +82,16 @@ than a check** — it exits zero on what it finds. It discovers every emitted `.
 itself, walks the part of each that runs at import time, and names anything that can execute, deliberately
 over-reporting rather than recognising shapes it believes are safe. Pass file paths to narrow it.
 
-The exit code covers only what is unambiguously wrong — a missing file, or `--selftest` failing — because
-every version of a stricter gate was wrong: a CommonJS bundle executes at module scope by construction,
-`dist/cli.js` ends in `main().then(…)` because a bin is supposed to run, and a benign lazy-init call in a
-library entry is indistinguishable here from a harmful one.
+The exit code covers only what is unambiguously wrong — a missing file, an empty build directory, or
+`--selftest` failing — because there is no honest threshold to fail on: a CommonJS bundle executes at module
+scope by construction, `dist/cli.js` ends in `main().then(…)` because a bin is supposed to run, and a benign
+lazy-init call in a library entry is indistinguishable here from a harmful one.
 
-`--selftest` is the part with teeth, and it is what CI gates on: 31 cases, many of which an earlier version
-of the script reported clean. `export default init()`, `class C extends init()`, a bare `import './x.js'`,
-a top-level `throw`, `new Set(imported)` and `{ ...imported }` all look like plain declarations to an
-allowlist, and every one of them runs code. The list has three outcomes rather than two, because an import
-with bindings is neither a finding nor safe: it evaluates another module, and this script cannot see what
-that does.
+`--selftest` is the part with teeth, and it is what CI gates on: 31 cases. `export default init()`,
+`class C extends init()`, a bare `import './x.js'`, a top-level `throw`, `new Set(imported)` and
+`{ ...imported }` all look like plain declarations to an allowlist, and every one of them runs code. The
+list has three outcomes rather than two, because an import with bindings is neither a finding nor safe: it
+evaluates another module, and this script cannot see what that does.
 
 The real evidence that the package survives a bundler is `npm run test:bundled`, which attacks the bundled
 guard rather than reading it.

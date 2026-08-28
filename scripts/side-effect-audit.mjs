@@ -8,9 +8,9 @@
 //
 // This is a REPORT, not a verdict, and the distinction is load-bearing rather than modest. It walks the
 // region of the AST that runs at import time and names anything that can execute, deliberately
-// over-reporting rather than recognising shapes it believes are safe: an allowlist gets this wrong in the
-// dangerous direction, and an earlier version of this script called `export default init()`,
-// `class C extends init()` and a bare `import './register.js'` all clean.
+// over-reporting rather than recognising shapes it believes are safe. An allowlist gets this wrong in the
+// dangerous direction: `export default init()`, `class C extends init()` and a bare
+// `import './register.js'` all read as plain declarations to one, and all three run code.
 //
 // What it cannot do is prove purity. It sees syntax, not behaviour: a call it reports may be harmless and
 // a call it accepts may not be. Read it before declaring `sideEffects: false`. Do not rely on it instead.
@@ -301,9 +301,8 @@ function findExecutable(sf) {
  * The audit's own tests, and the only part of this script with teeth.
  *
  * A tripwire that cannot fire is the same defect as no tripwire, and this one is easy to break in the
- * silent direction: many of the cases below were reported clean by an earlier version that recognised
- * "safe" shapes instead of walking for executable ones. They are pinned so that cannot come back
- * unnoticed.
+ * silent direction — recognising "safe" shapes instead of walking for executable ones reports most of the
+ * cases below as clean. They are pinned so that cannot happen unnoticed.
  *
  * Three outcomes, not two. `elsewhere` exists so that a bound import is neither treated as a finding nor
  * declared safe — importing evaluates the target, and this script cannot see what that does.
@@ -330,7 +329,7 @@ const CASES = [
   { src: 'const o = Object.freeze({ ...importedObject });', expect: 'executes', what: 'freezing a spread of a value from elsewhere' },
   { src: 'Object.freeze(someImportedThing);', expect: 'executes', what: 'freezing something others can see' },
 
-  // NOT 'clean'. Importing evaluates the target, and an earlier version of this list called that safe.
+  // NOT 'clean'. Importing evaluates the target, and this script cannot see what that evaluation does.
   { src: "import { readFileSync } from 'node:fs';", expect: 'elsewhere', what: 'an import with bindings' },
 
   { src: 'export function a(x = compute()) { return initialize(); }', expect: 'clean', what: 'a function body and its parameter defaults' },
@@ -374,12 +373,12 @@ if (process.argv.includes('--selftest')) {
  *
  * Recursive because the build emits into subdirectories: the scaffolder's guard templates live in
  * `dist/protect/templates/`, and those are the files copied into a consumer's application and executed
- * there. A non-recursive listing found eight of fourteen and reported on them as though that were the set,
- * which is the failure this whole script is supposed to be looking for, one level up.
+ * there. An artifact absent from the report is indistinguishable from one that reported clean, so a
+ * partial listing produces a report that looks complete — the failure this script is looking for, one
+ * level up.
  *
  * Done in Node rather than as a shell pipeline through `xargs`, which an ordinary Windows shell does not
- * have — a documented contributor command that works on Linux CI and fails on Windows is the kind of thing
- * nobody discovers until they are already stuck.
+ * have: a documented contributor command must not work on Linux CI and fail on Windows.
  */
 function emittedArtifacts(dir) {
   if (!existsSync(dir)) {
@@ -418,15 +417,14 @@ const files = named.length > 0 ? named : emittedArtifacts(dirFlag?.slice('--dir=
 /**
  * This REPORTS. It does not pass or fail on what it finds.
  *
- * Which was tempting to do differently, and every version of that gate was wrong:
+ * There is no honest threshold to fail on:
  *
  *   - A CommonJS bundle executes at module scope by construction — `module.exports = …`, `require(…)`,
  *     definitions on the exports object. No version of it does not.
  *   - `dist/cli.js` ends in `main().then(…)`. It is a bin; executing on evaluation is its entire job.
- *   - The library entries are clean today, but a benign lazy-init call is indistinguishable here from a
- *     harmful one, so gating on them would mean either an allowlist — which is what made an earlier
- *     version of this script report `export default init()` as pure — or a red build for a call nobody
- *     needs to act on.
+ *   - The library entries are clean, but a benign lazy-init call is indistinguishable here from a harmful
+ *     one. Gating on them would mean either an allowlist — the thing that reports `export default init()`
+ *     as pure — or a red build for a call nobody needs to act on.
  *
  * So the exit code speaks only for what is unambiguously wrong: a file that does not exist, or the
  * self-test failing.

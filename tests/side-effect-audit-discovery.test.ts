@@ -32,7 +32,7 @@ const audited = (stdout: string): string[] =>
 describe('what the audit discovers', () => {
   it('finds artifacts in subdirectories, not just the top level', () => {
     // The scaffolder's guard templates are emitted into `dist/protect/templates/` and are the files copied
-    // into a consumer's application. A non-recursive listing left every one of them out.
+    // into a consumer's application, so a listing that does not descend speaks for none of them.
     const dir = mkdtempSync(join(tmpdir(), 'ps-audit-'));
     mkdirSync(join(dir, 'nested', 'deeper'), { recursive: true });
     writeFileSync(join(dir, 'top.js'), 'export const a = 1;\n');
