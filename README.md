@@ -87,6 +87,7 @@ patchstack-connect demo-guide node-serialize       Read-only, state-aware instru
                                                    local demo, including the next exact command,
                                                    expected proof, and cleanup.
 patchstack-connect help                            Print help
+patchstack-connect --version                       Print the installed version
 
 Options (for scan, setup, and status):
   --site-uuid <uuid>      Override the configured site UUID

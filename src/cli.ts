@@ -1,4 +1,5 @@
 import { readFileSync, writeFileSync } from 'node:fs';
+import { createRequire } from 'node:module';
 
 import { scanLockfile } from './parsers/index.js';
 import { buildWirePayload } from './normalize.js';
@@ -134,6 +135,10 @@ Usage:
                                                      credential: CI, deploys and other machines using
                                                      the old one must be updated. Not usable in CI
   patchstack-connect help                            Print this message
+
+Global:
+  --version               Print the installed version of this package and exit
+  --help                  Print this help and exit
 
 Options (for scan, setup, status, and uninstall):
   --site-uuid <uuid>      Override the configured site UUID
@@ -998,8 +1003,36 @@ async function runMarkBuild(args: ParsedArgs): Promise<number> {
   return 0;
 }
 
+/**
+ * The installed version of this package.
+ *
+ * Read from the manifest beside `dist/` rather than baked in at build time, so there is one source and it
+ * is the same one npm resolved. A reporter asked which version they are running needs the answer to come
+ * from the artifact they installed, not from a constant that a partial build could leave stale.
+ *
+ * Returns `unknown` rather than throwing: a version string is diagnostic, and no command should fail
+ * because it could not read one.
+ */
+function packageVersion(): string {
+  try {
+    const require = createRequire(import.meta.url);
+    const manifest = require('../package.json') as { version?: unknown };
+
+    return typeof manifest.version === 'string' && manifest.version.length > 0 ? manifest.version : 'unknown';
+  } catch {
+    return 'unknown';
+  }
+}
+
 async function main(): Promise<number> {
   const args = parseArgs(process.argv);
+
+  // Before help, and before any command: `--version` is what a bug report is asked for, so it must work
+  // even when the rest of the arguments are wrong.
+  if (args.flags.has('version') || args.command === 'version') {
+    console.log(packageVersion());
+    return 0;
+  }
 
   if (args.flags.has('help') || args.command === 'help' || args.command === null) {
     console.log(HELP);

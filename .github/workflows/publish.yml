@@ -46,11 +46,14 @@ jobs:
       - name: Typecheck
         run: npm run typecheck
 
-      - name: Test
-        run: npm test
-
+      # Build BEFORE test, matching the main CI. Several tests assert against `dist/` and return early when
+      # it is absent — the edge-safety check, the version surfaces, the canary — so this order is what
+      # makes the release gate cover what actually ships.
       - name: Build
         run: npm run build
+
+      - name: Test
+        run: npm test
 
       # Before publishing anything: does the build about to ship block the exploit the canary is built
       # around? `PS_REQUIRE_CANARY` refuses to skip, because a skipped canary reads as a passing one.
@@ -74,6 +77,10 @@ jobs:
     environment:
       name: npm
       url: ${{ steps.version.outputs.url }}
+    # Exported so the job that records the version on `main` uses the version this job published, rather
+    # than resolving the tag a second time and being able to differ from it.
+    outputs:
+      version: ${{ steps.version.outputs.version }}
 
     steps:
       - name: Resolve version
@@ -112,6 +119,35 @@ jobs:
       - name: Publish to npm
         run: npm publish --access public --provenance
 
+  # A job of its own, separate from `publish`, and the separation carries the invariant.
+  #
+  # This runs after the version exists on npm and cannot be unpublished, so its failure is a discovery
+  # about something already released rather than something preventable. It must therefore not be able to
+  # stop `record-version`: the state to avoid is a version irreversibly on npm, a tag pointing at it,
+  # `main` naming a different version, and no pull request proposing the correction.
+  #
+  # Publication ends when npm accepts the tarball. Verification and recording are both consequences of
+  # that, and neither blocks the other. A failure here still turns the workflow red.
+  verify-published:
+    name: Verify the published tarball
+    needs: publish
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          ref: refs/tags/v${{ needs.publish.outputs.version }}
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24.x
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
       # The proof that matters most, and the only one that covers PACKAGING. Everything above tests a build
       # in this checkout; this installs the published tarball from the registry and runs the same canary
       # against the engine inside it. A file left out of `files`, a wrong `exports` map, or a bad entry
@@ -124,7 +160,7 @@ jobs:
       - name: Canary — the PUBLISHED tarball blocks the exploit
         run: |
           set -euo pipefail
-          version='${{ steps.version.outputs.version }}'
+          version='${{ needs.publish.outputs.version }}'
 
           # npm needs a moment before a fresh version resolves; a failure to install here is not a failure
           # of the engine and must not be reported as one.
@@ -148,3 +184,202 @@ jobs:
           fi
 
           PS_CANARY_ENGINE="$engine" PS_REQUIRE_CANARY=1 npx vitest run tests/protect/canary-engine-proof.test.ts
+
+  # The tag is the source of truth for what gets published, and this brings the repository's own copy in
+  # line with it afterwards.
+  #
+  # Both halves matter. Writing the version in CI is what lets a release happen with no pre-commit, which
+  # is what makes it work with branch protection. But only the published tarball gets its version from the
+  # tag: a git installation, an SBOM built from a checkout, `npm pack` from the repository and
+  # `--version` all read the committed manifest. For a package whose purpose is to shield known
+  # vulnerabilities, a manifest that names the wrong version means someone believing they have a fix they
+  # do not have — so the two must not be allowed to drift.
+  #
+  # A pull request rather than a push, because branch protection is the point of branch protection. Never
+  # auto-merged.
+  record-version:
+    name: Record the published version on main
+    # Depends on both, and gated on the PUBLISH result alone.
+    #
+    # No event guard, because the recommended release path runs `gh workflow run publish.yml`, which
+    # arrives as `workflow_dispatch` and not as `release` — a `release`-only condition would skip this on
+    # the path that publishes most versions while the workflow still reported success.
+    #
+    # `if: always()` with an explicit check on `needs.publish.result` rather than a bare `needs:`, because
+    # a failed VERIFICATION must not prevent recording. The version is on npm either way; the repository
+    # naming a different one is a second problem, not a safeguard. `always()` also means a dry-run
+    # dispatch — where `publish` is skipped, not successful — is correctly excluded by the condition.
+    if: always() && needs.publish.result == 'success'
+    needs:
+      - publish
+      - verify-published
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: write
+      # Required to dispatch CI on the branch below. Job-level `permissions` is a complete replacement
+      # rather than an addition — every scope not listed here is `none` — so without this the dispatch can
+      # only ever take its deliberately non-fatal warning path, and the branch would be left with no run at
+      # all while the workflow reported success.
+      actions: write
+
+    env:
+      BRANCH: chore/record-published-version
+      VERSION: ${{ needs.publish.outputs.version }}
+
+    steps:
+      - name: Checkout the default branch
+        uses: actions/checkout@v4
+        with:
+          # Deliberately the default branch, not the tag: the proposal targets `main`, and checking out
+          # the tag would carry every difference between the tag and `main` into the diff.
+          ref: ${{ github.event.repository.default_branch }}
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24.x
+          cache: npm
+
+      - name: Apply the version to the manifest and the lockfile
+        id: apply
+        run: |
+          set -euo pipefail
+          test -n "$VERSION" || { echo "::error::No published version was passed to this job."; exit 1; }
+
+          before=$(node -p 'require("./package.json").version')
+          # `npm version` is what writes all three recorded copies (manifest, lockfile top level, lockfile
+          # root entry). Doing it by hand is how one of the three gets left behind.
+          npm version "$VERSION" --no-git-tag-version --allow-same-version >/dev/null
+
+          echo "before=$before" >> "$GITHUB_OUTPUT"
+          if git diff --quiet -- package.json package-lock.json; then
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+            echo "main already records $VERSION."
+          else
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      # Evidence for the reviewer, gathered here because it may not be available on the pull request
+      # itself: a pull request opened with GITHUB_TOKEN does not start workflow runs. The consistency
+      # invariant is the whole content of this change, so it is checked here and the result stated in the
+      # body rather than leaving a reviewer to approve two edited strings on trust.
+      #
+      # `continue-on-error`, because this check must not be able to prevent the pull request. A step that
+      # exits non-zero stops the job, and a later step whose condition contains no status function carries
+      # an implicit `success()` — between them enough to skip the recording at exactly the moment it
+      # matters. `steps.verify.outcome` carries the real result into the body, and the job is failed at the
+      # end, once the pull request exists.
+      - name: Check the invariant this change exists to satisfy
+        if: steps.apply.outputs.changed == 'true'
+        id: verify
+        continue-on-error: true
+        run: |
+          set -euo pipefail
+          npm ci
+          npm run build
+          npx vitest run tests/package-version.test.ts
+
+      # `!cancelled()` rather than a bare condition: a condition without a status function is implicitly
+      # ANDed with `success()`, which would skip this step whenever the check above failed — precisely when
+      # the pull request matters most.
+      - name: Open or update the pull request
+        if: ${{ !cancelled() && steps.apply.outputs.changed == 'true' }}
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TITLE: "Record published version ${{ env.VERSION }}"
+        run: |
+          set -euo pipefail
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+
+          # The checkout fetched one ref, so on any run after the first there is no remote-tracking ref
+          # for this branch and a bare `--force-with-lease` would refuse the push as stale — opening the
+          # pull request once and never updating it again while still reporting success.
+          git fetch --depth=1 origin "+refs/heads/${BRANCH}:refs/remotes/origin/${BRANCH}" 2>/dev/null || true
+
+          if git rev-parse --verify -q "refs/remotes/origin/$BRANCH" >/dev/null; then
+            lease="--force-with-lease=${BRANCH}:$(git rev-parse "refs/remotes/origin/${BRANCH}")"
+          else
+            # An empty expected value means "expect this branch not to exist" — the honest lease for a
+            # first push, and it still refuses to clobber a branch somebody created meanwhile.
+            lease="--force-with-lease=${BRANCH}:"
+          fi
+
+          git checkout -B "$BRANCH"
+          git add package.json package-lock.json
+          git commit -m "$TITLE" -m "Prepared automatically after publishing v${VERSION}. Not auto-merged."
+          git push "$lease" origin "$BRANCH"
+
+          {
+            echo "\`${VERSION}\` is published; \`main\` records \`${{ steps.apply.outputs.before }}\`."
+            echo
+            echo "The tag is the source of truth for what gets published. This brings the repository's own"
+            echo "copy in line, so that a git installation, an SBOM built from a checkout, \`npm pack\` and"
+            echo "\`patchstack-connect --version\` all report the released version."
+            echo
+            echo "Prepared by the \`Publish\` workflow. Two version strings and the lockfile entries \`npm"
+            echo "version\` derives from them; no source changes."
+            echo
+            echo "**Version consistency check: ${{ steps.verify.outcome }}** (run inside the workflow)."
+            echo
+            echo "**Published tarball verification: ${{ needs['verify-published'].result }}.**"
+
+            # Said plainly and near the top of the body, because it changes what the reader should do
+            # rather than merely how they should feel. The tarball on npm cannot be unpublished; if the
+            # engine inside it does not block the exploit, the version needs deprecating and this pull
+            # request is not the urgent part.
+            if [ "${{ needs['verify-published'].result }}" != "success" ]; then
+              echo
+              echo "The published tarball did NOT pass its canary. \`${VERSION}\` is on npm and cannot be"
+              echo "unpublished — decide whether to deprecate it before treating this pull request as"
+              echo "routine. It is opened regardless, because a repository naming a version other than the"
+              echo "one that was released is a second problem rather than a safeguard against the first."
+            fi
+            if [ "${{ steps.verify.outcome }}" != "success" ]; then
+              echo
+              echo "The version surfaces disagreed even after applying \`${VERSION}\`. Read the workflow run"
+              echo "before merging: this pull request may not be sufficient on its own."
+            fi
+            echo
+            echo "A pull request opened with \`GITHUB_TOKEN\` does not start workflow runs, so the checks on"
+            echo "this pull request may be empty. Two things cover that: the invariant above was verified"
+            echo "inside the workflow, and CI was dispatched on this branch — a dispatched run proves the"
+            echo "branch is green but does not attach here, so it does not satisfy a required status."
+            echo "**Close and reopen this pull request** to get the required checks."
+          } > /tmp/pr-body.md
+
+          cat /tmp/pr-body.md >> "$GITHUB_STEP_SUMMARY"
+
+          existing=$(gh pr list --head "$BRANCH" --state open --limit 1 --json number --jq '.[0].number // empty')
+
+          if [ -n "$existing" ]; then
+            # Edited in place: one pull request that stays accurate is readable, a new one per release is not.
+            gh pr edit "$existing" --title "$TITLE" --body-file /tmp/pr-body.md
+            echo "Updated #$existing."
+          else
+            gh pr create --title "$TITLE" --body-file /tmp/pr-body.md --head "$BRANCH"
+          fi
+
+          # Start CI on the branch explicitly. A pull request opened with `GITHUB_TOKEN` does not start
+          # workflow runs, so without this the branch has no run at all and the only evidence is the
+          # in-workflow check above.
+          #
+          # Stated precisely because the distinction decides whether a human has to do something: a
+          # dispatched run does NOT attach to the pull request and so does NOT satisfy a required status.
+          # It proves the branch is green; closing and reopening the pull request is what produces the
+          # required checks. Never fatal — the version is already published and recorded by this point,
+          # and a dispatch that fails to start is not a reason to fail the release.
+          if gh workflow run ci.yml --ref "$BRANCH" 2>/dev/null; then
+            echo "Dispatched CI on $BRANCH (does not attach to the pull request)." >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "::warning::Could not dispatch CI on $BRANCH. The pull request has no run of its own; close and reopen it to get one."
+          fi
+
+      # Last, so failing is the final act rather than something that prevents the work above: the release
+      # is loud about a real problem and the correction has still been proposed.
+      - name: Fail if the invariant did not hold
+        if: ${{ !cancelled() && steps.verify.outcome == 'failure' }}
+        run: |
+          echo "::error::The version surfaces disagree even after applying ${VERSION}. The recording pull request was opened anyway — read it and the run before merging."
+          exit 1

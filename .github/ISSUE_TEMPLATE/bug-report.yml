@@ -17,7 +17,7 @@ body:
     id: connect-version
     attributes:
       label: "@patchstack/connect version"
-      description: "`npm ls @patchstack/connect --depth=0` in your project, or the version in your lockfile."
+      description: "`npx patchstack-connect --version`, or `npm ls @patchstack/connect --depth=0` if the CLI will not run."
       placeholder: "0.3.31"
     validations:
       required: true

@@ -11,7 +11,7 @@
 //
 // Run: node scripts/compat-matrix.mjs [--manager npm|pnpm|yarn|bun]
 import { execFileSync } from 'node:child_process';
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync, existsSync, readdirSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync, existsSync, readdirSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 
@@ -157,13 +157,28 @@ const SHAPES = [
     check: (dir) => run(tsc(dir), ['-p', 'tsconfig.json'], dir),
   },
   {
-    name: 'cli', why: 'the installed bin runs',
+    name: 'cli', why: 'the installed bin runs and reports its own version',
     pkg: { type: 'module' }, deps: [],
     check: (dir) => {
-      const out = run(bin(dir), ['--help'], dir);
-      if (!out.includes('patchstack-connect')) throw new Error(`bin produced no recognisable help:\n${out}`);
+      const help = run(bin(dir), ['--help'], dir);
+      if (!help.includes('patchstack-connect')) throw new Error(`bin produced no recognisable help:\n${help}`);
 
-      return out;
+      // The version a bug report is asked for. It has to come from the manifest npm resolved, so it is
+      // checked against the tarball that was just installed rather than against a constant: a build that
+      // baked in a stale value, or a manifest left out of `files`, both read as a working `--version`.
+      const reported = run(bin(dir), ['--version'], dir).trim();
+      const installed = JSON.parse(
+        readFileSync(path.join(dir, 'node_modules', '@patchstack', 'connect', 'package.json'), 'utf8'),
+      ).version;
+
+      if (reported !== installed) {
+        throw new Error(`--version reported "${reported}" but the installed manifest says "${installed}"`);
+      }
+      if (reported === 'unknown') {
+        throw new Error('--version could not read the manifest from the installed package');
+      }
+
+      return `${help}\n${reported}`;
     },
   },
   {
