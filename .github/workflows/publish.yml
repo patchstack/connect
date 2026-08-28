@@ -74,6 +74,10 @@ jobs:
     environment:
       name: npm
       url: ${{ steps.version.outputs.url }}
+    # Exported so the job that records the version on `main` uses the version that was actually
+    # published, rather than resolving the tag a second time and being able to differ.
+    outputs:
+      version: ${{ steps.version.outputs.version }}
 
     steps:
       - name: Resolve version
@@ -148,3 +152,136 @@ jobs:
           fi
 
           PS_CANARY_ENGINE="$engine" PS_REQUIRE_CANARY=1 npx vitest run tests/protect/canary-engine-proof.test.ts
+
+  # The repository's committed version used to be a permanent placeholder: the tag was the only source of
+  # truth, the version was written into `package.json` in CI, and nothing came back to `main`. That is
+  # sound for the published tarball and wrong for everything else that reads the version — a git
+  # installation, an SBOM built from the repository, `npm pack` from a checkout, and `--version` all
+  # reported a number that had not been current for two dozen releases. A version that is confidently
+  # wrong is the failure this job exists to prevent, not an untidy detail.
+  #
+  # So the tag remains the trigger and the source of truth, and this proposes the matching commit to
+  # `main` afterwards. A pull request rather than a push because branch protection is the point of branch
+  # protection, and it is never auto-merged.
+  record-version:
+    name: Record the published version on main
+    if: github.event_name == 'release'
+    needs: publish
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: write
+
+    env:
+      BRANCH: chore/record-published-version
+      VERSION: ${{ needs.publish.outputs.version }}
+
+    steps:
+      - name: Checkout the default branch
+        uses: actions/checkout@v4
+        with:
+          # Deliberately the default branch, not the tag: the proposal targets `main`, and checking out
+          # the tag would carry every difference between the tag and `main` into the diff.
+          ref: ${{ github.event.repository.default_branch }}
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24.x
+          cache: npm
+
+      - name: Apply the version to the manifest and the lockfile
+        id: apply
+        run: |
+          set -euo pipefail
+          test -n "$VERSION" || { echo "::error::No published version was passed to this job."; exit 1; }
+
+          before=$(node -p 'require("./package.json").version')
+          # `npm version` is what writes all three recorded copies (manifest, lockfile top level, lockfile
+          # root entry). Doing it by hand is how one of the three gets left behind.
+          npm version "$VERSION" --no-git-tag-version --allow-same-version >/dev/null
+
+          echo "before=$before" >> "$GITHUB_OUTPUT"
+          if git diff --quiet -- package.json package-lock.json; then
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+            echo "main already records $VERSION."
+          else
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      # Evidence for the reviewer, gathered here because it may not be available on the pull request
+      # itself: a pull request opened with GITHUB_TOKEN does not start workflow runs. The consistency
+      # invariant is the whole content of this change, so it is checked here and the result stated in the
+      # body rather than leaving a reviewer to approve two edited strings on trust.
+      - name: Check the invariant this change exists to satisfy
+        if: steps.apply.outputs.changed == 'true'
+        id: verify
+        run: |
+          set -euo pipefail
+          npm ci
+          npm run build
+          if npx vitest run tests/package-version.test.ts; then
+            echo 'result=passed' >> "$GITHUB_OUTPUT"
+          else
+            echo 'result=FAILED' >> "$GITHUB_OUTPUT"
+            echo "::error::The version surfaces disagree even after applying $VERSION. Do not merge without reading why."
+            exit 1
+          fi
+
+      - name: Open or update the pull request
+        if: steps.apply.outputs.changed == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TITLE: "Record published version ${{ env.VERSION }}"
+        run: |
+          set -euo pipefail
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+
+          # The checkout fetched one ref, so on any run after the first there is no remote-tracking ref
+          # for this branch and a bare `--force-with-lease` would refuse the push as stale — opening the
+          # pull request once and never updating it again while still reporting success.
+          git fetch --depth=1 origin "+refs/heads/${BRANCH}:refs/remotes/origin/${BRANCH}" 2>/dev/null || true
+
+          if git rev-parse --verify -q "refs/remotes/origin/$BRANCH" >/dev/null; then
+            lease="--force-with-lease=${BRANCH}:$(git rev-parse "refs/remotes/origin/${BRANCH}")"
+          else
+            # An empty expected value means "expect this branch not to exist" — the honest lease for a
+            # first push, and it still refuses to clobber a branch somebody created meanwhile.
+            lease="--force-with-lease=${BRANCH}:"
+          fi
+
+          git checkout -B "$BRANCH"
+          git add package.json package-lock.json
+          git commit -m "$TITLE" -m "Prepared automatically after publishing v${VERSION}. Not auto-merged."
+          git push "$lease" origin "$BRANCH"
+
+          {
+            echo "\`${VERSION}\` is published; \`main\` records \`${{ steps.apply.outputs.before }}\`."
+            echo
+            echo "The tag is still the source of truth for what gets published. This only brings the"
+            echo "repository's own copy in line, so that a git installation, an SBOM built from a checkout,"
+            echo "\`npm pack\`, and \`patchstack-connect --version\` stop reporting a version that is no longer"
+            echo "current."
+            echo
+            echo "Prepared by the \`Publish\` workflow. Two version strings and the lockfile entries \`npm"
+            echo "version\` derives from them; no source changes."
+            echo
+            echo "**Version consistency check: ${{ steps.verify.outputs.result }}** (run inside the workflow)."
+            echo
+            echo "A pull request opened with \`GITHUB_TOKEN\` does not start workflow runs, so the checks here"
+            echo "may be empty. That is why the invariant was verified in the workflow and reported above."
+            echo "To get the full suite to run, close and reopen this pull request."
+          } > /tmp/pr-body.md
+
+          cat /tmp/pr-body.md >> "$GITHUB_STEP_SUMMARY"
+
+          existing=$(gh pr list --head "$BRANCH" --state open --limit 1 --json number --jq '.[0].number // empty')
+
+          if [ -n "$existing" ]; then
+            # Edited in place: one pull request that stays accurate is readable, a new one per release is not.
+            gh pr edit "$existing" --title "$TITLE" --body-file /tmp/pr-body.md
+            echo "Updated #$existing."
+          else
+            gh pr create --title "$TITLE" --body-file /tmp/pr-body.md --head "$BRANCH"
+          fi
