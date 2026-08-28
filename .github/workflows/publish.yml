@@ -179,6 +179,11 @@ jobs:
     permissions:
       contents: write
       pull-requests: write
+      # Required to dispatch CI on the branch below. Job-level `permissions` is a complete replacement
+      # rather than an addition — every scope not listed here is `none` — so without this the dispatch can
+      # only ever take its deliberately non-fatal warning path, and the branch would be left with no run at
+      # all while the workflow reported success.
+      actions: write
 
     env:
       BRANCH: chore/record-published-version
@@ -269,7 +274,7 @@ jobs:
             echo
             echo "The tag is the source of truth for what gets published. This brings the repository's own"
             echo "copy in line, so that a git installation, an SBOM built from a checkout, \`npm pack\` and"
-            echo "\`patchstack-connect --version\` all report the released version.
+            echo "\`patchstack-connect --version\` all report the released version."
             echo
             echo "Prepared by the \`Publish\` workflow. Two version strings and the lockfile entries \`npm"
             echo "version\` derives from them; no source changes."

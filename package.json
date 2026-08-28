@@ -92,7 +92,8 @@
     "fastify": "^5.12.1",
     "tsup": "^8.0.0",
     "typescript": "^5.4.0",
-    "vitest": "^3.0.0"
+    "vitest": "^3.0.0",
+    "yaml": "^2.9.0"
   },
   "repository": {
     "type": "git",

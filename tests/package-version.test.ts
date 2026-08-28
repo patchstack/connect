@@ -64,7 +64,13 @@ describe('the version is one fact', () => {
     // version has been baked in — which is the defect.
     const reported = execFileSync(process.execPath, [cli, '--version'], { encoding: 'utf8' }).trim();
 
-    expect(reported).toBe(manifest.version);
+    // The message names the likely cause, because the failure it produces is otherwise puzzling: a `dist/`
+    // built from a revision without this flag falls through to the help text, so the assertion reports a
+    // page of usage against a version string.
+    expect(
+      reported,
+      reported.includes('Usage:') ? 'dist/ predates `--version` — run `npm run build`' : 'wrong version reported',
+    ).toBe(manifest.version);
   });
 
   it('reports `unknown` rather than failing when the manifest carries no version', () => {
