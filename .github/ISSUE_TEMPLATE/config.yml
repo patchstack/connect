@@ -1,0 +1,14 @@
+# Blank issues are disabled deliberately.
+#
+# The bug-report form asks for the versions and the reproduction that make a report actionable, and asks
+# the reporter to confirm it carries nothing private. A blank issue bypasses both prompts, and this
+# repository is public: the cost of a pasted log with a token or a customer hostname in it is not
+# recoverable by deleting the issue.
+blank_issues_enabled: false
+contact_links:
+  - name: Security vulnerability in this package
+    url: https://patchstack.com/contact/
+    about: Do not open a public issue. Contact Patchstack directly so it can be fixed before it is described.
+  - name: Help with your Patchstack account, sites or billing
+    url: https://patchstack.com/contact/
+    about: Anything about your account rather than this package.

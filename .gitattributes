@@ -1,0 +1,9 @@
+# One line ending in the repository, whatever a contributor's platform does locally.
+#
+# This matters more here than in most repositories: several committed artifacts are compared BYTE for byte
+# — the vendored rule contract, the capability manifest, the canary map and rule — and CRLF slipping into
+# one of them turns a cross-repository agreement check into a diff nobody can read.
+* text=auto eol=lf
+
+# Bun's binary lockfile. Marked so a diff never mangles it and `text=auto` never guesses.
+*.lockb binary

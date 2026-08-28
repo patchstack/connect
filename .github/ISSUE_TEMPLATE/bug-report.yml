@@ -1,0 +1,100 @@
+name: Bug report
+description: Something in @patchstack/connect does not work as documented.
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        **This repository is public, and so is everything you paste here.**
+
+        Before you fill this in: redact tokens, site UUIDs, customer hostnames and internal URLs. A
+        deleted issue is not a retracted one — it stays in notification emails, caches and forks.
+
+        Found a security vulnerability in this package? Do not file it here. Contact Patchstack directly so
+        it can be fixed before it is described in public.
+
+  - type: input
+    id: connect-version
+    attributes:
+      label: "@patchstack/connect version"
+      description: "`npm ls @patchstack/connect --depth=0` in your project, or the version in your lockfile."
+      placeholder: "0.3.31"
+    validations:
+      required: true
+
+  - type: input
+    id: node-version
+    attributes:
+      label: Node version
+      description: "`node --version`. Supported from 18."
+      placeholder: "v22.12.0"
+    validations:
+      required: true
+
+  - type: input
+    id: package-manager
+    attributes:
+      label: Package manager and version
+      description: npm, pnpm, Yarn or Bun — the resolution differs between them, and so do the bugs.
+      placeholder: "pnpm 9.12.0"
+    validations:
+      required: true
+
+  - type: input
+    id: framework
+    attributes:
+      label: Framework or runtime
+      description: Next.js, SvelteKit, Astro, NestJS, Fastify, Express, TanStack Start, Cloudflare Workers, Deno, Bun — and its version.
+      placeholder: "Next.js 15.1.0 (app router), Node runtime"
+    validations:
+      required: true
+
+  - type: input
+    id: os
+    attributes:
+      label: Operating system
+      placeholder: "macOS 15.1 (arm64) / Ubuntu 24.04 / Windows 11"
+    validations:
+      required: true
+
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: Steps to reproduce
+      description: The commands you ran, in order. A repository or a minimal project that shows it is worth more than a description.
+      placeholder: |
+        1. npm install --save @patchstack/connect
+        2. npx patchstack-connect setup
+        3. ...
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: What you expected
+      description: And where it says so — the README, AGENT-INSTALL.md, the CLI's own output. A documented promise that is wrong is a different bug from a surprising behaviour.
+    validations:
+      required: true
+
+  - type: textarea
+    id: actual
+    attributes:
+      label: What happened instead
+    validations:
+      required: true
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: Output and logs, sanitized
+      description: Command output, stack traces, the `patchstack:` lines. Replace tokens, site UUIDs and hostnames with placeholders.
+      render: shell
+
+  - type: checkboxes
+    id: disclosure
+    attributes:
+      label: Before you submit
+      options:
+        - label: This report contains no credentials or tokens, no customer data, no third-party proprietary material such as copied system prompts, and no private implementation details.
+          required: true
