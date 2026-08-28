@@ -93,6 +93,30 @@ describe('steps that must not be skipped by an implicit success()', () => {
     expect(condition, `condition was: ${condition || '(none)'}`).toMatch(/cancelled\(\)|always\(\)|failure\(\)/);
   });
 
+  it('actually fails the job when it reaches the final step', () => {
+    // The structural assertions above prove the step RUNS after a failed check. They say nothing about
+    // whether it fails anything, and a step that runs and exits zero leaves a green workflow over a
+    // release whose surfaces disagree — which is the state this arrangement exists to make loud.
+    //
+    // So the step's own script is executed. `${{ … }}` interpolations are left as written, because bash
+    // treats them as text and substituting them would test something other than what the runner receives.
+    const parsed = parse(readFileSync(join(workflowDir, 'publish.yml'), 'utf8')) as Workflow;
+    const step = (parsed.jobs?.['record-version']?.steps ?? []).find(
+      (s) => s.name === 'Fail if the invariant did not hold',
+    );
+
+    expect(step, 'the failing step is gone or renamed').toBeDefined();
+
+    const dir = mkdtempSync(join(tmpdir(), 'ps-workflow-fail-'));
+    const path = join(dir, 'fail.sh');
+    writeFileSync(path, String((step as { run?: unknown }).run));
+    const run = spawnSync('bash', [path], { encoding: 'utf8' });
+    rmSync(dir, { recursive: true, force: true });
+
+    expect(run.status, `script exited ${run.status}; it must be non-zero:\n${(step as { run?: unknown }).run}`)
+      .not.toBe(0);
+  });
+
   it('leaves the verification step free to fail without stopping the job', () => {
     // The other half. Without `continue-on-error` the job stops at that step whatever the conditions below
     // say, and the pull request is never opened.
