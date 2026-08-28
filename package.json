@@ -70,7 +70,7 @@
     "test": "vitest run",
     "test:consumers": "node scripts/compat-matrix.mjs",
     "test:bundled": "node scripts/bundled-consumer.mjs",
-    "audit:side-effects": "npm run build && node scripts/side-effect-audit.mjs dist/index.js dist/protect.js dist/protect.edge.js",
+    "audit:side-effects": "npm run build && node scripts/side-effect-audit.mjs --selftest && node -e \"const{readdirSync}=require('fs');console.log(readdirSync('dist').filter(f=>/\\\\.(js|cjs)$/.test(f)).map(f=>'dist/'+f).join(' '))\" | xargs node scripts/side-effect-audit.mjs",
     "test:manifest": "bun scripts/test-manifest.ts",
     "test:watch": "vitest",
     "typecheck": "tsc --noEmit && node scripts/typecheck-templates.mjs",

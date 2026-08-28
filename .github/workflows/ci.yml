@@ -126,13 +126,17 @@ jobs:
 
       # `sideEffects: false` is deliberately NOT declared in `package.json`; it was measured to buy zero
       # bytes on both consumer shapes, so declaring it would be a standing promise to bundlers with
-      # nothing bought for it. The audit is a tripwire that keeps that decision reviewable — it reports
-      # what executes at import time and cannot prove purity. Its own behaviour is checked first, because
-      # a tripwire that cannot fire is the same defect as no tripwire.
+      # nothing bought for it.
+      #
+      # The self-test is the gating half: it checks the audit still recognises the constructs it is meant
+      # to, because a tripwire that cannot fire is the same defect as no tripwire.
       - name: Check the side-effect audit against its own cases
         run: node scripts/side-effect-audit.mjs --selftest
 
-      - name: Report anything the published bundles execute at import time
+      # The audit itself is a REPORT and exits zero on what it finds — a CommonJS bundle executes at module
+      # scope by construction and a bin is supposed to run, so there is no honest threshold to fail on. It
+      # is here to be read when someone considers declaring the field.
+      - name: Report what the emitted artifacts execute at import time
         run: npm run audit:side-effects
 
       - name: Bundle an edge guard and attack it
