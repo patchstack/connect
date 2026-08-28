@@ -46,7 +46,7 @@ reads exactly like passing.
 
 ## Before you open a pull request
 
-- `npm run typecheck`, `npm test`, `npm run build` all clean.
+- `npm run typecheck`, `npm run build`, `npm test` all clean — in that order, for the reason above.
 - `npm pack --dry-run` if you touched anything about packaging. `files` in `package.json` is the
   authoritative allowlist of what ships.
 - `npm run test:consumers` if you touched `exports`, `files`, the build config or anything about types. It
