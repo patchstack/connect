@@ -771,8 +771,9 @@ export async function createProtection(options = {}) {
     mode = resolveMode(options, next);
     applyBundle(next);
     // Recomputed from the origin this refresh resolved. Within one process the reachable changes are a
-    // rules source that starts or stops being the platform's, and an opt-out appearing in the
-    // environment; the credential is resolved once at boot, so losing it mid-process is not modelled.
+    // rules source that STARTS being the platform's, and an opt-out appearing in the environment. It
+    // cannot stop being the platform's: once a bundle has been accepted the memory tier holds it, so a
+    // later failed fetch still resolves to `cache`. The credential is resolved once at boot.
     await applyReportingState(next.source?.origin);
     // After the swap, and only after it: later detections belong to the bundle now running. A refresh
     // that fell back to the cached or bundled ruleset kept the previous rules, and `store.read()` then

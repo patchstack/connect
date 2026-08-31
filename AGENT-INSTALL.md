@@ -156,10 +156,23 @@ would have stopped while it is still in dry-run. Two separate paths, with differ
   `createProtection`, or `PATCHSTACK_TELEMETRY=off` which covers all telemetry. `reportDetections` is an
   opt-out only — passing `true` cannot switch reporting on for a site that is not enrolled.
 
-  `protection.detectionReporting` names the current state, so a guard that is not reporting says which
-  reason applies: `on`, `disabled-by-config`, `disabled-by-telemetry-opt-out`, `not-enrolled`,
-  `no-managed-rules`, or `unavailable-no-credential`. The state is also sent on the rules request the guard
-  already makes, so Patchstack can tell "nothing matched" apart from "reporting is off".
+  `protection.detectionReporting` names the current state locally, so a guard that is not reporting says
+  which reason applies: `on`, `disabled-by-config`, `disabled-by-telemetry-opt-out`, `not-enrolled`,
+  `no-managed-rules`, or `unavailable-no-credential`.
+
+  **How the state reaches Patchstack, and what that costs on the network.** The state travels as a header
+  on the rules request the guard already makes — no extra request for it. Two of the six never travel:
+  `not-enrolled` makes no site-addressed request at all, and `unavailable-no-credential` cannot produce an
+  authenticated one, and the header is withheld from unauthenticated requests. Those two are local
+  diagnostics only.
+
+  There is one case that does add a request. The header is set before the rules request finishes, so a
+  guard booting with no cached rules declares `no-managed-rules` and then receives managed rules on that
+  same response. When that happens it sends **one immediate POST to the detections endpoint containing the
+  corrected state and no detections at all** — an empty `detections` array plus `reporting_state`. It is
+  sent once per process, only when the state changed, and never when the guard already had cached rules.
+  Without it, a guard with rule refreshing switched off would leave Patchstack holding the pre-resolution
+  answer for the life of the process.
 
 What a detection report contains, per matched rule: the rule id, the request path **with any query string
 removed**, the parameter names that rule reads (from the rule's own definition), which phase matched,
@@ -183,7 +196,9 @@ The endpoint needs a credential, so an enrolled site with none resolved starts n
 once at boot and `protection.detectionReporting` reads `unavailable-no-credential` instead of `on`.
 When reporting is on, `protection.detectionHealth()` returns local counts — detections attempted,
 acknowledged, refused or unreachable, dropped for queue pressure — and the time of the last
-acknowledgement. Those counts stay in your process; nothing extra is sent to report them.
+acknowledgement. Counts for the state POST described above are kept separately under `capability`, since it
+carries no detections and would otherwise read as one. Those counts stay in your process; nothing extra is
+sent to report them.
 
 `protection.stop()` stops everything the guard has running in the background — the rule-refresh loop, the
 block-log reporter, the detection reporter — and flushes what is buffered. `protection.stopRefresh()` is

@@ -73,11 +73,20 @@ export interface Protection {
   /** Present when detection reporting is on — delivery counts (in events) and the last acknowledgement.
    *  Carries no request data. */
   detectionHealth?: () => {
+    /** Events attempted, acknowledged, refused or unreachable, and dropped for queue pressure. */
     sent: number;
     delivered: number;
     failed: number;
     dropped: number;
     lastDeliveredAt: string | null;
+    /** Capability announcements, counted separately: these carry no events, so they never move the
+     *  counters above. Zero here alongside delivered events is normal, and so is the reverse. */
+    capability: {
+      announced: number;
+      acknowledged: number;
+      failed: number;
+      lastAcknowledgedAt: string | null;
+    };
   };
 }
 

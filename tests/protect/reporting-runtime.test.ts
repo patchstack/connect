@@ -19,7 +19,7 @@ const RULES = {
 const drain = async () => { await new Promise((r) => setTimeout(r, 5)); };
 
 /** A fetch stub that serves rules, and records the capability header of every rules request. */
-function stubFetch(opts: { rulesOk?: boolean; etag?: string } = {}) {
+function stubFetch(opts: { rulesOk?: boolean; etag?: string; refuseDetections?: boolean } = {}) {
   const capabilityHeaders: Array<string | undefined> = [];
   const posted: string[] = [];
   const bodies: any[] = [];
@@ -40,7 +40,10 @@ function stubFetch(opts: { rulesOk?: boolean; etag?: string } = {}) {
       posted.push(target);
       bodies.push(JSON.parse(String(init?.body ?? '{}')));
 
-      return new Response('{}', { status: 200, headers: { 'Content-Type': 'application/json' } });
+      return new Response('{}', {
+        status: opts.refuseDetections ? 503 : 200,
+        headers: { 'Content-Type': 'application/json' },
+      });
     }
     capabilityHeaders.push((init?.headers as Record<string, string>)?.['X-Patchstack-Detections']);
     if (!rulesOk) throw new Error('rules unreachable');
@@ -217,6 +220,45 @@ describe('the settled state reaches the platform', () => {
     expect(announcements.map((b) => b.reporting_state)).toContain('on');
     // It carries no events — its only content is the state.
     for (const body of announcements) expect(body.detections).toEqual([]);
+
+    // And it is accounted for separately. The event counters are measured in events, so an announcement
+    // moving them would produce readings that describe no real delivery — `sent: 0` with `failed: 1` — and
+    // would make an acknowledgement look like a delivered detection.
+    const health = p.detectionHealth();
+    expect(health.capability, 'the announcement is counted as a capability, not an event').toMatchObject({
+      announced: 1,
+      acknowledged: 1,
+      failed: 0,
+    });
+    expect(health.capability.lastAcknowledgedAt).not.toBeNull();
+    expect(
+      { sent: health.sent, delivered: health.delivered, failed: health.failed, lastDeliveredAt: health.lastDeliveredAt },
+      'no event has been delivered, so the event counters have not moved',
+    ).toEqual({ sent: 0, delivered: 0, failed: 0, lastDeliveredAt: null });
+
+    p.stop();
+  });
+
+  it('counts a refused announcement against capability, not against events', async () => {
+    // The failure direction of the same separation: a refused announcement must not appear as a refused
+    // detection, which is what `failed` counts.
+    const { bodies } = stubFetch({ refuseDetections: true });
+
+    const p: any = await createProtection({
+      siteUuid: 'site-1',
+      pulseRulesUrl: 'https://x.test/monitor/pulse',
+      pulseAuth: AUTH,
+      detectionFlushMs: 1,
+    });
+    await drain();
+    await drain();
+
+    expect(bodies.filter((b) => typeof b.reporting_state === 'string').length).toBe(1);
+
+    const health = p.detectionHealth();
+    expect(health.capability).toMatchObject({ announced: 1, acknowledged: 0, failed: 1 });
+    expect(health.failed, 'no event was refused, because none was sent').toBe(0);
+    expect(health.sent).toBe(0);
 
     p.stop();
   });

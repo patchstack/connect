@@ -113,7 +113,10 @@ export function createDetectionReporter(opts) {
     // It answers the whole interface, so a caller never has to know which kind it holds.
     return {
       record() {}, flush() {}, stop() {}, setRulesEtag() {}, announce() {}, dropped: () => 0,
-      health: () => ({ sent: 0, delivered: 0, failed: 0, dropped: 0, lastDeliveredAt: null }),
+      health: () => ({
+        sent: 0, delivered: 0, failed: 0, dropped: 0, lastDeliveredAt: null,
+        capability: { announced: 0, acknowledged: 0, failed: 0, lastAcknowledgedAt: null },
+      }),
     };
   }
 
@@ -140,6 +143,18 @@ export function createDetectionReporter(opts) {
   let droppedTotal = 0;
   /** @type {string | null} */
   let lastDeliveredAt = null;
+
+  // Capability accounting, kept apart from the event counters above.
+  //
+  // The event counters are measured in EVENTS. A state announcement carries none, so letting it advance
+  // `lastDeliveredAt` or `failed` produces readings that cannot describe any real delivery — `sent: 0`
+  // with `failed: 1` — and makes a capability acknowledgement indistinguishable from a delivered
+  // detection. They answer different questions and are counted separately.
+  let capabilityAnnounced = 0;
+  let capabilityAcknowledged = 0;
+  let capabilityFailed = 0;
+  /** @type {string | null} */
+  let lastCapabilityAckAt = null;
 
   /** @type {Array<Record<string, unknown>>} */
   let queue = [];
@@ -256,6 +271,7 @@ export function createDetectionReporter(opts) {
      */
     announce(state) {
       if (stopped || typeof fetchImpl !== 'function' || typeof state !== 'string') return;
+      capabilityAnnounced += 1;
 
       void (async () => {
         try {
@@ -270,12 +286,13 @@ export function createDetectionReporter(opts) {
             body: JSON.stringify({ detections: [], dropped: 0, reporting_state: state }),
           });
           if (res && res.ok) {
-            lastDeliveredAt = new Date().toISOString();
+            capabilityAcknowledged += 1;
+            lastCapabilityAckAt = new Date().toISOString();
           } else {
-            failed += 1;
+            capabilityFailed += 1;
           }
         } catch {
-          failed += 1;
+          capabilityFailed += 1;
         }
       })();
     },
@@ -300,6 +317,20 @@ export function createDetectionReporter(opts) {
      * Delivery health, counted in events: attempted, acknowledged, refused or unreachable, and dropped
      * for queue pressure — plus when a batch was last acknowledged. No request data of any kind.
      */
-    health: () => ({ sent, delivered, failed, dropped: droppedTotal + dropped, lastDeliveredAt }),
+    health: () => ({
+      sent,
+      delivered,
+      failed,
+      dropped: droppedTotal + dropped,
+      lastDeliveredAt,
+      // Separate, because a capability announcement delivers no events. Reading zero here alongside a
+      // non-zero `delivered` is a normal state, and so is the reverse.
+      capability: {
+        announced: capabilityAnnounced,
+        acknowledged: capabilityAcknowledged,
+        failed: capabilityFailed,
+        lastAcknowledgedAt: lastCapabilityAckAt,
+      },
+    }),
   };
 }
