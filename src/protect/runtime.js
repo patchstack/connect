@@ -160,18 +160,20 @@ export async function createProtection(options = {}) {
       configOptOut: options.reportDetections === false,
     });
 
+  // Read once and reused below, so the state reported on the fetch and the state compared against the
+  // settled one are the same value rather than two reads of a store the fetch has since written to.
+  const preFetchState = stateFor(await cachedOrigin()).state;
   const bundle = await resolveRules(options, store, {
     timeoutMs: bootTimeoutMs,
     pulseAuth,
-    detectionState: stateFor(await cachedOrigin()).state,
+    detectionState: preFetchState,
   });
-  // OPT-IN, deliberately. Two reasons, and the first is not about privacy: switching it on adds an
-  // outbound POST to every guard that has a site UUID, which is a change in what an installed app does
-  // on the network — the kind of thing that must be disclosed in the shipped docs before it is a default,
-  // not after. The second is that the default belongs to whoever owns that disclosure, so the capability
-  // lands here and the flip is a separate, deliberate change.
+  // ON by default for an enrolled site running Patchstack-delivered rules, and off otherwise — a local
+  // install and a guard running its own bundle send nothing. That default is a change in what an
+  // installed app does on the network, so it is disclosed in `AGENT-INSTALL.md` and in the option
+  // documentation rather than being inferred from behaviour.
   //
-  // And it needs a credential. The detections endpoint is site-addressed and site-bound-token-only, so a
+  // It needs a credential. The detections endpoint is site-addressed and site-bound-token-only, so a
   // reporter built without one queues events, posts them, and is refused — spending an outbound request
   // per batch to accomplish nothing, while `reportDetections: true` in the config says reporting is on.
   // Refusing to build it is the honest outcome; `protection.detectionReporting` says which it is.
@@ -180,20 +182,31 @@ export async function createProtection(options = {}) {
   // manages, and off everywhere else. `reportingState` holds the whole decision so every combination is
   // enumerable in a test instead of reachable only by constructing a guard.
   let detectionReporting = 'not-enrolled';
+  /**
+   * The origin of the rules in force.
+   *
+   * Held separately from the reported state so a request can carry a state derived FRESH from it. Sending
+   * the previously reported state would mean an opt-out that appeared under a running guard was not
+   * reported on the next request — only on the one after it.
+   */
+  let currentOrigin;
 
   /**
    * Bring reporting into line with the rules now in force.
    *
-   * Called at boot and after every refresh, because enrolment is not a boot-time fact: a guard that
+   * Called at boot and after every refresh, because the inputs are not all boot-time facts: a guard that
    * started on a failed fetch and fell back to its cached or bundled rules can receive platform rules on
-   * a later refresh, and one that was reporting can lose the credential or the enrolment. A state fixed
+   * a later refresh, and an opt-out can appear in the environment under a running process. A state fixed
    * at startup leaves the first case silent for the life of the process.
+   *
+   * The credential is resolved once at boot, so losing it mid-process does not change the state.
    *
    * Starts and stops the reporter accordingly. Stopping flushes what it holds — the events already
    * collected were collected while reporting was on, and dropping them would lose evidence rather than
    * decline to gather it.
    */
   const applyReportingState = async (origin) => {
+    currentOrigin = origin;
     const next = stateFor(origin);
     const changed = next.state !== detectionReporting;
     detectionReporting = next.state;
@@ -225,7 +238,12 @@ export async function createProtection(options = {}) {
     return next;
   };
 
-  await applyReportingState(bundle.source?.origin);
+  const settled = await applyReportingState(bundle.source?.origin);
+  // The fetch above carried the state as it stood before the fetch decided where the rules came from. If
+  // resolution settled somewhere else, say so now on an authenticated request of its own: waiting for the
+  // next refresh would leave the platform holding the pre-resolution answer, and a guard with refreshing
+  // switched off has no next refresh.
+  if (settled.state !== preFetchState && detections) detections.announce(settled.state);
   // Mode is mutable so a Pulse refresh can flip dry-run ↔ block when SaaS enables production.
   // Precedence: PATCHSTACK_MODE env (local override) > API enforcement > options.mode > dry-run.
   let mode = resolveMode(options, bundle);
@@ -746,14 +764,15 @@ export async function createProtection(options = {}) {
     const next = await resolveRules(options, store, {
       timeoutMs: options.refreshTimeoutMs,
       pulseAuth,
-      // Whatever the guard is in right now, so the platform's view follows the guard's rather than
-      // staying at the value the first fetch happened to carry.
-      detectionState: detectionReporting,
+      // Derived from the origin in force, re-reading the environment, rather than resent from the last
+      // reported value: an opt-out that appeared since the previous request has to travel on THIS one.
+      detectionState: stateFor(currentOrigin).state,
     });
     mode = resolveMode(options, next);
     applyBundle(next);
-    // Enrolment can change under a running guard in both directions, so this is recomputed from the
-    // origin the refresh actually resolved rather than left at its boot value.
+    // Recomputed from the origin this refresh resolved. Within one process the reachable changes are a
+    // rules source that starts or stops being the platform's, and an opt-out appearing in the
+    // environment; the credential is resolved once at boot, so losing it mid-process is not modelled.
     await applyReportingState(next.source?.origin);
     // After the swap, and only after it: later detections belong to the bundle now running. A refresh
     // that fell back to the cached or bundled ruleset kept the previous rules, and `store.read()` then

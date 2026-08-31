@@ -8,9 +8,19 @@
  *
  * The state is a single value with a reason built into it, because "no events arrived" has several
  * causes that look identical from the platform: nothing matched, reporting was switched off, the site
- * was never enrolled, or delivery is broken. A dashboard that cannot separate them has to describe all
- * of them every time. The state is declared on the rules fetch the guard already makes, so the platform
- * learns it without an extra request and without waiting for a rule to fire.
+ * was never enrolled, or delivery is broken.
+ *
+ * Most of these travel: the state is declared on the rules fetch the guard already makes, so the platform
+ * learns it without an extra request and without waiting for a rule to fire. Two do not, and cannot:
+ *
+ *   `not-enrolled`               makes no site-addressed request at all, so there is nothing to carry it
+ *   `unavailable-no-credential`  cannot produce an authenticated request, and the declaration is withheld
+ *                                from an unauthenticated one because a claim about a site carries no
+ *                                weight without a verified token
+ *
+ * Both remain useful locally — `protect --check` reports them, and they are why a guard is silent. But the
+ * platform cannot infer them from this header, so server-side absence has to be modelled on its own terms
+ * (last seen, and how long ago) rather than treated as a state the guard reported.
  */
 
 /**

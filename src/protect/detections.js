@@ -112,7 +112,7 @@ export function createDetectionReporter(opts) {
     // Nothing to report against. A no-op rather than a throw: reporting is never worth failing a boot.
     // It answers the whole interface, so a caller never has to know which kind it holds.
     return {
-      record() {}, flush() {}, stop() {}, setRulesEtag() {}, dropped: () => 0,
+      record() {}, flush() {}, stop() {}, setRulesEtag() {}, announce() {}, dropped: () => 0,
       health: () => ({ sent: 0, delivered: 0, failed: 0, dropped: 0, lastDeliveredAt: null }),
     };
   }
@@ -240,6 +240,45 @@ export function createDetectionReporter(opts) {
       if (!timer) timer = setTimeout(flush, flushMs);
     },
     flush,
+    /**
+     * Tell the platform which reporting state this guard settled on.
+     *
+     * The state also travels on the rules fetch, but that request is made BEFORE the fetch decides
+     * whether the rules are the platform's — so a site booting with an empty cache declares that it holds
+     * no managed rules, then receives them. Without this, the corrected state would wait for the next
+     * refresh, and a guard with refreshing switched off has none.
+     *
+     * Carries no events: an empty batch whose only content is the state. Fire-and-forget and fail-open for
+     * the same reason as a flush — a report is never worth disturbing the app over — and counted as a
+     * delivery attempt so a path that refuses everything stays visible.
+     *
+     * @param {string} state
+     */
+    announce(state) {
+      if (stopped || typeof fetchImpl !== 'function' || typeof state !== 'string') return;
+
+      void (async () => {
+        try {
+          const res = await fetchImpl(`${baseUrl}/detections/${encodeURIComponent(siteUuid)}`, {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+              Accept: 'application/json',
+              'User-Agent': '@patchstack/connect',
+              ...(await pulseAuthHeader({ pulseAuth: opts.pulseAuth, endpoint: baseUrl }, fetchImpl)),
+            },
+            body: JSON.stringify({ detections: [], dropped: 0, reporting_state: state }),
+          });
+          if (res && res.ok) {
+            lastDeliveredAt = new Date().toISOString();
+          } else {
+            failed += 1;
+          }
+        } catch {
+          failed += 1;
+        }
+      })();
+    },
     stop() {
       stopped = true;
       flush();

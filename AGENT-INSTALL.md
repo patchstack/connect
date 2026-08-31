@@ -144,11 +144,22 @@ would have stopped while it is still in dry-run. Two separate paths, with differ
   token; the `apiKey` itself is not sent to the log endpoint. Disable with `PATCHSTACK_TELEMETRY=off`, or
   `reportFirewallLog: false` in `createProtection`.
 - **Every rule that matched** goes to `monitor/pulse/detections/<your site uuid>` — including matches that
-  blocked, which are reported on both paths. This is **off unless you pass `reportDetections: true`** to
-  `createProtection`; the scaffolded guard does not pass it. It also requires a provisioned site UUID, a
-  resolvable credential, and is disabled by `PATCHSTACK_TELEMETRY=off`. It exists because a rule carrying
-  `dry-run` blocks nothing, so without it nothing distinguishes a rule that is protecting from one that is
-  quietly wrong.
+  blocked, which are reported on both paths. It exists because a rule carrying `dry-run` blocks nothing, so
+  without it nothing distinguishes a rule that is protecting from one that is quietly wrong.
+
+  **This is on by default for a site enrolled with Patchstack that is running Patchstack-delivered rules**,
+  and off otherwise. Specifically, it requires all of: a provisioned site UUID, rules that came from
+  Patchstack rather than from a local bundle, and a resolvable credential. A local install, or a guard
+  running its own `rules`, sends nothing.
+
+  Switch it off with **`PATCHSTACK_REPORT_DETECTIONS=0`**, or `reportDetections: false` in
+  `createProtection`, or `PATCHSTACK_TELEMETRY=off` which covers all telemetry. `reportDetections` is an
+  opt-out only — passing `true` cannot switch reporting on for a site that is not enrolled.
+
+  `protection.detectionReporting` names the current state, so a guard that is not reporting says which
+  reason applies: `on`, `disabled-by-config`, `disabled-by-telemetry-opt-out`, `not-enrolled`,
+  `no-managed-rules`, or `unavailable-no-credential`. The state is also sent on the rules request the guard
+  already makes, so Patchstack can tell "nothing matched" apart from "reporting is off".
 
 What a detection report contains, per matched rule: the rule id, the request path **with any query string
 removed**, the parameter names that rule reads (from the rule's own definition), which phase matched,
@@ -168,8 +179,8 @@ and not the value of any header, cookie or query-string parameter — including 
 named above. Reports are batched, capped in memory, and dropped rather than retried if Patchstack cannot
 be reached — a reporting failure never delays or fails a request.
 
-The endpoint needs a credential, so `reportDetections: true` with none resolved starts nothing: the guard
-warns once at boot and `protection.detectionReporting` reads `unavailable-no-credential` instead of `on`.
+The endpoint needs a credential, so an enrolled site with none resolved starts nothing: the guard warns
+once at boot and `protection.detectionReporting` reads `unavailable-no-credential` instead of `on`.
 When reporting is on, `protection.detectionHealth()` returns local counts — detections attempted,
 acknowledged, refused or unreachable, dropped for queue pressure — and the time of the last
 acknowledgement. Those counts stay in your process; nothing extra is sent to report them.

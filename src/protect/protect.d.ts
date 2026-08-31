@@ -118,20 +118,23 @@ export interface CreateProtectionOptions {
    */
   reportFirewallLog?: boolean;
   /**
-   * Report EVERY rule that fired — including one in `dry-run` that did not block — to the Pulse
-   * detections endpoint. Off unless explicitly `true`.
+   * Opt OUT of reporting every rule that fired — including one in `dry-run` that did not block — to the
+   * Pulse detections endpoint.
    *
-   * Why it exists: a rule that blocks nothing reports nothing, so a rule that is quietly wrong and a
-   * rule that is protecting look identical from the outside.
+   * Reporting is ON by default for a site enrolled with Patchstack that is running Patchstack-delivered
+   * rules and has a resolvable credential; it is off for a local install and for a guard running its own
+   * `rules`. This option can only switch it OFF: passing `true` cannot enable reporting for a site that is
+   * not enrolled, because whether a site is managed is Patchstack's answer and not a caller's to assert.
+   * `PATCHSTACK_REPORT_DETECTIONS=0` does the same thing from the environment.
+   *
+   * Why it exists: a rule that blocks nothing reports nothing, so a rule that is quietly wrong and a rule
+   * that is protecting look identical from the outside.
    *
    * What it sends, per detection: the rule id, the request PATH with the query string removed, the
-   * parameters the rule reads, the phase, whether it was enforced, the rule-bundle ETag, and a
-   * timestamp. It does NOT send the matched value, the request body, headers, or query-string values —
-   * this is a counting channel, not a copy of your traffic.
+   * parameters the rule reads, the phase, whether it was enforced, the rule-bundle ETag, and a timestamp.
+   * It does NOT send the matched value, the request body, headers, or query-string values.
    *
-   * Off by default because switching it on adds an outbound request to every guard with a site UUID.
-   * Needs a resolvable API credential: the endpoint requires a verified, site-bound token, so with no
-   * credential no reporter is created and `detectionReporting` reads `unavailable-no-credential`.
+   * `detectionReporting` names the state, including the reason when reporting is off.
    */
   reportDetections?: boolean;
   /** How long to buffer detections before posting a batch. Default 5000ms. */

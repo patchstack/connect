@@ -564,13 +564,18 @@ describe('the reporter can always be reached', () => {
 
     await p.fetchGuard()(new Request('https://app.test/api/x?q=boom'));
     await drain();
-    expect(posts.length, 'still buffered — nothing has asked it to flush').toBe(0);
+    // Counted in EVENTS, not requests: a state announcement is a request carrying no events, and it is
+    // made once at boot. What this asserts is that no detection has left the buffer yet.
+    const events = () => posts.flatMap((body: any) => body.detections ?? []);
+    expect(events().length, 'still buffered — nothing has asked it to flush').toBe(0);
 
     p.stop();
     await drain();
     await drain();
 
-    expect(posts.length).toBe(1);
+    // Exactly the one buffered event, delivered by the stop. `sent`/`delivered` count events, so the
+    // state announcement — which carries none — does not move them.
+    expect(events().length).toBe(1);
     expect(p.detectionHealth()).toMatchObject({ sent: 1, delivered: 1, failed: 0, dropped: 0 });
     expect(p.detectionHealth().lastDeliveredAt).not.toBeNull();
   });

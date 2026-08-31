@@ -22,6 +22,7 @@ const drain = async () => { await new Promise((r) => setTimeout(r, 5)); };
 function stubFetch(opts: { rulesOk?: boolean; etag?: string } = {}) {
   const capabilityHeaders: Array<string | undefined> = [];
   const posted: string[] = [];
+  const bodies: any[] = [];
   let rulesOk = opts.rulesOk ?? true;
 
   const impl = vi.fn(async (url: string, init?: RequestInit) => {
@@ -37,6 +38,7 @@ function stubFetch(opts: { rulesOk?: boolean; etag?: string } = {}) {
     }
     if (target.includes('/detections/')) {
       posted.push(target);
+      bodies.push(JSON.parse(String(init?.body ?? '{}')));
 
       return new Response('{}', { status: 200, headers: { 'Content-Type': 'application/json' } });
     }
@@ -51,7 +53,7 @@ function stubFetch(opts: { rulesOk?: boolean; etag?: string } = {}) {
 
   vi.stubGlobal('fetch', impl);
 
-  return { capabilityHeaders, posted, setRulesOk: (v: boolean) => { rulesOk = v; } };
+  return { capabilityHeaders, posted, bodies, setRulesOk: (v: boolean) => { rulesOk = v; } };
 }
 
 afterEach(() => {
@@ -191,6 +193,57 @@ describe('the platform learns the state', () => {
   });
 });
 
+describe('the settled state reaches the platform', () => {
+  it('is acknowledged when resolution settles somewhere other than the fetch declared', async () => {
+    // A site booting with an empty cache declares that it holds no managed rules, then receives them on
+    // that same request. Without an acknowledgement the platform keeps the pre-resolution answer — and a
+    // guard with refreshing switched off never sends another rules request.
+    const { capabilityHeaders, bodies } = stubFetch();
+
+    const p: any = await createProtection({
+      siteUuid: 'site-1',
+      pulseRulesUrl: 'https://x.test/monitor/pulse',
+      pulseAuth: AUTH,
+      detectionFlushMs: 1,
+    });
+    await drain();
+    await drain();
+
+    // What the fetch carried, and what it settled on: different, which is why the acknowledgement exists.
+    expect(capabilityHeaders).toContain('no-managed-rules');
+    expect(p.detectionReporting).toBe('on');
+
+    const announcements = bodies.filter((b) => typeof b.reporting_state === 'string');
+    expect(announcements.map((b) => b.reporting_state)).toContain('on');
+    // It carries no events — its only content is the state.
+    for (const body of announcements) expect(body.detections).toEqual([]);
+
+    p.stop();
+  });
+
+  it('is not acknowledged when the fetch already declared the settled state', async () => {
+    // A site whose store already holds a platform bundle declares `on` before the fetch and settles on
+    // `on`, so there is nothing to correct and no extra request to make.
+    let cached: unknown = { bundle: { firewall: [], whitelists: [], whitelist_keys: {} }, etag: '"v0"' };
+    const { bodies } = stubFetch();
+
+    const p: any = await createProtection({
+      siteUuid: 'site-1',
+      pulseRulesUrl: 'https://x.test/monitor/pulse',
+      pulseAuth: AUTH,
+      detectionFlushMs: 1,
+      ruleCache: { read: () => cached, write: (e: unknown) => { cached = e; } },
+    });
+    await drain();
+    await drain();
+
+    expect(p.detectionReporting).toBe('on');
+    expect(bodies.filter((b) => typeof b.reporting_state === 'string')).toEqual([]);
+
+    p.stop();
+  });
+});
+
 describe('reporting follows a refresh', () => {
   it('stops when an opt-out appears under a running guard', async () => {
     // The mirror of recovery, and the direction that matters more: a guard that keeps reporting after
@@ -201,7 +254,7 @@ describe('reporting follows a refresh', () => {
     // Losing MANAGED status mid-process is not the case tested here: once a fetch has succeeded, the
     // guard holds the platform's rules in its memory tier, so they remain managed and `cache` is the
     // correct answer. The opt-out is the transition that is actually reachable.
-    const { posted } = stubFetch();
+    const { posted, capabilityHeaders } = stubFetch();
 
     const p: any = await createProtection({
       siteUuid: 'site-1',
@@ -213,11 +266,18 @@ describe('reporting follows a refresh', () => {
     expect(p.detectionReporting).toBe('on');
     expect(p.detectionHealth).toBeTypeOf('function');
 
+    const beforeRefresh = capabilityHeaders.length;
     vi.stubEnv('PATCHSTACK_REPORT_DETECTIONS', '0');
     await p.refresh();
 
     expect(p.detectionReporting, 'the state follows the opt-out').toBe('disabled-by-config');
     expect(p.detectionHealth, 'and the health surface goes with it').toBeUndefined();
+    // And the request made BY that refresh says so. Carrying the previously reported state would mean the
+    // platform learns of the opt-out only on the refresh after this one — or never, if there is none.
+    expect(
+      capabilityHeaders.slice(beforeRefresh),
+      'the refresh request carries the state as of that request',
+    ).toContain('disabled-by-config');
 
     const before = posted.length;
     await p.fetchGuard()(new Request('https://app.test/api/x?q=boom'));
