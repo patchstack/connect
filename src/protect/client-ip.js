@@ -126,8 +126,12 @@ function parseIpv6(value) {
  *     parser rejects `[::1`, `::1]` and `[2001:db8::1]:8080` without needing a rule of its own — and
  *     stripping the delimiters instead would accept the unbalanced spellings. A proxy emitting the
  *     bracketed form is therefore not understood, and the walk falls back to the observed peer.
- *   - A zone identifier (`%eth0`) is permitted only on IPv6, and only when it names something. An IPv4
- *     literal has no zone, so `1.2.3.4%eth0` is malformed rather than an address with decoration.
+ *   - A zone identifier (`%eth0`) is permitted only on IPv6, only once, and only when it names something.
+ *     An IPv4 literal has no zone, so `1.2.3.4%eth0` is malformed rather than an address with
+ *     decoration, and `fe80::1%eth0%oops` is malformed rather than a zone containing a `%`.
+ *   - A zone is KEPT in the canonical spelling. The zone is what makes a link-local address identify an
+ *     interface, and dropping it would make two addresses on different interfaces compare equal. It plays
+ *     no part in the numeric comparison, which is why a policy entry may not carry one.
  *
  * The canonical spelling is what callers should store and match on, so a value the validator accepted is
  * the same value everywhere: IPv4 in dotted decimal, IPv6 lowercased with the longest zero run
@@ -137,9 +141,10 @@ function toNumeric(value) {
   const text = String(value).trim();
   if (text === '') return null;
 
-  const zoneAt = text.indexOf('%');
-  const addr = zoneAt === -1 ? text : text.slice(0, zoneAt);
-  const zone = zoneAt === -1 ? null : text.slice(zoneAt + 1);
+  const zoneParts = text.split('%');
+  if (zoneParts.length > 2) return null;
+  const addr = zoneParts[0];
+  const zone = zoneParts.length === 2 ? zoneParts[1] : null;
   // A zone must name something, and only IPv6 has one.
   if (zone !== null && (zone === '' || !addr.includes(':'))) return null;
 
@@ -168,7 +173,8 @@ function toNumeric(value) {
   return {
     bits: 128,
     value: v6.reduce((acc, group) => (acc << 16n) | BigInt(group), 0n),
-    canonical: canonicalIpv6(v6),
+    // The zone survives: without it a link-local address does not identify an interface.
+    canonical: zone === null ? canonicalIpv6(v6) : `${canonicalIpv6(v6)}%${zone}`,
   };
 }
 
@@ -229,6 +235,10 @@ export function isIpAddress(value) {
  */
 function parseCidr(entry) {
   if (typeof entry !== 'string') return null;
+  // A zone plays no part in the numeric comparison, so an entry carrying one would trust every address
+  // with those bits on every interface — including the one it was written to exclude.
+  if (entry.includes('%')) return null;
+
   const parts = entry.trim().split('/');
   if (parts.length > 2) return null;
 
@@ -258,26 +268,37 @@ function parseCidr(entry) {
 export function readTrustPolicy(trustedProxy) {
   if (trustedProxy === null || typeof trustedProxy !== 'object' || Array.isArray(trustedProxy)) return null;
 
+  // Every field that is PRESENT has to be valid. Substituting a default for a malformed value, or
+  // dropping it, installs a policy the operator did not write and gives them no way to tell from the
+  // behaviour which part took effect — on the configuration that decides whether request input becomes
+  // an identity.
+  if ('header' in trustedProxy) {
+    if (typeof trustedProxy.header !== 'string' || trustedProxy.header.trim() === '') return null;
+  }
+  if ('hops' in trustedProxy) {
+    if (!Number.isInteger(trustedProxy.hops) || trustedProxy.hops < 1) return null;
+  }
+  if ('isTrusted' in trustedProxy) {
+    if (typeof trustedProxy.isTrusted !== 'function') return null;
+  }
+
   const header =
-    typeof trustedProxy.header === 'string' && trustedProxy.header.trim() !== ''
-      ? trustedProxy.header.trim().toLowerCase()
-      : DEFAULT_FORWARDED_HEADER;
+    typeof trustedProxy.header === 'string' ? trustedProxy.header.trim().toLowerCase() : DEFAULT_FORWARDED_HEADER;
 
   // Trust configuration fails closed. One unparseable entry invalidates the whole policy rather than
-  // being dropped: a policy that silently lost a member is a policy nobody wrote, and the operator who
-  // typed it would have no way to tell from the behaviour which half took effect.
+  // being dropped, and an EMPTY list is a declaration that no peer is trusted — not an absent field to
+  // be filled in by a hop count.
   const cidrs = [];
-  if (Array.isArray(trustedProxy.peers)) {
+  if ('peers' in trustedProxy) {
+    if (!Array.isArray(trustedProxy.peers) || trustedProxy.peers.length === 0) return null;
     for (const entry of trustedProxy.peers) {
       const parsed = parseCidr(entry);
       if (parsed === null) return null;
       cidrs.push(parsed);
     }
-  } else if (trustedProxy.peers !== undefined) {
-    return null;
   }
 
-  const hops = Number.isInteger(trustedProxy.hops) && trustedProxy.hops > 0 ? trustedProxy.hops : null;
+  const hops = Number.isInteger(trustedProxy.hops) ? trustedProxy.hops : null;
   const predicate = typeof trustedProxy.isTrusted === 'function' ? trustedProxy.isTrusted : null;
 
   if (cidrs.length === 0 && hops === null && predicate === null) return null;

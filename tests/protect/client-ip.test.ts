@@ -391,3 +391,81 @@ describe('addresses are parsed strictly and reported canonically', () => {
     expect(resolved).toEqual({ ip: '198.51.100.99', source: 'trusted-proxy' });
   });
 });
+
+describe('every present field is validated', () => {
+  it.each([
+    ['a non-string header', { peers: ['10.0.0.0/8'], header: 42 }],
+    ['an empty header', { peers: ['10.0.0.0/8'], header: '   ' }],
+    ['a negative hop count', { peers: ['10.0.0.0/8'], hops: -1 }],
+    ['a zero hop count', { peers: ['10.0.0.0/8'], hops: 0 }],
+    ['a fractional hop count', { peers: ['10.0.0.0/8'], hops: 1.5 }],
+    ['a non-numeric hop count', { peers: ['10.0.0.0/8'], hops: 'two' }],
+    ['a non-function predicate', { peers: ['10.0.0.0/8'], isTrusted: 'nope' }],
+  ])('rejects the whole policy for %s, even with valid peers', (_label, config) => {
+    // Substituting a default for a malformed value, or dropping it, installs a policy the operator did
+    // not write — and its behaviour would not reveal which part took effect.
+    expect(readTrustPolicy(config as never)).toBeNull();
+  });
+
+  it('rejects an explicitly empty peer list', () => {
+    // An empty list declares that no peer is trusted. Treating it as an absent field, so that a hop count
+    // supplies the trust instead, inverts what was written.
+    expect(readTrustPolicy({ peers: [] })).toBeNull();
+    expect(readTrustPolicy({ peers: [], hops: 1 })).toBeNull();
+  });
+
+  it('accepts a fully valid policy using every field', () => {
+    // The positive control: a rule rejecting everything would satisfy the cases above.
+    const policy = readTrustPolicy({
+      peers: ['10.0.0.0/8'],
+      hops: 2,
+      header: 'X-Real-IP',
+      isTrusted: () => false,
+    });
+
+    expect(policy).not.toBeNull();
+    expect(policy?.header).toBe('x-real-ip');
+    expect(policy?.hops).toBe(2);
+  });
+});
+
+describe('an IPv6 zone identifies an interface, so it is kept or refused', () => {
+  it('keeps the zone in the canonical spelling', () => {
+    // Dropping it would make two addresses on different interfaces compare equal.
+    expect(canonicalIp('fe80::1%eth0')).toBe('fe80::1%eth0');
+    expect(canonicalIp('FE80::0001%eth0')).toBe('fe80::1%eth0');
+  });
+
+  it('rejects a policy entry carrying a zone', () => {
+    // A zone plays no part in the numeric comparison, so such an entry would trust those bits on every
+    // interface — including the one it was written to exclude.
+    expect(readTrustPolicy({ peers: ['fe80::1%eth0'] })).toBeNull();
+    expect(readTrustPolicy({ peers: ['fe80::/10%eth0'] })).toBeNull();
+  });
+
+  it('does not let one zone stand in for another', () => {
+    const resolved = resolveClientIp({
+      peer: 'fe80::1%eth1',
+      headers: { 'x-forwarded-for': '9.9.9.9' },
+      trustedProxy: { peers: ['fe80::1%eth0'] },
+    });
+
+    expect(resolved).toEqual({ ip: 'fe80::1%eth1', source: 'runtime' });
+  });
+
+  it('still matches a zoneless prefix that covers the address', () => {
+    // A CIDR is about the address bits, so `fe80::/10` covering a scoped peer is correct — it is only an
+    // entry with an explicit zone that cannot be honoured.
+    const resolved = resolveClientIp({
+      peer: 'fe80::1%eth0',
+      headers: { 'x-forwarded-for': CLIENT },
+      trustedProxy: { peers: ['fe80::/10'] },
+    });
+
+    expect(resolved).toEqual({ ip: CLIENT, source: 'trusted-proxy' });
+  });
+
+  it.each(['fe80::1%eth0%oops', 'fe80::1%%', '::1%a%b'])('rejects more than one zone delimiter (%s)', (value) => {
+    expect(isIpAddress(value)).toBe(false);
+  });
+});
