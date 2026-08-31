@@ -176,8 +176,13 @@ function toNumeric(value) {
 
   // `::ffff:a.b.c.d` is the same host as `a.b.c.d`, so it canonicalises to the IPv4 form and compares
   // against IPv4 policies.
+  //
+  // A zone on one is refused rather than dropped. The canonical form of a mapped address is IPv4, and an
+  // IPv4 identity has no zone to carry — so keeping the address would mean discarding the scope, which is
+  // the one thing a zone must never do silently. Applies to both spellings of the mapped form.
   const mapped = v6.slice(0, 5).every((g) => g === 0) && v6[5] === 0xffff;
   if (mapped) {
+    if (zone !== null) return null;
     const octets = [v6[6] >> 8, v6[6] & 0xff, v6[7] >> 8, v6[7] & 0xff];
 
     return { bits: 32, value: (BigInt(v6[6]) << 16n) | BigInt(v6[7]), canonical: octets.join('.') };

@@ -547,6 +547,25 @@ describe('a zone identifier follows a conservative grammar', () => {
     expect(isIpAddress(`fe80::1%${'a'.repeat(64)}`)).toBe(true);
   });
 
+  it.each([
+    // Both spellings of the mapped form. Its canonical form is IPv4, which has no zone to carry, so
+    // keeping the address would mean discarding the scope — the one thing a zone must never do silently.
+    '::ffff:203.0.113.1%eth0',
+    '::FFFF:203.0.113.1%2',
+    '::ffff:c000:0280%eth0',
+  ])('refuses a mapped IPv4 address carrying a zone (%s)', (value) => {
+    expect(isIpAddress(value)).toBe(false);
+    expect(canonicalIp(value)).toBeNull();
+  });
+
+  it.each([
+    ['::ffff:203.0.113.1', '203.0.113.1'],
+    ['::ffff:c000:0280', '192.0.2.128'],
+  ])('still accepts the zoneless mapped form %s as %s', (input, expected) => {
+    // The positive control: refusing every mapped address would satisfy the case above.
+    expect(canonicalIp(input)).toBe(expected);
+  });
+
   it('never reports an address carrying a rejected zone', () => {
     const resolved = resolveClientIp({ peer: 'fe80::1%bad zone' });
 
