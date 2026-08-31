@@ -238,12 +238,25 @@ export async function createProtection(options = {}) {
     return next;
   };
 
-  const settled = await applyReportingState(bundle.source?.origin);
-  // The fetch above carried the state as it stood before the fetch decided where the rules came from. If
-  // resolution settled somewhere else, say so now on an authenticated request of its own: waiting for the
-  // next refresh would leave the platform holding the pre-resolution answer, and a guard with refreshing
-  // switched off has no next refresh.
-  if (settled.state !== preFetchState && detections) detections.announce(settled.state);
+  /**
+   * Apply the settled state, and correct the platform if the request that just went out declared another.
+   *
+   * Both the boot fetch and every refresh declare a state BEFORE resolution decides where the rules came
+   * from, so either can settle somewhere else. This is the single place that reconciles the two, so the
+   * two paths cannot drift apart: a guard whose only refresh is a one-shot manual call would otherwise
+   * leave the platform holding the pre-resolution answer for the life of the process.
+   *
+   * @param {'api'|'cache'|'bundled'|'empty'|undefined} origin
+   * @param {string} declared the state carried by the request that produced `origin`
+   */
+  const applyAndAcknowledge = async (origin, declared) => {
+    const settled = await applyReportingState(origin);
+    if (settled.state !== declared && detections) detections.announce(settled.state);
+
+    return settled;
+  };
+
+  await applyAndAcknowledge(bundle.source?.origin, preFetchState);
   // Mode is mutable so a Pulse refresh can flip dry-run ↔ block when SaaS enables production.
   // Precedence: PATCHSTACK_MODE env (local override) > API enforcement > options.mode > dry-run.
   let mode = resolveMode(options, bundle);
@@ -761,12 +774,14 @@ export async function createProtection(options = {}) {
         notify(onError, err, 'onError'); // a failed report must not stop the rule refresh
       }
     }
+    // Derived from the origin in force, re-reading the environment, rather than resent from the last
+    // reported value: an opt-out that appeared since the previous request has to travel on THIS one. Held
+    // in a binding because the acknowledgement below compares against exactly what this request carried.
+    const declaredState = stateFor(currentOrigin).state;
     const next = await resolveRules(options, store, {
       timeoutMs: options.refreshTimeoutMs,
       pulseAuth,
-      // Derived from the origin in force, re-reading the environment, rather than resent from the last
-      // reported value: an opt-out that appeared since the previous request has to travel on THIS one.
-      detectionState: stateFor(currentOrigin).state,
+      detectionState: declaredState,
     });
     mode = resolveMode(options, next);
     applyBundle(next);
@@ -774,7 +789,7 @@ export async function createProtection(options = {}) {
     // rules source that STARTS being the platform's, and an opt-out appearing in the environment. It
     // cannot stop being the platform's: once a bundle has been accepted the memory tier holds it, so a
     // later failed fetch still resolves to `cache`. The credential is resolved once at boot.
-    await applyReportingState(next.source?.origin);
+    await applyAndAcknowledge(next.source?.origin, declaredState);
     // After the swap, and only after it: later detections belong to the bundle now running. A refresh
     // that fell back to the cached or bundled ruleset kept the previous rules, and `store.read()` then
     // still holds the previous identity — which is exactly the answer that stays true.

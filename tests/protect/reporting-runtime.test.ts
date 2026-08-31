@@ -333,7 +333,7 @@ describe('reporting follows a refresh', () => {
   it('starts once a refresh receives platform rules', async () => {
     // The recovery path. A guard that started on its own bundle because the first fetch failed must begin
     // reporting when the platform becomes reachable — not stay silent for the life of the process.
-    const { posted, setRulesOk } = stubFetch();
+    const { posted, bodies, setRulesOk } = stubFetch();
     setRulesOk(false);
 
     const p: any = await createProtection({
@@ -350,10 +350,18 @@ describe('reporting follows a refresh', () => {
 
     setRulesOk(true);
     const status = await p.refresh();
+    await drain();
 
     expect(status).toMatchObject({ ok: true, origin: 'api' });
     expect(p.detectionReporting, 'the state follows the refresh').toBe('on');
     expect(p.detectionHealth, 'and so does the health surface').toBeTypeOf('function');
+    // And the platform is told. The refresh request declared `no-managed-rules` and resolution settled on
+    // `on`, which is the same mismatch the boot path corrects — a guard whose only refresh is this
+    // one-shot call would otherwise leave the platform on the pre-resolution answer for good.
+    expect(
+      bodies.filter((b) => typeof b.reporting_state === 'string').map((b) => b.reporting_state),
+      'the settled state is acknowledged after a recovering refresh',
+    ).toContain('on');
 
     await p.fetchGuard()(new Request('https://app.test/api/x?q=boom'));
     p.stop();
