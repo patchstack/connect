@@ -142,7 +142,29 @@ export async function createProtection(options = {}) {
     notify(onError, new Error(message), 'onError');
     console.warn(message);
   }
-  const bundle = await resolveRules(options, store, { timeoutMs: bootTimeoutMs, pulseAuth });
+  // The state sent on the fetch, computed from what is knowable before it: the store says whether the
+  // platform has ever delivered rules here, which is the honest origin at the moment of asking. The
+  // resolved state is recomputed from the actual origin immediately after, and every later fetch carries
+  // whatever the guard is in by then.
+  const cachedOrigin = async () => {
+    const prior = await store.read();
+    if (prior?.bundle) return 'cache';
+
+    return options.rules ? 'bundled' : 'empty';
+  };
+  const stateFor = (origin) =>
+    reportingState({
+      siteUuid: options.siteUuid,
+      ruleOrigin: origin,
+      hasCredential: Boolean(pulseAuth),
+      configOptOut: options.reportDetections === false,
+    });
+
+  const bundle = await resolveRules(options, store, {
+    timeoutMs: bootTimeoutMs,
+    pulseAuth,
+    detectionState: stateFor(await cachedOrigin()).state,
+  });
   // OPT-IN, deliberately. Two reasons, and the first is not about privacy: switching it on adds an
   // outbound POST to every guard that has a site UUID, which is a change in what an installed app does
   // on the network — the kind of thing that must be disclosed in the shipped docs before it is a default,
@@ -157,33 +179,53 @@ export async function createProtection(options = {}) {
   // Derived from enrolment rather than from a config flag: reporting is on for a site the platform
   // manages, and off everywhere else. `reportingState` holds the whole decision so every combination is
   // enumerable in a test instead of reachable only by constructing a guard.
-  const reporting = reportingState({
-    siteUuid: options.siteUuid,
-    ruleOrigin: bundle.source?.origin,
-    hasCredential: Boolean(pulseAuth),
-    configOptOut: options.reportDetections === false,
-  });
-  let detectionReporting = reporting.state;
-  if (reporting.state === 'unavailable-no-credential') {
-    const message =
-      'Patchstack: this site is enrolled and running managed rules, but no API credential resolved, ' +
-      'so no security event could be delivered. Reporting is off.';
-    notify(onError, new Error(message), 'onError');
-    console.warn(message);
-  }
-  if (reporting.reports) {
-    detections = createDetectionReporter({
-      siteUuid: options.siteUuid,
-      baseUrl: options.pulseRulesUrl,
-      pulseAuth,
-      // The bundle the guard is actually running, so a hit can be attributed to the rules that produced
-      // it rather than to whatever is current when the report is read. Kept current across refreshes —
-      // see the refresh tick below.
-      rulesEtag: (await store.read())?.etag ?? null,
-      fetchImpl: options.fetchImpl,
-      flushMs: options.detectionFlushMs,
-    });
-  }
+  let detectionReporting = 'not-enrolled';
+
+  /**
+   * Bring reporting into line with the rules now in force.
+   *
+   * Called at boot and after every refresh, because enrolment is not a boot-time fact: a guard that
+   * started on a failed fetch and fell back to its cached or bundled rules can receive platform rules on
+   * a later refresh, and one that was reporting can lose the credential or the enrolment. A state fixed
+   * at startup leaves the first case silent for the life of the process.
+   *
+   * Starts and stops the reporter accordingly. Stopping flushes what it holds — the events already
+   * collected were collected while reporting was on, and dropping them would lose evidence rather than
+   * decline to gather it.
+   */
+  const applyReportingState = async (origin) => {
+    const next = stateFor(origin);
+    const changed = next.state !== detectionReporting;
+    detectionReporting = next.state;
+
+    if (next.reports && !detections) {
+      detections = createDetectionReporter({
+        siteUuid: options.siteUuid,
+        baseUrl: options.pulseRulesUrl,
+        pulseAuth,
+        // The bundle the guard is actually running, so a hit can be attributed to the rules that
+        // produced it rather than to whatever is current when the report is read.
+        rulesEtag: (await store.read())?.etag ?? null,
+        fetchImpl: options.fetchImpl,
+        flushMs: options.detectionFlushMs,
+      });
+    } else if (!next.reports && detections) {
+      detections.stop();
+      detections = undefined;
+    }
+
+    if (changed && next.state === 'unavailable-no-credential') {
+      const message =
+        'Patchstack: this site is enrolled and running managed rules, but no API credential resolved, ' +
+        'so no security event could be delivered. Reporting is off.';
+      notify(onError, new Error(message), 'onError');
+      console.warn(message);
+    }
+
+    return next;
+  };
+
+  await applyReportingState(bundle.source?.origin);
   // Mode is mutable so a Pulse refresh can flip dry-run ↔ block when SaaS enables production.
   // Precedence: PATCHSTACK_MODE env (local override) > API enforcement > options.mode > dry-run.
   let mode = resolveMode(options, bundle);
@@ -701,9 +743,18 @@ export async function createProtection(options = {}) {
         notify(onError, err, 'onError'); // a failed report must not stop the rule refresh
       }
     }
-    const next = await resolveRules(options, store, { timeoutMs: options.refreshTimeoutMs, pulseAuth });
+    const next = await resolveRules(options, store, {
+      timeoutMs: options.refreshTimeoutMs,
+      pulseAuth,
+      // Whatever the guard is in right now, so the platform's view follows the guard's rather than
+      // staying at the value the first fetch happened to carry.
+      detectionState: detectionReporting,
+    });
     mode = resolveMode(options, next);
     applyBundle(next);
+    // Enrolment can change under a running guard in both directions, so this is recomputed from the
+    // origin the refresh actually resolved rather than left at its boot value.
+    await applyReportingState(next.source?.origin);
     // After the swap, and only after it: later detections belong to the bundle now running. A refresh
     // that fell back to the cached or bundled ruleset kept the previous rules, and `store.read()` then
     // still holds the previous identity — which is exactly the answer that stays true.
@@ -742,9 +793,18 @@ export async function createProtection(options = {}) {
   protection.stopRefresh = protection.stop;
   // Which of the three states reporting is in: requested and running, requested but undeliverable, or
   // not requested. A boolean would collapse the middle one into "off", which is the reassuring reading.
-  protection.detectionReporting = detectionReporting;
-  // Delivery health, when there is a reporter: what was attempted, acknowledged, refused, and dropped.
-  if (detections) protection.detectionHealth = () => detections.health();
+  // A getter, because the state follows refreshes: a property assigned once would report the boot value
+  // for the life of the process, including after reporting started or stopped.
+  Object.defineProperty(protection, 'detectionReporting', {
+    get: () => detectionReporting,
+    enumerable: true,
+  });
+  // Delivery health while there is a reporter: what was attempted, acknowledged, refused, and dropped.
+  // Undefined when there is none, so "no reporter" and "a reporter with nothing to show" stay apart.
+  Object.defineProperty(protection, 'detectionHealth', {
+    get: () => (detections ? () => detections.health() : undefined),
+    enumerable: true,
+  });
 
   return protection;
 }

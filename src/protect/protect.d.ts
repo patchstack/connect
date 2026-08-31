@@ -34,7 +34,14 @@ export interface Protection {
   /** Present with a live source — re-fetch + hot-swap the rules once (used by the loop + push).
    *  Resolves with the outcome of the attempt: `ok: false` means the rules in force came from the
    *  cache or the bundled fallback, not from the source. It does not reject on a source failure. */
-  refresh?: () => Promise<{ ok: boolean; reason?: string }>;
+  /** Refresh the rules now. `ok` is whether the resolution was clean; `origin` is which source supplied
+   *  the rules now in force — `api` and `cache` are Patchstack-delivered, `bundled` is the caller's own
+   *  `rules` option, `empty` is none. A fallback is `ok: false` with the origin it fell back to. */
+  refresh?: () => Promise<{
+    ok: boolean;
+    origin?: "api" | "cache" | "bundled" | "empty";
+    reason?: string;
+  }>;
   /** Present with a live source — a fetch handler that runs `refresh()` when the request carries
    *  the configured refresh secret (a push/zero-day trigger). No secret set → the handler 404s. */
   refreshHandler?: () => (request: Request) => Promise<Response>;
@@ -43,10 +50,26 @@ export interface Protection {
   stop: () => void;
   /** Alias of `stop`, under the name callers already have. */
   stopRefresh: () => void;
-  /** Whether detection reporting is running, requested but undeliverable, or not requested.
-   *  `unavailable-no-credential` means `reportDetections` was set but no credential resolved, so
-   *  nothing is being sent. */
-  detectionReporting: "on" | "off" | "unavailable-no-credential";
+  /** Whether this guard reports security events, and if not, why not.
+   *
+   *  Reporting is on for a site enrolled in Patchstack-managed mitigation that is running managed rules
+   *  with a credential, and off everywhere else. Each state is distinct so "no events arrived" can be
+   *  told apart from "reporting is off" — and it follows refreshes, so a guard that starts on cached or
+   *  bundled rules and later receives managed rules begins reporting without a restart.
+   *
+   *  - `on` — events are being sent
+   *  - `disabled-by-config` — `PATCHSTACK_REPORT_DETECTIONS` is false, or `reportDetections: false`
+   *  - `disabled-by-telemetry-opt-out` — `PATCHSTACK_TELEMETRY` is false
+   *  - `not-enrolled` — no site identity
+   *  - `no-managed-rules` — the rules in force did not come from Patchstack
+   *  - `unavailable-no-credential` — enrolled, but no credential resolved */
+  detectionReporting:
+    | "on"
+    | "disabled-by-config"
+    | "disabled-by-telemetry-opt-out"
+    | "not-enrolled"
+    | "no-managed-rules"
+    | "unavailable-no-credential";
   /** Present when detection reporting is on — delivery counts (in events) and the last acknowledgement.
    *  Carries no request data. */
   detectionHealth?: () => {

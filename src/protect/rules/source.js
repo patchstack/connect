@@ -76,7 +76,7 @@ export async function resolveRules(options, store, ctx = {}) {
   const timeoutMs = ctx.timeoutMs;
   if (options.siteUuid) {
     const prior = await store.read(); // { bundle, etag } | null
-    const client = new PulseRuleClient({ siteUuid: options.siteUuid, baseUrl: options.pulseRulesUrl, etag: prior?.etag, timeoutMs, pulseAuth: ctx.pulseAuth, reportsDetections: options.reportDetections === true });
+    const client = new PulseRuleClient({ siteUuid: options.siteUuid, baseUrl: options.pulseRulesUrl, etag: prior?.etag, timeoutMs, pulseAuth: ctx.pulseAuth, detectionState: ctx.detectionState });
     const res = await client.getRules();
     if (res.success && res.notModified && prior?.bundle) return fromSource(normalizeBundle(prior.bundle, options), 'cache');
     if (res.success && !res.notModified) {

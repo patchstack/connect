@@ -241,12 +241,21 @@ describe('declaring the capability', () => {
       reportDetections: true,
     });
 
-    // Authenticated, so the claim carries weight and is made.
-    const claimed = seen.filter((h) => h['X-Patchstack-Detections'] === 'enabled');
+    // Authenticated, so the claim carries weight and is made. The header carries the STATE, not a bit:
+    // "no events arrived" has several causes, and the platform can only tell them apart if the guard
+    // names which one it is in.
+    const claimed = seen.filter((h) => typeof h['X-Patchstack-Detections'] === 'string');
     expect(claimed.length).toBeGreaterThan(0);
     for (const headers of claimed) {
       expect(headers.Authorization, 'the claim only travels on an authenticated request').toContain('Bearer');
+      expect(
+        ['on', 'no-managed-rules', 'unavailable-no-credential'],
+        'the header value is a reporting state',
+      ).toContain(headers['X-Patchstack-Detections']);
     }
+    // The first fetch of a site with no cached bundle honestly reports that it holds no managed rules
+    // yet; the state that follows the resolution is asserted separately below.
+    expect(p.detectionReporting).toBe('on');
     p.stopRefresh?.();
   });
 
