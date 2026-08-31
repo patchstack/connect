@@ -29,6 +29,7 @@ import { makeStore } from './rules/store.js';
 import { resolveRules } from './rules/source.js';
 import { startRefresh, makeRefreshHandler } from './rules/refresh.js';
 import { createDetectionReporter } from './detections.js';
+import { reportingState } from './reporting-state.js';
 import { notify } from './notify.js';
 import { createFirewallLogReporter, resolveApiBase, telemetryEnabled } from './firewall-log.js';
 
@@ -152,30 +153,36 @@ export async function createProtection(options = {}) {
   // reporter built without one queues events, posts them, and is refused — spending an outbound request
   // per batch to accomplish nothing, while `reportDetections: true` in the config says reporting is on.
   // Refusing to build it is the honest outcome; `protection.detectionReporting` says which it is.
-  let detectionReporting = 'off';
-  if (options.reportDetections === true && options.siteUuid && telemetryEnabled()) {
-    if (!pulseAuth) {
-      detectionReporting = 'unavailable-no-credential';
-      const message =
-        'Patchstack: detection reporting is enabled for site ' +
-        options.siteUuid +
-        ' but no API credential resolved, so no report could be delivered. Reporting is off.';
-      notify(onError, new Error(message), 'onError');
-      console.warn(message);
-    } else {
-      detectionReporting = 'on';
-      detections = createDetectionReporter({
-        siteUuid: options.siteUuid,
-        baseUrl: options.pulseRulesUrl,
-        pulseAuth,
-        // The bundle the guard is actually running, so a hit can be attributed to the rules that produced
-        // it rather than to whatever is current when the report is read. Kept current across refreshes —
-        // see the refresh tick below.
-        rulesEtag: (await store.read())?.etag ?? null,
-        fetchImpl: options.fetchImpl,
-        flushMs: options.detectionFlushMs,
-      });
-    }
+  //
+  // Derived from enrolment rather than from a config flag: reporting is on for a site the platform
+  // manages, and off everywhere else. `reportingState` holds the whole decision so every combination is
+  // enumerable in a test instead of reachable only by constructing a guard.
+  const reporting = reportingState({
+    siteUuid: options.siteUuid,
+    ruleOrigin: bundle.source?.origin,
+    hasCredential: Boolean(pulseAuth),
+    configOptOut: options.reportDetections === false,
+  });
+  let detectionReporting = reporting.state;
+  if (reporting.state === 'unavailable-no-credential') {
+    const message =
+      'Patchstack: this site is enrolled and running managed rules, but no API credential resolved, ' +
+      'so no security event could be delivered. Reporting is off.';
+    notify(onError, new Error(message), 'onError');
+    console.warn(message);
+  }
+  if (reporting.reports) {
+    detections = createDetectionReporter({
+      siteUuid: options.siteUuid,
+      baseUrl: options.pulseRulesUrl,
+      pulseAuth,
+      // The bundle the guard is actually running, so a hit can be attributed to the rules that produced
+      // it rather than to whatever is current when the report is read. Kept current across refreshes —
+      // see the refresh tick below.
+      rulesEtag: (await store.read())?.etag ?? null,
+      fetchImpl: options.fetchImpl,
+      flushMs: options.detectionFlushMs,
+    });
   }
   // Mode is mutable so a Pulse refresh can flip dry-run ↔ block when SaaS enables production.
   // Precedence: PATCHSTACK_MODE env (local override) > API enforcement > options.mode > dry-run.

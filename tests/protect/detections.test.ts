@@ -484,7 +484,7 @@ describe('reporting that cannot be delivered', () => {
     expect(p.detectionReporting).toBe('unavailable-no-credential');
     expect(p.detectionHealth, 'no reporter means no health to report').toBeUndefined();
     expect(posted.some((url) => url.includes('/detections/'))).toBe(false);
-    expect(warnings.some((m) => m.includes('detection reporting is enabled'))).toBe(true);
+    expect(warnings.some((m) => m.includes('no API credential resolved'))).toBe(true);
 
     p.stop();
   });

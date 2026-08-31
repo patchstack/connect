@@ -42,8 +42,31 @@ function reportRejections(rejected, options, label) {
 }
 
 /** A bundle plus the outcome of the attempt that produced it. `source` is never written to the store. */
-function fromSource(bundle, reason) {
-  return reason === undefined ? { ...bundle, source: { ok: true } } : { ...bundle, source: { ok: false, reason } };
+/**
+ * Wrap a resolved bundle with where it came from and whether the resolution was clean.
+ *
+ * `origin` is separate from `ok` because they answer different questions and a caller needs both.
+ * `ok: false` says the resolution hit a problem; `origin` says which leg actually supplied the rules
+ * that are now running:
+ *
+ *   `api`      delivered by the platform on this call
+ *   `cache`    last-known-good from the store — still platform-delivered, just not on this call
+ *   `bundled`  the caller's own `rules` option, which the platform never saw
+ *   `empty`    nothing at all
+ *
+ * Detection reporting depends on this distinction. Reporting is for sites the platform manages, so a
+ * guard running bundled or empty rules has nothing to report against: the platform has no rule document
+ * to attribute a hit to, and a detection naming a rule id it never issued is not evidence of anything.
+ *
+ * @param {object} bundle
+ * @param {'api'|'cache'|'bundled'|'empty'} origin
+ * @param {string} [reason]
+ */
+function fromSource(bundle, origin, reason) {
+  return {
+    ...bundle,
+    source: reason === undefined ? { ok: true, origin } : { ok: false, origin, reason },
+  };
 }
 
 export async function resolveRules(options, store, ctx = {}) {
@@ -55,66 +78,66 @@ export async function resolveRules(options, store, ctx = {}) {
     const prior = await store.read(); // { bundle, etag } | null
     const client = new PulseRuleClient({ siteUuid: options.siteUuid, baseUrl: options.pulseRulesUrl, etag: prior?.etag, timeoutMs, pulseAuth: ctx.pulseAuth, reportsDetections: options.reportDetections === true });
     const res = await client.getRules();
-    if (res.success && res.notModified && prior?.bundle) return fromSource(normalizeBundle(prior.bundle, options));
+    if (res.success && res.notModified && prior?.bundle) return fromSource(normalizeBundle(prior.bundle, options), 'cache');
     if (res.success && !res.notModified) {
       const rejected = liveUpdateRejections(res, options);
       if (rejected.length > 0) {
         reportRejections(rejected, options, 'rule update rejected');
         // Reached the source and refused what it sent. Not ok: the running rules are not the delivered
         // ones, and asking again at the normal interval re-downloads the same rejected bundle.
-        if (prior?.bundle) return fromSource(normalizeBundle(prior.bundle, options), 'update rejected');
-        if (options.rules) return fromSource(normalizeBundle(options.rules, options), 'update rejected');
-        return fromSource(emptyBundle(), 'update rejected');
+        if (prior?.bundle) return fromSource(normalizeBundle(prior.bundle, options), 'cache', 'update rejected');
+        if (options.rules) return fromSource(normalizeBundle(options.rules, options), 'bundled', 'update rejected');
+        return fromSource(emptyBundle(), 'empty', 'update rejected');
       }
       const bundle = normalizeBundle(res, options);
       await store.write({ bundle, etag: res.etag ?? null });
-      return fromSource(bundle);
+      return fromSource(bundle, 'api');
     }
     if (prior?.bundle) {
       notify(options.onError, new Error(`pulse rule fetch failed (${res.error ?? 'no usable response'}); using cached bundle`), 'onError');
-      return fromSource(normalizeBundle(prior.bundle, options), res.error ?? 'no usable response');
+      return fromSource(normalizeBundle(prior.bundle, options), 'cache', res.error ?? 'no usable response');
     }
     if (options.rules) {
       notify(options.onError, new Error(`pulse rule fetch failed (${res.error ?? 'no usable response'}); using bundled fallback`), 'onError');
-      return fromSource(normalizeBundle(options.rules, options), res.error ?? 'no usable response');
+      return fromSource(normalizeBundle(options.rules, options), 'bundled', res.error ?? 'no usable response');
     }
     notify(options.onError, new Error(`pulse rule fetch failed (${res.error ?? 'no usable response'}); no cache — running with no rules`), 'onError');
-    return fromSource(emptyBundle(), res.error ?? 'no usable response');
+    return fromSource(emptyBundle(), 'empty', res.error ?? 'no usable response');
   }
 
   if (options.token) {
     const prior = await store.read();
     const client = new PatchstackRuleClient({ token: options.token, baseUrl: options.baseUrl, etag: prior?.etag, timeoutMs });
     const res = await client.getRules();
-    if (res.success && res.notModified && prior?.bundle) return fromSource(normalizeBundle(prior.bundle, options));
+    if (res.success && res.notModified && prior?.bundle) return fromSource(normalizeBundle(prior.bundle, options), 'cache');
     if (res.success && !res.notModified) {
       const rejected = liveUpdateRejections(res, options);
       if (rejected.length > 0) {
         reportRejections(rejected, options, 'rule update rejected');
         // Reached the source and refused what it sent. Not ok: the running rules are not the delivered
         // ones, and asking again at the normal interval re-downloads the same rejected bundle.
-        if (prior?.bundle) return fromSource(normalizeBundle(prior.bundle, options), 'update rejected');
-        if (options.rules) return fromSource(normalizeBundle(options.rules, options), 'update rejected');
-        return fromSource(emptyBundle(), 'update rejected');
+        if (prior?.bundle) return fromSource(normalizeBundle(prior.bundle, options), 'cache', 'update rejected');
+        if (options.rules) return fromSource(normalizeBundle(options.rules, options), 'bundled', 'update rejected');
+        return fromSource(emptyBundle(), 'empty', 'update rejected');
       }
       const bundle = normalizeBundle(res, options);
       await store.write({ bundle, etag: res.etag ?? null });
-      return fromSource(bundle);
+      return fromSource(bundle, 'api');
     }
     if (prior?.bundle) {
       notify(options.onError, new Error(`rule fetch failed (${res.error ?? 'no usable response'}); using cached bundle`), 'onError');
-      return fromSource(normalizeBundle(prior.bundle, options), res.error ?? 'no usable response');
+      return fromSource(normalizeBundle(prior.bundle, options), 'cache', res.error ?? 'no usable response');
     }
     notify(options.onError, new Error(`rule fetch failed (${res.error ?? 'no usable response'}); no cache — running with no rules`), 'onError');
-    return fromSource(emptyBundle(), res.error ?? 'no usable response');
+    return fromSource(emptyBundle(), 'empty', res.error ?? 'no usable response');
   }
 
   // No live source configured, so the bundle IS the source and cannot be behind one.
   if (options.rules) {
-    return fromSource(normalizeBundle(options.rules, options));
+    return fromSource(normalizeBundle(options.rules, options), 'bundled');
   }
 
-  return fromSource(emptyBundle());
+  return fromSource(emptyBundle(), 'empty');
 }
 
 // Every rule path (live fetch, cache, bundled fallback) funnels through here, so this is where the
