@@ -33,6 +33,19 @@
  * needs a platform adapter that positively establishes the runtime; a header name on its own does not.
  */
 
+/**
+ * The zone identifiers this accepts: interface names and numeric scope ids.
+ *
+ * Deliberately narrow. A zone reaches logs and retained event payloads, so anything outside the forms
+ * real runtimes produce — whitespace, newlines, path separators, brackets, arbitrary Unicode — is treated
+ * as a malformed address rather than passed through as part of one. Covers `eth0`, `en0`, `eth0.100`,
+ * `br-abc123` and a bare scope number.
+ */
+const ZONE = /^[A-Za-z0-9._-]{1,64}$/;
+
+/** The fields a trust policy may declare. Anything else is a typo, not an extension. */
+const POLICY_FIELDS = Object.freeze(['peers', 'hops', 'header', 'isTrusted']);
+
 /** Provenance values. */
 export const IP_SOURCES = Object.freeze(['runtime', 'trusted-proxy', 'unavailable']);
 
@@ -126,9 +139,9 @@ function parseIpv6(value) {
  *     parser rejects `[::1`, `::1]` and `[2001:db8::1]:8080` without needing a rule of its own — and
  *     stripping the delimiters instead would accept the unbalanced spellings. A proxy emitting the
  *     bracketed form is therefore not understood, and the walk falls back to the observed peer.
- *   - A zone identifier (`%eth0`) is permitted only on IPv6, only once, and only when it names something.
- *     An IPv4 literal has no zone, so `1.2.3.4%eth0` is malformed rather than an address with
- *     decoration, and `fe80::1%eth0%oops` is malformed rather than a zone containing a `%`.
+ *   - A zone identifier (`%eth0`) is permitted only on IPv6, only once, and only in the conservative
+ *     grammar below. An IPv4 literal has no zone, so `1.2.3.4%eth0` is malformed rather than an address
+ *     with decoration, and `fe80::1%eth0%oops` is malformed rather than a zone containing a `%`.
  *   - A zone is KEPT in the canonical spelling. The zone is what makes a link-local address identify an
  *     interface, and dropping it would make two addresses on different interfaces compare equal. It plays
  *     no part in the numeric comparison, which is why a policy entry may not carry one.
@@ -145,8 +158,8 @@ function toNumeric(value) {
   if (zoneParts.length > 2) return null;
   const addr = zoneParts[0];
   const zone = zoneParts.length === 2 ? zoneParts[1] : null;
-  // A zone must name something, and only IPv6 has one.
-  if (zone !== null && (zone === '' || !addr.includes(':'))) return null;
+  // A zone must name something in the accepted grammar, and only IPv6 has one.
+  if (zone !== null && (!ZONE.test(zone) || !addr.includes(':'))) return null;
 
   const v4 = parseIpv4(addr);
   if (v4 !== null) {
@@ -268,28 +281,35 @@ function parseCidr(entry) {
 export function readTrustPolicy(trustedProxy) {
   if (trustedProxy === null || typeof trustedProxy !== 'object' || Array.isArray(trustedProxy)) return null;
 
-  // Every field that is PRESENT has to be valid. Substituting a default for a malformed value, or
-  // dropping it, installs a policy the operator did not write and gives them no way to tell from the
-  // behaviour which part took effect — on the configuration that decides whether request input becomes
-  // an identity.
-  if ('header' in trustedProxy) {
-    if (typeof trustedProxy.header !== 'string' || trustedProxy.header.trim() === '') return null;
-  }
-  if ('hops' in trustedProxy) {
-    if (!Number.isInteger(trustedProxy.hops) || trustedProxy.hops < 1) return null;
-  }
-  if ('isTrusted' in trustedProxy) {
-    if (typeof trustedProxy.isTrusted !== 'function') return null;
+  // Own properties only, and no unknown ones.
+  //
+  // A field read through the prototype chain was not written by whoever configured this object, and a key
+  // this does not recognise is a typo rather than an extension — `heder: 'x-real-ip'` would otherwise be
+  // ignored and the default header used, which is the quiet substitution this whole function exists to
+  // avoid. Both directions matter on the configuration that decides whether request input becomes an
+  // identity.
+  const has = (field) => Object.hasOwn(trustedProxy, field);
+
+  for (const key of Object.keys(trustedProxy)) {
+    if (!POLICY_FIELDS.includes(key)) return null;
   }
 
-  const header =
-    typeof trustedProxy.header === 'string' ? trustedProxy.header.trim().toLowerCase() : DEFAULT_FORWARDED_HEADER;
+  // Every field that is PRESENT has to be valid. Substituting a default for a malformed value, or
+  // dropping it, installs a policy the operator did not write and gives them no way to tell from the
+  // behaviour which part took effect.
+  if (has('header') && (typeof trustedProxy.header !== 'string' || trustedProxy.header.trim() === '')) {
+    return null;
+  }
+  if (has('hops') && (!Number.isInteger(trustedProxy.hops) || trustedProxy.hops < 1)) return null;
+  if (has('isTrusted') && typeof trustedProxy.isTrusted !== 'function') return null;
+
+  const header = has('header') ? trustedProxy.header.trim().toLowerCase() : DEFAULT_FORWARDED_HEADER;
 
   // Trust configuration fails closed. One unparseable entry invalidates the whole policy rather than
   // being dropped, and an EMPTY list is a declaration that no peer is trusted — not an absent field to
   // be filled in by a hop count.
   const cidrs = [];
-  if ('peers' in trustedProxy) {
+  if (has('peers')) {
     if (!Array.isArray(trustedProxy.peers) || trustedProxy.peers.length === 0) return null;
     for (const entry of trustedProxy.peers) {
       const parsed = parseCidr(entry);
@@ -298,8 +318,8 @@ export function readTrustPolicy(trustedProxy) {
     }
   }
 
-  const hops = Number.isInteger(trustedProxy.hops) ? trustedProxy.hops : null;
-  const predicate = typeof trustedProxy.isTrusted === 'function' ? trustedProxy.isTrusted : null;
+  const hops = has('hops') ? trustedProxy.hops : null;
+  const predicate = has('isTrusted') ? trustedProxy.isTrusted : null;
 
   if (cidrs.length === 0 && hops === null && predicate === null) return null;
 
@@ -329,7 +349,12 @@ function isTrustedPeer(policy, value) {
 
 /** The forwarded chain, in wire order (client-most first), with only real addresses kept. */
 function chainFrom(headers, header) {
-  const raw = headers?.[header];
+  // Own property only. A header inherited through the prototype chain was not sent with this request, so
+  // prototype pollution elsewhere in an application must not be able to supply an attributed client
+  // address.
+  if (headers === null || typeof headers !== 'object' || !Object.hasOwn(headers, header)) return [];
+
+  const raw = headers[header];
   const value = Array.isArray(raw) ? raw.join(',') : raw;
   if (typeof value !== 'string' || value.trim() === '') return [];
 

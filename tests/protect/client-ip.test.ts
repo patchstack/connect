@@ -469,3 +469,87 @@ describe('an IPv6 zone identifies an interface, so it is kept or refused', () =>
     expect(isIpAddress(value)).toBe(false);
   });
 });
+
+describe('a policy is read from its own properties only', () => {
+  it.each([
+    ['a misspelled field', { peers: ['10.0.0.0/8'], heder: 'x-real-ip' }],
+    ['an unrelated field', { peers: ['10.0.0.0/8'], trustProxy: true }],
+    ['a plausible-looking extra', { peers: ['10.0.0.0/8'], trustedHops: 2 }],
+  ])('rejects %s rather than ignoring it', (_label, config) => {
+    // An unrecognised key is a typo, not an extension. Ignoring it uses the default header while the
+    // operator believes they configured another — the quiet substitution this function exists to avoid.
+    expect(readTrustPolicy(config as never)).toBeNull();
+  });
+
+  it('does not read a field inherited through the prototype chain', () => {
+    // An inherited value was not written by whoever configured this object. It is ignored, so the policy
+    // falls back to the default header rather than adopting one from the prototype.
+    const config = Object.assign(Object.create({ header: 'x-real-ip' }), { peers: ['10.0.0.0/8'] });
+    const policy = readTrustPolicy(config);
+
+    expect(policy).not.toBeNull();
+    expect(policy?.header, 'the inherited header must not be adopted').toBe('x-forwarded-for');
+  });
+
+  it.each([
+    ['hops', { hops: 1 }],
+    ['isTrusted', { isTrusted: () => true }],
+    ['peers', { peers: ['10.0.0.0/8'] }],
+  ])('does not let an inherited %s be the whole policy', (_field, proto) => {
+    // With nothing of its own, the object declares no policy at all.
+    expect(readTrustPolicy(Object.create(proto))).toBeNull();
+  });
+});
+
+describe('a forwarded header must be sent with the request', () => {
+  it('ignores a header inherited through the prototype chain', () => {
+    // Prototype pollution elsewhere in an application must not be able to supply an attributed client
+    // address. The peer is what the transport observed, so it stands.
+    const headers = Object.create({ 'x-forwarded-for': CLIENT });
+    const resolved = resolveClientIp({ peer: PROXY, headers, trustedProxy: POLICY });
+
+    expect(resolved).toEqual({ ip: PROXY, source: 'runtime' });
+  });
+
+  it('still reads a header the request actually carried', () => {
+    // The positive control: a check that rejected every header would satisfy the case above.
+    const headers = Object.assign(Object.create({ 'x-forwarded-for': '203.0.113.99' }), {
+      'x-forwarded-for': CLIENT,
+    });
+    const resolved = resolveClientIp({ peer: PROXY, headers, trustedProxy: POLICY });
+
+    expect(resolved).toEqual({ ip: CLIENT, source: 'trusted-proxy' });
+  });
+});
+
+describe('a zone identifier follows a conservative grammar', () => {
+  it.each(['eth0', 'en0', 'lo', '2', '15', 'eth0.100', 'br-abc123', 'wlan_0'])('accepts %s', (zone) => {
+    expect(isIpAddress(`fe80::1%${zone}`)).toBe(true);
+  });
+
+  it.each([
+    ['a newline', 'bad\nzone'],
+    ['a space', 'a b'],
+    ['a path traversal', '../etc'],
+    ['a slash', 'eth0/1'],
+    ['brackets', 'zone[0]'],
+    ['non-ASCII', 'ünïcode'],
+    ['a quote', "zone'"],
+    ['a semicolon', 'zone;drop'],
+  ])('rejects %s in a zone', (_label, zone) => {
+    // A zone reaches logs and retained event payloads, so anything outside the forms real runtimes
+    // produce is a malformed address rather than an address with decoration.
+    expect(isIpAddress(`fe80::1%${zone}`)).toBe(false);
+  });
+
+  it('rejects a zone longer than the grammar allows', () => {
+    expect(isIpAddress(`fe80::1%${'a'.repeat(65)}`)).toBe(false);
+    expect(isIpAddress(`fe80::1%${'a'.repeat(64)}`)).toBe(true);
+  });
+
+  it('never reports an address carrying a rejected zone', () => {
+    const resolved = resolveClientIp({ peer: 'fe80::1%bad zone' });
+
+    expect(resolved).toEqual({ ip: null, source: 'unavailable' });
+  });
+});
