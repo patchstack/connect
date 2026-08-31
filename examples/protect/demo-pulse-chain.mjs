@@ -7,12 +7,14 @@
 // refresh, no redeploy). The exploit is a REAL unmodified vulnerable dependency
 // (lodash@4.17.11, CVE-2019-10744). Public CVE + demo rule only; no tokens/secrets.
 //
-//   cd examples/protect && npm install && node demo-pulse-chain.mjs
+//   npm install && npm run build   (repo root), then cd examples/protect && npm run setup && node demo-pulse-chain.mjs
 import { createServer } from 'node:http';
-import _ from 'lodash';
-import { createProtection } from '../../src/protect/runtime.js';
+import { DEMO_TARGET, loadRuntime, requireDemoTarget } from './demo-target.mjs';
 
-const LODASH = _.VERSION; // 4.17.11 (vulnerable; fixed in 4.17.12)
+const { createProtection } = await loadRuntime();
+
+const _ = await requireDemoTarget();
+const LODASH = DEMO_TARGET.version;
 const SITE_UUID = '00000000-demo-4pul-se00-000000000001';
 
 let ok = true;
