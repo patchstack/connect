@@ -3,10 +3,8 @@
   "private": true,
   "type": "module",
   "description": "End-to-end demo for @patchstack/connect/protect (public CVE, demo rules only)",
-  "dependencies": {
-    "lodash": "4.17.11"
-  },
   "scripts": {
+    "setup": "node setup.mjs",
     "demo": "node demo.mjs",
     "demo:pulse": "node demo-pulse-chain.mjs",
     "gallery": "node gallery.mjs"

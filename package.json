@@ -70,6 +70,7 @@
     "test": "vitest run",
     "test:consumers": "node scripts/compat-matrix.mjs",
     "test:bundled": "node scripts/bundled-consumer.mjs",
+    "test:demos": "npm run build && node scripts/run-demos.mjs",
     "audit:side-effects": "npm run build && node scripts/side-effect-audit.mjs --selftest && node scripts/side-effect-audit.mjs",
     "test:manifest": "bun scripts/test-manifest.ts",
     "test:watch": "vitest",
@@ -96,6 +97,9 @@
     "typescript": "^5.4.0",
     "vitest": "^3.0.0",
     "yaml": "^2.9.0"
+  },
+  "overrides": {
+    "esbuild": "^0.28.1"
   },
   "repository": {
     "type": "git",

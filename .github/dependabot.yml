@@ -1,0 +1,34 @@
+# Update pull requests for this package, and nothing else.
+#
+# This file selects which manifests Dependabot opens UPDATE pull requests for. It does not select which
+# manifests produce security ALERTS — those follow the dependency graph — so keeping an intentionally
+# vulnerable package out of the graph is what keeps the alerts meaningful. `examples/protect/` does that
+# by installing its demo target on demand instead of declaring it.
+#
+# Root only: this package has no runtime dependencies, so everything Dependabot can usefully maintain is a
+# devDependency at the root.
+version: 2
+
+updates:
+  - package-ecosystem: npm
+    directory: /
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5
+    # Grouped: a week of separate devDependency bumps is a week of separate CI runs and separate reviews
+    # for changes that are only meaningful together.
+    groups:
+      dev-dependencies:
+        patterns:
+          - "*"
+        update-types:
+          - minor
+          - patch
+
+  # The workflows are part of the release path. A pinned action going stale is a supply-chain surface of
+  # its own, and nothing else in this repository watches it.
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 3

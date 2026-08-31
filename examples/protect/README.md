@@ -4,12 +4,20 @@ Shows the full **Verified Vulnerability Shielding** loop against a **real, unmod
 vulnerable dependency** — no mocks of the vulnerability itself.
 
 ```bash
+# From the repository root: the demos load the built runtime, which is what an application loads.
+npm install
+npm run build
+
 cd examples/protect
-npm install      # pulls the real vulnerable lodash@4.17.11 (CVE-2019-10744)
+npm run setup    # installs lodash@4.17.11 (CVE-2019-10744), the vulnerable target
 npm run demo
 ```
 
 Expected: all six steps ✓.
+
+The vulnerable target is installed by `npm run setup` rather than declared as a dependency of this
+example, so that a knowingly vulnerable package stays out of the repository's dependency graph. The
+version lives in `demo-target.mjs`; the demos refuse to run against any other.
 
 ## What it demonstrates
 
@@ -53,11 +61,15 @@ is what the observed→enforced auto-promote flow builds on. Guarded in CI by
 ## Vulnerability gallery (demo-env showcase)
 
 For demonstrating **many** vulnerability classes at once (not one deep CVE proof), there's a
-comprehensive demo rule set and a gallery runner — no vulnerable dependency required, so it runs
-anywhere with zero install:
+comprehensive demo rule set and a gallery runner. It needs no vulnerable dependency — so once the
+repository is built, `npm run setup` is not required for this one:
 
 ```bash
-node gallery.mjs          # or: npm run gallery
+# From the repository root, if you have not built yet:
+npm install && npm run build
+
+cd examples/protect
+npm run gallery           # or: node gallery.mjs
 ```
 
 It loads [`demo-rules.json`](./demo-rules.json) and shows, one row per rule, that the exploit is
