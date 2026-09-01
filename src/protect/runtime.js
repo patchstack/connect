@@ -97,24 +97,18 @@ export async function createProtection(options = {}) {
   let detections = null;
 
   /**
-   * A rule a callback can hold without reaching the policy in force.
+   * The rule as a callback sees it: its identity, and nothing that carries policy.
    *
-   * The rule handed to `onDetect` is the object the engine is matching against, and its interesting parts
-   * are nested: `rule_v2`, `when`, and the match and action objects inside them. A shallow copy shares all
-   * of those, so a callback can rewrite a match value and change what every later request through this
-   * guard is screened for.
+   * `onDetect` documents `rule` as `{ id, category }`, and that is what this returns. The rule the engine
+   * matches with IS the policy in force, and enforcement lives in its nested parts — `rule_v2`, `when`,
+   * and the match and action objects inside them — so handing out the object, or any copy that still
+   * shares them, lets a callback change what every later request through this guard is screened for.
    *
-   * A deep clone breaks that link. Where a rule cannot be cloned — anything a structured clone refuses —
-   * the fields consumers read are projected instead, because passing the live object would be worse than
-   * passing less of it.
+   * Projected rather than cloned because this runs on every detection, which an attacker can drive. A
+   * deep clone would allocate the whole rule per detection to hand back fields the contract does not
+   * promise. The internal reporters keep reading the real rule; only the callback's view is narrowed.
    */
-  const isolateRule = (rule) => {
-    try {
-      return structuredClone(rule);
-    } catch {
-      return { id: rule?.id, category: rule?.category };
-    }
-  };
+  const ruleIdentity = (rule) => ({ id: rule?.id, category: rule?.category });
 
   const onDetect = (detection) => {
     // What the platform is told is the engine's account of the request, and a host callback cannot change
@@ -136,7 +130,7 @@ export async function createProtection(options = {}) {
       });
     }
 
-    notify(userOnDetect, { ...detection, ...(detection?.rule ? { rule: isolateRule(detection.rule) } : {}) }, 'onDetect');
+    notify(userOnDetect, { ...detection, ...(detection?.rule ? { rule: ruleIdentity(detection.rule) } : {}) }, 'onDetect');
   };
 
   // One tiered store (memory → filesystem/pluggable) shared by the initial load and every refresh.
@@ -516,7 +510,12 @@ export async function createProtection(options = {}) {
         // otherwise reconstructs raw by re-serialising the parsed body — which cannot carry what parsing
         // did not keep: a body that failed to parse at all, a duplicate key where only the last value
         // survives, or the exact bytes a signature was written against.
-        _rawBody: req?._rawBody,
+        //
+        // Own property only. Evidence is what this request actually carried: a value reachable through a
+        // polluted prototype is not, and materialising it here would turn it into evidence indistinguish-
+        // able from real bytes — firing every raw rule that matches it. The adapters that capture real
+        // bytes define `_rawBody` on the request object itself.
+        ...(Object.hasOwn(req ?? {}, '_rawBody') ? { _rawBody: req._rawBody } : {}),
         // The resolved address, and the resolution itself for the consumers downstream.
         ip: client.ip ?? '',
         _clientIp: client,

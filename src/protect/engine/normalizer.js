@@ -206,7 +206,10 @@ export function normalizeRequest(req, options = {}) {
     // it preserves literal keys like `__proto__` that JSON.stringify drops, which is
     // what makes prototype-pollution rules on `raw` robust. Fall back to a
     // reconstruction from the parsed body (the Express path, which has no raw text).
-    const rawBody = typeof req._rawBody === 'string'
+    // Own property only: a `_rawBody` reachable through a polluted prototype is not something this
+    // request carried, and accepting it here would let it stand as verbatim evidence on every path.
+    const ownRaw = Object.hasOwn(req ?? {}, '_rawBody') && typeof req._rawBody === 'string';
+    const rawBody = ownRaw
         ? req._rawBody
         : serializeForRawDetection(req.body ?? null);
 

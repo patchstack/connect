@@ -189,6 +189,27 @@ empty, so a missing address cannot read as a failed lookup of a real one. A forw
 trusted implicitly: with no `trustedProxy` policy the address is whatever the transport observed, and in a
 runtime that exposes no transport peer there is no address to report at all.
 
+### Behaviour change: how the client address is determined
+
+The guard resolves the client address itself, once per request, and shares that one answer with rule
+matching, block logging and detection reports — so those cannot disagree about who a request came from.
+Two consequences if you are upgrading:
+
+- **Express: `req.ip` is no longer consulted.** It reflects Express's own `trust proxy` setting, which the
+  guard cannot verify, so the guard reads the transport peer instead. **If your app runs behind a proxy or
+  load balancer, addresses will now show as the proxy's** until you declare your proxies with
+  `trustedProxy` (below). Rules matching on `server.ip` or `REMOTE_ADDR` see the same value.
+- **Runtimes with no transport peer report no address.** A WHATWG `Request` exposes no peer, so a Fetch
+  guard (Workers, Deno, Bun, edge) has nothing to observe and no forwarded header is accepted in its
+  place: `client_ip_source` is `unavailable` and no address is sent. The Node and Express guards read the
+  socket peer and are unaffected.
+
+`trustedProxy` is the only way to make a forwarded header count. It takes the proxies you actually run —
+`{ peers: ['10.0.0.0/8'] }`, or `{ hops: 1 }` to trust that many hops in from the peer, plus optional
+`header` and `isTrusted` — and the chain is then read from your application inward, stopping at the first
+hop you have not declared. There are no built-in provider presets: a header a provider sets is
+indistinguishable from one a client sent unless you say which peers may set it.
+
 The parameter names are **identifiers, and they name the request region they refer to** — `post.title`,
 `get.redirect_to`, `cookie.session`, `server.HTTP_AUTHORIZATION`. So a rule that inspects a cookie or an
 `Authorization` header sends that cookie's or header's **name**. They are read from the rule's own
