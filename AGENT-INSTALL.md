@@ -197,12 +197,15 @@ after the server has already taken a batch. One request is in flight at a time, 
 the queue rather than opening more sockets; each attempt is abandoned after 10 seconds, so a request that
 never settles cannot hold that slot; and a batch that exhausts its attempts is dropped and counted rather
 than retried forever. Stopping a guard makes one last attempt at whatever is outstanding and counts
-anything it could not send. `stop()` returns a promise that settles once every buffer it reaches is
-finished with, so a shutdown handler can `await protection.stop()` instead of racing the last batch
-against process exit. It is bounded: if the wait runs out first, the drain is ended rather than left
-running, so nothing is still outstanding when it resolves. Still best-effort, since a runtime that
-terminates the process regardless still wins. Detection events are delivered or else counted; block-log
-records only have their outstanding attempts completed, since that path keeps no counters.
+anything it could not send. `stop()` returns a promise that settles once the reporters have finished or
+been given up on, so a shutdown handler can `await protection.stop()` instead of racing the last batch
+against process exit. Each reporter has its own budget, and when it runs out that reporter is ended: its
+requests are aborted, it starts nothing further, and it discards what it was holding. An abort is a
+request to stop, not a guarantee — a transport that ignores it is detached rather than completed, so
+"resolved" means the reporter is finished with it, and a runtime that kills the process still wins
+regardless. Every detection event ends up delivered, refused or dropped and is reported in the health
+counts; block-log records have no counters, so one lost to a failed send or an expired shutdown is
+reported nowhere.
 
 The client address is reported with its **provenance**, because an address is only as trustworthy as
 whatever supplied it. `client_ip_source` is one of `runtime` (the address the transport observed),

@@ -277,6 +277,96 @@ describe('stopping the block log waits for what is outstanding, and is bounded',
     expect(firstDone && secondDone).toBe(true);
   });
 
+  it.each([
+    ['the token exchange', 'token'],
+    ['the log post', 'post'],
+  ])('aborts %s of a send that started before the shutdown did', async (_what, phase) => {
+    vi.useFakeTimers();
+    // The sends worth ending have already started by the time a shutdown begins, so a signal created at
+    // that point reaches none of them. This starts the flush FIRST, which is the case the tracking set
+    // was added for in the first place.
+    const aborted: string[] = [];
+    const impl = vi.fn((url: string, init?: RequestInit) => {
+      const isToken = String(url).includes('/oauth/token');
+      if (isToken && phase === 'post') {
+        return Promise.resolve(
+          new Response(JSON.stringify({ access_token: 'jwt', expires_in: 3600 }), {
+            status: 200,
+            headers: { 'Content-Type': 'application/json' },
+          }),
+        );
+      }
+
+      return new Promise<Response>(() => {
+        init?.signal?.addEventListener('abort', () => { aborted.push(isToken ? 'token' : 'post'); });
+      });
+    });
+    const r: any = reporter(impl);
+
+    record(r);
+    r.flush();
+    await vi.advanceTimersByTimeAsync(1);
+    expect(impl.mock.calls.length, 'the send is already running').toBeGreaterThan(0);
+
+    let settled = false;
+    void r.stop().then(() => { settled = true; });
+    await vi.advanceTimersByTimeAsync(5_000);
+    await vi.advanceTimersByTimeAsync(1);
+
+    expect(settled, 'the wait is bounded').toBe(true);
+    expect(aborted, `${phase} was let go of`).toContain(phase);
+  });
+
+  it('runs nothing more once the shutdown has given up', async () => {
+    vi.useFakeTimers();
+    let releaseToken: ((r: Response) => void) | null = null;
+    const impl = vi.fn((url: string) => {
+      if (String(url).includes('/oauth/token')) {
+        if (releaseToken) {
+          return Promise.resolve(
+            new Response(JSON.stringify({ access_token: 'jwt', expires_in: 3600 }), {
+              status: 200,
+              headers: { 'Content-Type': 'application/json' },
+            }),
+          );
+        }
+
+        return new Promise<Response>((resolve) => { releaseToken = resolve; });
+      }
+
+      return Promise.resolve(new Response('{}', { status: 200 }));
+    });
+    // A long interval, so records stay in the queue instead of being swept into sends: the case here
+    // needs BOTH a send that is stuck and records still waiting behind it.
+    const r: any = reporter(impl, { flushMs: 60_000 });
+
+    record(r, 50); // reaches the batch bound and starts a send, which hangs on the token exchange
+    await vi.advanceTimersByTimeAsync(1);
+    record(r, 20); // and these stay queued
+    expect(impl.mock.calls.length, 'one send is stuck').toBe(1);
+
+    const done = r.stop();
+    await vi.advanceTimersByTimeAsync(5_000);
+    await done;
+    const callsAtBudget = impl.mock.calls.length;
+
+    // The transport answers after the shutdown reported itself finished. Ending the WAIT but leaving the
+    // work alive would let the drain resume here and post the twenty records still queued behind it.
+    releaseToken?.(
+      new Response(JSON.stringify({ access_token: 'jwt', expires_in: 3600 }), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      }),
+    );
+    await vi.advanceTimersByTimeAsync(1_000);
+
+    expect(impl.mock.calls.length, 'nothing ran after the shutdown finished').toBe(callsAtBudget);
+    // And a later flush cannot restart it either.
+    r.flush();
+    await vi.advanceTimersByTimeAsync(1_000);
+    expect(impl.mock.calls.length).toBe(callsAtBudget);
+  });
+
   it('gives up on a transport that never answers, and lets go of both phases', async () => {
     vi.useFakeTimers();
     const aborted: string[] = [];

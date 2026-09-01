@@ -50,16 +50,21 @@ export interface Protection {
   /**
    * Stop everything holding a timer or a buffer.
    *
-   * Resolves once every buffer this reaches is finished with — the detection reporter and the block log —
-   * so a shutdown handler can await it instead of racing process exit. Bounded: each has its own budget,
-   * and when one elapses that drain is ENDED rather than merely stopped being waited for, so nothing is
-   * left outstanding when this resolves. Still best-effort, because a runtime that terminates the process
-   * regardless still wins. Ignoring the promise behaves as it always has.
+   * Resolves once the reporters this reaches — the detection reporter and the block log — have finished
+   * or been given up on, so a shutdown handler can await it instead of racing process exit. Each has its
+   * own budget, and when one elapses that reporter is ENDED: its requests are aborted, it starts nothing
+   * further, and it discards what it was holding. Ignoring the promise behaves as it always has.
    *
-   * What "finished with" means differs by reporter. Detection events are delivered or else counted, and
-   * `detectionHealth()` accounts for every one. Block-log records only have their outstanding attempts
-   * completed: that path keeps no counters, so a record lost to a failed token exchange or post is not
-   * reported anywhere.
+   * Two limits are worth knowing, because neither can be promised away:
+   *
+   * - A request is aborted, not guaranteed to stop. A transport that ignores its abort signal is
+   *   DETACHED — this stops waiting on it and stops acting on its result — so "resolved" means the
+   *   reporter is finished with it, not that the underlying request has ended.
+   * - A runtime that terminates the process regardless still wins, whatever this resolves.
+   *
+   * What is accounted for also differs by reporter. Every detection event ends up delivered, refused or
+   * dropped, and `detectionHealth()` reports each. Block-log records have no counters at all, so one lost
+   * to a failed token exchange, a failed post, or a shutdown that ran out of time is reported nowhere.
    */
   stop: () => Promise<void>;
   /** Alias of `stop`, under the name callers already have. */

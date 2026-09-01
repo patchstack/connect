@@ -99,8 +99,17 @@ export function createFirewallLogReporter(opts) {
   const outstanding = new Set();
   /** @type {Promise<void> | null} */
   let drainPromise = null;
-  /** Aborts both phases of every open send once the shutdown budget is spent. */
-  let shutdown = null;
+  /**
+   * One controller for every request this reporter makes, for its whole life.
+   *
+   * Not created at shutdown: by then the sends worth ending have already started, and a signal handed
+   * out afterwards reaches none of them. Not one per send either, because the token exchange is SHARED —
+   * a second send awaits the first send's exchange, so a signal belonging to the second would not reach
+   * the request it is waiting on.
+   */
+  const lifetime = typeof AbortController === 'function' ? new AbortController() : null;
+  /** Set when a shutdown gives up waiting: nothing may start, continue, or be retained after it. */
+  let ended = false;
 
   /** @type {{ token: string, expiresAt: number } | null} */
   let cachedToken = null;
@@ -152,7 +161,7 @@ export function createFirewallLogReporter(opts) {
       clearTimeout(timer);
       timer = null;
     }
-    if (queue.length === 0 || typeof fetchImpl !== 'function') return Promise.resolve();
+    if (ended || queue.length === 0 || typeof fetchImpl !== 'function') return Promise.resolve();
 
     const batch = queue.splice(0, MAX_BATCH);
 
@@ -162,8 +171,9 @@ export function createFirewallLogReporter(opts) {
     // whether it succeeded.
     const send = (async () => {
       try {
-        const token = await fetchAccessToken(shutdown?.signal);
-        if (!token) return;
+        const token = await fetchAccessToken(lifetime?.signal);
+        // Not after a shutdown gave up: it has already reported itself finished.
+        if (!token || ended) return;
 
         const body = new URLSearchParams();
         body.set('type', 'firewall');
@@ -180,7 +190,7 @@ export function createFirewallLogReporter(opts) {
           },
           body,
           // Both phases carry it, so a shutdown that runs out of time can end either one.
-          ...(shutdown ? { signal: shutdown.signal } : {}),
+          ...(lifetime ? { signal: lifetime.signal } : {}),
         });
         if (p && typeof p.then === 'function') await p.catch(() => {});
       } catch {
@@ -238,19 +248,29 @@ export function createFirewallLogReporter(opts) {
       if (drainPromise) return drainPromise;
       stopped = true;
 
-      const controller = typeof AbortController === 'function' ? new AbortController() : null;
-      shutdown = controller;
+      /**
+       * End the drain, rather than merely stop waiting for it.
+       *
+       * Racing the wait against a timer would leave the work alive: still blocked, still holding its
+       * entry, and free to run another flush if the transport answered later — after the shutdown had
+       * reported itself finished. So the reporter is marked ended, which closes `flush` and the loop
+       * below, the open requests are aborted, and what was never sent is discarded rather than retained
+       * by a reporter nobody will read again.
+       */
+      const terminate = () => {
+        ended = true;
+        lifetime?.abort();
+        queue = [];
+        outstanding.clear();
+      };
 
       /** @type {ReturnType<typeof setTimeout> | null} */
       let budget = null;
       // Bounded like the detection reporter's, and for the same reason: a hung transport would otherwise
       // keep a shutdown pending for as long as the process lived, which is not a bounded shutdown.
-      //
-      // The budget both aborts and DETACHES. Aborting alone would still leave the wait depending on the
-      // transport to honour it, and one that does not would hang the shutdown exactly as before.
       const spent = new Promise((resolve) => {
         budget = setTimeout(() => {
-          controller?.abort();
+          terminate();
           resolve();
         }, STOP_BUDGET_MS);
         if (typeof budget.unref === 'function') budget.unref();
@@ -261,7 +281,7 @@ export function createFirewallLogReporter(opts) {
         // it, then the queue itself a batch at a time. The loop stops as soon as a pass cannot shrink the
         // queue — with no usable transport there is nothing to wait for, and spinning would be worse.
         await Promise.all([...outstanding]);
-        while (queue.length > 0) {
+        while (!ended && queue.length > 0) {
           const before = queue.length;
           await flush();
           if (queue.length >= before) break;
