@@ -878,10 +878,26 @@ describe('request evidence comes from the request, not from a polluted prototype
     }
   });
 
-  it('still screens fields a framework supplies through its own prototype', async () => {
-    // The gate is the SUPPLIER, not ownership, and this is why. `headers` is a getter on
-    // `IncomingMessage.prototype`, and Express defines `query` the same way, so requiring an own property
-    // would leave real requests unscreened on exactly the sources rules read most.
+  /** A request whose named fields come from a prototype, the way `req` really reaches an Express guard. */
+  const inheriting = (proto: object, own: Record<string, unknown> = {}) => {
+    const req: any = Object.create(proto);
+    Object.assign(req, {
+      method: 'POST',
+      url: '/upload',
+      originalUrl: '/upload',
+      cookies: {},
+      files: {},
+      socket: { remoteAddress: '203.0.113.5' },
+      readableEnded: true,
+      ...own,
+    });
+
+    return req;
+  };
+
+  it('still screens headers a framework supplies through an inherited getter', async () => {
+    // `headers` is a getter on `IncomingMessage.prototype`, so requiring an own property here would leave
+    // real requests unscreened on the source rules read most.
     const p: any = await createProtection({
       rules: {
         firewall: [
@@ -889,7 +905,10 @@ describe('request evidence comes from the request, not from a polluted prototype
             id: 'ua-rule',
             title: 'reads a request header',
             rule_v2: [
-              { parameter: 'server.HTTP_USER_AGENT', match: { type: 'contains', value: 'scanner-payload' } },
+              {
+                parameter: 'server.HTTP_USER_AGENT',
+                match: { type: 'contains', value: 'scanner-payload' },
+              },
             ],
           },
         ],
@@ -899,27 +918,125 @@ describe('request evidence comes from the request, not from a polluted prototype
       mode: 'block',
     });
 
-    // A request shaped the way Node and Express really shape one.
-    const framework = {
-      get headers() {
-        return { 'user-agent': 'scanner-payload', 'content-type': 'application/json' };
+    const req = inheriting(
+      {
+        get headers() {
+          return { 'user-agent': 'scanner-payload', 'content-type': 'application/json' };
+        },
       },
-    };
-    const req: any = Object.create(framework);
-    Object.assign(req, {
-      method: 'POST',
-      url: '/upload',
-      originalUrl: '/upload',
-      query: {},
-      body: {},
-      cookies: {},
-      files: {},
-      socket: { remoteAddress: '203.0.113.5' },
-      readableEnded: true,
-    });
+      { query: {}, body: {} },
+    );
 
     expect(Object.hasOwn(req, 'headers'), 'the headers are inherited, as they really are').toBe(false);
     expect(await throughExpress(p, req), 'a header rule still screens them').toBe(403);
+    p.stop();
+  });
+
+  it('still screens a query string Express supplies through an inherited getter', async () => {
+    // Express defines `query` on its request prototype, so this needs its own test: a failure on the
+    // header case above would otherwise hide a query string that stopped being screened.
+    const p: any = await createProtection({ rules: bodyRules, mode: 'block' });
+
+    const req = inheriting(
+      {
+        get query() {
+          return { marker: 'inherited-evidence' };
+        },
+      },
+      { headers: { 'content-type': 'application/json' }, body: {} },
+    );
+
+    expect(Object.hasOwn(req, 'query'), 'the query is inherited, as Express supplies it').toBe(false);
+    expect(await throughExpress(p, req), 'a get rule still screens it').toBe(403);
+    p.stop();
+  });
+
+  it('refuses a value parked on an intermediate prototype, accessor or not', async () => {
+    // The inverse control. `Object.prototype` is not the only writable prototype, so refusing only that
+    // one would accept anything installed closer to the request — which is a value the request did not
+    // carry, arriving as evidence. A framework supplies request data as an own property or a getter; a
+    // data property on a prototype is neither.
+    const p: any = await createProtection({ rules: bodyRules, mode: 'block' });
+
+    const req = inheriting({
+      body: { marker: 'inherited-evidence' },
+      query: { marker: 'inherited-evidence' },
+      headers: { 'content-type': 'application/json', 'x-marker': 'inherited-evidence' },
+    });
+
+    expect((req as any).body, 'the chain does offer a body').toEqual({ marker: 'inherited-evidence' });
+    expect(await throughExpress(p, req), 'no rule sees any of it').toBeNull();
+
+    // And at the funnel, for each field: an inherited data property is refused even where an inherited
+    // getter would be honoured.
+    const normalized = normalizeRequest(
+      Object.create({
+        body: { marker: 'inherited-evidence' },
+        query: { marker: 'inherited-evidence' },
+        headers: { 'x-marker': 'inherited-evidence' },
+        url: '/x?p=inherited-evidence',
+      }) as never,
+    );
+
+    expect(JSON.stringify(normalized), 'nothing inherited became evidence').not.toContain(
+      'inherited-evidence',
+    );
+    p.stop();
+  });
+
+  it('refuses an accessor installed on Object.prototype, even for an allowed field', async () => {
+    // The inherited-accessor exception must not extend to `Object.prototype`. Pollution can define a
+    // GETTER there, not only a value, and that would otherwise arrive through the one door left open —
+    // for `headers` and `query`, the two fields the exception exists for.
+    const p: any = await createProtection({ rules: bodyRules, mode: 'block' });
+
+    for (const field of ['query', 'headers'] as const) {
+      Object.defineProperty(Object.prototype, field, {
+        get() {
+          return field === 'headers'
+            ? { 'content-type': 'application/json', 'x-marker': 'inherited-evidence' }
+            : { marker: 'inherited-evidence' };
+        },
+        configurable: true,
+      });
+      try {
+        const req: any = inheriting({}, { body: {} });
+        delete req[field];
+
+        expect(Object.hasOwn(req, field), `the request has no own ${field}`).toBe(false);
+        expect((req as any)[field], 'the polluted accessor does supply one').toBeTruthy();
+        expect(await throughExpress(p, req), `a rule reading ${field} does not see it`).toBeNull();
+
+        const normalized = normalizeRequest({} as never);
+
+        expect(JSON.stringify(normalized), `${field} did not become evidence`).not.toContain(
+          'inherited-evidence',
+        );
+      } finally {
+        delete (Object.prototype as any)[field];
+      }
+    }
+    p.stop();
+  });
+
+  it('refuses an inherited getter for a field no framework supplies that way', async () => {
+    // The exception is per field, not general: a getter installed for `body` is not how any supported
+    // framework delivers a parsed body, so it is refused like any other inherited value.
+    const p: any = await createProtection({ rules: bodyRules, mode: 'block' });
+
+    const req = inheriting(
+      {
+        get body() {
+          return { marker: 'inherited-evidence' };
+        },
+      },
+      { headers: { 'content-type': 'application/json' }, query: {} },
+    );
+
+    expect((req as any).body, 'the getter does supply one').toEqual({
+      marker: 'inherited-evidence',
+    });
+    expect(await throughExpress(p, req), 'a raw or post rule does not see it').toBeNull();
     p.stop();
   });
 });

@@ -201,33 +201,44 @@ function serializeForRawDetection(body, visited = new Set(), isRoot = true) {
     return '{' + parts.join(',') + '}';
 }
 
+// The only fields a supported framework supplies through an inherited accessor: `headers` is a getter on
+// `IncomingMessage.prototype`, and Express defines `query` on its request prototype. Every other field
+// arrives as an own property — body parsers, cookie parsers and upload middleware all assign one, and the
+// Node and Fetch adapters build their request shape as a literal.
+const INHERITED_ACCESSORS = new Set(['headers', 'query']);
+
 /**
- * A request field, unless `Object.prototype` is the only thing supplying it.
+ * A request field, taken only from the request itself.
  *
- * Evidence is what a request actually carried. A prototype-pollution primitive writes to
- * `Object.prototype`, so a field found there was carried by nothing — and materialising it would let one
- * pollution stand as request data and fire every rule that matches it.
+ * Evidence is what a request actually carried. A value reachable only through a prototype was carried by
+ * nothing, and materialising it would let one write stand as request data and fire every rule that
+ * matches it — arriving indistinguishable from a real body, query or header.
  *
- * The gate is the SUPPLIER, not ownership. Frameworks expose real request data through getters on their
- * own prototypes: `headers` is a getter on `IncomingMessage.prototype`, and Express defines `query` on its
- * request prototype. Requiring an own property would discard those and silently stop screening headers and
- * query strings — a worse failure than the pollution it prevents. So the chain is walked to whichever
- * object defines the key, and only `Object.prototype` is refused.
+ * An own property is evidence. Everything inherited is refused, with one exception: a getter on a
+ * prototype, for the two fields above. That exception exists because requiring an own property would
+ * discard how Node and Express really expose headers and the query string, and silently stop screening
+ * the sources rules read most — a worse failure than the pollution it prevents.
  *
- * Fields our own adapters create (`_rawBody`) are held to the stricter own-property rule instead: we
- * control every writer, so there is no getter to accommodate.
+ * The exception is deliberately narrow in both directions. An inherited DATA property is refused however
+ * it arrives, because a framework does not install request data that way and a write to a prototype does;
+ * and `Object.prototype` is refused even for an accessor, because that is where a pollution primitive
+ * lands.
  */
 export function requestField(req, key) {
     if (req === null || typeof req !== 'object') return undefined;
-    let holder = req;
-    while (holder !== null && holder !== undefined) {
-        if (Object.hasOwn(holder, key)) {
-            // Read through `req` so a legitimate accessor still runs with the right receiver.
-            return holder === Object.prototype ? undefined : req[key];
-        }
-        holder = Object.getPrototypeOf(holder);
-    }
-    return undefined;
+    if (Object.hasOwn(req, key)) return req[key];
+    if (!INHERITED_ACCESSORS.has(key)) return undefined;
+
+    let holder = Object.getPrototypeOf(req);
+    while (holder !== null && !Object.hasOwn(holder, key)) holder = Object.getPrototypeOf(holder);
+    if (holder === null || holder === Object.prototype) return undefined;
+
+    // An accessor, not a value parked on a prototype the request happens to inherit from.
+    const descriptor = Object.getOwnPropertyDescriptor(holder, key);
+    if (typeof descriptor?.get !== 'function') return undefined;
+
+    // Read through `req` so the accessor runs with the receiver it expects.
+    return req[key];
 }
 
 export function normalizeRequest(req, options = {}) {
