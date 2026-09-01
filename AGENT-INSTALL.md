@@ -195,14 +195,18 @@ The guard resolves the client address itself, once per request, and shares that 
 matching, block logging and detection reports — so those cannot disagree about who a request came from.
 Two consequences if you are upgrading:
 
-- **Express: `req.ip` is no longer consulted.** It reflects Express's own `trust proxy` setting, which the
-  guard cannot verify, so the guard reads the transport peer instead. **If your app runs behind a proxy or
-  load balancer, addresses will now show as the proxy's** until you declare your proxies with
-  `trustedProxy` (below). Rules matching on `server.ip` or `REMOTE_ADDR` see the same value.
-- **Runtimes with no transport peer report no address.** A WHATWG `Request` exposes no peer, so a Fetch
-  guard (Workers, Deno, Bun, edge) has nothing to observe and no forwarded header is accepted in its
-  place: `client_ip_source` is `unavailable` and no address is sent. The Node and Express guards read the
-  socket peer and are unaffected.
+- **Express and Node: forwarded headers are no longer read implicitly.** Earlier versions took the
+  address from `X-Forwarded-For`, `CF-Connecting-IP` or `X-Real-IP` (the Node guard), or from `req.ip`
+  (the Express guard, where it reflects Express's own `trust proxy` setting). Neither source can be
+  verified by the guard, and any client can send those headers, so both guards now read the transport
+  peer. **If your app runs behind a proxy or load balancer, addresses will now show as the proxy's**
+  until you declare your proxies with `trustedProxy` (below) — which affects attribution in reports and
+  any rule matching on `server.ip` or `REMOTE_ADDR`.
+- **Fetch runtimes report no address at all.** A WHATWG `Request` exposes no transport peer, so a Fetch
+  guard (Workers, Deno, Bun, edge) has nothing to observe, and no forwarded header is accepted in its
+  place under any `trustedProxy` policy: `client_ip_source` is `unavailable` and no address is sent.
+  Earlier versions reported the forwarded header here, so an address-scoped rule that appeared to work on
+  such a runtime was matching a client-supplied value.
 
 `trustedProxy` is the only way to make a forwarded header count. It takes the proxies you actually run —
 `{ peers: ['10.0.0.0/8'] }`, or `{ hops: 1 }` to trust that many hops in from the peer, plus optional

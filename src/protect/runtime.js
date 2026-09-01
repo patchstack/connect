@@ -18,6 +18,7 @@
 import { resolveClientIp } from './client-ip.js';
 import { RuleEngine } from './engine/index.js';
 import { matchValue, walkLeaves, safeRegExp, jwtClaimSpans } from './engine/engine.js';
+import { requestField } from './engine/normalizer.js';
 import { PulseRuleClient } from './engine/pulse-client.js';
 import { fromFetchRequest } from './engine/fetch.js';
 import { fromNodeRequest } from './engine/node.js';
@@ -497,15 +498,18 @@ export async function createProtection(options = {}) {
       shaped: {
         // Own copies of everything a rule can address. Listed rather than spread, so a field the engine
         // gains has to be added here deliberately instead of appearing to work by accident.
-        method: req?.method,
-        url: req?.url,
-        originalUrl: req?.originalUrl,
-        headers: req?.headers,
-        query: req?.query,
-        body: req?.body,
-        files: req?.files,
-        cookies: req?.cookies,
-        socket: req?.socket,
+        // Through the same gate as the engine's own normalisation: this projection turns whatever it reads
+        // into an OWN property, so reading a polluted prototype here would launder it into evidence that
+        // no later own-property check could tell from the real thing.
+        method: requestField(req, 'method'),
+        url: requestField(req, 'url'),
+        originalUrl: requestField(req, 'originalUrl'),
+        headers: requestField(req, 'headers'),
+        query: requestField(req, 'query'),
+        body: requestField(req, 'body'),
+        files: requestField(req, 'files'),
+        cookies: requestField(req, 'cookies'),
+        socket: requestField(req, 'socket'),
         // The verbatim body, when a caller kept one. A `raw` rule reads it directly, and the engine
         // otherwise reconstructs raw by re-serialising the parsed body — which cannot carry what parsing
         // did not keep: a body that failed to parse at all, a duplicate key where only the last value

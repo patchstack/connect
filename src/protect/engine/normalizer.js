@@ -201,6 +201,35 @@ function serializeForRawDetection(body, visited = new Set(), isRoot = true) {
     return '{' + parts.join(',') + '}';
 }
 
+/**
+ * A request field, unless `Object.prototype` is the only thing supplying it.
+ *
+ * Evidence is what a request actually carried. A prototype-pollution primitive writes to
+ * `Object.prototype`, so a field found there was carried by nothing — and materialising it would let one
+ * pollution stand as request data and fire every rule that matches it.
+ *
+ * The gate is the SUPPLIER, not ownership. Frameworks expose real request data through getters on their
+ * own prototypes: `headers` is a getter on `IncomingMessage.prototype`, and Express defines `query` on its
+ * request prototype. Requiring an own property would discard those and silently stop screening headers and
+ * query strings — a worse failure than the pollution it prevents. So the chain is walked to whichever
+ * object defines the key, and only `Object.prototype` is refused.
+ *
+ * Fields our own adapters create (`_rawBody`) are held to the stricter own-property rule instead: we
+ * control every writer, so there is no getter to accommodate.
+ */
+export function requestField(req, key) {
+    if (req === null || typeof req !== 'object') return undefined;
+    let holder = req;
+    while (holder !== null && holder !== undefined) {
+        if (Object.hasOwn(holder, key)) {
+            // Read through `req` so a legitimate accessor still runs with the right receiver.
+            return holder === Object.prototype ? undefined : req[key];
+        }
+        holder = Object.getPrototypeOf(holder);
+    }
+    return undefined;
+}
+
 export function normalizeRequest(req, options = {}) {
     // Prefer a caller-provided verbatim body string (set by the fetch/node adapters):
     // it preserves literal keys like `__proto__` that JSON.stringify drops, which is
@@ -209,16 +238,20 @@ export function normalizeRequest(req, options = {}) {
     // Own property only: a `_rawBody` reachable through a polluted prototype is not something this
     // request carried, and accepting it here would let it stand as verbatim evidence on every path.
     const ownRaw = Object.hasOwn(req ?? {}, '_rawBody') && typeof req._rawBody === 'string';
+    // Every field below comes through the same gate, because the reconstruction fallback reads the parsed
+    // body: gating `_rawBody` alone would leave a polluted `body` serialised into raw evidence anyway.
+    const body = requestField(req, 'body');
+    const url = requestField(req, 'url');
     const rawBody = ownRaw
         ? req._rawBody
-        : serializeForRawDetection(req.body ?? null);
+        : serializeForRawDetection(body ?? null);
 
     return {
-        query: normalizeObject(req.query || {}, options),
-        body: normalizeObject(req.body || {}, options),
-        headers: normalizeObject(req.headers || {}, options),
-        url: normalize(req.url || '', options),
-        originalUrl: normalize(req.originalUrl || req.url || '', options),
+        query: normalizeObject(requestField(req, 'query') || {}, options),
+        body: normalizeObject(body || {}, options),
+        headers: normalizeObject(requestField(req, 'headers') || {}, options),
+        url: normalize(url || '', options),
+        originalUrl: normalize(requestField(req, 'originalUrl') || url || '', options),
         _rawBody: rawBody
     };
 }

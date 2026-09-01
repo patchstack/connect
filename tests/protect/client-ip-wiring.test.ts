@@ -764,6 +764,166 @@ describe('the Express view carries evidence a reconstructed body cannot', () => 
   });
 });
 
+describe('request evidence comes from the request, not from a polluted prototype', () => {
+  const bodyRules = {
+    firewall: [
+      {
+        id: 'raw-marker',
+        title: 'reads the verbatim body',
+        rule_v2: [{ parameter: 'raw', match: { type: 'contains', value: 'inherited-evidence' } }],
+      },
+      {
+        id: 'post-marker',
+        title: 'reads a named field',
+        rule_v2: [{ parameter: 'post.marker', match: { type: 'contains', value: 'inherited-evidence' } }],
+      },
+      {
+        id: 'get-marker',
+        title: 'reads a query parameter',
+        rule_v2: [{ parameter: 'get.marker', match: { type: 'contains', value: 'inherited-evidence' } }],
+      },
+    ],
+    whitelists: [],
+    whitelist_keys: {},
+  };
+
+  it('fires on a body the request actually carried', async () => {
+    // The positive control for the two tests below: the same rules, the same payload, carried for real.
+    const p: any = await createProtection({ rules: bodyRules, mode: 'block' });
+
+    expect(
+      await throughExpress(p, expressReq({ body: { marker: 'inherited-evidence' } })),
+      'an own body is evidence',
+    ).toBe(403);
+    expect(
+      await throughExpress(p, expressReq({ query: { marker: 'inherited-evidence' } })),
+      'an own query is evidence',
+    ).toBe(403);
+    p.stop();
+  });
+
+  it('refuses a body only the prototype chain supplies', async () => {
+    // Gating `_rawBody` alone is not enough: the raw view falls back to serialising the PARSED body, so a
+    // polluted `body` becomes verbatim evidence by that route and fires `raw` and `post.` rules alike.
+    const p: any = await createProtection({ rules: bodyRules, mode: 'block' });
+
+    (Object.prototype as any).body = { marker: 'inherited-evidence' };
+    try {
+      const req = expressReq();
+      delete (req as any).body;
+
+      expect(Object.hasOwn(req, 'body'), 'the request carries no body of its own').toBe(false);
+      expect((req as any).body, 'but the chain offers one').toEqual({ marker: 'inherited-evidence' });
+      expect(await throughExpress(p, req), 'neither a raw nor a post rule sees it').toBeNull();
+
+      // At the engine's own funnel too, where the serialisation happens.
+      const normalized = normalizeRequest({ query: {}, headers: {}, url: '/' } as never);
+      expect(normalized._rawBody, 'nothing was serialised into raw evidence').not.toContain(
+        'inherited-evidence',
+      );
+      expect(JSON.stringify(normalized.body), 'and nothing became POST data').not.toContain(
+        'inherited-evidence',
+      );
+    } finally {
+      delete (Object.prototype as any).body;
+    }
+    p.stop();
+  });
+
+  it('refuses a query string only the prototype chain supplies', async () => {
+    const p: any = await createProtection({ rules: bodyRules, mode: 'block' });
+
+    (Object.prototype as any).query = { marker: 'inherited-evidence' };
+    try {
+      const req = expressReq();
+      delete (req as any).query;
+
+      expect((req as any).query, 'the chain offers a query').toEqual({ marker: 'inherited-evidence' });
+      expect(await throughExpress(p, req), 'a get rule does not see it').toBeNull();
+    } finally {
+      delete (Object.prototype as any).query;
+    }
+    p.stop();
+  });
+
+  it('ignores every polluted field at the engine funnel, not just the body', async () => {
+    // Each field needs its own check here. The Express projection strips these before the funnel sees
+    // them, so a gate removed at the funnel would still look covered by the tests above while every
+    // non-Express path went through ungated.
+    const MARKER = 'inherited-evidence';
+    for (const field of ['body', 'query', 'headers', 'url', 'originalUrl', '_rawBody'] as const) {
+      const polluted = field === 'url' || field === 'originalUrl' || field === '_rawBody'
+        ? `/x?p=${MARKER}`
+        : { marker: MARKER };
+      (Object.prototype as any)[field] = polluted;
+      try {
+        const normalized = normalizeRequest({} as never);
+
+        expect(JSON.stringify(normalized), `${field} did not become evidence`).not.toContain(MARKER);
+      } finally {
+        delete (Object.prototype as any)[field];
+      }
+    }
+
+    // The positive control: the same fields, carried by the request, all arrive.
+    const normalized = normalizeRequest({
+      body: { marker: MARKER },
+      query: { marker: MARKER },
+      headers: { 'x-marker': MARKER },
+      url: `/x?p=${MARKER}`,
+    } as never);
+
+    for (const key of ['body', 'query', 'headers', 'url'] as const) {
+      expect(JSON.stringify(normalized[key]), `an own ${key} is evidence`).toContain(MARKER);
+    }
+  });
+
+  it('still screens fields a framework supplies through its own prototype', async () => {
+    // The gate is the SUPPLIER, not ownership, and this is why. `headers` is a getter on
+    // `IncomingMessage.prototype`, and Express defines `query` the same way, so requiring an own property
+    // would leave real requests unscreened on exactly the sources rules read most.
+    const p: any = await createProtection({
+      rules: {
+        firewall: [
+          {
+            id: 'ua-rule',
+            title: 'reads a request header',
+            rule_v2: [
+              { parameter: 'server.HTTP_USER_AGENT', match: { type: 'contains', value: 'scanner-payload' } },
+            ],
+          },
+        ],
+        whitelists: [],
+        whitelist_keys: {},
+      },
+      mode: 'block',
+    });
+
+    // A request shaped the way Node and Express really shape one.
+    const framework = {
+      get headers() {
+        return { 'user-agent': 'scanner-payload', 'content-type': 'application/json' };
+      },
+    };
+    const req: any = Object.create(framework);
+    Object.assign(req, {
+      method: 'POST',
+      url: '/upload',
+      originalUrl: '/upload',
+      query: {},
+      body: {},
+      cookies: {},
+      files: {},
+      socket: { remoteAddress: '203.0.113.5' },
+      readableEnded: true,
+    });
+
+    expect(Object.hasOwn(req, 'headers'), 'the headers are inherited, as they really are').toBe(false);
+    expect(await throughExpress(p, req), 'a header rule still screens them').toBe(403);
+    p.stop();
+  });
+});
+
 describe('a host callback cannot rewrite what the platform is told', () => {
   /**
    * One blocked request through a guard whose `onDetect` rewrites everything it can reach, returning what
