@@ -19,13 +19,19 @@ import { isSafeOrigin } from './safe-origin.js';
  * the bundle identity, and the rule's own revision where the bundle carried one. That is enough to count
  * hits per rule, compare them against traffic, and decide whether a rule is wrong.
  *
- * What it never carries: **the matched value, the request body, headers, or query-string values**. A
- * channel that counts detections is a different thing from a copy of an application's traffic, and once
- * values are collected every question about retention, access and jurisdiction arrives with them.
- * Anything value-level belongs behind its own explicit opt-in with its own controls, not as a side
- * effect of counting.
+ * It also carries the values of the parameters the matched rule NAMES, under a plan derived from that
+ * rule — because counting that a rule fired is not enough to act on it. What may be captured is the
+ * rule's own doing: a rule reading the whole request permits nothing, response values are never
+ * captured, and raw request bytes need a reviewed opt-in on the rule. Every value is bounded in number
+ * and length, and what a bound leaves out is counted, so a short list is never mistaken for a complete
+ * one.
  *
- * The route is the request PATH with any query string dropped, because `?token=…` is a value.
+ * What it never carries: **the value of any parameter the matched rule does not name**, any response
+ * value, or the query string's values. A channel that reports detections is a different thing from a
+ * copy of an application's traffic, and the plan is what keeps the difference.
+ *
+ * The route is the request PATH; the query travels as parameter NAMES only, because `?token=…` is a
+ * value and the rule that fired may never have named it.
  */
 
 const DEFAULT_BASE_URL = 'https://api.patchstack.com/monitor/pulse';
@@ -105,6 +111,16 @@ const MAX_PARAMETER_CHARS = 64;
  */
 const MAX_IDENTIFIER_CHARS = 256;
 /**
+ * Bounds re-applied to captured evidence at the wire.
+ *
+ * Chosen so one worst-case event stays well inside `MAX_BODY_BYTES`: a batch always sends at least one
+ * event, so an event that cannot fit could never be delivered at all.
+ */
+const MAX_CAPTURED_VALUES = 10;
+const MAX_CAPTURED_VALUE_CHARS = 512;
+/** Query-string parameter NAMES from the request line. Names, never values — see `queryKeysOf`. */
+const MAX_QUERY_KEYS = 10;
+/**
  * The body bound, set where a full batch can actually reach it.
  *
  * A bound above anything the other caps allow is not a bound, it is a comment: the count and the field
@@ -113,6 +129,85 @@ const MAX_IDENTIFIER_CHARS = 256;
  * endpoint or proxy that refuses an oversized body would refuse every retry of it too.
  */
 const MAX_BODY_BYTES = 64 * 1024;
+
+/**
+ * The query string's parameter names, without any of its values.
+ *
+ * A reviewer needs the shape of the URL that was requested, and the query is where a URL carries values.
+ * Sending it verbatim would put the values of parameters the matched rule never named onto the wire —
+ * exactly what the capture plan exists to prevent — so what travels is the path plus the NAMES of the
+ * query parameters, which describe the request without disclosing what was in it.
+ *
+ * @returns {string[]}
+ */
+export function queryKeysOf(path) {
+  if (typeof path !== 'string') return [];
+  const start = path.indexOf('?');
+  if (start === -1) return [];
+
+  const out = [];
+  for (const pair of path.slice(start + 1).split('&')) {
+    if (pair === '') continue;
+    const name = pair.split('=')[0];
+    if (name === '') continue;
+    let decoded = name;
+    try {
+      decoded = decodeURIComponent(name);
+    } catch {
+      // A name that will not decode is reported as sent: it is still a name, and guessing is worse.
+    }
+    if (!out.includes(decoded)) out.push(decoded);
+    if (out.length >= MAX_QUERY_KEYS) break;
+  }
+
+  return out;
+}
+
+/**
+ * Capture, bounded for the wire.
+ *
+ * The extractor bounds what it takes, but a parameter NAME comes from the rule and rules carry no length
+ * limit — so a label alone can carry an event past the body bound, and a batch always sends at least one
+ * event. This is the last gate before the wire, so it re-applies every bound rather than trusting whatever
+ * produced the capture, and marks what it shortened.
+ */
+function boundCapture(capture) {
+  if (!capture || typeof capture !== 'object') return null;
+
+  const truncated = [];
+  const out = { plan: capText(String(capture.plan ?? ''), MAX_IDENTIFIER_CHARS).value };
+  if (out.plan !== String(capture.plan ?? '')) truncated.push('plan');
+
+  if (Array.isArray(capture.values) && capture.values.length > 0) {
+    const kept = capture.values.slice(0, MAX_CAPTURED_VALUES);
+    if (capture.values.length > kept.length) truncated.push('values');
+    out.values = kept.map((entry) => {
+      const parameter = capText(String(entry?.parameter ?? ''), MAX_PARAMETER_CHARS);
+      const value = capText(String(entry?.value ?? ''), MAX_CAPTURED_VALUE_CHARS);
+      if (parameter.truncated && !truncated.includes('parameter')) truncated.push('parameter');
+      if (value.truncated && !truncated.includes('value')) truncated.push('value');
+
+      return {
+        parameter: parameter.value,
+        value: value.value,
+        ...(entry?.truncated || value.truncated ? { truncated: true } : {}),
+      };
+    });
+  }
+
+  if (capture.raw && typeof capture.raw.value === 'string') {
+    const raw = capText(capture.raw.value, MAX_CAPTURED_VALUE_CHARS);
+    out.raw = { value: raw.value, ...(capture.raw.truncated || raw.truncated ? { truncated: true } : {}) };
+  }
+
+  for (const key of ['omitted', 'unsupported', 'failed']) {
+    if (Number.isFinite(capture[key]) && capture[key] > 0) out[key] = Math.floor(capture[key]);
+  }
+  if (capture.unavailable === true) out.unavailable = true;
+  if (truncated.length > 0) out.truncated = truncated;
+
+  return out;
+}
 
 /** A per-reporter identity, so idempotency keys from two guards cannot collide. */
 function makeInstanceId() {
@@ -692,6 +787,7 @@ export function createDetectionReporter(opts) {
       // who cannot tell a shortened route from a complete one will read it as a different route.
       // `null` survives: there being no route is not the same as the route being empty, and a cap that
       // turned one into the other would invent a known path where none was established.
+      const queryKeys = queryKeysOf(detection.path);
       const rawRoute = routeOf(detection.path);
       const route = typeof rawRoute === 'string' ? capText(rawRoute, MAX_ROUTE_CHARS) : { value: rawRoute, truncated: false };
       const allParameters = ruleParameters(detection.rule);
@@ -722,6 +818,15 @@ export function createDetectionReporter(opts) {
         // Only when parameters were actually left out. Reporting a total because some OTHER field was
         // shortened states that parameters were omitted when none were.
         ...(truncated.includes('parameters') ? { parameters_total: allParameters.length } : {}),
+        method: typeof detection.method === 'string' ? capText(detection.method, 16).value : null,
+        // The rest of the URL, as names only. `route` is the path; together they say what was requested
+        // without saying what was in it.
+        query_keys: queryKeys.map((name) => capText(name, MAX_PARAMETER_CHARS).value),
+        // Who asked. Capped, since it is client-supplied text and this is an event with a size bound.
+        user_agent:
+          typeof detection.userAgent === 'string' && detection.userAgent !== ''
+            ? capText(detection.userAgent, MAX_IDENTIFIER_CHARS).value
+            : null,
         phase: detection.phase ?? null,
         // The state this detection was handled under, which is the whole point: `false` is a rule that
         // saw traffic it would have stopped.
@@ -734,7 +839,7 @@ export function createDetectionReporter(opts) {
         rule_revision: revisionOf(detection.rule) === null ? null : revision.value,
         // What the rule was permitted to show, and what it showed. Present only when a plan was derived,
         // which is to say only for a phase that has a reading to derive from.
-        ...(detection.capture ? { capture: detection.capture } : {}),
+        ...(boundCapture(detection.capture) ? { capture: boundCapture(detection.capture) } : {}),
         // The client address and where it came from. `client_ip` is omitted entirely when there is none,
         // so a present-but-empty field cannot read as a failed lookup of a real address; the provenance is
         // always present, because "this could not be established" is the part a reader needs.

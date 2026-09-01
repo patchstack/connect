@@ -166,9 +166,18 @@ export interface CreateProtectionOptions {
    * Why it exists: a rule that blocks nothing reports nothing, so a rule that is quietly wrong and a rule
    * that is protecting look identical from the outside.
    *
-   * What it sends, per detection: the rule id, the request PATH with the query string removed, the
-   * parameters the rule reads, the phase, whether it was enforced, the rule-bundle ETag, and a timestamp.
-   * It does NOT send the matched value, the request body, headers, or query-string values.
+   * What it sends, per detection: the rule id and its revision, the request path, the query string's
+   * parameter NAMES, the method, the user agent, the client address with its provenance, the parameters
+   * the rule reads, the phase, whether it was enforced, the rule-bundle ETag, a timestamp — and the
+   * values of the parameters the matched rule names, under a capture plan derived from that rule.
+   *
+   * A rule earns each captured value by naming what it reads. A rule reading the whole request (`raw`,
+   * `all`) permits nothing; response values are never captured; raw request bytes need an explicit,
+   * reviewed opt-in on the rule itself. Values are bounded in number and length, and what a bound left
+   * out is counted. It does NOT send the value of any parameter the matched rule does not name, any
+   * response value, or the query string's values.
+   *
+   * `AGENT-INSTALL.md` carries the full statement, and is the version to read before enabling this.
    *
    * `detectionReporting` names the state, including the reason when reporting is off.
    */

@@ -1167,3 +1167,71 @@ describe('termination finalises everything the reporter was holding', () => {
     expect(vi.getTimerCount()).toBe(0);
   });
 });
+
+describe('captured evidence cannot carry an event past the body bound', () => {
+  it('bounds a parameter label a rule left unbounded', async () => {
+    // A parameter NAME comes from the rule, and rules carry no length limit — so a label alone can push
+    // an event past the body bound. A batch always sends at least one event, so an event that cannot fit
+    // could never be delivered at all: the bound has to hold at the wire, whatever produced the capture.
+    const bodies: string[] = [];
+    const impl = vi.fn(async (_u: string, init?: RequestInit) => {
+      bodies.push(String(init?.body ?? ''));
+
+      return new Response('{}', { status: 202 });
+    });
+    const r = reporterFor(impl);
+    const enormous = `post.${'p'.repeat(70_000)}`;
+
+    r.record({
+      rule: { id: 'r1', rule_v2: [{ parameter: enormous, match: { type: 'contains', value: 'x' } }] },
+      phase: 'request',
+      mode: 'block',
+      path: '/a',
+      capture: {
+        plan: 'cp2-' + 'f'.repeat(32),
+        values: [{ parameter: enormous, value: 'v'.repeat(70_000) }],
+      },
+    } as never);
+    r.flush();
+    await settle();
+
+    expect(bodies.length).toBe(1);
+    expect(byteLength(bodies[0]), 'the body stayed inside the bound').toBeLessThanOrEqual(64 * 1024);
+
+    const event = JSON.parse(bodies[0]).detections[0];
+    expect(event.capture.values[0].parameter.length).toBeLessThanOrEqual(64);
+    expect(event.capture.values[0].value.length).toBeLessThanOrEqual(512);
+    // Marked, so a reader does not take a shortened label for the parameter's real name.
+    expect(event.capture.truncated).toContain('parameter');
+    r.stop();
+  });
+
+  it('bounds how many captured values one event can carry', async () => {
+    const bodies: string[] = [];
+    const impl = vi.fn(async (_u: string, init?: RequestInit) => {
+      bodies.push(String(init?.body ?? ''));
+
+      return new Response('{}', { status: 202 });
+    });
+    const r = reporterFor(impl);
+
+    r.record({
+      rule: { id: 'r1', rule_v2: [{ parameter: 'post.a', match: { type: 'contains', value: 'x' } }] },
+      phase: 'request',
+      mode: 'block',
+      path: '/a',
+      capture: {
+        plan: 'cp2-' + 'f'.repeat(32),
+        // More than any plan permits: the wire gate does not trust what produced the capture.
+        values: Array.from({ length: 200 }, (_, i) => ({ parameter: `post.f${i}`, value: `v${i}` })),
+      },
+    } as never);
+    r.flush();
+    await settle();
+
+    const event = JSON.parse(bodies[0]).detections[0];
+    expect(event.capture.values.length).toBe(10);
+    expect(event.capture.truncated).toContain('values');
+    r.stop();
+  });
+});

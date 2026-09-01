@@ -23,6 +23,9 @@ const drain = () => new Promise((resolve) => setTimeout(resolve, 0));
 const ALLOWED_KEYS = [
   'rule_id',
   'route',
+  'query_keys',
+  'method',
+  'user_agent',
   'parameters',
   'phase',
   'enforced',
@@ -73,6 +76,7 @@ describe('the detection payload', () => {
     expect(event).toMatchObject({
       rule_id: 'pulse-1',
       route: '/api/preview',
+      query_keys: ['url'],
       parameters: ['server.REQUEST_URI', 'get.url'],
       phase: 'request',
       // The point of the channel: this rule did not block, and that is the interesting case.
@@ -82,7 +86,7 @@ describe('the detection payload', () => {
     expect(typeof event.detected_at).toBe('string');
   });
 
-  it('never puts a matched value, a query string, a body or a header on the wire', async () => {
+  it('never puts a matched value, a query-string value or a body on the wire', async () => {
     // The load-bearing test, and deliberately a scan of the serialized payload rather than of the object
     // we built: a field added later — `message`, `value`, `headers` — would pass every assertion above
     // and fail here, which is the direction this needs to fail in.
@@ -104,11 +108,20 @@ describe('the detection payload', () => {
     await drain();
 
     const wire = JSON.stringify(posts[0].body);
-    for (const forbidden of ['SUPER_SECRET', '169.254.169.254', 'meta-data', '203.0.113.9', 'curl/8.0', 'Blocked by']) {
+    for (const forbidden of ['SUPER_SECRET', '169.254.169.254', 'meta-data', '203.0.113.9', 'Blocked by']) {
       expect(wire, `${forbidden} must not reach the reporting endpoint`).not.toContain(forbidden);
     }
-    // And the route survived, so the scan above is not passing because nothing was sent.
-    expect(wire).toContain('/api/preview');
+
+    // The user agent DOES travel: attribution is what the channel is for, and a detection without it
+    // cannot be told from another client's. It is a header value, and the only one that is sent.
+    expect(wire).toContain('curl/8.0');
+
+    // The query's parameter NAMES travel, and none of its values do — which is what makes the scan above
+    // meaningful rather than a payload that simply dropped the URL.
+    const [event] = posts[0].body.detections;
+    expect(event.route).toBe('/api/preview');
+    expect(event.query_keys).toEqual(['url', 'token']);
+    expect(wire).not.toContain('http://169');
   });
 
   it('reports the enforcement state, not the site mode', async () => {

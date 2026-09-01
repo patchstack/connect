@@ -241,6 +241,28 @@ describe('shipped docs disclose every endpoint the package calls', () => {
     }
   });
 
+  it('says the same thing in the shipped type declaration and the module it documents', () => {
+    // `protect.d.ts` is copied into `dist/` and is what an editor shows a caller; the module docblock is
+    // what a reader of the source sees. A privacy statement that is current in one place and stale in
+    // another is worse than one stale everywhere, because the stale one still reads as authoritative.
+    const shipped = [
+      readFileSync(new URL('../src/protect/protect.d.ts', import.meta.url), 'utf8'),
+      readFileSync(new URL('../src/protect/detections.js', import.meta.url), 'utf8'),
+    ];
+
+    for (const text of shipped) {
+      expect(text, 'must not still promise that no values are sent').not.toMatch(
+        /does NOT send the matched value|never carries: \*\*the matched value/i,
+      );
+      expect(text, 'must say which values do travel').toMatch(
+        /values of the parameters the matched rule names|values of the parameters a rule names/i,
+      );
+      expect(text, 'must scope the exclusion to unnamed parameters').toMatch(
+        /any parameter the matched rule does not name/i,
+      );
+    }
+  });
+
   it('states which sources can never be captured, however a rule is written', () => {
     // These are the refusals that hold regardless of what a rule names, so they are the ones a reader
     // most needs stated rather than inferred.

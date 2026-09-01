@@ -471,6 +471,10 @@ export async function createProtection(options = {}) {
         rule,
         message: result.message,
         ...requestMetaFromContext(reqCtx),
+        // A response detection names its capture policy like any other. Response sources are never
+        // capturable, so a response-only rule reports a plan that permitted nothing — which is the
+        // policy, and a different fact from a rule that found nothing.
+        capture: evidenceFrom(result),
       });
       if (responseMode !== 'block') continue; // dry-run: observe only
       if (redactors && redactors.length) {

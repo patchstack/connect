@@ -158,9 +158,23 @@ describe('a detection carries the evidence its rule permitted', () => {
     expect(posted).not.toContain('resolver');
     expect(posted).not.toContain('_rawBody');
     const [event] = eventsFrom(bodies);
-    expect(Object.keys(event.capture).sort()).toEqual(
-      ['failed', 'omitted', 'plan', 'raw', 'unavailable', 'unsupported', 'values'].sort(),
-    );
+    // The whole of what evidence may carry: a policy reference, the values it permitted, and counts of
+    // what did not make it. A key beyond this list is something nobody documented leaving an app.
+    const permitted = new Set([
+      'plan',
+      'values',
+      'raw',
+      'omitted',
+      'unsupported',
+      'failed',
+      'unavailable',
+      'truncated',
+    ]);
+    for (const key of Object.keys(event.capture)) {
+      expect(permitted.has(key), `capture carries an undocumented "${key}"`).toBe(true);
+    }
+    expect(Object.keys(event.capture)).toContain('plan');
+    expect(Object.keys(event.capture)).toContain('values');
   });
 });
 
@@ -205,5 +219,129 @@ describe('a guard with reporting off sends nothing, and shows a host nothing', (
     expect(seen.length, 'the rule fired').toBeGreaterThan(0);
     expect(posted.filter((u) => u.includes('/detections/')), 'nothing was reported').toEqual([]);
     expect(JSON.stringify(seen), 'and the host saw no value').not.toContain('boom-payload');
+  });
+});
+
+describe('capture is the rule\'s union, not the matching condition', () => {
+  it('sends a value named by a condition that did not fire', async () => {
+    // The engine reports which RULE matched, not which of its conditions did. So a plan covers everything
+    // the rule reads — and a reader has to know that, because a rule scoped to one parameter captures one
+    // while a broad rule captures what it is broad about.
+    const rules = {
+      firewall: [
+        {
+          id: 'r1',
+          title: 'two conditions, either of which fires',
+          rule_v2: [
+            { parameter: 'post.title', match: { type: 'contains', value: 'boom' } },
+            { parameter: 'cookie.session', match: { type: 'contains', value: 'never-matches' } },
+          ],
+        },
+      ],
+      whitelists: [],
+      whitelist_keys: {},
+    };
+    const { bodies, impl } = stub(rules);
+    const p = await guardFor(impl);
+    // Only the first condition can fire; the cookie does not contain what its condition looks for.
+    await through(
+      p,
+      expressReq({ body: { title: 'boom-payload' }, cookies: { session: 'quiet-session-value' } }),
+    );
+
+    const [event] = eventsFrom(bodies);
+    const captured = event.capture.values.map((v: any) => v.parameter).sort();
+
+    expect(captured, 'both parameters the rule reads').toEqual(['cookie.session', 'post.title']);
+    expect(JSON.stringify(bodies), 'including the one whose condition did not match').toContain(
+      'quiet-session-value',
+    );
+  });
+});
+
+describe('a response detection names its capture policy too', () => {
+  const responseRules = (over: Record<string, unknown> = {}) => ({
+    firewall: [
+      {
+        id: 'resp-1',
+        title: 'a response rule',
+        phase: 'response',
+        action: 'block',
+        rule_v2: [{ parameter: 'response.body', match: { type: 'contains', value: 'SENTINEL-RESP' } }],
+        ...over,
+      },
+    ],
+    whitelists: [],
+    whitelist_keys: {},
+  });
+
+  async function throughResponse(p: any, req: any, body: string) {
+    const chunks: string[] = [];
+    const res: any = {
+      statusCode: 200,
+      setHeader() {}, getHeader() { return 'text/plain'; }, removeHeader() {},
+      writeHead() { return this; },
+      write(c: string) { chunks.push(String(c)); return true; },
+      end(c?: string) { if (c) chunks.push(String(c)); return this; },
+      status() { return this; }, json() { return this; }, send() { return this; }, type() { return this; },
+    };
+    await new Promise<void>((resolve) => {
+      let done = false;
+      const finish = () => { if (!done) { done = true; resolve(); } };
+      p.express({ screenResponses: true })(req, res, () => { res.end(body); finish(); });
+      setTimeout(finish, 30);
+    });
+    p.stop();
+    await new Promise((r) => setTimeout(r, 20));
+  }
+
+  it('reports a plan that permitted nothing, rather than no plan', async () => {
+    const { bodies, impl } = stub(responseRules());
+    const p = await guardFor(impl);
+    await throughResponse(p, expressReq({ method: 'GET', url: '/page', originalUrl: '/page' }), 'SENTINEL-RESP body');
+
+    const events = eventsFrom(bodies).filter((e: any) => e.phase === 'response');
+    expect(events.length, 'the response rule fired').toBeGreaterThan(0);
+    expect(events[0].capture.plan, 'and named its policy').toMatch(/^cp2-/);
+    // Response sources are never capturable, whatever a rule names, so there is nothing to permit.
+    expect(Object.hasOwn(events[0].capture, 'values')).toBe(false);
+  });
+
+  it('never sends a response value, even to a rule written to read one', async () => {
+    const { bodies, impl } = stub(responseRules());
+    const p = await guardFor(impl);
+    await throughResponse(p, expressReq({ method: 'GET', url: '/page', originalUrl: '/page' }), 'SENTINEL-RESP body');
+
+    // The phase that reads these exists to redact secrets; capturing them would collect the very values
+    // redaction stops leaving.
+    expect(JSON.stringify(bodies)).not.toContain('SENTINEL-RESP');
+  });
+
+  it('captures a request parameter a response rule also names', async () => {
+    // A response-phase rule can scope on the request, and those sources are capturable — so "response
+    // rules capture nothing" would be the wrong generalisation.
+    const { bodies, impl } = stub(
+      responseRules({
+        rule_v2: [
+          { parameter: 'response.body', match: { type: 'contains', value: 'SENTINEL-RESP' } },
+          { parameter: 'server.HTTP_USER_AGENT', match: { type: 'contains', value: 'never-matches' } },
+        ],
+      }),
+    );
+    const p = await guardFor(impl);
+    await throughResponse(
+      p,
+      expressReq({
+        method: 'GET',
+        url: '/page',
+        originalUrl: '/page',
+        headers: { 'content-type': 'application/json', 'user-agent': 'SENTINEL-UA' },
+      }),
+      'SENTINEL-RESP body',
+    );
+
+    const events = eventsFrom(bodies).filter((e: any) => e.phase === 'response');
+    expect(events[0].capture.values?.map((v: any) => v.parameter)).toEqual(['server.HTTP_USER_AGENT']);
+    expect(JSON.stringify(bodies)).toContain('SENTINEL-UA');
   });
 });

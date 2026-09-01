@@ -34,6 +34,9 @@ const disclosure = readFileSync(join(root, 'AGENT-INSTALL.md'), 'utf8');
 const FIELD_DISCLOSURE: Record<string, RegExp> = {
   rule_id: /rule id/i,
   route: /request path/i,
+  query_keys: /query string's parameter \*\*names\*\*|query string travels as names only/i,
+  method: /request's method|method/i,
+  user_agent: /user\s+agent/i,
   parameters: /parameter names/i,
   phase: /which phase matched/i,
   enforced: /whether it was enforced/i,

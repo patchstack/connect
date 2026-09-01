@@ -248,7 +248,9 @@ contained.
 
 ### What values a report can contain
 
-A report can include the **values of the parameters a rule names** — and nothing else. Counting that a
+A report always carries the request's method, path, the query string's parameter **names**, the user
+agent, the client address with its provenance, and a timestamp.
+Beyond that it can include the **values of the parameters a rule names** — and nothing else. Counting that a
 rule fired is not enough to act on it: whoever triages a detection still has to decide whether the request
 was really an attack, and for that they need to see what the rule saw.
 
@@ -271,9 +273,16 @@ left out are counted; a value refused because it was not a plain string, number 
 separately; and a read that failed is counted as a failure rather than as absence — so a short list is
 never mistaken for a complete one.
 
-**Every capture names the policy that allowed it.** Each report carries a `capture.plan` reference derived
-from the rule's own immutable revision, so what a given report was permitted to include can be established
-after the fact, without the rule in front of you.
+**A `capture.plan` identifies the permissions, not the rule.** Each report carries a `capture.plan` reference derived
+from the permissions themselves — which parameters, which prefixes, which bounds — so what a given report
+was permitted to include can be established after the fact, without the rule in front of you. It
+identifies the PERMISSIONS, not the rule: two different rules that read the same parameters share one
+reference, and the rule document is identified by `rule_id` with `rule_revision`.
+
+**Capture is the union of everything the rule reads, not only the condition that matched.** The engine
+reports which rule fired, not which of its conditions did, so a rule reading `post.title` and
+`cookie.session` permits both values whichever one triggered the detection. A rule scoped to one parameter
+captures one; a broad rule captures what it is broad about.
 
 **What a report never contains:** the value of any parameter the matched rule does not name; any response
 body, header or status value; the request body, other than the reviewed raw prefix above; and anything at
