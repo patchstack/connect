@@ -129,7 +129,9 @@ describe('the refresh loop', () => {
       reportManifest: false,
     });
 
-    expect(await p.refresh()).toEqual({ ok: true });
+    // Exact, including the origin: a successful refresh took the rules from the platform on this call,
+    // which is what makes the site's detections attributable to a managed rule.
+    expect(await p.refresh()).toEqual({ ok: true, origin: 'api' });
 
     state.fail = true;
     const failed = await p.refresh();

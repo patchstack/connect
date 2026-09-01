@@ -5,6 +5,8 @@ import { isSafeOrigin } from './safe-origin.js';
 // Opt out: PATCHSTACK_TELEMETRY=off. Never put api_key in the public widget.
 
 const DEFAULT_API_BASE = 'https://api.patchstack.com';
+/** The shutdown budget, matching the detection reporter's. */
+const STOP_BUDGET_MS = 5_000;
 const DEFAULT_FLUSH_MS = 1000;
 const MAX_BATCH = 50;
 const TOKEN_SKEW_MS = 60_000;
@@ -72,7 +74,7 @@ export function resolveApiBase(pulseOrManifestUrl) {
 export function createFirewallLogReporter(opts) {
   const creds = parseApiKey(opts.apiKey);
   if (!creds) {
-    return { record() {}, flush() {}, stop() {} };
+    return { record() {}, flush: () => Promise.resolve(), stop: () => Promise.resolve() };
   }
 
   const apiBase = (opts.apiBase ?? DEFAULT_API_BASE).replace(/\/$/, '');
@@ -85,13 +87,36 @@ export function createFirewallLogReporter(opts) {
   /** @type {ReturnType<typeof setTimeout> | null} */
   let timer = null;
   let stopped = false;
+  /**
+   * Every send that has been started and not finished.
+   *
+   * A flush that has already taken its batch leaves an empty queue behind it, so a shutdown looking only
+   * at the queue would see nothing to wait for while a token exchange or a post was still open. What is
+   * outstanding is the set of sends, not the contents of the queue.
+   *
+   * @type {Set<Promise<void>>}
+   */
+  const outstanding = new Set();
+  /** @type {Promise<void> | null} */
+  let drainPromise = null;
+  /**
+   * One controller for every request this reporter makes, for its whole life.
+   *
+   * Not created at shutdown: by then the sends worth ending have already started, and a signal handed
+   * out afterwards reaches none of them. Not one per send either, because the token exchange is SHARED —
+   * a second send awaits the first send's exchange, so a signal belonging to the second would not reach
+   * the request it is waiting on.
+   */
+  const lifetime = typeof AbortController === 'function' ? new AbortController() : null;
+  /** Set when a shutdown gives up waiting: nothing may start, continue, or be retained after it. */
+  let ended = false;
 
   /** @type {{ token: string, expiresAt: number } | null} */
   let cachedToken = null;
   /** @type {Promise<string | null> | null} */
   let tokenInflight = null;
 
-  const fetchAccessToken = async () => {
+  const fetchAccessToken = async (signal) => {
     if (cachedToken && Date.now() < cachedToken.expiresAt - TOKEN_SKEW_MS) {
       return cachedToken.token;
     }
@@ -101,6 +126,7 @@ export function createFirewallLogReporter(opts) {
       try {
         const res = await fetchImpl(`${apiBase}/oauth/token`, {
           method: 'POST',
+          ...(signal ? { signal } : {}),
           headers: {
             'Content-Type': 'application/json',
             Accept: 'application/json',
@@ -135,18 +161,26 @@ export function createFirewallLogReporter(opts) {
       clearTimeout(timer);
       timer = null;
     }
-    if (queue.length === 0 || typeof fetchImpl !== 'function') return;
+    if (ended || queue.length === 0 || typeof fetchImpl !== 'function') return Promise.resolve();
 
     const batch = queue.splice(0, MAX_BATCH);
-    void (async () => {
-      const token = await fetchAccessToken();
-      if (!token) return;
 
-      const body = new URLSearchParams();
-      body.set('type', 'firewall');
-      body.set('logs', JSON.stringify(batch));
-
+    // Returned so a shutdown can wait for it, and tracked so a shutdown can find it even when the queue
+    // it came from is already empty. It never rejects: a caller that ignores it must not produce an
+    // unhandled rejection, and one that awaits it is waiting for the attempt to finish, not asking
+    // whether it succeeded.
+    /** @type {Promise<void>} */
+    let entry;
+    const send = (async () => {
       try {
+        const token = await fetchAccessToken(lifetime?.signal);
+        // Not after a shutdown gave up: it has already reported itself finished.
+        if (!token || ended) return;
+
+        const body = new URLSearchParams();
+        body.set('type', 'firewall');
+        body.set('logs', JSON.stringify(batch));
+
         const p = fetchImpl(`${apiBase}/api/logs/log`, {
           method: 'POST',
           headers: {
@@ -157,12 +191,23 @@ export function createFirewallLogReporter(opts) {
             ...(sourceHost ? { 'Source-Host': sourceHost } : {}),
           },
           body,
+          // Both phases carry it, so a shutdown that runs out of time can end either one.
+          ...(lifetime ? { signal: lifetime.signal } : {}),
         });
-        if (p && typeof p.then === 'function') p.catch(() => {});
+        if (p && typeof p.then === 'function') await p.catch(() => {});
       } catch {
-        /* ignore */
+        /* A delivery problem is never worth disturbing the app over. */
+      } finally {
+        // Here rather than in a `.then`: this runs before the promise settles, so a waiter that looks at
+        // the set the moment its wait resolves cannot see a send that has already finished.
+        outstanding.delete(entry);
       }
     })();
+
+    entry = send;
+    outstanding.add(send);
+
+    return send;
   };
 
   return {
@@ -196,9 +241,79 @@ export function createFirewallLogReporter(opts) {
       if (!timer) timer = setTimeout(flush, flushMs);
     },
     flush,
+    /**
+     * Stop, and hand back a wait for what was outstanding.
+     *
+     * One flush sends at most a batch, so the queue is drained a batch at a time. The loop stops as soon
+     * as a pass cannot shrink the queue — with no usable transport there is nothing to wait for, and
+     * spinning would be worse than leaving the records where they are.
+     */
     stop() {
+      // The same wait every time. A second call must not hand back a resolved promise while the first
+      // drain is still running, and must not start a second drain behind it.
+      if (drainPromise) return drainPromise;
       stopped = true;
-      flush();
+      // Before anything else. An armed interval would otherwise fire mid-drain, take the queued records
+      // for itself, and start a send the drain never learns about — leaving the drain to look at an empty
+      // queue, conclude it is finished, and resolve with that send still open.
+      if (timer) {
+        clearTimeout(timer);
+        timer = null;
+      }
+
+      /**
+       * End the drain, rather than merely stop waiting for it.
+       *
+       * Racing the wait against a timer would leave the work alive: still blocked, still holding its
+       * entry, and free to run another flush if the transport answered later — after the shutdown had
+       * reported itself finished. So the reporter is marked ended, which closes `flush` and the loop
+       * below, the open requests are aborted, and what was never sent is discarded rather than retained
+       * by a reporter nobody will read again.
+       */
+      const terminate = () => {
+        ended = true;
+        lifetime?.abort();
+        queue = [];
+        outstanding.clear();
+      };
+
+      /** @type {ReturnType<typeof setTimeout> | null} */
+      let budget = null;
+      // Bounded like the detection reporter's, and for the same reason: a hung transport would otherwise
+      // keep a shutdown pending for as long as the process lived, which is not a bounded shutdown.
+      const spent = new Promise((resolve) => {
+        budget = setTimeout(() => {
+          terminate();
+          resolve();
+        }, STOP_BUDGET_MS);
+        if (typeof budget.unref === 'function') budget.unref();
+      });
+
+      const work = (async () => {
+        // Two things can be outstanding and each can produce the other: a send holds records that have
+        // left the queue, and the queue holds records that will become a send. So this asks again after
+        // every wait rather than taking one snapshot — a snapshot resolves as soon as the sends it
+        // happened to capture are done, whatever appeared in the meantime.
+        //
+        // It ends when both are empty, when a pass cannot shrink the queue (with no usable transport
+        // there is nothing to wait for, and spinning would be worse), or when the budget ends it.
+        while (!ended) {
+          if (outstanding.size > 0) {
+            await Promise.all([...outstanding]);
+            continue;
+          }
+          if (queue.length === 0) break;
+          const before = queue.length;
+          await flush();
+          if (queue.length >= before) break;
+        }
+      })();
+
+      drainPromise = Promise.race([work, spent]).then(() => {
+        if (budget) clearTimeout(budget);
+      });
+
+      return drainPromise;
     },
   };
 }

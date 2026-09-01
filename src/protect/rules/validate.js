@@ -51,7 +51,7 @@ export function validateBundle(bundle, opts = {}) {
       rejected.push({ id: idOf(rule), reason: `bundle exceeds maxRules (${LIMITS.maxRules})` });
       continue;
     }
-    const reason = ruleProblem(rule);
+    const reason = enforceableRuleProblem(rule);
     if (reason) rejected.push({ id: idOf(rule), reason });
     else firewall.push(rule);
   }
@@ -85,8 +85,16 @@ function idOf(rule) {
   return id === undefined || id === null ? '(unidentified)' : String(id);
 }
 
-/** @returns {string|null} a reason the rule must be dropped, or null when it's acceptable. */
-function ruleProblem(rule) {
+/**
+ * Why a rule would not be run, or null when it would.
+ *
+ * Exported because a capture permission depends on it: a permission exists to explain a detection, and a
+ * rule this refuses produces none. Capture validity is deliberately not part of the answer — it governs
+ * collection, never protection.
+ *
+ * @returns {string|null} a reason the rule must be dropped, or null when it's acceptable.
+ */
+export function enforceableRuleProblem(rule) {
   if (!rule || typeof rule !== 'object') return 'not an object';
 
   // Before anything reads a property: a property that is PRESENT and null is not an omission. Every layer

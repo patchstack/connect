@@ -829,7 +829,12 @@ export class RuleEngine {
           return {
             blocked: true,
             rule,
-            message: rule.message ?? `Blocked by Patchstack WAF rule: ${rule.title ?? rule.id}`
+            message: rule.message ?? `Blocked by Patchstack WAF rule: ${rule.title ?? rule.id}`,
+            // The resolver this match was decided by, for whatever needs to report on it. A consumer
+            // that re-read the request instead would be reading it a second time: a getter, a stream or
+            // anything else that answers once can give a different value, and evidence that disagrees
+            // with the match it belongs to is worse than none.
+            resolver
           };
         }
       } catch (err) {

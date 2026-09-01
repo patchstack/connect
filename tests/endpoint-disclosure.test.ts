@@ -215,9 +215,133 @@ describe('shipped docs disclose every endpoint the package calls', () => {
   it('says what a detection report carries, and what it does not', () => {
     expect(agentInstall).toMatch(/reportDetections/);
     // Phrasing-tolerant, substance-strict: the claim has to be there, not any particular sentence.
-    for (const claim of [/query string|query-string/i, /matched value|value that matched/i, /request body/i]) {
+    for (const claim of [
+      /query string|query-string/i,
+      /request body/i,
+      // A report can carry the values of the parameters a rule names, so the doc has to say which values
+      // and on what authority — an omission here reads as the older, narrower promise.
+      /values of the parameters a rule names/i,
+      /derived from the rule/i,
+      /capture\.plan/,
+    ]) {
       expect(agentInstall, `the payload description must address ${claim}`).toMatch(claim);
     }
+  });
+
+  it('states the limits on captured values, and that the limits report themselves', () => {
+    // A bound nobody documents is a bound a reader cannot rely on, and a truncated capture that does not
+    // say so invites a conclusion drawn from a sample.
+    for (const claim of [
+      /at most 10 values/i,
+      /512 characters/i,
+      /shortened to fit is marked|marked/i,
+      /counted/i,
+    ]) {
+      expect(agentInstall, `the bounds must address ${claim}`).toMatch(claim);
+    }
+  });
+
+  it('says the same thing in the shipped type declaration and the module it documents', () => {
+    // `protect.d.ts` is copied into `dist/` and is what an editor shows a caller; the module docblock is
+    // what a reader of the source sees. A privacy statement that is current in one place and stale in
+    // another is worse than one stale everywhere, because the stale one still reads as authoritative.
+    const shipped = [
+      readFileSync(new URL('../src/protect/protect.d.ts', import.meta.url), 'utf8'),
+      readFileSync(new URL('../src/protect/detections.js', import.meta.url), 'utf8'),
+    ];
+
+    for (const text of shipped) {
+      expect(text, 'must not still promise that no values are sent').not.toMatch(
+        /does NOT send the matched value|never carries: \*\*the matched value/i,
+      );
+      expect(text, 'must say which values do travel').toMatch(
+        /values of the parameters the matched rule names|values of the parameters a rule names/i,
+      );
+      expect(text, 'must scope the exclusion to unnamed parameters').toMatch(
+        /any (other )?parameter the matched rule does not name/i,
+      );
+      // The User-Agent travels whether or not a rule names it, so an absolute exclusion would be false.
+      // Pinned in every place the claim is made, because a carve-out stated in one is not stated at all.
+      expect(text, 'must carve out the baseline user agent').toMatch(
+        /user.agent is the one exception|exception to the rule-scoped policy/i,
+      );
+      // And the carve-out itself is phase-dependent: an egress detection has no client to attribute, so a
+      // surface that promised a user agent or an address on every detection would be wrong there.
+      expect(text, 'must scope the client fields to the phases that have a client').toMatch(
+        /request or response detection/i,
+      );
+      expect(text, 'and must say an egress detection carries neither').toMatch(
+        /egress detection[^.]*(carries neither|no user agent)/i,
+      );
+    }
+  });
+
+  it('qualifies the client fields in each place it lists them, not just once', () => {
+    // Two sections list what a report carries. A single "the phrase appears somewhere" check passes when
+    // one of them is qualified and the other still promises a user agent and an address on every
+    // detection — which is false for egress, and false in the direction that flatters us.
+    const sections = {
+      'the per-detection summary': agentInstall.slice(
+        agentInstall.indexOf('What a detection report contains'),
+        agentInstall.indexOf('Every field is bounded'),
+      ),
+      'the captured-values section': agentInstall.slice(
+        agentInstall.indexOf('### What values a report can contain'),
+        agentInstall.indexOf('One header value always travels'),
+      ),
+    };
+
+    for (const [where, text] of Object.entries(sections)) {
+      expect(text.length, `${where} should be findable`).toBeGreaterThan(200);
+      expect(text, `${where} must scope the client fields to the phases that have a client`).toMatch(
+        /request or response/i,
+      );
+      expect(text, `${where} must not promise them on every detection`).not.toMatch(
+        /(every|any|each) detection[^.]*(user agent|client address)/i,
+      );
+    }
+  });
+
+  it('states the egress baseline separately, since it is a different baseline', () => {
+    // An egress detection has no client and no user agent, and a single "every report carries" claim
+    // would be false for it in both directions.
+    expect(agentInstall, 'egress must have its own baseline').toMatch(
+      /\*\*An egress detection\*\*/i,
+    );
+    expect(agentInstall, 'and must say it carries no client attribution').toMatch(
+      /no user agent and no\s+client address/i,
+    );
+  });
+
+  it('qualifies the query-value exclusion as being about baseline metadata', () => {
+    // A rule naming `egress.url` captures that URL as it read it, query values included. An unqualified
+    // "query values are never sent" would be false, in the direction that flatters us.
+    expect(agentInstall, 'the qualification must be present').toMatch(
+      /One qualification on the query string/i,
+    );
+    expect(agentInstall, 'and must name the case it covers').toMatch(
+      /names `egress\.url`[^.]*query values included|query values included/i,
+    );
+  });
+
+  it('states which sources can never be captured, however a rule is written', () => {
+    // These are the refusals that hold regardless of what a rule names, so they are the ones a reader
+    // most needs stated rather than inferred.
+    expect(agentInstall, 'a whole-request read must grant nothing').toMatch(
+      /reading `raw` or `all`[^.]*permits \*\*nothing/i,
+    );
+    expect(agentInstall, 'response values must never be captured').toMatch(
+      /\*\*response\*\* values are never captured/i,
+    );
+    expect(agentInstall, 'raw bytes need a reviewed per-rule opt-in').toMatch(
+      /raw request bytes\*\* need an explicit, reviewed opt-in/i,
+    );
+    expect(agentInstall, 'and the one header that always travels must be named').toMatch(
+      /User-Agent\*\*\. It is part of the baseline|One header value always travels/i,
+    );
+    expect(agentInstall, 'and a parameter the rule does not name is never sent').toMatch(
+      /never contains:\*\* the value of any parameter the matched rule does not name/i,
+    );
   });
 
   it('separates parameter identifiers from values, and does not exclude what it sends', () => {
@@ -229,7 +353,15 @@ describe('shipped docs disclose every endpoint the package calls', () => {
     expect(agentInstall, 'must say the identifiers carry their request region').toMatch(/request region/i);
     expect(agentInstall, 'must show a region-qualified example').toMatch(/cookie\.session/);
     expect(agentInstall, 'must show a header example, since that is the sensitive case').toMatch(/server\.HTTP_/);
-    expect(agentInstall, 'the exclusion must be about values').toMatch(/no values of any kind/i);
+    // The exclusion is now scoped to the parameters a rule does NOT name, since the ones it names may
+    // have their values captured. A blanket "no values of any kind" would be the opposite overclaim to
+    // the one this test was written for: understating what is sent rather than overstating it.
+    expect(agentInstall, 'the exclusion must be scoped to unnamed parameters').toMatch(
+      /the value of any parameter the matched rule does not name/i,
+    );
+    expect(agentInstall, 'and must not still claim no values are sent at all').not.toMatch(
+      /no values of any kind/i,
+    );
 
     // The regression itself: an exclusion clause that names headers or cookies without scoping to their
     // values. Asserted as an absence because the overclaim is a sentence someone would write again while

@@ -31,7 +31,11 @@ describe('fetch adapter', () => {
     );
     assert.deepStrictEqual(req.query.q, ['1', '2']);
     assert.strictEqual(req.body.a, 1);
-    assert.strictEqual(req.ip, '1.2.3.4');
+    // A WHATWG Request exposes no transport peer, so a forwarded header alone establishes nothing: it is
+    // indistinguishable from one the caller wrote. The address is absent and its provenance says why.
+    assert.strictEqual(req.ip, '');
+    assert.strictEqual(req._clientIp.source, 'unavailable');
+    assert.strictEqual(req._clientIp.ip, null);
     assert.strictEqual(req.headers['content-type'], 'application/json');
     assert.strictEqual(req._rawBody, JSON.stringify({ a: 1 }));
     assert.strictEqual(req.originalUrl, '/api?q=1&q=2');

@@ -1,6 +1,6 @@
 {
   "$comment": "Generated from src/protect/rules/contract.js by scripts/emit-rule-contract.mjs. Do not edit.",
-  "version": "2.7",
+  "version": "2.8",
   "sources": {
     "raw": {
       "keyed": false
@@ -359,6 +359,9 @@
     "method"
   ],
   "null_valued_properties": "refused",
+  "null_exempt_properties": [
+    "capture"
+  ],
   "rule_property_shapes": {
     "max_bytes": "positive-number",
     "bypass_limit": "boolean",
@@ -386,8 +389,31 @@
     "set_headers",
     "remove_headers",
     "cookie_flags",
-    "ensure"
+    "ensure",
+    "capture"
   ],
+  "capture": {
+    "version": 1,
+    "required": [
+      "version",
+      "raw_chars"
+    ],
+    "additional_properties": false,
+    "properties": {
+      "version": {
+        "type": "integer",
+        "const": 1
+      },
+      "raw_chars": {
+        "type": "integer",
+        "minimum": 1
+      }
+    },
+    "raw_chars_effective_maximum": 512,
+    "unknown_version": "grants no capture; the rule still applies",
+    "unreadable": "grants no capture; the rule still applies",
+    "raw_chars_note": "a request for a bounded PREFIX of the body; more than the effective maximum yields the maximum"
+  },
   "limits": {
     "maxRules": 5000,
     "maxWhitelists": 2000,

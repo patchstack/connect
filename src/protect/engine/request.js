@@ -288,7 +288,10 @@ export class RequestResolver {
         return req.headers?.host ? [req.headers.host] : [];
       case 'REMOTE_ADDR':
       case 'ip':
-        return [req.ip ?? req.socket?.remoteAddress ?? ''];
+        // The address the caller resolved, and nothing else. Falling back to the socket — or to a
+        // forwarded header — would let one request be attributed to two different addresses depending on
+        // which consumer asked, and would reintroduce a value the client can set.
+        return [typeof req.ip === 'string' ? req.ip : ''];
       case 'CONTENT_TYPE':
         return req.headers?.['content-type'] ? [req.headers['content-type']] : [];
       case 'CONTENT_LENGTH':

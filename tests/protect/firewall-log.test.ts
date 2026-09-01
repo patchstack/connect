@@ -192,3 +192,291 @@ describe('createProtection connector log reporting', () => {
     protection.stopRefresh?.();
   });
 });
+
+describe('stopping the block log waits for what is outstanding, and is bounded', () => {
+  const KEY = 'abcdefghijabcdefghijabcdefghijabcdefghij-42';
+  const reporter = (fetchImpl: unknown, over: Record<string, unknown> = {}) =>
+    createFirewallLogReporter({
+      apiKey: KEY,
+      apiBase: 'https://api.test',
+      fetchImpl: fetchImpl as typeof fetch,
+      flushMs: 1,
+      ...over,
+    });
+  let recorded = 0;
+  const record = (r: any, n = 1, tag = 'r') => {
+    for (let i = 0; i < n; i++) {
+      r.record({ rule: { id: `${tag}${i}` }, method: 'GET', path: `/a${recorded++}`, ip: '1.2.3.4' });
+    }
+  };
+  const tick = async () => { await new Promise((r) => setTimeout(r, 5)); };
+
+  afterEach(() => { vi.useRealTimers(); });
+
+  it('waits for a send that was already running when it was called', async () => {
+    // A flush that has already taken its batch leaves an empty queue behind it. A shutdown that looked
+    // only at the queue would see nothing to wait for while the post was still open.
+    let releasePost: ((r: Response) => void) | null = null;
+    const impl = vi.fn(async (url: string) => {
+      if (String(url).includes('/oauth/token')) {
+        return new Response(JSON.stringify({ access_token: 'jwt', expires_in: 3600 }), {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' },
+        });
+      }
+
+      return new Promise<Response>((resolve) => { releasePost = resolve; });
+    });
+    const r: any = reporter(impl);
+
+    record(r);
+    r.flush();
+    await tick();
+    expect(releasePost, 'the post is open and the queue is empty').not.toBeNull();
+
+    let settled = false;
+    const done = r.stop().then(() => { settled = true; });
+    await tick();
+    expect(settled, 'the wait found the send the queue no longer knew about').toBe(false);
+
+    releasePost?.(new Response('{}', { status: 200 }));
+    await done;
+    expect(settled).toBe(true);
+  });
+
+  it('returns the same wait when stopped twice', async () => {
+    let releasePost: ((r: Response) => void) | null = null;
+    const impl = vi.fn(async (url: string) => {
+      if (String(url).includes('/oauth/token')) {
+        return new Response(JSON.stringify({ access_token: 'jwt', expires_in: 3600 }), {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' },
+        });
+      }
+
+      return new Promise<Response>((resolve) => { releasePost = resolve; });
+    });
+    const r: any = reporter(impl);
+
+    record(r);
+    r.flush();
+    await tick();
+
+    // The second call must not hand back a resolved promise while the first drain is still running, nor
+    // start a second drain behind it: it is the same shutdown, so it is the same wait.
+    const firstCall = r.stop();
+    const secondCall = r.stop();
+    expect(secondCall, 'the same wait, not a new one').toBe(firstCall);
+
+    let firstDone = false;
+    let secondDone = false;
+    const first = firstCall.then(() => { firstDone = true; });
+    const second = secondCall.then(() => { secondDone = true; });
+    await tick();
+
+    expect(firstDone || secondDone, 'neither has finished yet').toBe(false);
+    releasePost?.(new Response('{}', { status: 200 }));
+    await Promise.all([first, second]);
+    expect(firstDone && secondDone).toBe(true);
+  });
+
+  it.each([
+    ['the token exchange', 'token'],
+    ['the log post', 'post'],
+  ])('aborts %s of a send that started before the shutdown did', async (_what, phase) => {
+    vi.useFakeTimers();
+    // The sends worth ending have already started by the time a shutdown begins, so a signal created at
+    // that point reaches none of them. This starts the flush FIRST, which is the case the tracking set
+    // was added for in the first place.
+    const aborted: string[] = [];
+    const impl = vi.fn((url: string, init?: RequestInit) => {
+      const isToken = String(url).includes('/oauth/token');
+      if (isToken && phase === 'post') {
+        return Promise.resolve(
+          new Response(JSON.stringify({ access_token: 'jwt', expires_in: 3600 }), {
+            status: 200,
+            headers: { 'Content-Type': 'application/json' },
+          }),
+        );
+      }
+
+      return new Promise<Response>(() => {
+        init?.signal?.addEventListener('abort', () => { aborted.push(isToken ? 'token' : 'post'); });
+      });
+    });
+    const r: any = reporter(impl);
+
+    record(r);
+    r.flush();
+    await vi.advanceTimersByTimeAsync(1);
+    expect(impl.mock.calls.length, 'the send is already running').toBeGreaterThan(0);
+
+    let settled = false;
+    void r.stop().then(() => { settled = true; });
+    await vi.advanceTimersByTimeAsync(5_000);
+    await vi.advanceTimersByTimeAsync(1);
+
+    expect(settled, 'the wait is bounded').toBe(true);
+    expect(aborted, `${phase} was let go of`).toContain(phase);
+  });
+
+  it('does not resolve while records buffered behind an armed interval are still going out', async () => {
+    vi.useFakeTimers();
+    // Send A is open. Records B sit in the queue with the flush interval armed behind them. A drain that
+    // waited on the sends it happened to find at the start would resolve the moment A finished — while
+    // the interval had quietly taken B and started a send of its own.
+    const posts: Array<{ release: (r: Response) => void; body: string }> = [];
+    const impl = vi.fn((url: string, init?: RequestInit) => {
+      if (String(url).includes('/oauth/token')) {
+        return Promise.resolve(
+          new Response(JSON.stringify({ access_token: 'jwt', expires_in: 3600 }), {
+            status: 200,
+            headers: { 'Content-Type': 'application/json' },
+          }),
+        );
+      }
+
+      return new Promise<Response>((resolve) => {
+        posts.push({ release: resolve, body: String(init?.body ?? '') });
+      });
+    });
+    // Short enough that the interval fires during the drain.
+    const r: any = reporter(impl, { flushMs: 10 });
+
+    record(r, 50, 'a'); // A: reaches the batch bound and starts a send
+    await vi.advanceTimersByTimeAsync(1);
+    record(r, 5, 'b'); // B: queued, with the interval now armed behind them
+    expect(posts.length, 'A is in flight').toBe(1);
+
+    let settled = false;
+    const done = r.stop().then(() => { settled = true; });
+
+    // The interval's moment passes FIRST, while A is still open — that is the whole race. An interval
+    // left armed takes B here, starting a send the drain never learns about.
+    await vi.advanceTimersByTimeAsync(50);
+
+    // Nothing took B: from the moment a shutdown begins, the drain owns the queue. Were the interval
+    // still armed it would have started B's send here, outside the drain's knowledge.
+    expect(posts.length, 'the interval did not take B').toBe(1);
+
+    // A finishes. A drain waiting on the sends it found at the start is now satisfied, and would resolve
+    // with B's send open.
+    posts[0].release(new Response('{}', { status: 200 }));
+    await vi.advanceTimersByTimeAsync(5);
+
+    expect(posts.length, "B's post has started").toBe(2);
+    expect(settled, 'and the shutdown is still waiting for it').toBe(false);
+    expect(posts[1].body, 'B is what is being sent').toContain('b0');
+
+    posts[1].release(new Response('{}', { status: 200 }));
+    await vi.advanceTimersByTimeAsync(1);
+    await done;
+    expect(settled).toBe(true);
+  });
+
+  it('runs nothing more once the shutdown has given up', async () => {
+    vi.useFakeTimers();
+    let releaseToken: ((r: Response) => void) | null = null;
+    const impl = vi.fn((url: string) => {
+      if (String(url).includes('/oauth/token')) {
+        if (releaseToken) {
+          return Promise.resolve(
+            new Response(JSON.stringify({ access_token: 'jwt', expires_in: 3600 }), {
+              status: 200,
+              headers: { 'Content-Type': 'application/json' },
+            }),
+          );
+        }
+
+        return new Promise<Response>((resolve) => { releaseToken = resolve; });
+      }
+
+      return Promise.resolve(new Response('{}', { status: 200 }));
+    });
+    // A long interval, so records stay in the queue instead of being swept into sends: the case here
+    // needs BOTH a send that is stuck and records still waiting behind it.
+    const r: any = reporter(impl, { flushMs: 60_000 });
+
+    record(r, 50); // reaches the batch bound and starts a send, which hangs on the token exchange
+    await vi.advanceTimersByTimeAsync(1);
+    record(r, 20); // and these stay queued
+    expect(impl.mock.calls.length, 'one send is stuck').toBe(1);
+
+    const done = r.stop();
+    await vi.advanceTimersByTimeAsync(5_000);
+    await done;
+    const callsAtBudget = impl.mock.calls.length;
+
+    // The transport answers after the shutdown reported itself finished. Ending the WAIT but leaving the
+    // work alive would let the drain resume here and post the twenty records still queued behind it.
+    releaseToken?.(
+      new Response(JSON.stringify({ access_token: 'jwt', expires_in: 3600 }), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      }),
+    );
+    await vi.advanceTimersByTimeAsync(1_000);
+
+    expect(impl.mock.calls.length, 'nothing ran after the shutdown finished').toBe(callsAtBudget);
+    // And a later flush cannot restart it either.
+    r.flush();
+    await vi.advanceTimersByTimeAsync(1_000);
+    expect(impl.mock.calls.length).toBe(callsAtBudget);
+  });
+
+  it('gives up on a transport that never answers, and lets go of both phases', async () => {
+    vi.useFakeTimers();
+    const aborted: string[] = [];
+    const impl = vi.fn(
+      (url: string, init?: RequestInit) =>
+        new Promise<Response>(() => {
+          init?.signal?.addEventListener('abort', () => {
+            aborted.push(String(url).includes('/oauth/token') ? 'token' : 'post');
+          });
+        }),
+    );
+    const r: any = reporter(impl);
+
+    record(r);
+    let settled = false;
+    void r.stop().then(() => { settled = true; });
+    await vi.advanceTimersByTimeAsync(1);
+    expect(settled, 'still waiting on the token exchange').toBe(false);
+
+    // A hung transport would otherwise keep a shutdown pending for as long as the process lived.
+    await vi.advanceTimersByTimeAsync(5_000);
+    await vi.advanceTimersByTimeAsync(1);
+    expect(settled, 'the wait is bounded').toBe(true);
+    expect(aborted, 'and the open phase was let go of').toContain('token');
+  });
+
+  it('aborts a hanging post, not only a hanging token exchange', async () => {
+    vi.useFakeTimers();
+    const aborted: string[] = [];
+    const impl = vi.fn((url: string, init?: RequestInit) => {
+      if (String(url).includes('/oauth/token')) {
+        return Promise.resolve(
+          new Response(JSON.stringify({ access_token: 'jwt', expires_in: 3600 }), {
+            status: 200,
+            headers: { 'Content-Type': 'application/json' },
+          }),
+        );
+      }
+
+      return new Promise<Response>(() => {
+        init?.signal?.addEventListener('abort', () => { aborted.push('post'); });
+      });
+    });
+    const r: any = reporter(impl);
+
+    record(r);
+    let settled = false;
+    void r.stop().then(() => { settled = true; });
+    await vi.advanceTimersByTimeAsync(1);
+    await vi.advanceTimersByTimeAsync(5_000);
+    await vi.advanceTimersByTimeAsync(1);
+
+    expect(settled, 'bounded on the post too').toBe(true);
+    expect(aborted).toContain('post');
+  });
+});

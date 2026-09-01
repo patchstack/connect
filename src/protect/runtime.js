@@ -15,8 +15,11 @@
 // Runtime guards: .express(), .node(), .fetch(handler) / .fetchGuard() — same policy,
 // every runtime an AI builder deploys to.
 // Vendored node-waf engine (this package is self-contained — no @patchstack/node-waf dep).
+import { resolveClientIp } from './client-ip.js';
 import { RuleEngine } from './engine/index.js';
 import { matchValue, walkLeaves, safeRegExp, jwtClaimSpans } from './engine/engine.js';
+import { requestField } from './engine/normalizer.js';
+import { captureValues, createPlanCache, permitsAnything } from './capture-plan.js';
 import { PulseRuleClient } from './engine/pulse-client.js';
 import { fromFetchRequest } from './engine/fetch.js';
 import { fromNodeRequest } from './engine/node.js';
@@ -29,6 +32,7 @@ import { makeStore } from './rules/store.js';
 import { resolveRules } from './rules/source.js';
 import { startRefresh, makeRefreshHandler } from './rules/refresh.js';
 import { createDetectionReporter } from './detections.js';
+import { reportingState } from './reporting-state.js';
 import { notify } from './notify.js';
 import { createFirewallLogReporter, resolveApiBase, telemetryEnabled } from './firewall-log.js';
 
@@ -94,8 +98,29 @@ export async function createProtection(options = {}) {
   // Minimal payload by design; see `detections.js`.
   let detections = null;
 
+  /**
+   * The rule as a callback sees it: its identity, and nothing that carries policy.
+   *
+   * `onDetect` documents `rule` as `{ id, category }`, and that is what this returns. The rule the engine
+   * matches with IS the policy in force, and enforcement lives in its nested parts — `rule_v2`, `when`,
+   * and the match and action objects inside them — so handing out the object, or any copy that still
+   * shares them, lets a callback change what every later request through this guard is screened for.
+   *
+   * Projected rather than cloned because this runs on every detection, which an attacker can drive. A
+   * deep clone would allocate the whole rule per detection to hand back fields the contract does not
+   * promise. The internal reporters keep reading the real rule; only the callback's view is narrowed.
+   */
+  const ruleIdentity = (rule) => ({ id: rule?.id, category: rule?.category });
+
   const onDetect = (detection) => {
-    notify(userOnDetect, detection, 'onDetect');
+    // What the platform is told is the engine's account of the request, and a host callback cannot change
+    // it. A synchronous callback that replaced `ip`, `clientIpSource`, `rule` or `path` would otherwise
+    // decide what the platform is told a rule matched and who it matched — silently, and
+    // indistinguishably from a correct report.
+    //
+    // The callback gets its own object, so what it writes reaches nothing else; each internal reporter
+    // builds its own record from the detection itself. Reading before the callback runs is not what
+    // carries this — it is defence in depth for the case where the copy is later weakened.
     if (detections) detections.record(detection);
     if (firewallLog && detection?.mode === 'block') {
       firewallLog.record({
@@ -106,6 +131,16 @@ export async function createProtection(options = {}) {
         userAgent: detection.userAgent,
       });
     }
+
+    // Without `capture`: the documented callback carries the rule's identity and the request's own
+    // metadata, and a host already holds the request these values came from. Widening it to forward
+    // evidence is a decision about the callback contract, not a side effect of collecting any.
+    const { capture: _evidence, ...forCallback } = detection ?? {};
+    notify(
+      userOnDetect,
+      { ...forCallback, ...(detection?.rule ? { rule: ruleIdentity(detection.rule) } : {}) },
+      'onDetect',
+    );
   };
 
   // One tiered store (memory → filesystem/pluggable) shared by the initial load and every refresh.
@@ -141,42 +176,121 @@ export async function createProtection(options = {}) {
     notify(onError, new Error(message), 'onError');
     console.warn(message);
   }
-  const bundle = await resolveRules(options, store, { timeoutMs: bootTimeoutMs, pulseAuth });
-  // OPT-IN, deliberately. Two reasons, and the first is not about privacy: switching it on adds an
-  // outbound POST to every guard that has a site UUID, which is a change in what an installed app does
-  // on the network — the kind of thing that must be disclosed in the shipped docs before it is a default,
-  // not after. The second is that the default belongs to whoever owns that disclosure, so the capability
-  // lands here and the flip is a separate, deliberate change.
+  // The state sent on the fetch, computed from what is knowable before it: the store says whether the
+  // platform has ever delivered rules here, which is the honest origin at the moment of asking. The
+  // resolved state is recomputed from the actual origin immediately after, and every later fetch carries
+  // whatever the guard is in by then.
+  const cachedOrigin = async () => {
+    const prior = await store.read();
+    if (prior?.bundle) return 'cache';
+
+    return options.rules ? 'bundled' : 'empty';
+  };
+  const stateFor = (origin) =>
+    reportingState({
+      siteUuid: options.siteUuid,
+      ruleOrigin: origin,
+      hasCredential: Boolean(pulseAuth),
+      configOptOut: options.reportDetections === false,
+    });
+
+  // Read once and reused below, so the state reported on the fetch and the state compared against the
+  // settled one are the same value rather than two reads of a store the fetch has since written to.
+  const preFetchState = stateFor(await cachedOrigin()).state;
+  const bundle = await resolveRules(options, store, {
+    timeoutMs: bootTimeoutMs,
+    pulseAuth,
+    detectionState: preFetchState,
+  });
+  // ON by default for an enrolled site running Patchstack-delivered rules, and off otherwise — a local
+  // install and a guard running its own bundle send nothing. That default is a change in what an
+  // installed app does on the network, so it is disclosed in `AGENT-INSTALL.md` and in the option
+  // documentation rather than being inferred from behaviour.
   //
-  // And it needs a credential. The detections endpoint is site-addressed and site-bound-token-only, so a
+  // It needs a credential. The detections endpoint is site-addressed and site-bound-token-only, so a
   // reporter built without one queues events, posts them, and is refused — spending an outbound request
   // per batch to accomplish nothing, while `reportDetections: true` in the config says reporting is on.
   // Refusing to build it is the honest outcome; `protection.detectionReporting` says which it is.
-  let detectionReporting = 'off';
-  if (options.reportDetections === true && options.siteUuid && telemetryEnabled()) {
-    if (!pulseAuth) {
-      detectionReporting = 'unavailable-no-credential';
-      const message =
-        'Patchstack: detection reporting is enabled for site ' +
-        options.siteUuid +
-        ' but no API credential resolved, so no report could be delivered. Reporting is off.';
-      notify(onError, new Error(message), 'onError');
-      console.warn(message);
-    } else {
-      detectionReporting = 'on';
+  //
+  // Derived from enrolment rather than from a config flag: reporting is on for a site the platform
+  // manages, and off everywhere else. `reportingState` holds the whole decision so every combination is
+  // enumerable in a test instead of reachable only by constructing a guard.
+  let detectionReporting = 'not-enrolled';
+  /**
+   * The origin of the rules in force.
+   *
+   * Held separately from the reported state so a request can carry a state derived FRESH from it. Sending
+   * the previously reported state would mean an opt-out that appeared under a running guard was not
+   * reported on the next request — only on the one after it.
+   */
+  let currentOrigin;
+
+  /**
+   * Bring reporting into line with the rules now in force.
+   *
+   * Called at boot and after every refresh, because the inputs are not all boot-time facts: a guard that
+   * started on a failed fetch and fell back to its cached or bundled rules can receive platform rules on
+   * a later refresh, and an opt-out can appear in the environment under a running process. A state fixed
+   * at startup leaves the first case silent for the life of the process.
+   *
+   * The credential is resolved once at boot, so losing it mid-process does not change the state.
+   *
+   * Starts and stops the reporter accordingly. Stopping flushes what it holds — the events already
+   * collected were collected while reporting was on, and dropping them would lose evidence rather than
+   * decline to gather it.
+   */
+  const applyReportingState = async (origin) => {
+    currentOrigin = origin;
+    const next = stateFor(origin);
+    const changed = next.state !== detectionReporting;
+    detectionReporting = next.state;
+
+    if (next.reports && !detections) {
       detections = createDetectionReporter({
         siteUuid: options.siteUuid,
         baseUrl: options.pulseRulesUrl,
         pulseAuth,
-        // The bundle the guard is actually running, so a hit can be attributed to the rules that produced
-        // it rather than to whatever is current when the report is read. Kept current across refreshes —
-        // see the refresh tick below.
+        // The bundle the guard is actually running, so a hit can be attributed to the rules that
+        // produced it rather than to whatever is current when the report is read.
         rulesEtag: (await store.read())?.etag ?? null,
         fetchImpl: options.fetchImpl,
         flushMs: options.detectionFlushMs,
       });
+    } else if (!next.reports && detections) {
+      detections.stop();
+      detections = undefined;
     }
-  }
+
+    if (changed && next.state === 'unavailable-no-credential') {
+      const message =
+        'Patchstack: this site is enrolled and running managed rules, but no API credential resolved, ' +
+        'so no security event could be delivered. Reporting is off.';
+      notify(onError, new Error(message), 'onError');
+      console.warn(message);
+    }
+
+    return next;
+  };
+
+  /**
+   * Apply the settled state, and correct the platform if the request that just went out declared another.
+   *
+   * Both the boot fetch and every refresh declare a state BEFORE resolution decides where the rules came
+   * from, so either can settle somewhere else. This is the single place that reconciles the two, so the
+   * two paths cannot drift apart: a guard whose only refresh is a one-shot manual call would otherwise
+   * leave the platform holding the pre-resolution answer for the life of the process.
+   *
+   * @param {'api'|'cache'|'bundled'|'empty'|undefined} origin
+   * @param {string} declared the state carried by the request that produced `origin`
+   */
+  const applyAndAcknowledge = async (origin, declared) => {
+    const settled = await applyReportingState(origin);
+    if (settled.state !== declared && detections) detections.announce(settled.state);
+
+    return settled;
+  };
+
+  await applyAndAcknowledge(bundle.source?.origin, preFetchState);
   // Mode is mutable so a Pulse refresh can flip dry-run ↔ block when SaaS enables production.
   // Precedence: PATCHSTACK_MODE env (local override) > API enforcement > options.mode > dry-run.
   let mode = resolveMode(options, bundle);
@@ -259,6 +373,39 @@ export async function createProtection(options = {}) {
   // before, so an older server that never sends the field behaves identically.
   const ruleMode = (rule) => (rule?.enforcement === 'dry-run' ? 'dry-run' : mode);
 
+  // Plans derived once per rule, and only ever consulted where there is somewhere for evidence to go.
+  const planCache = createPlanCache();
+
+  /**
+   * The evidence for one match, taken here and nowhere else.
+   *
+   * The resolver stays inside this function. What leaves is the bounded result — a fixed number of
+   * values, each of fixed length, and counts of what did not fit. Handing the resolver onward instead
+   * would put the whole request within reach of every consumer of a detection, which is the opposite of
+   * a plan that names what may be read.
+   *
+   * Nothing is derived when reporting is off. That is a cost decision rather than a safeguard — with no
+   * reporter there is no event for evidence to travel on, and the block log reads named fields only — so
+   * skipping the work changes what an app spends, not what leaves it.
+   */
+  const evidenceFrom = (result) => {
+    if (!detections || !result?.rule) return undefined;
+    let entry;
+    try {
+      entry = planCache.for(result.rule);
+    } catch (err) {
+      notify(onError, err, 'onError');
+
+      return undefined;
+    }
+
+    // The reference travels even when the plan permits nothing, because "this rule was allowed to show
+    // you nothing" and "this rule showed you nothing" are different facts, and only the first is policy.
+    if (!permitsAnything(entry.plan)) return { plan: entry.reference };
+
+    return { plan: entry.reference, ...captureValues(entry.plan, result.resolver) };
+  };
+
   const decide = (phase, result, block, allow, ctx = {}) => {
     if (!result || !result.blocked) return allow();
     const effectiveMode = ruleMode(result.rule);
@@ -273,7 +420,12 @@ export async function createProtection(options = {}) {
       method: ctx.method,
       path: ctx.path,
       ip: ctx.ip,
+      // Provenance travels with the address. Without it a consumer cannot tell an observed peer from a
+      // value read out of a forwarded header, and `null` from "there was no address to establish".
+      clientIpSource: ctx.clientIpSource,
       userAgent: ctx.userAgent,
+      // Derived from the reading this decision was made on, before that reading goes out of scope.
+      capture: evidenceFrom(result),
     });
     return effectiveMode === 'block' ? block() : allow();
   };
@@ -309,7 +461,21 @@ export async function createProtection(options = {}) {
       // dry-run must not redact or withhold a body either: "detect until justified" is meaningless if the
       // rule still rewrites what the user sees.
       const responseMode = ruleMode(rule);
-      onDetect({ phase: 'response', mode: responseMode, category: rule.category, rule, message: result.message });
+      // The same request metadata a request-phase detection carries, taken from the originating request's
+      // own resolution. Omitting it left a response detection with no client at all, so a reviewer could
+      // not tell which request produced it.
+      onDetect({
+        phase: 'response',
+        mode: responseMode,
+        category: rule.category,
+        rule,
+        message: result.message,
+        ...requestMetaFromContext(reqCtx),
+        // A response detection names its capture policy like any other. Response sources are never
+        // capturable, so a response-only rule reports a plan that permitted nothing — which is the
+        // policy, and a different fact from a rule that found nothing.
+        capture: evidenceFrom(result),
+      });
       if (responseMode !== 'block') continue; // dry-run: observe only
       if (redactors && redactors.length) {
         // Span redactors on a mutation-decoded rule can't map back to the raw body → fail closed.
@@ -357,19 +523,122 @@ export async function createProtection(options = {}) {
 
   // Minimal request context for the response phase: what a response rule's `when` scope and any
   // request-header reference (Host/Origin) need — method, path, and request headers. No body.
-  const reqContextFromFetch = (request) => {
+  /**
+   * Present an Express request to the engine with the resolved address, without touching the original.
+   *
+   * Every field the engine reads is materialised as an OWN property. The engine normalises with
+   * `{ ...req, ...normalizeRequest(req) }`, and a spread copies own enumerable properties only — so a
+   * prototype-linked view would arrive carrying just the two properties added here, and a rule scoped to
+   * a method, or reading an uploaded file or a parsed cookie, would silently find nothing.
+   *
+   * The application's own request object is left alone: `req.ip` on Express is an accessor the framework
+   * defines from its own `trust proxy` setting, and overwriting it would change what the application sees.
+   */
+  const shapeExpressRequest = (req) => {
+    const client = resolveClientIp({
+      peer: req?.socket?.remoteAddress,
+      headers: req?.headers ?? {},
+      trustedProxy: options.trustedProxy,
+    });
+
+    return {
+      client,
+      shaped: {
+        // Own copies of everything a rule can address. Listed rather than spread, so a field the engine
+        // gains has to be added here deliberately instead of appearing to work by accident.
+        // Through the same gate as the engine's own normalisation: this projection turns whatever it reads
+        // into an OWN property, so reading a polluted prototype here would launder it into evidence that
+        // no later own-property check could tell from the real thing.
+        method: requestField(req, 'method'),
+        url: requestField(req, 'url'),
+        originalUrl: requestField(req, 'originalUrl'),
+        headers: requestField(req, 'headers'),
+        query: requestField(req, 'query'),
+        body: requestField(req, 'body'),
+        files: requestField(req, 'files'),
+        cookies: requestField(req, 'cookies'),
+        socket: requestField(req, 'socket'),
+        // The verbatim body, when a caller kept one. A `raw` rule reads it directly, and the engine
+        // otherwise reconstructs raw by re-serialising the parsed body — which cannot carry what parsing
+        // did not keep: a body that failed to parse at all, a duplicate key where only the last value
+        // survives, or the exact bytes a signature was written against.
+        //
+        // Own property only. Evidence is what this request actually carried: a value reachable through a
+        // polluted prototype is not, and materialising it here would turn it into evidence indistinguish-
+        // able from real bytes — firing every raw rule that matches it. The adapters that capture real
+        // bytes define `_rawBody` on the request object itself.
+        ...(Object.hasOwn(req ?? {}, '_rawBody') ? { _rawBody: req._rawBody } : {}),
+        // The resolved address, and the resolution itself for the consumers downstream.
+        ip: client.ip ?? '',
+        _clientIp: client,
+      },
+    };
+  };
+
+  /**
+   * Screen a fetch request once, and hand back both the decision and the address it resolved.
+   *
+   * Shared by `fetchGuard()` and `fetch(handler)` so the response phase can reuse the request phase's
+   * resolution instead of making its own.
+   */
+  const screenFetchRequest = async (request) => {
+    let result;
+    let shaped;
+    try {
+      shaped = await fromFetchRequest(request, { trustedProxy: options.trustedProxy });
+      result = engine.evaluate(shaped);
+    } catch (err) {
+      notify(onError, err, 'onError');
+
+      return { blocked: null, client: undefined }; // fail open
+    }
+    const blocked = decide(
+      'request',
+      result,
+      () => blockResponse(result, request),
+      () => null,
+      requestMeta(shaped, request),
+    );
+
+    return { blocked, client: shaped?._clientIp };
+  };
+
+  const reqContextFromFetch = (request, client) => {
     try {
       const u = new URL(request.url);
       const headers = headerObject(request.headers);
       // A fetch Request doesn't expose the Host header (it's set at send time), so derive it from the
       // URL — response rules that compare origins (open-redirect / CORS) need the request Host.
       if (!headers.host) headers.host = u.host;
-      return { method: request.method, originalUrl: u.pathname + u.search, headers };
+      // `client` is the resolution the request phase already made for this request, when there was one.
+      // Resolving again here could disagree with it, and a response detection naming a different address
+      // than the request detection for the same request describes two clients that do not exist.
+      const resolved = client ?? { ip: null, source: 'unavailable' };
+
+      return {
+        method: request.method,
+        originalUrl: u.pathname + u.search,
+        headers,
+        ip: resolved.ip ?? '',
+        _clientIp: resolved,
+      };
     } catch {
       return undefined;
     }
   };
-  const reqContextFromNode = (req) => (req ? { method: req.method, originalUrl: req.url, headers: req.headers || {} } : undefined);
+  // The response phase evaluates against the ORIGINATING request, so the resolution travels with it: a
+  // response rule reading `server.ip`, and a response detection's record, get the same address the
+  // request phase used.
+  const reqContextFromNode = (req, client) =>
+    req
+      ? {
+          method: req.method,
+          originalUrl: req.url,
+          headers: req.headers || {},
+          ip: client?.ip ?? '',
+          _clientIp: client ?? { ip: null, source: 'unavailable' },
+        }
+      : undefined;
 
   // Screen a fetch Response (used by .fetch() and — via protection.screenResponse — the Supabase guard).
   const screenResp = async (response, reqCtx) => {
@@ -490,7 +759,28 @@ export async function createProtection(options = {}) {
     // Same for egress: a dry-run rule records the outbound attempt without preventing it. Blocking a
     // request the app makes is at least as disruptive as blocking one it receives.
     const egressMode = ruleMode(result.rule);
-    onDetect({ phase: 'egress', mode: egressMode, category: result.rule?.category, rule: result.rule, message: result.message });
+    // The outbound request's own method and path. An egress detection has no client address and no user
+    // agent by nature: the call is the application's, not a visitor's, so there is nobody to attribute it
+    // to. Its destination host reaches the report through capture, for a rule that names `egress.url` or
+    // `egress.host` — which the internal-host rules do.
+    let egressPath = null;
+    try {
+      const u = new URL(url);
+      egressPath = u.pathname + u.search;
+    } catch {
+      egressPath = typeof url === 'string' ? url : null;
+    }
+
+    onDetect({
+      phase: 'egress',
+      mode: egressMode,
+      category: result.rule?.category,
+      rule: result.rule,
+      message: result.message,
+      method: typeof method === 'string' ? method : null,
+      path: egressPath,
+      capture: evidenceFrom(result),
+    });
     return egressMode === 'block';
   };
 
@@ -514,30 +804,36 @@ export async function createProtection(options = {}) {
 
     // Screen a fetch Response through the response-phase rules (redact/block). Used by
     // .fetch(), and by the Supabase guard on its forwarded upstream response.
-    screenResponse: (response, request) => screenResp(response, request ? reqContextFromFetch(request) : undefined),
+    // A standalone response screen with no request phase of its own — the Supabase guard's forwarded
+    // upstream response. It resolves once here, which is the only resolution for this call.
+    screenResponse: (response, request) =>
+      screenResp(
+        response,
+        request
+          ? reqContextFromFetch(
+              request,
+              resolveClientIp({ headers: headerObject(request.headers), trustedProxy: options.trustedProxy }),
+            )
+          : undefined,
+      ),
 
     // (request) => Response | null   (null = allow, caller proceeds). Request phase only.
     fetchGuard() {
-      return async (request) => {
-        let result;
-        try {
-          result = engine.evaluate(await fromFetchRequest(request));
-        } catch (err) {
-          notify(onError, err, 'onError');
-          return null; // fail open
-        }
-        return decide('request', result, () => blockResponse(result, request), () => null, fetchRequestMeta(request));
-      };
+      return async (request) => (await screenFetchRequest(request)).blocked;
     },
 
     // Wrap a fetch handler: screens the request, then the response (redact/block).
     fetch(handler) {
-      const guard = protection.fetchGuard();
       return async (request, ...rest) => {
-        const blocked = await guard(request);
+        // The request phase's own resolution is carried into the response phase rather than the response
+        // screening making a second one. Two resolutions for one request can disagree, and a response
+        // detection naming a different address than the request detection describes two clients that do
+        // not exist.
+        const { blocked, client } = await screenFetchRequest(request);
         if (blocked) return blocked;
         const response = await handler(request, ...rest);
-        return screenResp(response, reqContextFromFetch(request));
+
+        return screenResp(response, reqContextFromFetch(request, client));
       };
     },
 
@@ -546,11 +842,15 @@ export async function createProtection(options = {}) {
     express(exprOptions = {}) {
       return (req, res, next) => {
         let result;
+        // Resolved once, before evaluation, and reused by the engine, the response screening and the
+        // block record below. Three consumers deriving it separately could attribute one request to
+        // three different addresses.
+        const { shaped, client } = shapeExpressRequest(req);
         try {
-          result = engine.evaluate(req);
+          result = engine.evaluate(shaped);
         } catch (err) {
           notify(onError, err, 'onError');
-          if (exprOptions.screenResponses) wrapNodeResponse(res, reqContextFromNode(req));
+          if (exprOptions.screenResponses) wrapNodeResponse(res, reqContextFromNode(req, client));
           return next();
         }
         decide(
@@ -564,10 +864,10 @@ export async function createProtection(options = {}) {
             }
           },
           () => {
-            if (exprOptions.screenResponses) wrapNodeResponse(res, reqContextFromNode(req));
+            if (exprOptions.screenResponses) wrapNodeResponse(res, reqContextFromNode(req, client));
             next();
           },
-          nodeRequestMeta(req),
+          nodeRequestMeta(req, client),
         );
       };
     },
@@ -616,7 +916,7 @@ export async function createProtection(options = {}) {
         let shaped;
         let result;
         try {
-          shaped = fromNodeRequest(req, rawBody);
+          shaped = fromNodeRequest(req, rawBody, { trustedProxy: options.trustedProxy });
           if (parsedBody !== undefined && parsedBody !== null) shaped.body = parsedBody;
           result = engine.evaluate(shaped);
         } catch (err) {
@@ -640,10 +940,11 @@ export async function createProtection(options = {}) {
             // This guard consumed the request stream to screen it; re-expose the parsed
             // body so a downstream handler (without its own body-parser) can read it.
             if (req.body === undefined) req.body = shaped.body;
-            if (nodeOptions.screenResponses) wrapNodeResponse(res, reqContextFromNode(req));
+            // The resolution the shaping already made, carried into the response phase and the record.
+            if (nodeOptions.screenResponses) wrapNodeResponse(res, reqContextFromNode(req, shaped?._clientIp));
             next();
           },
-          nodeRequestMeta(req),
+          nodeRequestMeta(req, shaped?._clientIp),
         );
       }
     },
@@ -694,9 +995,22 @@ export async function createProtection(options = {}) {
         notify(onError, err, 'onError'); // a failed report must not stop the rule refresh
       }
     }
-    const next = await resolveRules(options, store, { timeoutMs: options.refreshTimeoutMs, pulseAuth });
+    // Derived from the origin in force, re-reading the environment, rather than resent from the last
+    // reported value: an opt-out that appeared since the previous request has to travel on THIS one. Held
+    // in a binding because the acknowledgement below compares against exactly what this request carried.
+    const declaredState = stateFor(currentOrigin).state;
+    const next = await resolveRules(options, store, {
+      timeoutMs: options.refreshTimeoutMs,
+      pulseAuth,
+      detectionState: declaredState,
+    });
     mode = resolveMode(options, next);
     applyBundle(next);
+    // Recomputed from the origin this refresh resolved. Within one process the reachable changes are a
+    // rules source that STARTS being the platform's, and an opt-out appearing in the environment. It
+    // cannot stop being the platform's: once a bundle has been accepted the memory tier holds it, so a
+    // later failed fetch still resolves to `cache`. The credential is resolved once at boot.
+    await applyAndAcknowledge(next.source?.origin, declaredState);
     // After the swap, and only after it: later detections belong to the bundle now running. A refresh
     // that fell back to the cached or bundled ruleset kept the previous rules, and `store.read()` then
     // still holds the previous identity — which is exactly the answer that stays true.
@@ -726,18 +1040,37 @@ export async function createProtection(options = {}) {
   // the block log, the detection reporter. Always present because a lifecycle method that exists only
   // for some configurations is one a caller cannot rely on — and each of these components can be the
   // only one installed, so any of them can be the one left running.
+  //
+  // Returns a promise that settles when the reporter has finished draining, so a host shutting down can
+  // await it rather than racing the last batch against process exit. Bounded and best-effort — a runtime
+  // that terminates regardless still wins — and ignoring the return behaves exactly as before.
   protection.stop = () => {
     loop?.stop();
-    firewallLog?.stop();
-    detections?.stop();
+    // Both reporters, because the promise says every buffer this reaches is finished with. Waiting only
+    // for one would resolve while the other still had records outstanding — and resolve immediately in a
+    // configuration where the one being waited for was never built.
+    const outstanding = [firewallLog?.stop(), detections?.stop()].filter(
+      (wait) => wait && typeof wait.then === 'function',
+    );
+
+    return Promise.all(outstanding).then(() => undefined);
   };
   // The name callers already have, kept as an alias for it.
   protection.stopRefresh = protection.stop;
   // Which of the three states reporting is in: requested and running, requested but undeliverable, or
   // not requested. A boolean would collapse the middle one into "off", which is the reassuring reading.
-  protection.detectionReporting = detectionReporting;
-  // Delivery health, when there is a reporter: what was attempted, acknowledged, refused, and dropped.
-  if (detections) protection.detectionHealth = () => detections.health();
+  // A getter, because the state follows refreshes: a property assigned once would report the boot value
+  // for the life of the process, including after reporting started or stopped.
+  Object.defineProperty(protection, 'detectionReporting', {
+    get: () => detectionReporting,
+    enumerable: true,
+  });
+  // Delivery health while there is a reporter: what was attempted, acknowledged, refused, and dropped.
+  // Undefined when there is none, so "no reporter" and "a reporter with nothing to show" stay apart.
+  Object.defineProperty(protection, 'detectionHealth', {
+    get: () => (detections ? () => detections.health() : undefined),
+    enumerable: true,
+  });
 
   return protection;
 }
@@ -1278,33 +1611,76 @@ function defaultOnDetect({ phase, mode, category, rule, message }) {
   console.warn(`[patchstack] ${tag} phase=${phase ?? 'request'} category=${category ?? '?'} rule=${rule?.id ?? '?'} ${message ?? ''}`.trim());
 }
 
-/** @param {Request} request */
-function fetchRequestMeta(request) {
-  if (!request) return {};
-  let path = null;
-  try {
-    path = new URL(request.url).pathname;
-  } catch {
-    path = typeof request.url === 'string' ? request.url : null;
-  }
+/**
+ * Request metadata for a detection or a block record, using the address already resolved for it.
+ *
+ * `shaped` is the object the engine evaluated, which carries the one resolution for this request. The
+ * original request is only consulted for the path, the method and the user agent — never for an address,
+ * because a second derivation could disagree with the first and attribute one request to two clients.
+ *
+ * @param {{ ip?: string, _clientIp?: { ip: string | null, source: string } } | undefined} shaped
+ * @param {Request | undefined} request
+ */
+/**
+ * Request metadata from a response-phase context.
+ *
+ * The context is the originating request, already carrying its own resolution — so a response detection
+ * names the same client as the request detection for that request.
+ */
+function requestMetaFromContext(reqCtx) {
+  if (!reqCtx) return {};
+  const client = reqCtx._clientIp ?? { ip: null, source: 'unavailable' };
+
   return {
-    method: request.method ?? null,
-    path,
-    ip: request.headers?.get?.('x-forwarded-for') ?? null,
-    userAgent: request.headers?.get?.('user-agent') ?? null,
+    method: reqCtx.method ?? null,
+    // Path AND query. The reporter is what drops the query's VALUES, keeping its parameter names, so
+    // trimming it here would leave a Fetch or response detection unable to say what was requested.
+    path: typeof reqCtx.originalUrl === 'string' ? reqCtx.originalUrl : null,
+    ip: client.ip,
+    clientIpSource: client.source,
+    userAgent: reqCtx.headers?.['user-agent'] ?? null,
   };
 }
 
-/** @param {import('http').IncomingMessage & { ip?: string, originalUrl?: string }} req */
-function nodeRequestMeta(req) {
+function requestMeta(shaped, request) {
+  const client = shaped?._clientIp ?? { ip: null, source: 'unavailable' };
+  let path = null;
+  let method = null;
+  let userAgent = null;
+
+  if (request) {
+    try {
+      const u = new URL(request.url);
+      path = u.pathname + u.search;
+    } catch {
+      path = typeof request.url === 'string' ? request.url : null;
+    }
+    method = request.method ?? null;
+    userAgent = request.headers?.get?.('user-agent') ?? null;
+  }
+
+  return { method, path, ip: client.ip, clientIpSource: client.source, userAgent };
+}
+
+/**
+ * Request metadata on the Node and Express paths, using the address already resolved for the request.
+ *
+ * @param {import('http').IncomingMessage & { originalUrl?: string }} req
+ * @param {{ ip: string | null, source: string } | undefined} client
+ */
+function nodeRequestMeta(req, client) {
   if (!req) return {};
   const headers = req.headers ?? {};
   const ua = headers['user-agent'] ?? headers['User-Agent'];
-  const fwd = headers['x-forwarded-for'] ?? headers['X-Forwarded-For'];
+  const resolved = client ?? { ip: null, source: 'unavailable' };
+
   return {
     method: req.method ?? null,
     path: req.originalUrl || req.url || null,
-    ip: req.ip ?? (typeof fwd === 'string' ? fwd : null),
+    // Never `req.ip`: under Express's `trust proxy` that is header-derived by a policy this guard has not
+    // verified, and a second derivation could disagree with the one the engine evaluated.
+    ip: resolved.ip,
+    clientIpSource: resolved.source,
     userAgent: typeof ua === 'string' ? ua : Array.isArray(ua) ? ua[0] : null,
   };
 }

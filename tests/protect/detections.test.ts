@@ -17,7 +17,23 @@ import { createProtection } from '../../src/protect/runtime.js';
 const drain = () => new Promise((resolve) => setTimeout(resolve, 0));
 
 /** Everything the payload is allowed to carry, and nothing else. */
-const ALLOWED_KEYS = ['rule_id', 'route', 'parameters', 'phase', 'enforced', 'rules_etag', 'rule_revision', 'detected_at'];
+// `client_ip` is not here: it is omitted when no address could be established, which is the case for a
+// reporter driven directly with no resolved address. `client_ip_source` is always present, because "this
+// could not be established" is the part a reader needs.
+const ALLOWED_KEYS = [
+  'rule_id',
+  'route',
+  'query_keys',
+  'method',
+  'user_agent',
+  'parameters',
+  'phase',
+  'enforced',
+  'rules_etag',
+  'rule_revision',
+  'client_ip_source',
+  'detected_at',
+];
 
 const pinnedRule = {
   id: 'pulse-1',
@@ -60,6 +76,7 @@ describe('the detection payload', () => {
     expect(event).toMatchObject({
       rule_id: 'pulse-1',
       route: '/api/preview',
+      query_keys: ['url'],
       parameters: ['server.REQUEST_URI', 'get.url'],
       phase: 'request',
       // The point of the channel: this rule did not block, and that is the interesting case.
@@ -69,7 +86,7 @@ describe('the detection payload', () => {
     expect(typeof event.detected_at).toBe('string');
   });
 
-  it('never puts a matched value, a query string, a body or a header on the wire', async () => {
+  it('never puts a matched value, a query-string value or a body on the wire', async () => {
     // The load-bearing test, and deliberately a scan of the serialized payload rather than of the object
     // we built: a field added later — `message`, `value`, `headers` — would pass every assertion above
     // and fail here, which is the direction this needs to fail in.
@@ -91,11 +108,20 @@ describe('the detection payload', () => {
     await drain();
 
     const wire = JSON.stringify(posts[0].body);
-    for (const forbidden of ['SUPER_SECRET', '169.254.169.254', 'meta-data', '203.0.113.9', 'curl/8.0', 'Blocked by']) {
+    for (const forbidden of ['SUPER_SECRET', '169.254.169.254', 'meta-data', '203.0.113.9', 'Blocked by']) {
       expect(wire, `${forbidden} must not reach the reporting endpoint`).not.toContain(forbidden);
     }
-    // And the route survived, so the scan above is not passing because nothing was sent.
-    expect(wire).toContain('/api/preview');
+
+    // The user agent DOES travel: attribution is what the channel is for, and a detection without it
+    // cannot be told from another client's. It is a header value, and the only one that is sent.
+    expect(wire).toContain('curl/8.0');
+
+    // The query's parameter NAMES travel, and none of its values do — which is what makes the scan above
+    // meaningful rather than a payload that simply dropped the URL.
+    const [event] = posts[0].body.detections;
+    expect(event.route).toBe('/api/preview');
+    expect(event.query_keys).toEqual(['url', 'token']);
+    expect(wire).not.toContain('http://169');
   });
 
   it('reports the enforcement state, not the site mode', async () => {
@@ -241,12 +267,21 @@ describe('declaring the capability', () => {
       reportDetections: true,
     });
 
-    // Authenticated, so the claim carries weight and is made.
-    const claimed = seen.filter((h) => h['X-Patchstack-Detections'] === 'enabled');
+    // Authenticated, so the claim carries weight and is made. The header carries the STATE, not a bit:
+    // "no events arrived" has several causes, and the platform can only tell them apart if the guard
+    // names which one it is in.
+    const claimed = seen.filter((h) => typeof h['X-Patchstack-Detections'] === 'string');
     expect(claimed.length).toBeGreaterThan(0);
     for (const headers of claimed) {
       expect(headers.Authorization, 'the claim only travels on an authenticated request').toContain('Bearer');
+      expect(
+        ['on', 'no-managed-rules', 'unavailable-no-credential'],
+        'the header value is a reporting state',
+      ).toContain(headers['X-Patchstack-Detections']);
     }
+    // The first fetch of a site with no cached bundle honestly reports that it holds no managed rules
+    // yet; the state that follows the resolution is asserted separately below.
+    expect(p.detectionReporting).toBe('on');
     p.stopRefresh?.();
   });
 
@@ -484,7 +519,7 @@ describe('reporting that cannot be delivered', () => {
     expect(p.detectionReporting).toBe('unavailable-no-credential');
     expect(p.detectionHealth, 'no reporter means no health to report').toBeUndefined();
     expect(posted.some((url) => url.includes('/detections/'))).toBe(false);
-    expect(warnings.some((m) => m.includes('detection reporting is enabled'))).toBe(true);
+    expect(warnings.some((m) => m.includes('no API credential resolved'))).toBe(true);
 
     p.stop();
   });
@@ -555,13 +590,18 @@ describe('the reporter can always be reached', () => {
 
     await p.fetchGuard()(new Request('https://app.test/api/x?q=boom'));
     await drain();
-    expect(posts.length, 'still buffered — nothing has asked it to flush').toBe(0);
+    // Counted in EVENTS, not requests: a state announcement is a request carrying no events, and it is
+    // made once at boot. What this asserts is that no detection has left the buffer yet.
+    const events = () => posts.flatMap((body: any) => body.detections ?? []);
+    expect(events().length, 'still buffered — nothing has asked it to flush').toBe(0);
 
     p.stop();
     await drain();
     await drain();
 
-    expect(posts.length).toBe(1);
+    // Exactly the one buffered event, delivered by the stop. `sent`/`delivered` count events, so the
+    // state announcement — which carries none — does not move them.
+    expect(events().length).toBe(1);
     expect(p.detectionHealth()).toMatchObject({ sent: 1, delivered: 1, failed: 0, dropped: 0 });
     expect(p.detectionHealth().lastDeliveredAt).not.toBeNull();
   });
@@ -572,7 +612,9 @@ describe('delivery health', () => {
     // The capability declaration says a guard intends to report. Only an acknowledgement says anything
     // arrived, and without counting the refusals a delivery path that rejects everything reads the same
     // as an app where no rule fired.
-    let status = 500;
+    // A terminal refusal, so the outcome is settled on the first attempt: a retryable status would be
+    // retried, and this test is about which counter moves, not about when.
+    let status = 400;
     const fetchImpl = vi.fn(async () => new Response('{}', { status }));
     const reporter = createDetectionReporter({
       siteUuid: 'site-1',
@@ -671,5 +713,266 @@ describe('the rule revision travels with the detection', () => {
     await drain();
 
     for (const event of posts[0].body.detections) expect(event.rule_revision).toBeNull();
+  });
+});
+
+describe('every shortened field says so, including the baseline ones', () => {
+  it('marks a capped method, user agent and query-key list, and gives the key total', async () => {
+    const { reporter, posts } = reporterWith();
+    const manyKeys = Array.from({ length: 25 }, (_, i) => `k${i}=v${i}`).join('&');
+
+    reporter.record({
+      rule: pinnedRule,
+      phase: 'request',
+      mode: 'block',
+      path: `/api/preview?${manyKeys}&${'n'.repeat(200)}=x`,
+      method: 'M'.repeat(40),
+      userAgent: 'u'.repeat(600),
+    } as never);
+    reporter.flush();
+    await drain();
+
+    const [event] = posts[0].body.detections;
+    // A cap nobody reports is a cap a reader cannot allow for.
+    expect(event.truncated).toContain('method');
+    expect(event.truncated).toContain('user_agent');
+    expect(event.truncated).toContain('query_keys');
+    expect(event.query_keys.length).toBe(10);
+    expect(event.query_keys_total, 'so a short list is not read as a complete one').toBe(26);
+    expect(event.method.length).toBeLessThanOrEqual(16);
+    expect(event.user_agent.length).toBeLessThanOrEqual(256);
+  });
+
+  it('says nothing about truncation when the baseline fitted', async () => {
+    const { reporter, posts } = reporterWith();
+
+    reporter.record({
+      rule: pinnedRule,
+      phase: 'request',
+      mode: 'block',
+      path: '/api/preview?url=x',
+      method: 'GET',
+      userAgent: 'curl/8.0',
+    } as never);
+    reporter.flush();
+    await drain();
+
+    const [event] = posts[0].body.detections;
+    expect(Object.hasOwn(event, 'truncated')).toBe(false);
+    expect(Object.hasOwn(event, 'query_keys_total')).toBe(false);
+  });
+});
+
+describe('the wire gate validates what it is given', () => {
+  const withCapture = (capture: unknown) => ({
+    rule: pinnedRule,
+    phase: 'request',
+    mode: 'block',
+    path: '/a',
+    capture,
+  });
+
+  it('counts what it dropped, so eleven values are not mistaken for two hundred', async () => {
+    const { reporter, posts } = reporterWith();
+
+    reporter.record(
+      withCapture({
+        plan: 'cp2-abc',
+        omitted: 3,
+        values: Array.from({ length: 200 }, (_, i) => ({ parameter: `post.f${i}`, value: `v${i}` })),
+      }) as never,
+    );
+    reporter.flush();
+    await drain();
+
+    const { capture } = posts[0].body.detections[0];
+    expect(capture.values.length).toBe(10);
+    // What the producer left out, plus what this gate did — in the matching counter.
+    expect(capture.omitted).toBe(3 + 190);
+    expect(Object.hasOwn(capture, 'unsupported'), 'nothing here was refused for its type').toBe(false);
+    expect(capture.truncated).toContain('values');
+  });
+
+  it('refuses a value whose type this channel does not report, rather than coercing it', async () => {
+    const { reporter, posts } = reporterWith();
+    // `String(x)` would run whatever `toString` an object carries, turning a refused value into content.
+    const hostile = { toString: () => 'SENTINEL-COERCED' };
+
+    reporter.record(
+      withCapture({
+        plan: 'cp2-abc',
+        values: [
+          { parameter: 'post.a', value: hostile },
+          { parameter: 'post.b', value: 'kept' },
+        ],
+      }) as never,
+    );
+    reporter.flush();
+    await drain();
+
+    const wire = JSON.stringify(posts[0].body);
+    expect(wire).not.toContain('SENTINEL-COERCED');
+    const { capture } = posts[0].body.detections[0];
+    expect(capture.values).toEqual([{ parameter: 'post.b', value: 'kept' }]);
+    // Refused for its type, which is a different fact from a bound leaving it out.
+    expect(capture.unsupported, 'counted as unsupported').toBe(1);
+    expect(Object.hasOwn(capture, 'omitted'), 'and not as omitted').toBe(false);
+  });
+
+  it('refuses a capture whose plan is not a plan', async () => {
+    const { reporter, posts } = reporterWith();
+
+    reporter.record(withCapture({ plan: { toString: () => 'SENTINEL-PLAN' }, values: [] }) as never);
+    reporter.flush();
+    await drain();
+
+    const wire = JSON.stringify(posts[0].body);
+    expect(wire).not.toContain('SENTINEL-PLAN');
+    expect(Object.hasOwn(posts[0].body.detections[0], 'capture')).toBe(false);
+  });
+
+  it('reads the capture once, so a getter cannot answer differently twice', async () => {
+    const { reporter, posts } = reporterWith();
+    let reads = 0;
+    const detection: any = withCapture(undefined);
+    Object.defineProperty(detection, 'capture', {
+      get() {
+        reads += 1;
+
+        return { plan: 'cp2-abc', values: [{ parameter: 'post.a', value: `read-${reads}` }] };
+      },
+    });
+
+    reporter.record(detection);
+    reporter.flush();
+    await drain();
+
+    expect(reads, 'one read, so what was checked is what was sent').toBe(1);
+    expect(posts[0].body.detections[0].capture.values[0].value).toBe('read-1');
+  });
+});
+
+describe('the wire gate reads only what the capture itself carries', () => {
+  const record = (reporter: any, capture: unknown) =>
+    reporter.record({ rule: pinnedRule, phase: 'request', mode: 'block', path: '/a', capture } as never);
+
+  afterEach(() => {
+    for (const key of ['raw', 'values', 'plan', 'unavailable']) delete (Object.prototype as any)[key];
+  });
+
+  it('does not transmit raw evidence that a prototype supplied', async () => {
+    // A plan that permitted nothing must transmit nothing. This guard shields applications against
+    // prototype pollution; its own reporting must not be the way one lands.
+    const { reporter, posts } = reporterWith();
+    (Object.prototype as any).raw = { value: 'SENTINEL-INHERITED-RAW' };
+
+    record(reporter, { plan: 'cp2-abc' });
+    reporter.flush();
+    await drain();
+
+    const { capture } = posts[0].body.detections[0];
+    expect(JSON.stringify(posts[0].body)).not.toContain('SENTINEL-INHERITED-RAW');
+    expect(Object.hasOwn(capture, 'raw')).toBe(false);
+  });
+
+  it('does not transmit values that a prototype supplied', async () => {
+    const { reporter, posts } = reporterWith();
+    (Object.prototype as any).values = [{ parameter: 'post.a', value: 'SENTINEL-INHERITED-VALUE' }];
+
+    record(reporter, { plan: 'cp2-abc' });
+    reporter.flush();
+    await drain();
+
+    expect(JSON.stringify(posts[0].body)).not.toContain('SENTINEL-INHERITED-VALUE');
+    expect(Object.hasOwn(posts[0].body.detections[0].capture, 'values')).toBe(false);
+  });
+
+  it('does not accept a plan that only a prototype names', async () => {
+    const { reporter, posts } = reporterWith();
+    (Object.prototype as any).plan = 'cp2-inherited';
+
+    record(reporter, { values: [{ parameter: 'post.a', value: 'v' }] });
+    reporter.flush();
+    await drain();
+
+    // No plan of its own means no capture at all: a report that named someone else's policy would be
+    // worse than one that named none.
+    expect(Object.hasOwn(posts[0].body.detections[0], 'capture')).toBe(false);
+    expect(JSON.stringify(posts[0].body)).not.toContain('cp2-inherited');
+  });
+
+  it('does not let a prototype claim a capture was unavailable', async () => {
+    const { reporter, posts } = reporterWith();
+    (Object.prototype as any).unavailable = true;
+
+    record(reporter, { plan: 'cp2-abc', values: [{ parameter: 'post.a', value: 'v' }] });
+    reporter.flush();
+    await drain();
+
+    const { capture } = posts[0].body.detections[0];
+    expect(capture.values.length, 'the values were read').toBe(1);
+    expect(Object.hasOwn(capture, 'unavailable'), 'and nothing claimed they were not').toBe(false);
+  });
+
+  it('does not let an entry inherit its parameter or value', async () => {
+    const { reporter, posts } = reporterWith();
+    const bare: any = Object.create({ parameter: 'post.inherited', value: 'SENTINEL-INHERITED-ENTRY' });
+
+    record(reporter, { plan: 'cp2-abc', values: [bare, { parameter: 'post.a', value: 'kept' }] });
+    reporter.flush();
+    await drain();
+
+    const { capture } = posts[0].body.detections[0];
+    expect(JSON.stringify(posts[0].body)).not.toContain('SENTINEL-INHERITED-ENTRY');
+    expect(capture.values).toEqual([{ parameter: 'post.a', value: 'kept' }]);
+    expect(capture.unsupported).toBe(1);
+  });
+});
+
+describe('reported query names are the names the guard addresses', () => {
+  const keysFor = async (query: string) => {
+    const { reporter, posts } = reporterWith();
+
+    reporter.record({ rule: pinnedRule, phase: 'request', mode: 'block', path: `/a?${query}` } as never);
+    reporter.flush();
+    await drain();
+
+    return posts[0].body.detections[0];
+  };
+
+  it('reads a plus as a space, as a rule addressing that parameter does', async () => {
+    // A rule addresses this parameter as `first name`. Reporting `first+name` would name something no
+    // reviewer could look up.
+    expect((await keysFor('first+name=x')).query_keys).toEqual(['first name']);
+  });
+
+  it('decodes a percent sequence', async () => {
+    expect((await keysFor('a%20b=1&%2Fslash=2')).query_keys).toEqual(['a b', '/slash']);
+  });
+
+  it('leaves an invalid percent sequence as written, rather than dropping the parameter', async () => {
+    expect((await keysFor('bad%ZZ=1')).query_keys).toEqual(['bad%ZZ']);
+  });
+
+  it('names a repeated parameter once, and counts distinct names', async () => {
+    const event = await keysFor('dup=1&dup=2&dup=3&other=4');
+
+    expect(event.query_keys).toEqual(['dup', 'other']);
+    // A parameter repeated three times is one name to look up, so the total describes the list.
+    expect(Object.hasOwn(event, 'query_keys_total'), 'nothing was left out').toBe(false);
+  });
+
+  it('reports a parameter with no value, and skips one with no name', async () => {
+    expect((await keysFor('flag&=novalue&real=1')).query_keys).toEqual(['flag', 'real']);
+  });
+
+  it('carries no names when there is no query at all', async () => {
+    const { reporter, posts } = reporterWith();
+
+    reporter.record({ rule: pinnedRule, phase: 'request', mode: 'block', path: '/a' } as never);
+    reporter.flush();
+    await drain();
+
+    expect(posts[0].body.detections[0].query_keys).toEqual([]);
   });
 });

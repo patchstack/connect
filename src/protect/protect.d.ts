@@ -34,27 +34,86 @@ export interface Protection {
   /** Present with a live source — re-fetch + hot-swap the rules once (used by the loop + push).
    *  Resolves with the outcome of the attempt: `ok: false` means the rules in force came from the
    *  cache or the bundled fallback, not from the source. It does not reject on a source failure. */
-  refresh?: () => Promise<{ ok: boolean; reason?: string }>;
+  /** Refresh the rules now. `ok` is whether the resolution was clean; `origin` is which source supplied
+   *  the rules now in force — `api` and `cache` are Patchstack-delivered, `bundled` is the caller's own
+   *  `rules` option, `empty` is none. A fallback is `ok: false` with the origin it fell back to. */
+  refresh?: () => Promise<{
+    ok: boolean;
+    origin?: "api" | "cache" | "bundled" | "empty";
+    reason?: string;
+  }>;
   /** Present with a live source — a fetch handler that runs `refresh()` when the request carries
    *  the configured refresh secret (a push/zero-day trigger). No secret set → the handler 404s. */
   refreshHandler?: () => (request: Request) => Promise<Response>;
   /** Stops everything with a timer or a buffer behind it: the refresh loop, the block log, the
    *  detection reporter (flushing what it holds). Always present, and safe to call twice. */
-  stop: () => void;
+  /**
+   * Stop everything holding a timer or a buffer.
+   *
+   * Resolves once the reporters this reaches — the detection reporter and the block log — have finished
+   * or been given up on, so a shutdown handler can await it instead of racing process exit. Each has its
+   * own budget, and when one elapses that reporter is ENDED: its requests are aborted, it starts nothing
+   * further, and it discards what it was holding. Ignoring the promise behaves as it always has.
+   *
+   * Two limits are worth knowing, because neither can be promised away:
+   *
+   * - A request is aborted, not guaranteed to stop. A transport that ignores its abort signal is
+   *   DETACHED — this stops waiting on it and stops acting on its result — so "resolved" means the
+   *   reporter is finished with it, not that the underlying request has ended.
+   * - A runtime that terminates the process regardless still wins, whatever this resolves.
+   *
+   * What is accounted for also differs by reporter. Every detection event ends up delivered, refused or
+   * dropped, and `detectionHealth()` reports each. Block-log records have no counters at all, so one lost
+   * to a failed token exchange, a failed post, or a shutdown that ran out of time is reported nowhere.
+   */
+  stop: () => Promise<void>;
   /** Alias of `stop`, under the name callers already have. */
-  stopRefresh: () => void;
-  /** Whether detection reporting is running, requested but undeliverable, or not requested.
-   *  `unavailable-no-credential` means `reportDetections` was set but no credential resolved, so
-   *  nothing is being sent. */
-  detectionReporting: "on" | "off" | "unavailable-no-credential";
+  stopRefresh: () => Promise<void>;
+  /** Whether this guard reports security events, and if not, why not.
+   *
+   *  Reporting is on for a site enrolled in Patchstack-managed mitigation that is running managed rules
+   *  with a credential, and off everywhere else. Each state is distinct so "no events arrived" can be
+   *  told apart from "reporting is off" — and it follows refreshes, so a guard that starts on cached or
+   *  bundled rules and later receives managed rules begins reporting without a restart.
+   *
+   *  - `on` — events are being sent
+   *  - `disabled-by-config` — `PATCHSTACK_REPORT_DETECTIONS` is false, or `reportDetections: false`
+   *  - `disabled-by-telemetry-opt-out` — `PATCHSTACK_TELEMETRY` is false
+   *  - `not-enrolled` — no site identity
+   *  - `no-managed-rules` — the rules in force did not come from Patchstack
+   *  - `unavailable-no-credential` — enrolled, but no credential resolved */
+  detectionReporting:
+    | "on"
+    | "disabled-by-config"
+    | "disabled-by-telemetry-opt-out"
+    | "not-enrolled"
+    | "no-managed-rules"
+    | "unavailable-no-credential";
   /** Present when detection reporting is on — delivery counts (in events) and the last acknowledgement.
    *  Carries no request data. */
   detectionHealth?: () => {
+    /** Events attempted, acknowledged, refused or unreachable, and dropped for queue pressure. */
     sent: number;
     delivered: number;
     failed: number;
     dropped: number;
+    /** Backoff attempts beyond the first. A path that only ever succeeds on a retry is working, and is
+     *  worth telling apart from one that never has to retry. */
+    retried: number;
+    /** Redeliveries made after the endpoint refused a token, which are not backoff retries: a rotated or
+     *  revoked credential is worth seeing as itself rather than as a delivery failure. */
+    reauthorized: number;
     lastDeliveredAt: string | null;
+    /** Capability announcements, counted separately: these carry no events, so they never move the
+     *  counters above. Zero here alongside delivered events is normal, and so is the reverse. */
+    capability: {
+      announced: number;
+      acknowledged: number;
+      failed: number;
+      /** Retries of a declaration, counted apart from event retries for the same reason as the rest. */
+      retried: number;
+      lastAcknowledgedAt: string | null;
+    };
   };
 }
 
@@ -95,20 +154,41 @@ export interface CreateProtectionOptions {
    */
   reportFirewallLog?: boolean;
   /**
-   * Report EVERY rule that fired — including one in `dry-run` that did not block — to the Pulse
-   * detections endpoint. Off unless explicitly `true`.
+   * Opt OUT of reporting every rule that fired — including one in `dry-run` that did not block — to the
+   * Pulse detections endpoint.
    *
-   * Why it exists: a rule that blocks nothing reports nothing, so a rule that is quietly wrong and a
-   * rule that is protecting look identical from the outside.
+   * Reporting is ON by default for a site enrolled with Patchstack that is running Patchstack-delivered
+   * rules and has a resolvable credential; it is off for a local install and for a guard running its own
+   * `rules`. This option can only switch it OFF: passing `true` cannot enable reporting for a site that is
+   * not enrolled, because whether a site is managed is Patchstack's answer and not a caller's to assert.
+   * `PATCHSTACK_REPORT_DETECTIONS=0` does the same thing from the environment.
    *
-   * What it sends, per detection: the rule id, the request PATH with the query string removed, the
-   * parameters the rule reads, the phase, whether it was enforced, the rule-bundle ETag, and a
-   * timestamp. It does NOT send the matched value, the request body, headers, or query-string values —
-   * this is a counting channel, not a copy of your traffic.
+   * Why it exists: a rule that blocks nothing reports nothing, so a rule that is quietly wrong and a rule
+   * that is protecting look identical from the outside.
    *
-   * Off by default because switching it on adds an outbound request to every guard with a site UUID.
-   * Needs a resolvable API credential: the endpoint requires a verified, site-bound token, so with no
-   * credential no reporter is created and `detectionReporting` reads `unavailable-no-credential`.
+   * What it sends on EVERY detection: the rule id and its revision, the request path, the query string's
+   * parameter NAMES, the method, the parameters the rule reads, the phase, whether it was enforced, the
+   * rule-bundle ETag, and a timestamp — plus the values of the parameters the matched rule names, under a
+   * capture plan derived from that rule.
+   *
+   * Two fields depend on the phase. A request or response detection also carries the user agent and the
+   * client address with its provenance. An egress detection carries neither: the call was the
+   * application's own, so there is no visitor to attribute it to, and both read `null`/`unavailable`.
+   *
+   * A rule earns each captured value by naming what it reads. A rule reading the whole request (`raw`,
+   * `all`) permits nothing; response values are never captured; raw request bytes need an explicit,
+   * reviewed opt-in on the rule itself. Values are bounded in number and length, and what a bound left
+   * out is counted. The User-Agent is the one exception to the rule-scoped policy: it is part of the
+   * baseline and travels whether or not a rule names it, because a detection nobody can attribute is of
+   * little use. It does NOT send the value of any other parameter the matched rule does not name, any
+   * response value, or the query string's values as baseline metadata — `route` and `query_keys`
+   * describe a URL without disclosing what was in it, while a rule naming `egress.url` captures that URL
+   * as the rule read it. An egress detection has no user agent and no client address: the call was the
+   * application's own, so there is no visitor to attribute it to.
+   *
+   * `AGENT-INSTALL.md` carries the full statement, and is the version to read before enabling this.
+   *
+   * `detectionReporting` names the state, including the reason when reporting is off.
    */
   reportDetections?: boolean;
   /** How long to buffer detections before posting a batch. Default 5000ms. */
@@ -149,6 +229,38 @@ export interface CreateProtectionOptions {
     read(): unknown | Promise<unknown>;
     write(envelope: unknown): unknown | Promise<unknown>;
   };
+  /**
+   * Declare which peers are this deployment's own reverse proxies, so a forwarded header can be believed.
+   *
+   * With no policy, the client address is whatever the transport observed — the socket peer on Node, and
+   * nothing at all in a runtime that exposes no peer, where the provenance reads `unavailable`. A
+   * forwarded header is never trusted implicitly: it is ordinary request input that any caller can send.
+   *
+   * A policy must say WHO is trusted, not just which header to read. Declare at least one of:
+   *
+   * - `peers` — CIDRs or bare addresses of your front end. An empty list means no peer is trusted, and
+   *   one unparseable entry rejects the whole policy.
+   * - `hops` — the number of trusted proxies counting from the peer inward, as in the numeric form of
+   *   Express's `trust proxy`.
+   * - `isTrusted` — a predicate over an address.
+   *
+   * `header` defaults to `x-forwarded-for`. The chain is read from the application side inward, stopping
+   * at the first address that is not trusted, because a proxy appends rather than replaces — so a value
+   * the caller prepended is ignored.
+   *
+   * Any unrecognised key, or any malformed value, rejects the policy rather than being ignored. There are
+   * no provider presets: a provider's name does not establish that the provider overwrote the header.
+   *
+   * Note that `req.ip` is never consulted on the Express path. Under `trust proxy` it is itself
+   * header-derived by a policy this guard has not verified, so an application behind a proxy sees the
+   * proxy's address until it declares a policy here.
+   */
+  trustedProxy?: {
+    peers?: string[];
+    hops?: number;
+    header?: string;
+    isTrusted?: (ip: string) => boolean;
+  };
   /** Override the default response-phase (secret-leak) rule set. */
   responseRules?: unknown[];
   /** Override the default egress-phase (SSRF) rule set. */
@@ -175,7 +287,11 @@ export interface CreateProtectionOptions {
     message?: string;
     method?: string | null;
     path?: string | null;
+    /** The client address resolved for this request, or null when none could be established. */
     ip?: string | null;
+    /** Where `ip` came from: the transport peer, a forwarded header a declared trusted proxy set, or
+     *  nothing this guard can stand behind. `ip` is null when this is `unavailable`. */
+    clientIpSource?: "runtime" | "trusted-proxy" | "unavailable";
     userAgent?: string | null;
   }) => void;
 }

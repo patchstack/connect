@@ -144,18 +144,112 @@ would have stopped while it is still in dry-run. Two separate paths, with differ
   token; the `apiKey` itself is not sent to the log endpoint. Disable with `PATCHSTACK_TELEMETRY=off`, or
   `reportFirewallLog: false` in `createProtection`.
 - **Every rule that matched** goes to `monitor/pulse/detections/<your site uuid>` — including matches that
-  blocked, which are reported on both paths. This is **off unless you pass `reportDetections: true`** to
-  `createProtection`; the scaffolded guard does not pass it. It also requires a provisioned site UUID, a
-  resolvable credential, and is disabled by `PATCHSTACK_TELEMETRY=off`. It exists because a rule carrying
-  `dry-run` blocks nothing, so without it nothing distinguishes a rule that is protecting from one that is
-  quietly wrong.
+  blocked, which are reported on both paths. It exists because a rule carrying `dry-run` blocks nothing, so
+  without it nothing distinguishes a rule that is protecting from one that is quietly wrong.
 
-What a detection report contains, per matched rule: the rule id, the request path **with any query string
-removed**, the parameter names that rule reads (from the rule's own definition), which phase matched,
-whether it was enforced, the identifier of the rule bundle in use, the revision of the rule itself when the
-bundle carried one, and a timestamp. Each batch also
-carries a count of reports dropped when traffic outran the flush, so a partial sample is not read as a
-complete one.
+  **This is on by default for a site enrolled with Patchstack that is running Patchstack-delivered rules**,
+  and off otherwise. Specifically, it requires all of: a provisioned site UUID, rules that came from
+  Patchstack rather than from a local bundle, and a resolvable credential. A local install, or a guard
+  running its own `rules`, sends nothing.
+
+  Switch it off with **`PATCHSTACK_REPORT_DETECTIONS=0`**, or `reportDetections: false` in
+  `createProtection`, or `PATCHSTACK_TELEMETRY=off` which covers all telemetry. `reportDetections` is an
+  opt-out only — passing `true` cannot switch reporting on for a site that is not enrolled.
+
+  `protection.detectionReporting` names the current state locally, so a guard that is not reporting says
+  which reason applies: `on`, `disabled-by-config`, `disabled-by-telemetry-opt-out`, `not-enrolled`,
+  `no-managed-rules`, or `unavailable-no-credential`.
+
+  **How the state reaches Patchstack, and what that costs on the network.** The state travels as a header
+  on the rules request the guard already makes — no extra request for it. Two of the six never travel:
+  `not-enrolled` makes no site-addressed request at all, and `unavailable-no-credential` cannot produce an
+  authenticated one, and the header is withheld from unauthenticated requests. Those two are local
+  diagnostics only.
+
+  There is one case that does add a request. The header is set before the rules request finishes, so a
+  guard booting with no cached rules declares `no-managed-rules` and then receives managed rules on that
+  same response. When that happens it sends **one immediate POST to the detections endpoint containing the
+  corrected state and no detections at all** — an empty `detections` array plus `reporting_state`. It is
+  sent once per process, only when the state changed, and never when the guard already had cached rules.
+  Without it, a guard with rule refreshing switched off would leave Patchstack holding the pre-resolution
+  answer for the life of the process.
+
+What a detection report contains, per matched rule — on every phase, whatever fired it: the rule id, the revision of the rule when the
+bundle carried one, the identifier of the rule bundle in use, which phase matched,
+whether it was enforced, the request path **with the query string's values removed**,
+that query's parameter names, the method, and a timestamp. Each batch also carries a count of reports dropped when traffic outran the flush,
+so a partial sample is not read as a complete one.
+
+Two fields depend on the phase, because one kind of detection has a client and the other does not. A
+**request or response** detection also carries the user agent,
+and the client address together with where that address came from.
+An **egress** detection — a rule that fired on a call your application made outbound — carries neither:
+the call was your application's own, so there is no visitor to attribute it to, and those fields read
+`null` and `unavailable` rather than being guessed at. "What values a report can contain" below says the
+same thing about captured evidence.
+
+Every field is bounded in size, and an event that had to be shortened says so.
+`truncated` lists **which fields were shortened**.
+`parameters_total` records **how many parameters the rule reads**, when a rule reads more than the event
+names.
+`query_keys_total` records **how many query parameters the request carried**, counted as DISTINCT names,
+when it carried more than the event lists — a parameter repeated three times is one name to look up. The
+names themselves are the ones the guard addresses a parameter by, so `?first+name=x` is reported as
+`first name`. Both appear only when something really was shortened, so their absence is not a claim of its own —
+and a shortened route or rule id is marked rather than passed off as complete, because a reader must not
+use one as a key believing it names the whole thing.
+
+Delivery is retried, up to four attempts per batch, with exponential backoff and jitter, honouring a
+`Retry-After` header when the endpoint sets one. Only failures worth retrying are retried — unreachable,
+rate-limited, or a server error; a batch that was refused on its merits is not sent again. Every attempt
+of one batch carries the same `Idempotency-Key` header, and a different batch carries a different one, so
+a redelivery is identifiable as the same batch rather than a new one — an acknowledgement can be lost
+after the server has already taken a batch. One request is in flight at a time, so a slow endpoint slows
+the queue rather than opening more sockets; each attempt is abandoned after 10 seconds, so a request that
+never settles cannot hold that slot; and a batch that exhausts its attempts is dropped and counted rather
+than retried forever. Stopping a guard makes one last attempt at whatever is outstanding and counts
+anything it could not send. `stop()` returns a promise that settles once the reporters have finished or
+been given up on, so a shutdown handler can `await protection.stop()` instead of racing the last batch
+against process exit. Each reporter has its own budget, and when it runs out that reporter is ended: its
+requests are aborted, it starts nothing further, and it discards what it was holding. An abort is a
+request to stop, not a guarantee — a transport that ignores it is detached rather than completed, so
+"resolved" means the reporter is finished with it, and a runtime that kills the process still wins
+regardless. Every detection event ends up delivered, refused or dropped and is reported in the health
+counts; block-log records have no counters, so one lost to a failed send or an expired shutdown is
+reported nowhere.
+
+The client address is reported with its **provenance**, because an address is only as trustworthy as
+whatever supplied it. `client_ip_source` is one of `runtime` (the address the transport observed),
+`trusted-proxy` (read from a forwarded header, through peers you declared via `trustedProxy`), or
+`unavailable`. When it is `unavailable` the `client_ip` field is **omitted entirely** rather than sent
+empty, so a missing address cannot read as a failed lookup of a real one. A forwarded header is never
+trusted implicitly: with no `trustedProxy` policy the address is whatever the transport observed, and in a
+runtime that exposes no transport peer there is no address to report at all.
+
+### Behaviour change: how the client address is determined
+
+The guard resolves the client address itself, once per request, and shares that one answer with rule
+matching, block logging and detection reports — so those cannot disagree about who a request came from.
+Two consequences if you are upgrading:
+
+- **Express and Node: forwarded headers are no longer read implicitly.** Earlier versions took the
+  address from `X-Forwarded-For`, `CF-Connecting-IP` or `X-Real-IP` (the Node guard), or from `req.ip`
+  (the Express guard, where it reflects Express's own `trust proxy` setting). Neither source can be
+  verified by the guard, and any client can send those headers, so both guards now read the transport
+  peer. **If your app runs behind a proxy or load balancer, addresses will now show as the proxy's**
+  until you declare your proxies with `trustedProxy` (below) — which affects attribution in reports and
+  any rule matching on `server.ip` or `REMOTE_ADDR`.
+- **Fetch runtimes report no address at all.** A WHATWG `Request` exposes no transport peer, so a Fetch
+  guard (Workers, Deno, Bun, edge) has nothing to observe, and no forwarded header is accepted in its
+  place under any `trustedProxy` policy: `client_ip_source` is `unavailable` and no address is sent.
+  Earlier versions reported the forwarded header here, so an address-scoped rule that appeared to work on
+  such a runtime was matching a client-supplied value.
+
+`trustedProxy` is the only way to make a forwarded header count. It takes the proxies you actually run —
+`{ peers: ['10.0.0.0/8'] }`, or `{ hops: 1 }` to trust that many hops in from the peer, plus optional
+`header` and `isTrusted` — and the chain is then read from your application inward, stopping at the first
+hop you have not declared. There are no built-in provider presets: a header a provider sets is
+indistinguishable from one a client sent unless you say which peers may set it.
 
 The parameter names are **identifiers, and they name the request region they refer to** — `post.title`,
 `get.redirect_to`, `cookie.session`, `server.HTTP_AUTHORIZATION`. So a rule that inspects a cookie or an
@@ -163,16 +257,79 @@ The parameter names are **identifiers, and they name the request region they ref
 definition, not from your traffic, so they describe what is being screened rather than what any request
 contained.
 
-What it does not contain: **no values of any kind.** Not the value that matched, not the request body,
-and not the value of any header, cookie or query-string parameter — including those of the parameters
-named above. Reports are batched, capped in memory, and dropped rather than retried if Patchstack cannot
+### What values a report can contain
+
+**A request or response detection** carries the request's method and path,
+the query string's parameter **names**,
+the user agent, the client address with its provenance, and a timestamp.
+
+**An egress detection** — a rule that fired on a request your application made outbound — carries the
+outbound method and path, the query's parameter names, and a timestamp. It carries **no user agent and no
+client address**: the call was your application's own, so there is no visitor to attribute it to, and
+those fields read `null` and `unavailable` rather than being guessed at.
+
+Beyond that baseline, either can include the **values of the parameters a rule names** — and nothing
+else. Counting that a
+rule fired is not enough to act on it: whoever triages a detection still has to decide whether the request
+was really an attack, and for that they need to see what the rule saw.
+
+**A rule earns each permission by naming what it reads.** What may be captured is derived from the rule
+itself, never configured per site:
+
+- a rule naming a parameter (`post.title`, `cookie.session`, `server.HTTP_AUTHORIZATION`) permits **that
+  parameter's value**, because the rule was written to inspect it;
+- a prefix (`post.field_*`) permits the values of keys that match, and no others;
+- a rule reading `raw` or `all` — the whole request — permits **nothing at all**, so the broadest rules
+  grant the narrowest capture;
+- **response** values are never captured: the phase that reads them exists to redact secrets, and
+  capturing them would collect the very values that redaction stops leaving;
+- **raw request bytes** need an explicit, reviewed opt-in on the individual rule, and are then limited to
+  a short prefix of the body.
+
+**Everything is bounded, and the bounds report themselves.**
+At most 10 values per detection, at most 512 characters each, and at most 5 values from any one prefix. A value shortened to fit is marked; values a bound
+left out are counted; a value refused because it was not a plain string, number or boolean is counted
+separately; and a read that failed is counted as a failure rather than as absence — so a short list is
+never mistaken for a complete one.
+
+**A `capture.plan` identifies the permissions, not the rule.** Each report carries a `capture.plan` reference derived
+from the permissions themselves — which parameters, which prefixes, which bounds — so what a given report
+was permitted to include can be established after the fact, without the rule in front of you. It
+identifies the PERMISSIONS, not the rule: two different rules that read the same parameters share one
+reference, and the rule document is identified by `rule_id` with `rule_revision`.
+
+**Capture is the union of everything the rule reads, not only the condition that matched.** The engine
+reports which rule fired, not which of its conditions did, so a rule reading `post.title` and
+`cookie.session` permits both values whichever one triggered the detection. A rule scoped to one parameter
+captures one; a broad rule captures what it is broad about.
+
+**One header value always travels, whatever the rule names: the User-Agent** — on a request or response
+detection, where there is a client to attribute. It is part of the baseline above, because attribution is
+what this channel is for and a detection without it cannot be told from another client's. It is the only
+exception to the rule-scoped policy, and the only header value sent without a rule naming it.
+
+**What a report never contains:** the value of any parameter the matched rule does not name — the
+User-Agent above excepted; any response body, header or status value;
+the request body, other than the reviewed raw prefix above;
+and anything at all from a rule that reads the whole request without that opt-in.
+
+**One qualification on the query string.** The exclusion above is about baseline URL metadata: `route` and
+`query_keys` describe a URL without disclosing what was in it. It is not a promise about captured
+evidence. A rule that names `egress.url` reads the outbound URL, so its capture carries that URL as the
+rule read it — query values included. That is the rule-scoped policy working as described, not an
+exception to it: the rule named the parameter, so the parameter's value travels. The value recorded is the request as the
+engine resolved it — URL- and entity-decoded — and not the result of a rule's own further mutations.
+
+Reports are batched, capped in memory, retried a bounded number of times, and dropped if Patchstack cannot
 be reached — a reporting failure never delays or fails a request.
 
-The endpoint needs a credential, so `reportDetections: true` with none resolved starts nothing: the guard
-warns once at boot and `protection.detectionReporting` reads `unavailable-no-credential` instead of `on`.
+The endpoint needs a credential, so an enrolled site with none resolved starts nothing: the guard warns
+once at boot and `protection.detectionReporting` reads `unavailable-no-credential` instead of `on`.
 When reporting is on, `protection.detectionHealth()` returns local counts — detections attempted,
 acknowledged, refused or unreachable, dropped for queue pressure — and the time of the last
-acknowledgement. Those counts stay in your process; nothing extra is sent to report them.
+acknowledgement. Counts for the state POST described above are kept separately under `capability`, since it
+carries no detections and would otherwise read as one. Those counts stay in your process; nothing extra is
+sent to report them.
 
 `protection.stop()` stops everything the guard has running in the background — the rule-refresh loop, the
 block-log reporter, the detection reporter — and flushes what is buffered. `protection.stopRefresh()` is
