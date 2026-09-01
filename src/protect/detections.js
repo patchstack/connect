@@ -146,7 +146,9 @@ const MAX_BODY_BYTES = 64 * 1024;
  * exactly what the capture plan exists to prevent — so what travels is the path plus the NAMES of the
  * query parameters, which describe the request without disclosing what was in it.
  *
- * @returns {string[]}
+ * `total` counts DISTINCT names, matching the deduplicated `keys` it accompanies.
+ *
+ * @returns {{ keys: string[], total: number }}
  */
 export function queryKeysOf(path) {
   if (typeof path !== 'string') return { keys: [], total: 0 };
