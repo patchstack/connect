@@ -19,6 +19,7 @@ import { resolveClientIp } from './client-ip.js';
 import { RuleEngine } from './engine/index.js';
 import { matchValue, walkLeaves, safeRegExp, jwtClaimSpans } from './engine/engine.js';
 import { requestField } from './engine/normalizer.js';
+import { captureValues, createPlanCache, permitsAnything } from './capture-plan.js';
 import { PulseRuleClient } from './engine/pulse-client.js';
 import { fromFetchRequest } from './engine/fetch.js';
 import { fromNodeRequest } from './engine/node.js';
@@ -131,7 +132,15 @@ export async function createProtection(options = {}) {
       });
     }
 
-    notify(userOnDetect, { ...detection, ...(detection?.rule ? { rule: ruleIdentity(detection.rule) } : {}) }, 'onDetect');
+    // Without `capture`: the documented callback carries the rule's identity and the request's own
+    // metadata, and a host already holds the request these values came from. Widening it to forward
+    // evidence is a decision about the callback contract, not a side effect of collecting any.
+    const { capture: _evidence, ...forCallback } = detection ?? {};
+    notify(
+      userOnDetect,
+      { ...forCallback, ...(detection?.rule ? { rule: ruleIdentity(detection.rule) } : {}) },
+      'onDetect',
+    );
   };
 
   // One tiered store (memory → filesystem/pluggable) shared by the initial load and every refresh.
@@ -364,6 +373,39 @@ export async function createProtection(options = {}) {
   // before, so an older server that never sends the field behaves identically.
   const ruleMode = (rule) => (rule?.enforcement === 'dry-run' ? 'dry-run' : mode);
 
+  // Plans derived once per rule, and only ever consulted where there is somewhere for evidence to go.
+  const planCache = createPlanCache();
+
+  /**
+   * The evidence for one match, taken here and nowhere else.
+   *
+   * The resolver stays inside this function. What leaves is the bounded result — a fixed number of
+   * values, each of fixed length, and counts of what did not fit. Handing the resolver onward instead
+   * would put the whole request within reach of every consumer of a detection, which is the opposite of
+   * a plan that names what may be read.
+   *
+   * Nothing is derived when reporting is off. That is a cost decision rather than a safeguard — with no
+   * reporter there is no event for evidence to travel on, and the block log reads named fields only — so
+   * skipping the work changes what an app spends, not what leaves it.
+   */
+  const evidenceFrom = (result) => {
+    if (!detections || !result?.rule) return undefined;
+    let entry;
+    try {
+      entry = planCache.for(result.rule);
+    } catch (err) {
+      notify(onError, err, 'onError');
+
+      return undefined;
+    }
+
+    // The reference travels even when the plan permits nothing, because "this rule was allowed to show
+    // you nothing" and "this rule showed you nothing" are different facts, and only the first is policy.
+    if (!permitsAnything(entry.plan)) return { plan: entry.reference };
+
+    return { plan: entry.reference, ...captureValues(entry.plan, result.resolver) };
+  };
+
   const decide = (phase, result, block, allow, ctx = {}) => {
     if (!result || !result.blocked) return allow();
     const effectiveMode = ruleMode(result.rule);
@@ -382,6 +424,8 @@ export async function createProtection(options = {}) {
       // value read out of a forwarded header, and `null` from "there was no address to establish".
       clientIpSource: ctx.clientIpSource,
       userAgent: ctx.userAgent,
+      // Derived from the reading this decision was made on, before that reading goes out of scope.
+      capture: evidenceFrom(result),
     });
     return effectiveMode === 'block' ? block() : allow();
   };
@@ -711,7 +755,14 @@ export async function createProtection(options = {}) {
     // Same for egress: a dry-run rule records the outbound attempt without preventing it. Blocking a
     // request the app makes is at least as disruptive as blocking one it receives.
     const egressMode = ruleMode(result.rule);
-    onDetect({ phase: 'egress', mode: egressMode, category: result.rule?.category, rule: result.rule, message: result.message });
+    onDetect({
+      phase: 'egress',
+      mode: egressMode,
+      category: result.rule?.category,
+      rule: result.rule,
+      message: result.message,
+      capture: evidenceFrom(result),
+    });
     return egressMode === 'block';
   };
 

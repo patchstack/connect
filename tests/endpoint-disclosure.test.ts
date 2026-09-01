@@ -215,9 +215,47 @@ describe('shipped docs disclose every endpoint the package calls', () => {
   it('says what a detection report carries, and what it does not', () => {
     expect(agentInstall).toMatch(/reportDetections/);
     // Phrasing-tolerant, substance-strict: the claim has to be there, not any particular sentence.
-    for (const claim of [/query string|query-string/i, /matched value|value that matched/i, /request body/i]) {
+    for (const claim of [
+      /query string|query-string/i,
+      /request body/i,
+      // A report can carry the values of the parameters a rule names, so the doc has to say which values
+      // and on what authority — an omission here reads as the older, narrower promise.
+      /values of the parameters a rule names/i,
+      /derived from the rule/i,
+      /capture\.plan/,
+    ]) {
       expect(agentInstall, `the payload description must address ${claim}`).toMatch(claim);
     }
+  });
+
+  it('states the limits on captured values, and that the limits report themselves', () => {
+    // A bound nobody documents is a bound a reader cannot rely on, and a truncated capture that does not
+    // say so invites a conclusion drawn from a sample.
+    for (const claim of [
+      /at most 10 values/i,
+      /512 characters/i,
+      /shortened to fit is marked|marked/i,
+      /counted/i,
+    ]) {
+      expect(agentInstall, `the bounds must address ${claim}`).toMatch(claim);
+    }
+  });
+
+  it('states which sources can never be captured, however a rule is written', () => {
+    // These are the refusals that hold regardless of what a rule names, so they are the ones a reader
+    // most needs stated rather than inferred.
+    expect(agentInstall, 'a whole-request read must grant nothing').toMatch(
+      /reading `raw` or `all`[^.]*permits \*\*nothing/i,
+    );
+    expect(agentInstall, 'response values must never be captured').toMatch(
+      /\*\*response\*\* values are never captured/i,
+    );
+    expect(agentInstall, 'raw bytes need a reviewed per-rule opt-in').toMatch(
+      /raw request bytes\*\* need an explicit, reviewed opt-in/i,
+    );
+    expect(agentInstall, 'and a parameter the rule does not name is never sent').toMatch(
+      /never contains:\*\* the value of any parameter the matched rule does not name/i,
+    );
   });
 
   it('separates parameter identifiers from values, and does not exclude what it sends', () => {
@@ -229,7 +267,15 @@ describe('shipped docs disclose every endpoint the package calls', () => {
     expect(agentInstall, 'must say the identifiers carry their request region').toMatch(/request region/i);
     expect(agentInstall, 'must show a region-qualified example').toMatch(/cookie\.session/);
     expect(agentInstall, 'must show a header example, since that is the sensitive case').toMatch(/server\.HTTP_/);
-    expect(agentInstall, 'the exclusion must be about values').toMatch(/no values of any kind/i);
+    // The exclusion is now scoped to the parameters a rule does NOT name, since the ones it names may
+    // have their values captured. A blanket "no values of any kind" would be the opposite overclaim to
+    // the one this test was written for: understating what is sent rather than overstating it.
+    expect(agentInstall, 'the exclusion must be scoped to unnamed parameters').toMatch(
+      /the value of any parameter the matched rule does not name/i,
+    );
+    expect(agentInstall, 'and must not still claim no values are sent at all').not.toMatch(
+      /no values of any kind/i,
+    );
 
     // The regression itself: an exclusion clause that names headers or cookies without scoping to their
     // values. Asserted as an absence because the overclaim is a sentence someone would write again while

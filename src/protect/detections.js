@@ -732,6 +732,9 @@ export function createDetectionReporter(opts) {
         // one rule describe the document that rule has now. Passed through untouched, and null when the
         // bundle carried none.
         rule_revision: revisionOf(detection.rule) === null ? null : revision.value,
+        // What the rule was permitted to show, and what it showed. Present only when a plan was derived,
+        // which is to say only for a phase that has a reading to derive from.
+        ...(detection.capture ? { capture: detection.capture } : {}),
         // The client address and where it came from. `client_ip` is omitted entirely when there is none,
         // so a present-but-empty field cannot read as a failed lookup of a real address; the provenance is
         // always present, because "this could not be established" is the part a reader needs.

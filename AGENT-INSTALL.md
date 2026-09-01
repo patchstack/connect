@@ -246,9 +246,41 @@ The parameter names are **identifiers, and they name the request region they ref
 definition, not from your traffic, so they describe what is being screened rather than what any request
 contained.
 
-What it does not contain: **no values of any kind.** Not the value that matched, not the request body,
-and not the value of any header, cookie or query-string parameter — including those of the parameters
-named above. Reports are batched, capped in memory, retried a bounded number of times, and dropped if Patchstack cannot
+### What values a report can contain
+
+A report can include the **values of the parameters a rule names** — and nothing else. Counting that a
+rule fired is not enough to act on it: whoever triages a detection still has to decide whether the request
+was really an attack, and for that they need to see what the rule saw.
+
+**A rule earns each permission by naming what it reads.** What may be captured is derived from the rule
+itself, never configured per site:
+
+- a rule naming a parameter (`post.title`, `cookie.session`, `server.HTTP_AUTHORIZATION`) permits **that
+  parameter's value**, because the rule was written to inspect it;
+- a prefix (`post.field_*`) permits the values of keys that match, and no others;
+- a rule reading `raw` or `all` — the whole request — permits **nothing at all**, so the broadest rules
+  grant the narrowest capture;
+- **response** values are never captured: the phase that reads them exists to redact secrets, and
+  capturing them would collect the very values that redaction stops leaving;
+- **raw request bytes** need an explicit, reviewed opt-in on the individual rule, and are then limited to
+  a short prefix of the body.
+
+**Everything is bounded, and the bounds report themselves.**
+At most 10 values per detection, at most 512 characters each, and at most 5 values from any one prefix. A value shortened to fit is marked; values a bound
+left out are counted; a value refused because it was not a plain string, number or boolean is counted
+separately; and a read that failed is counted as a failure rather than as absence — so a short list is
+never mistaken for a complete one.
+
+**Every capture names the policy that allowed it.** Each report carries a `capture.plan` reference derived
+from the rule's own immutable revision, so what a given report was permitted to include can be established
+after the fact, without the rule in front of you.
+
+**What a report never contains:** the value of any parameter the matched rule does not name; any response
+body, header or status value; the request body, other than the reviewed raw prefix above; and anything at
+all from a rule that reads the whole request without that opt-in. The value recorded is the request as the
+engine resolved it — URL- and entity-decoded — and not the result of a rule's own further mutations.
+
+Reports are batched, capped in memory, retried a bounded number of times, and dropped if Patchstack cannot
 be reached — a reporting failure never delays or fails a request.
 
 The endpoint needs a credential, so an enrolled site with none resolved starts nothing: the guard warns
