@@ -197,7 +197,9 @@ after the server has already taken a batch. One request is in flight at a time, 
 the queue rather than opening more sockets; each attempt is abandoned after 10 seconds, so a request that
 never settles cannot hold that slot; and a batch that exhausts its attempts is dropped and counted rather
 than retried forever. Stopping a guard makes one last attempt at whatever is outstanding and counts
-anything it could not send.
+anything it could not send. `stop()` returns a promise that settles once that is finished, so a shutdown
+handler can `await protection.stop()` instead of racing the last batch against process exit — bounded and
+best-effort, since a runtime that terminates regardless still wins.
 
 The client address is reported with its **provenance**, because an address is only as trustworthy as
 whatever supplied it. `client_ip_source` is one of `runtime` (the address the transport observed),

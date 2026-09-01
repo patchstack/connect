@@ -1,4 +1,4 @@
-import { pulseAuthHeader } from '../pulse-token.js';
+import { pulseFetch } from '../pulse-token.js';
 import { clientIpFields } from './client-ip.js';
 import { isSafeOrigin } from './safe-origin.js';
 
@@ -72,6 +72,19 @@ export function worthRetrying(status) {
  * counters would show a single attempt that never failed. A hung connection has to look like a failure.
  */
 const ATTEMPT_TIMEOUT_MS = 10_000;
+
+/** Matches the rules path, so one app-wide setting governs both. */
+const DEFAULT_TIMEOUT_MS = 30_000;
+
+/**
+ * How long `stop()` will wait for the drain before resolving anyway.
+ *
+ * A shutdown that waits without a bound is a shutdown that can hang, and a host handling SIGTERM has its
+ * own deadline. So the promise resolves either when nothing is outstanding or when this elapses — never
+ * later. Waiting is the caller's option, not an obligation: ignoring the promise leaves the old
+ * behaviour exactly as it was.
+ */
+const STOP_BUDGET_MS = 5_000;
 
 /**
  * Size bounds, applied per event and per batch.
@@ -264,7 +277,7 @@ export function createDetectionReporter(opts) {
     // Nothing to report against. A no-op rather than a throw: reporting is never worth failing a boot.
     // It answers the whole interface, so a caller never has to know which kind it holds.
     return {
-      record() {}, flush() {}, stop() {}, setRulesEtag() {}, announce() {}, dropped: () => 0,
+      record() {}, flush() {}, stop: () => Promise.resolve(), setRulesEtag() {}, announce() {}, dropped: () => 0,
       health: () => ({
         sent: 0, delivered: 0, failed: 0, dropped: 0, retried: 0, lastDeliveredAt: null,
         capability: { announced: 0, acknowledged: 0, failed: 0, retried: 0, lastAcknowledgedAt: null },
@@ -320,6 +333,12 @@ export function createDetectionReporter(opts) {
   let capabilityRetried = 0;
   let flushRequested = false;
   let draining = false;
+  /** @type {(() => void) | null} */
+  let drainResolve = null;
+  /** @type {Promise<void> | null} */
+  let drainPromise = null;
+  /** @type {ReturnType<typeof setTimeout> | null} */
+  let budgetTimer = null;
 
   // One send at a time, and one batch's worth of state while it runs.
   let sending = false;
@@ -365,25 +384,42 @@ export function createDetectionReporter(opts) {
     return batch;
   };
 
+  /**
+   * The credential exchange's own bound, never longer than an attempt's.
+   *
+   * The exchange is a separate request, so the attempt's abort signal does not reach it: a token call
+   * bounded above the attempt would hold the single send slot past the point the attempt was supposed to
+   * end. It must also be a number — the exchange bounds itself with a timeout built from this value, and
+   * an absent one makes that construction throw, which the exchange reports as "no token" and every
+   * site-addressed endpoint then refuses.
+   */
+  const configuredTimeout = Number(opts.timeoutMs) > 0 ? Number(opts.timeoutMs) : DEFAULT_TIMEOUT_MS;
+  const tokenTimeoutMs = Math.min(configuredTimeout, ATTEMPT_TIMEOUT_MS);
+  const authConfig = { pulseAuth: opts.pulseAuth, endpoint: baseUrl, timeoutMs: tokenTimeoutMs };
+
   const post = async (body, key, signal) =>
-    fetchImpl(`${baseUrl}/detections/${encodeURIComponent(siteUuid)}`, {
-      method: 'POST',
-      ...(signal ? { signal } : {}),
-      headers: {
-        'Content-Type': 'application/json',
-        Accept: 'application/json',
-        'User-Agent': '@patchstack/connect',
-        // The same key on every attempt of one batch. A retry exists because an acknowledgement can be
-        // lost after the server committed the batch, so without this a redelivery would be counted twice
-        // and inflate exactly the numbers the reports are read for.
-        'Idempotency-Key': key,
-        // Same credential path as the rules fetch. The detections endpoint is site-addressed and requires
-        // a verified, site-bound token, so a batch sent without one is refused — which is why the runtime
-        // does not build a reporter when no credential resolves, rather than posting into a 401.
-        ...(await pulseAuthHeader({ pulseAuth: opts.pulseAuth, endpoint: baseUrl }, fetchImpl)),
+    // Through the shared Pulse path, which attaches the token and — on a 401 — discards it and retries
+    // once with a fresh one. A cached token can stop being valid before it expires, and the server's
+    // refusal is authoritative over our own clock; the batch's own headers, this key included, are
+    // carried through both sends, so the redelivery is still recognisable as the same batch.
+    pulseFetch(
+      authConfig,
+      `${baseUrl}/detections/${encodeURIComponent(siteUuid)}`,
+      {
+        method: 'POST',
+        ...(signal ? { signal } : {}),
+        headers: {
+          'Content-Type': 'application/json',
+          Accept: 'application/json',
+          'User-Agent': '@patchstack/connect',
+          // The same key on every attempt of one batch: an acknowledgement can be lost after the server
+          // has already taken the batch, and a redelivery has to be identifiable as the same one.
+          'Idempotency-Key': key,
+        },
+        body: JSON.stringify(body),
       },
-      body: JSON.stringify(body),
-    });
+      fetchImpl,
+    );
 
   /** Give up on the batch in flight, counting what it carried. */
   const abandon = () => {
@@ -547,13 +583,20 @@ export function createDetectionReporter(opts) {
     void attempt();
   };
 
-  /** Nothing left to send: whatever never left is counted rather than forgotten. */
+  /** Nothing left to send: whatever never left is counted rather than forgotten, and the wait ends. */
   const drained = () => {
     draining = false;
     if (queue.length > 0) {
       droppedTotal += queue.length;
       queue = [];
     }
+    if (budgetTimer) {
+      clearTimeout(budgetTimer);
+      budgetTimer = null;
+    }
+    const resolve = drainResolve;
+    drainResolve = null;
+    if (resolve) resolve();
   };
 
   const flush = () => {
@@ -681,10 +724,26 @@ export function createDetectionReporter(opts) {
      *
      * Whatever remains unsent when the drain runs out is counted as dropped, so every recorded event ends
      * up delivered, refused or dropped, and none simply disappears.
+     *
+     * The drain is asynchronous, so this returns a promise that settles when nothing is outstanding —
+     * which a host shutting down can await instead of racing the last batch against process exit. It is
+     * best-effort and bounded: a runtime that terminates the process regardless, or a drain slower than
+     * `STOP_BUDGET_MS`, still ends the wait. Ignoring the promise behaves exactly as before.
      */
     stop() {
-      if (stopped) return;
+      if (stopped) return drainPromise ?? Promise.resolve();
       stopped = true;
+      drainPromise = new Promise((resolve) => {
+        drainResolve = resolve;
+      });
+      budgetTimer = unattended(
+        setTimeout(() => {
+          budgetTimer = null;
+          const resolve = drainResolve;
+          drainResolve = null;
+          if (resolve) resolve();
+        }, STOP_BUDGET_MS),
+      );
       if (timer) {
         clearTimeout(timer);
         timer = null;
@@ -696,17 +755,19 @@ export function createDetectionReporter(opts) {
         retryTimer = null;
         void attempt();
 
-        return;
+        return drainPromise;
       }
       if (sending) {
         // Its completion continues the drain. Aborting turns a hung request into a failure now rather
         // than a slot held until the process exits.
         inFlight?.controller?.abort();
 
-        return;
+        return drainPromise;
       }
       flushRequested = true;
       kick();
+
+      return drainPromise;
     },
     /**
      * Point later events at the bundle now running. Called after an ACCEPTED swap only — a rejected

@@ -1,4 +1,5 @@
-import { describe, it, expect, vi, afterEach } from 'vitest';
+import { describe, it, expect, vi, afterEach, beforeEach } from 'vitest';
+import { clearPulseToken } from '../../src/pulse-token.js';
 import {
   byteLength,
   createDetectionReporter,
@@ -731,5 +732,213 @@ describe('a capability retry is not an event retry', () => {
     expect(h.retried, 'the events were retried').toBe(1);
     expect(h.capability.retried, 'and so was the declaration').toBe(1);
     r.stop();
+  });
+});
+
+describe('a detection is posted authenticated, on a cold cache and after revocation', () => {
+  // `{secret}-{oauth id}`, the credential shape the exchange parses.
+  const AUTH = 'the-secret-40-chars-long-ish-value-here-987';
+
+  /** A transport that exchanges a credential for a token and records what each detection POST carried. */
+  const stub = (opts: { tokens?: string[]; detectionStatus?: (n: number) => number } = {}) => {
+    const tokens = opts.tokens ?? ['jwt-first', 'jwt-second'];
+    let exchanges = 0;
+    const posts: Array<{ auth?: string; key?: string }> = [];
+    const impl = vi.fn(async (url: string, init?: RequestInit) => {
+      const target = String(url);
+      const headers = (init?.headers ?? {}) as Record<string, string>;
+      if (target.endsWith('/token')) {
+        const token = tokens[Math.min(exchanges, tokens.length - 1)];
+        exchanges++;
+
+        return new Response(JSON.stringify({ access_token: token, expires_in: 3600 }), {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' },
+        });
+      }
+      posts.push({ auth: headers.Authorization, key: headers['Idempotency-Key'] });
+
+      return new Response('{}', { status: opts.detectionStatus?.(posts.length) ?? 202 });
+    });
+
+    return { impl, posts, exchanges: () => exchanges };
+  };
+
+  beforeEach(() => { clearPulseToken(); });
+  afterEach(() => { clearPulseToken(); });
+
+  it('exchanges a credential when nothing is cached', async () => {
+    // Boot happens to prime the shared token cache through the rules fetch, so a reporter that could not
+    // exchange one itself still looked authenticated — until the cache expired or it ran on its own.
+    const { impl, posts, exchanges } = stub();
+    const r = reporterFor(impl, { pulseAuth: AUTH });
+
+    one(r);
+    r.flush();
+    await settle();
+
+    expect(exchanges(), 'it obtained a token of its own').toBe(1);
+    expect(posts.length).toBe(1);
+    expect(posts[0].auth, 'and the detection went out authenticated').toBe('Bearer jwt-first');
+    r.stop();
+  });
+
+  it('exchanges again once the cached token has expired', async () => {
+    const { impl, posts } = stub({ tokens: ['jwt-short', 'jwt-fresh'] });
+    const r = reporterFor(impl, { pulseAuth: AUTH });
+
+    one(r);
+    r.flush();
+    await settle();
+    expect(posts[0].auth).toBe('Bearer jwt-short');
+
+    // What a long-running guard reaches: the token it holds is past its life.
+    clearPulseToken();
+    one(r, '/b');
+    r.flush();
+    await settle();
+
+    expect(posts[1].auth, 'a fresh token, not an unauthenticated request').toBe('Bearer jwt-fresh');
+    r.stop();
+  });
+
+  it('discards a revoked token, retries once, and keeps the same idempotency key', async () => {
+    // A credential can be rotated or revoked before the token's own expiry, so the server's 401 is
+    // authoritative over our clock. Without this a guard would present a dead token until local expiry
+    // and every event in between would be refused.
+    const { impl, posts, exchanges } = stub({
+      tokens: ['jwt-revoked', 'jwt-reissued'],
+      detectionStatus: (n) => (n === 1 ? 401 : 202),
+    });
+    const r = reporterFor(impl, { pulseAuth: AUTH });
+
+    one(r);
+    r.flush();
+    await settle();
+
+    expect(posts.length, 'refused once, then sent again').toBe(2);
+    expect(posts[0].auth).toBe('Bearer jwt-revoked');
+    expect(posts[1].auth, 'with a reissued token').toBe('Bearer jwt-reissued');
+    expect(exchanges()).toBe(2);
+    // The redelivery must still be recognisable as the same batch.
+    expect(posts[1].key, 'the same key as the refused attempt').toBe(posts[0].key);
+    expect(r.health()).toMatchObject({ sent: 1, delivered: 1, failed: 0 });
+    r.stop();
+  });
+
+  it('counts a persistent refusal rather than retrying it forever', async () => {
+    vi.useFakeTimers();
+    const { impl, posts } = stub({ detectionStatus: () => 401 });
+    const r = reporterFor(impl, { pulseAuth: AUTH });
+
+    one(r);
+    r.flush();
+    await vi.advanceTimersByTimeAsync(1);
+    await vi.advanceTimersByTimeAsync(RETRY_CAP_MS * 4);
+
+    // The token path retries a 401 once with a fresh token; a still-refused batch is a refusal on the
+    // merits, so the outer retry does not repeat it.
+    expect(posts.length, 'two sends, not an endless series').toBe(2);
+    expect(r.health()).toMatchObject({ sent: 1, delivered: 0, failed: 1 });
+    r.stop();
+  });
+
+  it('bounds the credential exchange by the attempt, not by a longer app-wide setting', async () => {
+    // The exchange is a separate request, so an attempt's abort does not reach it. Bounded above the
+    // attempt it would hold the only send slot past the point the attempt was meant to end.
+    const seen: number[] = [];
+    const original = AbortSignal.timeout.bind(AbortSignal);
+    vi.spyOn(AbortSignal, 'timeout').mockImplementation((ms: number) => {
+      seen.push(ms);
+
+      return original(ms);
+    });
+    const { impl } = stub();
+    const r = reporterFor(impl, { pulseAuth: AUTH, timeoutMs: 120_000 });
+
+    one(r);
+    r.flush();
+    await settle();
+
+    expect(seen.length, 'the exchange bounded itself').toBeGreaterThan(0);
+    for (const ms of seen) {
+      expect(typeof ms, 'a number, or building the bound throws and the token is lost').toBe('number');
+      expect(ms, 'never longer than one attempt').toBeLessThanOrEqual(10_000);
+    }
+    r.stop();
+  });
+});
+
+describe('stopping can be awaited', () => {
+  it('settles only once the outstanding batch has been delivered', async () => {
+    let release: ((r: Response) => void) | null = null;
+    const impl = vi.fn(
+      () => new Promise<Response>((resolve) => { release = resolve; }),
+    );
+    const r = reporterFor(impl);
+
+    one(r);
+    r.flush();
+    await settle();
+
+    let settled = false;
+    const done = r.stop().then(() => { settled = true; });
+    await settle();
+
+    // A shutdown handler that did not await this would race the last batch against process exit.
+    expect(settled, 'not while the request is still open').toBe(false);
+    release?.(new Response('{}', { status: 202 }));
+    await done;
+
+    expect(settled).toBe(true);
+    expect(r.health()).toMatchObject({ delivered: 1 });
+  });
+
+  it('settles when there was nothing outstanding', async () => {
+    const impl = vi.fn(async () => new Response('{}', { status: 202 }));
+    const r = reporterFor(impl);
+
+    await expect(r.stop()).resolves.toBeUndefined();
+  });
+
+  it('settles after the drain of a multi-batch queue', async () => {
+    const impl = vi.fn(async () => new Response('{}', { status: 202 }));
+    const r = reporterFor(impl);
+
+    for (let i = 0; i < 60; i++) one(r, `/p${i}`);
+    await r.stop();
+
+    // Awaiting means the queue is finished with, not merely started on.
+    expect(r.health()).toMatchObject({ delivered: 60, dropped: 0 });
+  });
+
+  it('gives up waiting rather than hanging on a request that never answers', async () => {
+    vi.useFakeTimers();
+    const impl = vi.fn(() => new Promise<Response>(() => {}));
+    const r = reporterFor(impl);
+
+    one(r);
+    r.flush();
+    await vi.advanceTimersByTimeAsync(1);
+
+    let settled = false;
+    void r.stop().then(() => { settled = true; });
+    // The budget, not the attempt: a host shutting down has its own deadline, and an unbounded wait here
+    // would become a hung shutdown.
+    await vi.advanceTimersByTimeAsync(5_000);
+    expect(settled, 'the wait is bounded').toBe(true);
+  });
+
+  it('returns the same settled wait when stopped twice', async () => {
+    const impl = vi.fn(async () => new Response('{}', { status: 202 }));
+    const r = reporterFor(impl);
+
+    one(r);
+    const first = r.stop();
+    const second = r.stop();
+    await Promise.all([first, second]);
+
+    // A second stop must not restart a drain or hand back a promise nothing will settle.
+    expect(impl.mock.calls.length).toBe(1);
   });
 });

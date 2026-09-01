@@ -47,9 +47,17 @@ export interface Protection {
   refreshHandler?: () => (request: Request) => Promise<Response>;
   /** Stops everything with a timer or a buffer behind it: the refresh loop, the block log, the
    *  detection reporter (flushing what it holds). Always present, and safe to call twice. */
-  stop: () => void;
+  /**
+   * Stop everything holding a timer or a buffer.
+   *
+   * Resolves when the detection reporter has finished draining — outstanding batches delivered, or
+   * counted if they could not be — so a shutdown handler can await it instead of racing process exit.
+   * Best-effort and bounded: a runtime that terminates regardless still wins, and the wait ends after an
+   * internal budget either way. Ignoring the promise behaves as it always has.
+   */
+  stop: () => Promise<void>;
   /** Alias of `stop`, under the name callers already have. */
-  stopRefresh: () => void;
+  stopRefresh: () => Promise<void>;
   /** Whether this guard reports security events, and if not, why not.
    *
    *  Reporting is on for a site enrolled in Patchstack-managed mitigation that is running managed rules

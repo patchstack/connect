@@ -246,6 +246,7 @@ export async function createProtection(options = {}) {
         rulesEtag: (await store.read())?.etag ?? null,
         fetchImpl: options.fetchImpl,
         flushMs: options.detectionFlushMs,
+        timeoutMs: options.timeoutMs,
       });
     } else if (!next.reports && detections) {
       detections.stop();
@@ -971,10 +972,15 @@ export async function createProtection(options = {}) {
   // the block log, the detection reporter. Always present because a lifecycle method that exists only
   // for some configurations is one a caller cannot rely on — and each of these components can be the
   // only one installed, so any of them can be the one left running.
+  //
+  // Returns a promise that settles when the reporter has finished draining, so a host shutting down can
+  // await it rather than racing the last batch against process exit. Bounded and best-effort — a runtime
+  // that terminates regardless still wins — and ignoring the return behaves exactly as before.
   protection.stop = () => {
     loop?.stop();
     firewallLog?.stop();
-    detections?.stop();
+
+    return detections?.stop() ?? Promise.resolve();
   };
   // The name callers already have, kept as an alias for it.
   protection.stopRefresh = protection.stop;
