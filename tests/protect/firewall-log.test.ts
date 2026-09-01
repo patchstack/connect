@@ -192,3 +192,144 @@ describe('createProtection connector log reporting', () => {
     protection.stopRefresh?.();
   });
 });
+
+describe('stopping the block log waits for what is outstanding, and is bounded', () => {
+  const KEY = 'abcdefghijabcdefghijabcdefghijabcdefghij-42';
+  const reporter = (fetchImpl: unknown, over: Record<string, unknown> = {}) =>
+    createFirewallLogReporter({
+      apiKey: KEY,
+      apiBase: 'https://api.test',
+      fetchImpl: fetchImpl as typeof fetch,
+      flushMs: 1,
+      ...over,
+    });
+  const record = (r: any, n = 1) => {
+    for (let i = 0; i < n; i++) r.record({ rule: { id: `r${i}` }, method: 'GET', path: '/a', ip: '1.2.3.4' });
+  };
+  const tick = async () => { await new Promise((r) => setTimeout(r, 5)); };
+
+  afterEach(() => { vi.useRealTimers(); });
+
+  it('waits for a send that was already running when it was called', async () => {
+    // A flush that has already taken its batch leaves an empty queue behind it. A shutdown that looked
+    // only at the queue would see nothing to wait for while the post was still open.
+    let releasePost: ((r: Response) => void) | null = null;
+    const impl = vi.fn(async (url: string) => {
+      if (String(url).includes('/oauth/token')) {
+        return new Response(JSON.stringify({ access_token: 'jwt', expires_in: 3600 }), {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' },
+        });
+      }
+
+      return new Promise<Response>((resolve) => { releasePost = resolve; });
+    });
+    const r: any = reporter(impl);
+
+    record(r);
+    r.flush();
+    await tick();
+    expect(releasePost, 'the post is open and the queue is empty').not.toBeNull();
+
+    let settled = false;
+    const done = r.stop().then(() => { settled = true; });
+    await tick();
+    expect(settled, 'the wait found the send the queue no longer knew about').toBe(false);
+
+    releasePost?.(new Response('{}', { status: 200 }));
+    await done;
+    expect(settled).toBe(true);
+  });
+
+  it('returns the same wait when stopped twice', async () => {
+    let releasePost: ((r: Response) => void) | null = null;
+    const impl = vi.fn(async (url: string) => {
+      if (String(url).includes('/oauth/token')) {
+        return new Response(JSON.stringify({ access_token: 'jwt', expires_in: 3600 }), {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' },
+        });
+      }
+
+      return new Promise<Response>((resolve) => { releasePost = resolve; });
+    });
+    const r: any = reporter(impl);
+
+    record(r);
+    r.flush();
+    await tick();
+
+    // The second call must not hand back a resolved promise while the first drain is still running, nor
+    // start a second drain behind it: it is the same shutdown, so it is the same wait.
+    const firstCall = r.stop();
+    const secondCall = r.stop();
+    expect(secondCall, 'the same wait, not a new one').toBe(firstCall);
+
+    let firstDone = false;
+    let secondDone = false;
+    const first = firstCall.then(() => { firstDone = true; });
+    const second = secondCall.then(() => { secondDone = true; });
+    await tick();
+
+    expect(firstDone || secondDone, 'neither has finished yet').toBe(false);
+    releasePost?.(new Response('{}', { status: 200 }));
+    await Promise.all([first, second]);
+    expect(firstDone && secondDone).toBe(true);
+  });
+
+  it('gives up on a transport that never answers, and lets go of both phases', async () => {
+    vi.useFakeTimers();
+    const aborted: string[] = [];
+    const impl = vi.fn(
+      (url: string, init?: RequestInit) =>
+        new Promise<Response>(() => {
+          init?.signal?.addEventListener('abort', () => {
+            aborted.push(String(url).includes('/oauth/token') ? 'token' : 'post');
+          });
+        }),
+    );
+    const r: any = reporter(impl);
+
+    record(r);
+    let settled = false;
+    void r.stop().then(() => { settled = true; });
+    await vi.advanceTimersByTimeAsync(1);
+    expect(settled, 'still waiting on the token exchange').toBe(false);
+
+    // A hung transport would otherwise keep a shutdown pending for as long as the process lived.
+    await vi.advanceTimersByTimeAsync(5_000);
+    await vi.advanceTimersByTimeAsync(1);
+    expect(settled, 'the wait is bounded').toBe(true);
+    expect(aborted, 'and the open phase was let go of').toContain('token');
+  });
+
+  it('aborts a hanging post, not only a hanging token exchange', async () => {
+    vi.useFakeTimers();
+    const aborted: string[] = [];
+    const impl = vi.fn((url: string, init?: RequestInit) => {
+      if (String(url).includes('/oauth/token')) {
+        return Promise.resolve(
+          new Response(JSON.stringify({ access_token: 'jwt', expires_in: 3600 }), {
+            status: 200,
+            headers: { 'Content-Type': 'application/json' },
+          }),
+        );
+      }
+
+      return new Promise<Response>(() => {
+        init?.signal?.addEventListener('abort', () => { aborted.push('post'); });
+      });
+    });
+    const r: any = reporter(impl);
+
+    record(r);
+    let settled = false;
+    void r.stop().then(() => { settled = true; });
+    await vi.advanceTimersByTimeAsync(1);
+    await vi.advanceTimersByTimeAsync(5_000);
+    await vi.advanceTimersByTimeAsync(1);
+
+    expect(settled, 'bounded on the post too').toBe(true);
+    expect(aborted).toContain('post');
+  });
+});

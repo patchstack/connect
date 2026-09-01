@@ -50,12 +50,16 @@ export interface Protection {
   /**
    * Stop everything holding a timer or a buffer.
    *
-   * Resolves once every buffer this reaches is finished with — the detection reporter and the block log,
-   * their outstanding batches delivered or else counted — so a shutdown handler can await it instead of
-   * racing process exit. Bounded: if an internal budget elapses first, the drain is ENDED rather than
-   * merely stopped being waited for, so nothing is left outstanding when this resolves. Still
-   * best-effort, because a runtime that terminates the process regardless still wins. Ignoring the
-   * promise behaves as it always has.
+   * Resolves once every buffer this reaches is finished with — the detection reporter and the block log —
+   * so a shutdown handler can await it instead of racing process exit. Bounded: each has its own budget,
+   * and when one elapses that drain is ENDED rather than merely stopped being waited for, so nothing is
+   * left outstanding when this resolves. Still best-effort, because a runtime that terminates the process
+   * regardless still wins. Ignoring the promise behaves as it always has.
+   *
+   * What "finished with" means differs by reporter. Detection events are delivered or else counted, and
+   * `detectionHealth()` accounts for every one. Block-log records only have their outstanding attempts
+   * completed: that path keeps no counters, so a record lost to a failed token exchange or post is not
+   * reported anywhere.
    */
   stop: () => Promise<void>;
   /** Alias of `stop`, under the name callers already have. */

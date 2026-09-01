@@ -475,17 +475,25 @@ export function createDetectionReporter(opts) {
     const timeout = controller
       ? unattended(setTimeout(() => controller.abort(), ATTEMPT_TIMEOUT_MS))
       : null;
+    // Owned by the batch, so termination can cancel it. A transport that ignores an abort would otherwise
+    // leave this scheduled past the shutdown that already reported itself finished.
+    inFlight.timeout = timeout;
     // The credential path may send the same batch twice: once with a token the server refuses, once with
     // a reissued one. That is a redelivery of this batch, so it is counted rather than invisible.
     let sends = 0;
     const counted = (url, init) => {
-      if (String(url) === detectionsUrl) sends += 1;
+      if (String(url) === detectionsUrl) {
+        sends += 1;
+        // Counted as the second send is made, and only while this attempt still owns the numbers. After
+        // `terminate()` the health has been reported as final, and a refresh completing later must not
+        // move it.
+        if (sends > 1 && mine === epoch) reauthorized += 1;
+      }
 
       return fetchImpl(url, init);
     };
     try {
       const res = await post(body, inFlight.key, controller?.signal, counted);
-      if (sends > 1) reauthorized += sends - 1;
       if (mine !== epoch) return; // the drain was terminated while this was open
       if (res && res.ok) {
         settle();
@@ -505,7 +513,10 @@ export function createDetectionReporter(opts) {
       // Only if it is still THIS attempt's. On the acknowledged path `settle()` and `finish()` run inside
       // the block above, so by the time this executes `inFlight` can already be the NEXT batch — and
       // clearing its controller would leave that batch with nothing to abort it by.
-      if (inFlight && inFlight.controller === controller) inFlight.controller = null;
+      if (inFlight && inFlight.controller === controller) {
+        inFlight.controller = null;
+        inFlight.timeout = null;
+      }
     }
 
     if (mine !== epoch) return;
@@ -593,8 +604,9 @@ export function createDetectionReporter(opts) {
 
     const events = takeBatch(droppedWith, state);
     sent += events.length;
-    // Counted where the declaration is actually attached to a request, so coalesced states count once —
-    // the number describes declarations made, not calls received.
+    // Counted where the declaration is committed to a request, so coalesced states count once — the
+    // number describes declarations this guard undertook to make, not calls received. A state still
+    // waiting when a shutdown ends counts here too, against a matching failure.
     if (state !== null) capabilityAnnounced += 1;
 
     sequence += 1;
@@ -615,9 +627,17 @@ export function createDetectionReporter(opts) {
     epoch += 1;
     if (inFlight) {
       inFlight.controller?.abort();
+      if (inFlight.timeout) clearTimeout(inFlight.timeout);
       failed += inFlight.events.length;
       if (inFlight.state !== null) capabilityFailed += 1;
       inFlight = null;
+    }
+    // A state that was waiting for a request it will now never get. Counted, because "the platform was
+    // not told my final state" is exactly what a reader of these numbers is trying to find out.
+    if (pendingState !== null) {
+      pendingState = null;
+      capabilityAnnounced += 1;
+      capabilityFailed += 1;
     }
     sending = false;
     drained();

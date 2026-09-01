@@ -1023,6 +1023,8 @@ describe('stopping can be awaited', () => {
     one(r);
     const first = r.stop();
     const second = r.stop();
+    // The same shutdown, so the same wait — not a fresh promise that settles on its own schedule.
+    expect(second, 'the same wait, not a new one').toBe(first);
     await Promise.all([first, second]);
 
     // A second stop must not restart a drain or hand back a promise nothing will settle.
@@ -1082,5 +1084,86 @@ describe('a redelivery after a refused token appears in the numbers', () => {
 
     expect(r.health().reauthorized).toBe(0);
     r.stop();
+  });
+});
+
+describe('termination finalises everything the reporter was holding', () => {
+  const AUTH = 'the-secret-40-chars-long-ish-value-here-987';
+
+  beforeEach(() => { clearPulseToken(); });
+  afterEach(() => { clearPulseToken(); });
+
+  it('does not let a credential refresh that lands late move the final numbers', async () => {
+    vi.useFakeTimers();
+    let releaseSecond: ((r: Response) => void) | null = null;
+    let posts = 0;
+    const impl = vi.fn(async (url: string) => {
+      if (String(url).endsWith('/token')) {
+        return new Response(JSON.stringify({ access_token: `jwt-${posts}`, expires_in: 3600 }), {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' },
+        });
+      }
+      posts++;
+      if (posts === 1) return new Response('{}', { status: 401 });
+
+      // The redelivery, held open past the shutdown budget.
+      return new Promise<Response>((resolve) => { releaseSecond = resolve; });
+    });
+    const r = reporterFor(impl, { pulseAuth: AUTH });
+
+    one(r);
+    r.flush();
+    await vi.advanceTimersByTimeAsync(1);
+
+    const done = r.stop();
+    await vi.advanceTimersByTimeAsync(5_000);
+    await done;
+
+    const atBudget = r.health();
+    releaseSecond?.(new Response('{}', { status: 202 }));
+    await vi.advanceTimersByTimeAsync(RETRY_CAP_MS);
+
+    // The redelivery is counted as it is made, under this attempt's epoch — so one completing after the
+    // numbers were reported as final cannot change them.
+    expect(r.health(), 'the final numbers stayed final').toEqual(atBudget);
+  });
+
+  it('accounts for a state that was still waiting for a request', async () => {
+    vi.useFakeTimers();
+    const impl = vi.fn(() => new Promise<Response>(() => {}));
+    const r = reporterFor(impl);
+
+    one(r);
+    r.flush();
+    await vi.advanceTimersByTimeAsync(1);
+    // Queued behind the batch that is now stuck, so it never gets a request of its own.
+    r.announce('on');
+
+    const done = r.stop();
+    await vi.advanceTimersByTimeAsync(5_000);
+    await done;
+
+    // "The platform was never told my final state" is exactly what a reader of these numbers is after.
+    expect(r.health().capability).toMatchObject({ announced: 1, acknowledged: 0, failed: 1 });
+  });
+
+  it('leaves no attempt timer scheduled behind a finished shutdown', async () => {
+    vi.useFakeTimers();
+    const impl = vi.fn(() => new Promise<Response>(() => {}));
+    const r = reporterFor(impl);
+
+    one(r);
+    r.flush();
+    await vi.advanceTimersByTimeAsync(1);
+    const whileRunning = vi.getTimerCount();
+
+    const done = r.stop();
+    await vi.advanceTimersByTimeAsync(5_000);
+    await done;
+
+    // The attempt's own ten-second bound outlives the five-second budget unless termination clears it.
+    expect(vi.getTimerCount(), 'nothing is still scheduled').toBeLessThan(whileRunning);
+    expect(vi.getTimerCount()).toBe(0);
   });
 });

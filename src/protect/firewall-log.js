@@ -5,6 +5,8 @@ import { isSafeOrigin } from './safe-origin.js';
 // Opt out: PATCHSTACK_TELEMETRY=off. Never put api_key in the public widget.
 
 const DEFAULT_API_BASE = 'https://api.patchstack.com';
+/** The shutdown budget, matching the detection reporter's. */
+const STOP_BUDGET_MS = 5_000;
 const DEFAULT_FLUSH_MS = 1000;
 const MAX_BATCH = 50;
 const TOKEN_SKEW_MS = 60_000;
@@ -85,13 +87,27 @@ export function createFirewallLogReporter(opts) {
   /** @type {ReturnType<typeof setTimeout> | null} */
   let timer = null;
   let stopped = false;
+  /**
+   * Every send that has been started and not finished.
+   *
+   * A flush that has already taken its batch leaves an empty queue behind it, so a shutdown looking only
+   * at the queue would see nothing to wait for while a token exchange or a post was still open. What is
+   * outstanding is the set of sends, not the contents of the queue.
+   *
+   * @type {Set<Promise<void>>}
+   */
+  const outstanding = new Set();
+  /** @type {Promise<void> | null} */
+  let drainPromise = null;
+  /** Aborts both phases of every open send once the shutdown budget is spent. */
+  let shutdown = null;
 
   /** @type {{ token: string, expiresAt: number } | null} */
   let cachedToken = null;
   /** @type {Promise<string | null> | null} */
   let tokenInflight = null;
 
-  const fetchAccessToken = async () => {
+  const fetchAccessToken = async (signal) => {
     if (cachedToken && Date.now() < cachedToken.expiresAt - TOKEN_SKEW_MS) {
       return cachedToken.token;
     }
@@ -101,6 +117,7 @@ export function createFirewallLogReporter(opts) {
       try {
         const res = await fetchImpl(`${apiBase}/oauth/token`, {
           method: 'POST',
+          ...(signal ? { signal } : {}),
           headers: {
             'Content-Type': 'application/json',
             Accept: 'application/json',
@@ -139,12 +156,13 @@ export function createFirewallLogReporter(opts) {
 
     const batch = queue.splice(0, MAX_BATCH);
 
-    // The send is returned rather than discarded, so a shutdown can wait for it. It never rejects: a
-    // caller that ignores it must not produce an unhandled rejection, and one that awaits it is waiting
-    // for the attempt to finish, not asking whether it succeeded.
-    return (async () => {
+    // Returned so a shutdown can wait for it, and tracked so a shutdown can find it even when the queue
+    // it came from is already empty. It never rejects: a caller that ignores it must not produce an
+    // unhandled rejection, and one that awaits it is waiting for the attempt to finish, not asking
+    // whether it succeeded.
+    const send = (async () => {
       try {
-        const token = await fetchAccessToken();
+        const token = await fetchAccessToken(shutdown?.signal);
         if (!token) return;
 
         const body = new URLSearchParams();
@@ -161,12 +179,19 @@ export function createFirewallLogReporter(opts) {
             ...(sourceHost ? { 'Source-Host': sourceHost } : {}),
           },
           body,
+          // Both phases carry it, so a shutdown that runs out of time can end either one.
+          ...(shutdown ? { signal: shutdown.signal } : {}),
         });
         if (p && typeof p.then === 'function') await p.catch(() => {});
       } catch {
         /* A delivery problem is never worth disturbing the app over. */
       }
     })();
+
+    outstanding.add(send);
+    void send.then(() => outstanding.delete(send));
+
+    return send;
   };
 
   return {
@@ -208,15 +233,46 @@ export function createFirewallLogReporter(opts) {
      * spinning would be worse than leaving the records where they are.
      */
     stop() {
+      // The same wait every time. A second call must not hand back a resolved promise while the first
+      // drain is still running, and must not start a second drain behind it.
+      if (drainPromise) return drainPromise;
       stopped = true;
 
-      return (async () => {
+      const controller = typeof AbortController === 'function' ? new AbortController() : null;
+      shutdown = controller;
+
+      /** @type {ReturnType<typeof setTimeout> | null} */
+      let budget = null;
+      // Bounded like the detection reporter's, and for the same reason: a hung transport would otherwise
+      // keep a shutdown pending for as long as the process lived, which is not a bounded shutdown.
+      //
+      // The budget both aborts and DETACHES. Aborting alone would still leave the wait depending on the
+      // transport to honour it, and one that does not would hang the shutdown exactly as before.
+      const spent = new Promise((resolve) => {
+        budget = setTimeout(() => {
+          controller?.abort();
+          resolve();
+        }, STOP_BUDGET_MS);
+        if (typeof budget.unref === 'function') budget.unref();
+      });
+
+      const work = (async () => {
+        // Sends already started, whose batches have left the queue and so cannot be found by looking at
+        // it, then the queue itself a batch at a time. The loop stops as soon as a pass cannot shrink the
+        // queue — with no usable transport there is nothing to wait for, and spinning would be worse.
+        await Promise.all([...outstanding]);
         while (queue.length > 0) {
           const before = queue.length;
           await flush();
-          if (queue.length >= before) return;
+          if (queue.length >= before) break;
         }
       })();
+
+      drainPromise = Promise.race([work, spent]).then(() => {
+        if (budget) clearTimeout(budget);
+      });
+
+      return drainPromise;
     },
   };
 }

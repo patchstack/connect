@@ -201,7 +201,8 @@ anything it could not send. `stop()` returns a promise that settles once every b
 finished with, so a shutdown handler can `await protection.stop()` instead of racing the last batch
 against process exit. It is bounded: if the wait runs out first, the drain is ended rather than left
 running, so nothing is still outstanding when it resolves. Still best-effort, since a runtime that
-terminates the process regardless still wins.
+terminates the process regardless still wins. Detection events are delivered or else counted; block-log
+records only have their outstanding attempts completed, since that path keeps no counters.
 
 The client address is reported with its **provenance**, because an address is only as trustworthy as
 whatever supplied it. `client_ip_source` is one of `runtime` (the address the transport observed),
