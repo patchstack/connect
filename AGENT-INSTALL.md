@@ -191,10 +191,13 @@ use one as a key believing it names the whole thing.
 Delivery is retried, up to four attempts per batch, with exponential backoff and jitter, honouring a
 `Retry-After` header when the endpoint sets one. Only failures worth retrying are retried — unreachable,
 rate-limited, or a server error; a batch that was refused on its merits is not sent again. Every attempt
-of one batch carries the same `Idempotency-Key` header, so a batch that was committed before its
-acknowledgement was lost is not counted twice. One request is in flight at a time, so a slow endpoint
-slows the queue rather than opening more sockets, and a batch that exhausts its attempts is dropped and
-counted rather than retried forever.
+of one batch carries the same `Idempotency-Key` header, and a different batch carries a different one, so
+a redelivery is identifiable as the same batch rather than a new one — an acknowledgement can be lost
+after the server has already taken a batch. One request is in flight at a time, so a slow endpoint slows
+the queue rather than opening more sockets; each attempt is abandoned after 10 seconds, so a request that
+never settles cannot hold that slot; and a batch that exhausts its attempts is dropped and counted rather
+than retried forever. Stopping a guard makes one last attempt at whatever is outstanding and counts
+anything it could not send.
 
 The client address is reported with its **provenance**, because an address is only as trustworthy as
 whatever supplied it. `client_ip_source` is one of `runtime` (the address the transport observed),
@@ -237,7 +240,7 @@ contained.
 
 What it does not contain: **no values of any kind.** Not the value that matched, not the request body,
 and not the value of any header, cookie or query-string parameter — including those of the parameters
-named above. Reports are batched, capped in memory, and dropped rather than retried if Patchstack cannot
+named above. Reports are batched, capped in memory, retried a bounded number of times, and dropped if Patchstack cannot
 be reached — a reporting failure never delays or fails a request.
 
 The endpoint needs a credential, so an enrolled site with none resolved starts nothing: the guard warns

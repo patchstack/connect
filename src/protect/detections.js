@@ -50,8 +50,28 @@ const MAX_QUEUE = 500;
 const MAX_ATTEMPTS = 4;
 const RETRY_BASE_MS = 1000;
 const RETRY_CAP_MS = 30_000;
-/** A refusal that will refuse again is terminal; these are the ones worth trying later. */
-const RETRYABLE_STATUS = new Set([408, 425, 429, 500, 502, 503, 504]);
+/**
+ * A refusal that will refuse again is terminal; these are the ones worth trying later.
+ *
+ * Any 5xx counts, not a chosen few. A server error is the endpoint saying the fault is its own, and
+ * picking a subset would leave the rest abandoned on the first attempt while the documented contract
+ * says a server error is retried — a difference nothing in the output would reveal.
+ */
+const RETRYABLE_EXPLICIT = new Set([408, 425, 429]);
+export function worthRetrying(status) {
+  if (status === null) return true; // Unreachable: nothing has said the endpoint is unwilling.
+
+  return RETRYABLE_EXPLICIT.has(status) || (status >= 500 && status <= 599);
+}
+
+/**
+ * How long one attempt may take before it is abandoned and retried.
+ *
+ * Only one send is in flight, so a request that never settles would hold that slot for the life of the
+ * process: the queue would fill, every later event would be dropped for pressure, and the health
+ * counters would show a single attempt that never failed. A hung connection has to look like a failure.
+ */
+const ATTEMPT_TIMEOUT_MS = 10_000;
 
 /**
  * Size bounds, applied per event and per batch.
@@ -129,18 +149,29 @@ function parseRetryAfter(value) {
   return Math.max(0, at - Date.now());
 }
 
+const encoder = new TextEncoder();
+
+/** The size of a string on the wire. `length` counts UTF-16 code units, which is not that. */
+export function byteLength(text) {
+  return encoder.encode(text).length;
+}
+
 /**
  * As many events as fit the byte bound, and the rest.
  *
- * A backstop, not the primary bound: with every field capped, a full batch cannot reach `MAX_BODY_BYTES`
- * today. It stays because the field caps and the batch count are separate numbers that can each change,
- * and an endpoint refusing an oversized body would refuse every retry of it too. At least one event
- * always goes, since a batch of none makes no progress.
+ * The bound is on the REQUEST, so `wrap` builds the body that will actually be sent — envelope, drop
+ * count and reporting state included — and it is measured in bytes rather than characters. Measuring the
+ * events alone, or measuring `length`, both understate the request: one leaves out the envelope, the
+ * other counts a multi-byte character as one. Either would let a body past the bound on the wire while
+ * the check reported it as fitting.
+ *
+ * At least one event always goes, since a batch of none makes no progress and would meet the same bound
+ * on every retry.
  */
-export function splitToFit(events, maxBytes) {
+export function splitToFit(events, maxBytes, wrap = (batch) => ({ detections: batch })) {
   const batch = events.slice();
   const rest = [];
-  while (batch.length > 1 && JSON.stringify(batch).length > maxBytes) {
+  while (batch.length > 1 && byteLength(JSON.stringify(wrap(batch))) > maxBytes) {
     rest.unshift(batch.pop());
   }
 
@@ -236,7 +267,7 @@ export function createDetectionReporter(opts) {
       record() {}, flush() {}, stop() {}, setRulesEtag() {}, announce() {}, dropped: () => 0,
       health: () => ({
         sent: 0, delivered: 0, failed: 0, dropped: 0, retried: 0, lastDeliveredAt: null,
-        capability: { announced: 0, acknowledged: 0, failed: 0, lastAcknowledgedAt: null },
+        capability: { announced: 0, acknowledged: 0, failed: 0, retried: 0, lastAcknowledgedAt: null },
       }),
     };
   }
@@ -286,7 +317,9 @@ export function createDetectionReporter(opts) {
   let stopped = false;
   let dropped = 0;
   let retried = 0;
+  let capabilityRetried = 0;
   let flushRequested = false;
+  let draining = false;
 
   // One send at a time, and one batch's worth of state while it runs.
   let sending = false;
@@ -313,16 +346,29 @@ export function createDetectionReporter(opts) {
   let sequence = 0;
 
   /** Events up to the batch and byte bounds, leaving the rest queued. */
-  const takeBatch = () => {
-    const [batch, rest] = splitToFit(queue.splice(0, MAX_BATCH), MAX_BODY_BYTES);
+  /** The exact request body for a batch: what is measured is what is sent. */
+  const bodyFor = (events, droppedWith, state) => ({
+    detections: events,
+    // The count of what never made it, sent WITH the batch rather than inferred from a gap: a consumer
+    // computing a false-positive rate needs to know its denominator is short, and silence about that
+    // would make a truncated sample look like a complete one.
+    dropped: droppedWith,
+    ...(state !== null ? { reporting_state: state } : {}),
+  });
+
+  const takeBatch = (droppedWith, state) => {
+    const [batch, rest] = splitToFit(queue.splice(0, MAX_BATCH), MAX_BODY_BYTES, (events) =>
+      bodyFor(events, droppedWith, state),
+    );
     if (rest.length > 0) queue.unshift(...rest);
 
     return batch;
   };
 
-  const post = async (body, key) =>
+  const post = async (body, key, signal) =>
     fetchImpl(`${baseUrl}/detections/${encodeURIComponent(siteUuid)}`, {
       method: 'POST',
+      ...(signal ? { signal } : {}),
       headers: {
         'Content-Type': 'application/json',
         Accept: 'application/json',
@@ -370,23 +416,30 @@ export function createDetectionReporter(opts) {
     if (!inFlight) return;
     sending = true;
     inFlight.attempts += 1;
-    if (inFlight.attempts > 1) retried += 1;
+    if (inFlight.attempts > 1) {
+      // Counted against whatever the request carries. A state-only request carries no events, so letting
+      // it advance the event counter would report retries of deliveries that never happened — the same
+      // conflation the delivered/acknowledged split exists to prevent. A request carrying both counts on
+      // both, because both were retried.
+      if (inFlight.events.length > 0) retried += 1;
+      if (inFlight.state !== null) capabilityRetried += 1;
+    }
 
-    const body = {
-      detections: inFlight.events,
-      // The count of what never made it, sent WITH the batch rather than inferred from a gap: a consumer
-      // computing a false-positive rate needs to know its denominator is short, and silence about that
-      // would make a truncated sample look like a complete one.
-      dropped: inFlight.dropped,
-      ...(inFlight.state !== null ? { reporting_state: inFlight.state } : {}),
-    };
+    const body = bodyFor(inFlight.events, inFlight.dropped, inFlight.state);
 
     let status = null;
     let retryAfter = null;
+    // A hung request must look like a failure rather than holding the only send slot forever.
+    const controller = typeof AbortController === 'function' ? new AbortController() : null;
+    inFlight.controller = controller;
+    const timeout = controller
+      ? unattended(setTimeout(() => controller.abort(), ATTEMPT_TIMEOUT_MS))
+      : null;
     try {
-      const res = await post(body, inFlight.key);
+      const res = await post(body, inFlight.key, controller?.signal);
       if (res && res.ok) {
         settle();
+        if (timeout) clearTimeout(timeout);
         finish();
 
         return;
@@ -394,15 +447,18 @@ export function createDetectionReporter(opts) {
       status = typeof res?.status === 'number' ? res.status : 0;
       retryAfter = res?.headers?.get?.('retry-after') ?? null;
     } catch {
-      // Unreachable rather than refused: worth another attempt, since nothing says the endpoint is
-      // unwilling.
+      // Unreachable, timed out, or aborted: worth another attempt, since nothing says the endpoint is
+      // unwilling. An abort from `stop()` is not retried, because `stopped` closes that path below.
       status = null;
+    } finally {
+      if (timeout) clearTimeout(timeout);
+      if (inFlight) inFlight.controller = null;
     }
 
-    const worthRetrying = status === null || RETRYABLE_STATUS.has(status);
+    const retryable = worthRetrying(status);
     // Not after `stop()`: the guard is going away, and a timer that outlives it would keep a process
     // alive to deliver a report nobody is waiting for.
-    if (worthRetrying && inFlight.attempts < MAX_ATTEMPTS && !stopped) {
+    if (retryable && inFlight.attempts < MAX_ATTEMPTS && !stopped) {
       const delay = retryDelayMs(inFlight.attempts, retryAfter);
       sending = false;
       retryTimer = unattended(
@@ -444,13 +500,25 @@ export function createDetectionReporter(opts) {
    * one request would immediately become the next — and the flush interval, which exists so a busy app
    * makes one request instead of fifty, would apply only to the first batch of a guard's life.
    */
-  const due = () => pendingState !== null || queue.length >= MAX_BATCH || flushRequested;
+  // While draining there is no "eventually": everything left goes now, or is accounted for.
+  const due = () => draining || pendingState !== null || queue.length >= MAX_BATCH || flushRequested;
 
   /** Start a send if one is due and nothing is already in flight; otherwise wait for the interval. */
   const kick = () => {
-    if (sending || inFlight || typeof fetchImpl !== 'function') return;
+    if (sending || inFlight) return;
+    if (typeof fetchImpl !== 'function') {
+      // Nothing can be sent, so a drain makes no progress and the queue is accounted for here.
+      if (draining) drained();
+
+      return;
+    }
+    // After `stop()` the only sends are the drain's own. `record` and `announce` also refuse once stopped,
+    // so this is the second of two independent refusals rather than the only one — deliberately, because
+    // the property it protects is that a torn-down guard opens no connections and arms no timers.
+    if (stopped && !draining) return;
     if (queue.length === 0 && pendingState === null) {
       flushRequested = false;
+      if (draining) drained();
 
       return;
     }
@@ -461,14 +529,15 @@ export function createDetectionReporter(opts) {
     }
     flushRequested = false;
 
-    const events = takeBatch();
     const droppedWith = dropped;
     dropped = 0;
     droppedTotal += droppedWith;
-    sent += events.length;
 
     const state = pendingState;
     pendingState = null;
+
+    const events = takeBatch(droppedWith, state);
+    sent += events.length;
     // Counted where the declaration is actually attached to a request, so coalesced states count once —
     // the number describes declarations made, not calls received.
     if (state !== null) capabilityAnnounced += 1;
@@ -476,6 +545,15 @@ export function createDetectionReporter(opts) {
     sequence += 1;
     inFlight = { key: `${instanceId}-${sequence}`, events, dropped: droppedWith, state, attempts: 0 };
     void attempt();
+  };
+
+  /** Nothing left to send: whatever never left is counted rather than forgotten. */
+  const drained = () => {
+    draining = false;
+    if (queue.length > 0) {
+      droppedTotal += queue.length;
+      queue = [];
+    }
   };
 
   const flush = () => {
@@ -509,7 +587,10 @@ export function createDetectionReporter(opts) {
       // Capped, with a note of what was capped. Every field is an identifier rather than traffic, but a
       // route is whatever the application routes and a broad rule can read many parameters — and a reader
       // who cannot tell a shortened route from a complete one will read it as a different route.
-      const route = capText(routeOf(detection.path), MAX_ROUTE_CHARS);
+      // `null` survives: there being no route is not the same as the route being empty, and a cap that
+      // turned one into the other would invent a known path where none was established.
+      const rawRoute = routeOf(detection.path);
+      const route = typeof rawRoute === 'string' ? capText(rawRoute, MAX_ROUTE_CHARS) : { value: rawRoute, truncated: false };
       const allParameters = ruleParameters(detection.rule);
       const parameters = allParameters.slice(0, MAX_PARAMETERS).map((name) => capText(name, MAX_PARAMETER_CHARS));
       const truncated = [];
@@ -534,9 +615,10 @@ export function createDetectionReporter(opts) {
         route: route.value,
         parameters: parameters.map((entry) => entry.value),
         // Present only when something was shortened, so its absence is not a claim of its own.
-        ...(truncated.length > 0
-          ? { truncated, parameters_total: allParameters.length }
-          : {}),
+        ...(truncated.length > 0 ? { truncated } : {}),
+        // Only when parameters were actually left out. Reporting a total because some OTHER field was
+        // shortened states that parameters were omitted when none were.
+        ...(truncated.includes('parameters') ? { parameters_total: allParameters.length } : {}),
         phase: detection.phase ?? null,
         // The state this detection was handled under, which is the whole point: `false` is a rule that
         // saw traffic it would have stopped.
@@ -586,15 +668,45 @@ export function createDetectionReporter(opts) {
         if (!stopped) kick();
       });
     },
+    /**
+     * Stop reporting, leaving nothing stranded and nothing scheduled.
+     *
+     * Three things can be outstanding, and each needs an answer:
+     *
+     * - a batch waiting on a retry timer — it holds the only send slot, so clearing the timer alone would
+     *   leave it neither delivered nor counted. It gets one final attempt, with no retry behind it.
+     * - a request in flight — it is aborted, and its completion drains what is left rather than starting
+     *   open-ended work.
+     * - events still queued — drained a batch at a time, each attempted once.
+     *
+     * Whatever remains unsent when the drain runs out is counted as dropped, so every recorded event ends
+     * up delivered, refused or dropped, and none simply disappears.
+     */
     stop() {
+      if (stopped) return;
       stopped = true;
+      if (timer) {
+        clearTimeout(timer);
+        timer = null;
+      }
+      draining = true;
+
       if (retryTimer) {
         clearTimeout(retryTimer);
         retryTimer = null;
+        void attempt();
+
+        return;
       }
-      // One last send for whatever is queued. No retry follows it: `stopped` closes that path, so a
-      // failure here is counted and the guard goes away rather than keeping a timer alive behind it.
-      flush();
+      if (sending) {
+        // Its completion continues the drain. Aborting turns a hung request into a failure now rather
+        // than a slot held until the process exits.
+        inFlight?.controller?.abort();
+
+        return;
+      }
+      flushRequested = true;
+      kick();
     },
     /**
      * Point later events at the bundle now running. Called after an ACCEPTED swap only — a rejected
@@ -628,6 +740,7 @@ export function createDetectionReporter(opts) {
         announced: capabilityAnnounced,
         acknowledged: capabilityAcknowledged,
         failed: capabilityFailed,
+        retried: capabilityRetried,
         lastAcknowledgedAt: lastCapabilityAckAt,
       },
     }),

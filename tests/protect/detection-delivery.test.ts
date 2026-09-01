@@ -1,5 +1,11 @@
 import { describe, it, expect, vi, afterEach } from 'vitest';
-import { createDetectionReporter, retryDelayMs, splitToFit } from '../../src/protect/detections.js';
+import {
+  byteLength,
+  createDetectionReporter,
+  retryDelayMs,
+  splitToFit,
+  worthRetrying,
+} from '../../src/protect/detections.js';
 
 /**
  * Delivery, not payload.
@@ -32,7 +38,7 @@ const RETRY_CAP_MS = 30_000;
 const keysOf = (impl: any) =>
   impl.mock.calls.map((c: any[]) => (c[1]?.headers ?? {})['Idempotency-Key']).filter(Boolean);
 
-afterEach(() => { vi.useRealTimers(); vi.restoreAllMocks(); });
+afterEach(() => { vi.useRealTimers(); vi.restoreAllMocks(); vi.unstubAllGlobals(); });
 
 describe('a batch worth retrying is retried, and only so far', () => {
   it('retries a transient refusal and delivers the same batch', async () => {
@@ -272,6 +278,22 @@ describe('an event is bounded in size, and says when it was', () => {
     expect(event.route.length, 'capped').toBe(256);
     // Without this a reader would take a shortened route for a different route.
     expect(event.truncated).toContain('route');
+    // And nothing else is claimed: no parameter was left out, so there is no total to report.
+    expect(event.truncated).not.toContain('parameters');
+    expect(Object.hasOwn(event, 'parameters_total')).toBe(false);
+  });
+
+  it('keeps a missing route missing rather than turning it into an empty one', async () => {
+    const { bodies, impl } = capture();
+    const r = reporterFor(impl);
+
+    r.record({ rule: RULE, phase: 'request', mode: 'block' } as never);
+    r.flush();
+    await settle();
+
+    // There being no route is not the same as the route being empty: an empty string reads as a known
+    // path that happens to be blank.
+    expect(bodies[0].detections[0].route).toBeNull();
   });
 
   it('caps how many parameters an event names, and reports the real count', async () => {
@@ -329,6 +351,8 @@ describe('an event is bounded in size, and says when it was', () => {
     // reader must not use it as a key believing it is complete.
     expect(event.truncated).toContain('rule_id');
     expect(event.truncated).toContain('rules_etag');
+    // The rule reads one parameter and the event names it, so a parameter total would be a false claim.
+    expect(Object.hasOwn(event, 'parameters_total'), 'no parameters were omitted').toBe(false);
     r.stop();
   });
 });
@@ -401,5 +425,311 @@ describe('the byte bound on a batch', () => {
     const events = [event(10, 1), event(10, 2)];
 
     expect(splitToFit(events, 1000)).toEqual([events, []]);
+  });
+});
+
+describe('stopping leaves nothing outstanding and nothing scheduled', () => {
+  const refusing = () => vi.fn(async () => new Response('{}', { status: 503 }));
+
+  it('makes a final attempt at a batch that was waiting to retry, and counts it', async () => {
+    vi.useFakeTimers();
+    const impl = refusing();
+    const r = reporterFor(impl);
+
+    one(r);
+    r.flush();
+    await vi.advanceTimersByTimeAsync(1);
+    expect(impl.mock.calls.length, 'the first attempt failed and a retry is pending').toBe(1);
+
+    r.stop();
+    await vi.advanceTimersByTimeAsync(1);
+
+    // Clearing the retry timer alone would leave this batch holding the only slot: never delivered,
+    // never abandoned, and absent from every counter.
+    expect(impl.mock.calls.length, 'the waiting batch got one last attempt').toBe(2);
+    expect(r.health()).toMatchObject({ sent: 1, delivered: 0, failed: 1 });
+    await vi.advanceTimersByTimeAsync(RETRY_CAP_MS * 4);
+    expect(impl.mock.calls.length, 'and nothing after it').toBe(2);
+  });
+
+  it('accounts for a waiting batch that finally succeeds on the way out', async () => {
+    vi.useFakeTimers();
+    let attempts = 0;
+    const impl = vi.fn(async () => {
+      attempts++;
+
+      return new Response('{}', { status: attempts === 1 ? 503 : 202 });
+    });
+    const r = reporterFor(impl);
+
+    one(r);
+    r.flush();
+    await vi.advanceTimersByTimeAsync(1);
+    r.stop();
+    await vi.advanceTimersByTimeAsync(1);
+
+    expect(r.health()).toMatchObject({ sent: 1, delivered: 1, failed: 0 });
+  });
+
+  it('drains what is still queued, a batch at a time', async () => {
+    vi.useFakeTimers();
+    const bodies: any[] = [];
+    const impl = vi.fn(async (_u: string, init?: RequestInit) => {
+      bodies.push(JSON.parse(String(init?.body ?? '{}')));
+
+      return new Response('{}', { status: 202 });
+    });
+    const r = reporterFor(impl);
+
+    // More than one batch's worth, with nothing due, so it is all still queued.
+    for (let i = 0; i < 60; i++) one(r, `/p${i}`);
+    r.stop();
+    await vi.advanceTimersByTimeAsync(1);
+
+    const total = bodies.reduce((n, b) => n + b.detections.length, 0);
+    expect(bodies.length, 'more than one batch left').toBeGreaterThan(1);
+    expect(total, 'and all of it went').toBe(60);
+    expect(r.health()).toMatchObject({ delivered: 60, dropped: 0 });
+  });
+
+  it('counts what it could not send rather than losing track of it', async () => {
+    vi.useFakeTimers();
+    // A transport that is gone: nothing can be delivered, so the drain has to account for the queue.
+    const impl = vi.fn(async () => { throw new Error('gone'); });
+    const r = reporterFor(impl);
+
+    for (let i = 0; i < 60; i++) one(r, `/p${i}`);
+    r.stop();
+    await vi.advanceTimersByTimeAsync(1);
+
+    const h = r.health();
+    // Every recorded event ends up somewhere: delivered, refused, or dropped. None simply disappears.
+    expect(h.delivered + h.failed + h.dropped, 'all 60 are accounted for').toBe(60);
+    expect(h.delivered).toBe(0);
+  });
+
+  it('does not start new work when a send already in flight completes after stop', async () => {
+    let release: (() => void) | null = null;
+    const impl = vi.fn(async () => {
+      if (impl.mock.calls.length === 1) await new Promise<void>((r) => { release = r; });
+
+      return new Response('{}', { status: 202 });
+    });
+    const r = reporterFor(impl);
+
+    one(r);
+    r.flush();
+    await settle();
+    expect(impl.mock.calls.length, 'one send is in flight').toBe(1);
+
+    // Queued behind it, then stopped while it is still running.
+    one(r, '/b');
+    r.stop();
+    release?.();
+    await settle();
+    await settle();
+
+    // The drain sends what was queued — deliberately, once each — rather than the completion quietly
+    // chaining fresh batches behind a stopped guard.
+    const total = impl.mock.calls.length;
+    await settle();
+    expect(impl.mock.calls.length, 'and then it is finished').toBe(total);
+    expect(r.health().sent).toBe(2);
+  });
+
+  it('ignores a flush or a record that arrives after stopping', async () => {
+    const impl = vi.fn(async () => new Response('{}', { status: 202 }));
+    const r = reporterFor(impl);
+
+    one(r);
+    r.stop();
+    await settle();
+    const afterStop = impl.mock.calls.length;
+    expect(afterStop, 'the drain sent what was buffered').toBe(1);
+
+    // `flush` and `record` are public, so they can be called after a guard is torn down. Neither may
+    // start a new request or arm a new interval behind it.
+    one(r, '/late');
+    r.flush();
+    await settle();
+
+    expect(impl.mock.calls.length, 'nothing new was started').toBe(afterStop);
+    expect(r.health().sent, 'and the late event was never sent').toBe(1);
+  });
+
+  it('accounts for the queue when there is no transport to drain it through', async () => {
+    // A runtime with no usable `fetch` can still record. Those events go nowhere, so they have to be
+    // counted somewhere rather than sitting in a queue that appears in no number.
+    vi.stubGlobal('fetch', undefined);
+    const r = createDetectionReporter({ siteUuid: 'site-1', baseUrl: 'https://x.test/monitor/pulse' });
+
+    for (let i = 0; i < 7; i++) one(r, `/p${i}`);
+    r.stop();
+    await settle();
+
+    const h = r.health();
+    expect(h.dropped, 'every unsendable event is accounted for').toBe(7);
+    expect(h.sent).toBe(0);
+    expect(h.delivered + h.failed).toBe(0);
+  });
+
+  it('abandons an attempt that never settles instead of holding the only slot', async () => {
+    vi.useFakeTimers();
+    const seen: Array<AbortSignal | undefined> = [];
+    const impl = vi.fn(
+      (_u: string, init?: RequestInit) =>
+        new Promise<Response>((_resolve, reject) => {
+          seen.push(init?.signal ?? undefined);
+          init?.signal?.addEventListener('abort', () => reject(new Error('aborted')));
+        }),
+    );
+    const r = reporterFor(impl);
+
+    one(r);
+    r.flush();
+    await vi.advanceTimersByTimeAsync(1);
+    expect(seen[0], 'the attempt carries a signal').toBeDefined();
+
+    // Ten seconds is the attempt bound; without it this request holds the single send slot for the life
+    // of the process and every later event is dropped for pressure.
+    await vi.advanceTimersByTimeAsync(10_000);
+    await vi.advanceTimersByTimeAsync(RETRY_CAP_MS);
+    expect(impl.mock.calls.length, 'it was abandoned and retried').toBeGreaterThan(1);
+    r.stop();
+  });
+
+  it('aborts a request in flight when stopped', async () => {
+    let aborted = false;
+    const impl = vi.fn(
+      (_u: string, init?: RequestInit) =>
+        new Promise<Response>((_resolve, reject) => {
+          init?.signal?.addEventListener('abort', () => { aborted = true; reject(new Error('aborted')); });
+        }),
+    );
+    const r = reporterFor(impl);
+
+    one(r);
+    r.flush();
+    await settle();
+    r.stop();
+    await settle();
+
+    expect(aborted, 'stopping does not wait on a request that may never answer').toBe(true);
+  });
+});
+
+describe('what counts as worth retrying', () => {
+  it('retries any server error, not a chosen few', () => {
+    // The documented contract says a server error is retried. Picking a subset would abandon the rest on
+    // the first attempt while the documentation said otherwise.
+    for (const status of [500, 501, 502, 503, 504, 507, 508, 599]) {
+      expect(worthRetrying(status), `${status} is the endpoint's own fault`).toBe(true);
+    }
+    for (const status of [408, 425, 429]) expect(worthRetrying(status)).toBe(true);
+    expect(worthRetrying(null), 'unreachable says nothing about willingness').toBe(true);
+  });
+
+  it('does not retry a refusal on the merits', () => {
+    for (const status of [400, 401, 403, 404, 409, 413, 422, 200, 302]) {
+      expect(worthRetrying(status), `${status} would refuse again`).toBe(false);
+    }
+  });
+});
+
+describe('the byte bound is measured in bytes, on the request that is sent', () => {
+  it('counts what goes on the wire, not UTF-16 code units', () => {
+    // A multi-byte character is one code unit and several bytes, so `length` understates the request.
+    const multi = '☂'.repeat(100);
+    expect(multi.length).toBe(100);
+    expect(byteLength(multi), 'three bytes each on the wire').toBe(300);
+  });
+
+  it('sizes the whole request, envelope included', () => {
+    const events = [{ rule_id: 'a' }, { rule_id: 'b' }];
+    const wrap = (batch: unknown[]) => ({ detections: batch, dropped: 0, reporting_state: 'on' });
+    const bare = byteLength(JSON.stringify({ detections: events }));
+    const full = byteLength(JSON.stringify(wrap(events)));
+
+    // Measuring the events alone leaves the envelope out, so a body just under the bound goes over it.
+    expect(full).toBeGreaterThan(bare);
+    const [batch] = splitToFit(events, full - 1, wrap as never);
+    expect(batch.length, 'the envelope counted against the bound').toBe(1);
+  });
+
+  it('keeps a real request under the bound with multi-byte routes', async () => {
+    const bodies: string[] = [];
+    const impl = vi.fn(async (_u: string, init?: RequestInit) => {
+      bodies.push(String(init?.body ?? ''));
+
+      return new Response('{}', { status: 202 });
+    });
+    const r = reporterFor(impl, { rulesEtag: `"${'e'.repeat(254)}"` });
+    const wide = {
+      id: 'r'.repeat(256),
+      rule_v2: Array.from({ length: 25 }, (_, i) => ({
+        parameter: `post.${'f'.repeat(58)}${i}`,
+        match: { type: 'contains', value: 'x' },
+      })),
+    };
+    // Three bytes per character, so a batch sized by characters would be three times the bound.
+    for (let i = 0; i < 50; i++) {
+      r.record({ rule: wide, phase: 'request', mode: 'block', path: `/${'☂'.repeat(120)}${i}` });
+    }
+    for (let i = 0; i < 8; i++) {
+      r.flush();
+      await settle();
+    }
+
+    expect(bodies.length).toBeGreaterThan(1);
+    for (const body of bodies) {
+      // The actual bytes of the actual request.
+      expect(byteLength(body), 'the request that was sent is under the bound').toBeLessThanOrEqual(64 * 1024);
+    }
+    r.stop();
+  });
+});
+
+describe('a capability retry is not an event retry', () => {
+  it('counts a retried declaration against capability only', async () => {
+    vi.useFakeTimers();
+    let attempts = 0;
+    const impl = vi.fn(async () => {
+      attempts++;
+
+      return new Response('{}', { status: attempts === 1 ? 503 : 202 });
+    });
+    const r = reporterFor(impl);
+
+    r.announce('on');
+    await vi.advanceTimersByTimeAsync(1);
+    await vi.advanceTimersByTimeAsync(RETRY_CAP_MS);
+
+    const h = r.health();
+    // A declaration carries no events, so a retry of it describes no delivery of any event.
+    expect(h.retried, 'no event was retried, because none was sent').toBe(0);
+    expect(h.capability).toMatchObject({ announced: 1, acknowledged: 1, retried: 1 });
+    expect(h.sent).toBe(0);
+    r.stop();
+  });
+
+  it('counts both when one request carried both', async () => {
+    vi.useFakeTimers();
+    let attempts = 0;
+    const impl = vi.fn(async () => {
+      attempts++;
+
+      return new Response('{}', { status: attempts === 1 ? 503 : 202 });
+    });
+    const r = reporterFor(impl);
+
+    one(r);
+    r.announce('on');
+    await vi.advanceTimersByTimeAsync(1);
+    await vi.advanceTimersByTimeAsync(RETRY_CAP_MS);
+
+    const h = r.health();
+    expect(h.retried, 'the events were retried').toBe(1);
+    expect(h.capability.retried, 'and so was the declaration').toBe(1);
+    r.stop();
   });
 });

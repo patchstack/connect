@@ -88,6 +88,8 @@ export interface Protection {
       announced: number;
       acknowledged: number;
       failed: number;
+      /** Retries of a declaration, counted apart from event retries for the same reason as the rest. */
+      retried: number;
       lastAcknowledgedAt: string | null;
     };
   };
