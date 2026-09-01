@@ -1,6 +1,10 @@
 import { describe, it, expect } from 'vitest';
+import { RequestResolver } from '../../src/protect/engine/request.js';
+import { RuleEngine } from '../../src/protect/engine/engine.js';
+import { normalizeRequest } from '../../src/protect/engine/normalizer.js';
 import {
   CAPTURE_LIMITS,
+  captureValues,
   createPlanCache,
   derivePlan,
   permitsAnything,
@@ -105,8 +109,8 @@ describe('a prefix permits matching keys and no others', () => {
   it('bounds how many keys a prefix may match', () => {
     // A prefix can match an unbounded number of keys, and "a rule that reads a prefix" must not become
     // "a rule that reads the whole body".
-    expect(derivePlan(rule(['post.field_*'])).limits.prefixKeys).toBe(CAPTURE_LIMITS.prefixKeys);
-    expect(CAPTURE_LIMITS.prefixKeys).toBeLessThan(CAPTURE_LIMITS.values + 1);
+    expect(derivePlan(rule(['post.field_*'])).limits.prefixValues).toBe(CAPTURE_LIMITS.prefixValues);
+    expect(CAPTURE_LIMITS.prefixValues).toBeLessThan(CAPTURE_LIMITS.capturedValues + 1);
   });
 });
 
@@ -334,7 +338,7 @@ describe('a plan reference names the policy, not the moment', () => {
   it('does not depend on the order the permissions are listed in', () => {
     // `derivePlan` sorts, so this cannot arise from it today — but the reference is what ties a captured
     // value to the policy that allowed it, and that tie must not rest on an ordering somewhere else.
-    const limits = { values: 10, valueChars: 512, prefixKeys: 5 };
+    const limits = { capturedValues: 10, valueChars: 512, prefixValues: 5 };
     const one = { named: ['get.q', 'post.title'], prefixes: ['post.a.', 'post.b.'], raw: null, limits };
     const other = { named: ['post.title', 'get.q'], prefixes: ['post.b.', 'post.a.'], raw: null, limits };
 
@@ -366,20 +370,20 @@ describe('a plan reference names the policy, not the moment', () => {
       named: ['get.q', 'post.title'],
       prefixes: [],
       raw: null,
-      limits: { values: 10, valueChars: 512, prefixKeys: 5 },
+      limits: { capturedValues: 10, valueChars: 512, prefixValues: 5 },
     };
 
-    expect(planReference(plan)).toBe('cp1-bf0f418cf2f24752c827a4f8e3b6334a');
+    expect(planReference(plan)).toBe('cp2-470617d87e6943b67e48ec6c4022705e');
   });
 
   it('changes when a limit changes, without changing the algorithm', () => {
     // The policy moving is not the algorithm moving: the reference follows the permissions, the prefix
     // stays put.
-    const base = { named: ['post.title'], prefixes: [], raw: null, limits: { values: 10, valueChars: 512 } };
-    const tighter = { ...base, limits: { values: 10, valueChars: 128 } };
+    const base = { named: ['post.title'], prefixes: [], raw: null, limits: { capturedValues: 10, valueChars: 512 } };
+    const tighter = { ...base, limits: { capturedValues: 10, valueChars: 128 } };
 
     expect(planReference(tighter)).not.toBe(planReference(base));
-    expect(planReference(tighter).startsWith('cp1-')).toBe(true);
+    expect(planReference(tighter).startsWith('cp2-')).toBe(true);
   });
 
   it('is what derivePlan produces under the limits in force', () => {
@@ -395,7 +399,7 @@ describe('a plan reference names the policy, not the moment', () => {
     // reference must not be something a reader has to think about.
     const reference = planReference(derivePlan(rule(['post.title'])));
 
-    expect(reference).toMatch(/^cp1-[0-9a-f]{32}$/);
+    expect(reference).toMatch(/^cp2-[0-9a-f]{32}$/);
   });
 
   it('differs when the permissions differ', () => {
@@ -459,7 +463,7 @@ describe('plans are derived once per rule', () => {
     const cache = createPlanCache();
 
     expect(permitsAnything(cache.for(undefined as never).plan)).toBe(false);
-    expect(cache.for(null as never).reference).toMatch(/^cp1-/);
+    expect(cache.for(null as never).reference).toMatch(/^cp2-/);
   });
 
   it('hands out an entry that cannot be edited', () => {
@@ -546,5 +550,340 @@ describe('the published contract and the runtime give the same answer', () => {
     expect(captureProblem({ version: 1, raw_chars: 0 }), 'below the minimum').not.toBeNull();
     expect(captureProblem({ version: 1, raw_chars: 8, extra: 1 }), 'no other keys').not.toBeNull();
     expect(captureProblem({ version: 1, raw_chars: 8 }), 'and this one is valid').toBeNull();
+  });
+});
+
+describe('what a plan actually reads from a request', () => {
+  const resolverFor = (req: unknown) => new RequestResolver(normalizeRequestFor(req));
+  // The engine reads a normalized request, so capture reads the same one — otherwise it would be holding
+  // something other than what the rule matched on.
+  function normalizeRequestFor(req: any) {
+    return { ...req, ...normalizeRequest(req) };
+  }
+  const request = (over: Record<string, unknown> = {}) => ({
+    method: 'POST',
+    url: '/checkout',
+    originalUrl: '/checkout',
+    headers: { 'content-type': 'application/json', 'user-agent': 'scanner/1.0' },
+    query: {},
+    body: {},
+    cookies: {},
+    ...over,
+  });
+
+  it('reads the parameter the plan names, and nothing beside it', () => {
+    const plan = derivePlan(rule(['post.title']));
+    const taken = captureValues(plan, resolverFor(request({ body: { title: 'payload', secret: 'not-permitted' } })));
+
+    expect(taken.values).toEqual([{ parameter: 'post.title', value: 'payload' }]);
+    expect(JSON.stringify(taken), 'a field the plan did not name is not read').not.toContain(
+      'not-permitted',
+    );
+  });
+
+  it('takes nothing when the plan permits nothing', () => {
+    // The common case, and the one that must cost nothing: a rule reading `raw` with no opt-in.
+    const taken = captureValues(derivePlan(rule(['raw'])), resolverFor(request({ body: { title: 'payload' } })));
+
+    expect(taken).toEqual({ values: [], omitted: 0, unsupported: 0, failed: 0, unavailable: false, raw: null });
+  });
+
+  it('reads a header and a cookie the rule named', () => {
+    const plan = derivePlan(rule(['server.HTTP_USER_AGENT', 'cookie.session']));
+    const taken = captureValues(plan, resolverFor(request({ cookies: { session: 'abc123' } })));
+
+    expect(taken.values.map((v: any) => v.parameter).sort()).toEqual([
+      'cookie.session',
+      'server.HTTP_USER_AGENT',
+    ]);
+  });
+
+  it('shortens a long value and says which one', () => {
+    const plan = derivePlan(rule(['post.title']));
+    const taken = captureValues(plan, resolverFor(request({ body: { title: 'x'.repeat(5000) } })));
+
+    expect(taken.values[0].value.length).toBe(CAPTURE_LIMITS.valueChars);
+    expect(taken.values[0].truncated).toBe(true);
+  });
+
+  it('says nothing about truncation when nothing was shortened', () => {
+    const taken = captureValues(derivePlan(rule(['post.title'])), resolverFor(request({ body: { title: 'short' } })));
+
+    expect(Object.hasOwn(taken.values[0], 'truncated')).toBe(false);
+  });
+
+  it('stops at the total it is allowed, and counts what it left', () => {
+    // A capture holding less than it appears to would have a reader drawing conclusions from a sample
+    // without knowing it was one.
+    const many = Array.from({ length: 30 }, (_, i) => `post.f${i}`);
+    const body = Object.fromEntries(many.map((_, i) => [`f${i}`, `value-${i}`]));
+    const taken = captureValues(derivePlan(rule(many)), resolverFor(request({ body })));
+
+    expect(taken.values.length).toBe(CAPTURE_LIMITS.capturedValues);
+    expect(taken.omitted).toBe(30 - CAPTURE_LIMITS.capturedValues);
+  });
+
+  it('bounds how many keys one prefix contributes', () => {
+    const body = Object.fromEntries(Array.from({ length: 20 }, (_, i) => [`field_${i}`, `v${i}`]));
+    const taken = captureValues(derivePlan(rule(['post.field_*'])), resolverFor(request({ body })));
+
+    expect(taken.values.length).toBe(CAPTURE_LIMITS.prefixValues);
+    expect(taken.values.every((v: any) => v.parameter === 'post.field_*')).toBe(true);
+    expect(taken.omitted).toBe(20 - CAPTURE_LIMITS.prefixValues);
+  });
+
+  it('does not serialise an object the plan named', () => {
+    // A permission for `post.profile` is not a permission for everything under it.
+    const plan = derivePlan(rule(['post.profile']));
+    const taken = captureValues(plan, resolverFor(request({ body: { profile: { name: 'ada', password: 'hunter2' } } })));
+
+    expect(JSON.stringify(taken)).not.toContain('hunter2');
+    expect(taken.unsupported, 'refused for its type, and said so').toBe(1);
+    expect(taken.omitted, 'which is not the same as a bound leaving it out').toBe(0);
+  });
+
+  it('reads a bounded prefix of the raw body only with the opt-in', () => {
+    const raw = 'not-json __proto__ ' + 'y'.repeat(1000);
+    const req = request({ headers: { 'content-type': 'application/json' }, body: {}, _rawBody: raw });
+
+    const without = captureValues(derivePlan(rule(['raw'])), resolverFor(req));
+    expect(without.raw, 'no opt-in, no raw evidence').toBeNull();
+
+    const withOptIn = captureValues(
+      derivePlan(rule(['raw'], { capture: { version: 1, raw_chars: 64 } })),
+      resolverFor(req),
+    );
+    expect(withOptIn.raw.value.length).toBe(64);
+    expect(withOptIn.raw.truncated).toBe(true);
+    expect(withOptIn.raw.value).toBe(raw.slice(0, 64));
+  });
+
+  it('never fails a request over evidence', () => {
+    // Fail-open, like everything else on this path: a capture that cannot be taken is not taken.
+    const hostile = {
+      resolve() {
+        throw new Error('hostile parameter');
+      },
+    };
+
+    // No resolver to read with at all.
+    expect(captureValues(derivePlan(rule(['post.title'])), undefined as never)).toEqual({
+      values: [],
+      omitted: 0,
+      unsupported: 0,
+      failed: 0,
+      // Distinguishable from "there was nothing to capture": a reviewer must not read incomplete
+      // evidence as complete.
+      unavailable: true,
+      raw: null,
+    });
+
+    const threw = captureValues(derivePlan(rule(['post.title'])), hostile as never);
+
+    expect(threw.values).toEqual([]);
+    expect(threw.failed, 'the failure is recorded, not silently empty').toBe(1);
+    expect(threw.unavailable, 'and no read completed, so nothing was readable').toBe(true);
+  });
+
+  it('reports a partial read as partial, not as unreadable', () => {
+    // One parameter failing is not the request being unreadable, and the two lead to opposite
+    // conclusions from a short list of values.
+    const flaky = {
+      resolve(parameter: string) {
+        if (parameter === 'post.bad') throw new Error('nope');
+
+        return ['fine'];
+      },
+    };
+    const taken = captureValues(derivePlan(rule(['post.bad', 'post.good'])), flaky as never);
+
+    expect(taken.values).toEqual([{ parameter: 'post.good', value: 'fine' }]);
+    expect(taken.failed).toBe(1);
+    expect(taken.unavailable).toBe(false);
+  });
+
+});
+
+describe('evidence records what it could not take, and why', () => {
+  const resolverFor = (req: unknown) => new RequestResolver({ ...(req as object), ...normalizeRequest(req as never) });
+  const request = (over: Record<string, unknown> = {}) => ({
+    method: 'POST',
+    url: '/checkout',
+    originalUrl: '/checkout',
+    headers: { 'content-type': 'application/json' },
+    query: {},
+    body: {},
+    cookies: {},
+    ...over,
+  });
+
+  it('keeps a value that is present and empty', () => {
+    // A rule can be written so that its finding IS that a parameter is empty. Collapsing that into
+    // absence erases the evidence for exactly those rules.
+    const taken = captureValues(derivePlan(rule(['post.title'])), resolverFor(request({ body: { title: '' } })));
+
+    expect(taken.values).toEqual([{ parameter: 'post.title', value: '' }]);
+  });
+
+  it('tells a present-but-empty value apart from an absent one', () => {
+    const absent = captureValues(derivePlan(rule(['post.title'])), resolverFor(request({ body: {} })));
+
+    // An absent field resolves to no value at all, which is already a different answer — and neither is
+    // a failure, so nothing is counted against the bounds.
+    expect(absent.values).toEqual([]);
+    expect(absent).toMatchObject({ omitted: 0, unsupported: 0, failed: 0, unavailable: false });
+  });
+
+  it('counts every value one NAMED parameter had excluded, not just the first', () => {
+    // A single named parameter can resolve to many values — several files uploaded under one field name
+    // fan out. Reporting one omission where there were several would have a reviewer take a truncated
+    // sample for a nearly complete one.
+    const upload = Array.from({ length: 15 }, (_, i) => ({
+      filename: `f${i}.php`,
+      type: 'text/php',
+      content: `content-${i}`,
+    }));
+    const taken = captureValues(derivePlan(rule(['files.upload.content'])), resolverFor(request({ files: { upload } })));
+
+    expect(taken.values.length).toBe(CAPTURE_LIMITS.capturedValues);
+    expect(taken.omitted, 'every one that did not fit').toBe(15 - CAPTURE_LIMITS.capturedValues);
+  });
+
+  it('counts every value a prefix had excluded', () => {
+    const files = Object.fromEntries(
+      Array.from({ length: 15 }, (_, i) => [`f${i}`, { filename: `f${i}.php`, type: 'text/php', content: 'x' }]),
+    );
+    const taken = captureValues(derivePlan(rule(['files.f*'])), resolverFor(request({ files })));
+
+    expect(taken.values.length).toBe(CAPTURE_LIMITS.prefixValues);
+    expect(taken.omitted).toBe(15 - CAPTURE_LIMITS.prefixValues);
+  });
+
+  it('judges an unsupported type wherever it appears, not by where the budget ran out', () => {
+    // Type is judged before capacity, so the same value is refused the same way at the front of a
+    // request and at the back of it.
+    // The object sorts LAST, so the budget is already full when it is reached. Judging capacity first
+    // would file it as omitted — a value a bound left out — rather than as one whose type is refused.
+    const body: Record<string, unknown> = { z: { nested: true } };
+    for (let i = 0; i < 12; i++) body[`f${i}`] = `v${i}`;
+    const plan = derivePlan(rule(['post.z', ...Array.from({ length: 12 }, (_, i) => `post.f${i}`)]));
+
+    expect(plan.named[plan.named.length - 1], 'the object is reached last').toBe('post.z');
+
+    const taken = captureValues(plan, resolverFor(request({ body })));
+
+    expect(taken.unsupported, 'refused for its type, not for arriving late').toBe(1);
+    expect(taken.values.length).toBe(CAPTURE_LIMITS.capturedValues);
+    expect(taken.omitted).toBe(12 - CAPTURE_LIMITS.capturedValues);
+  });
+
+  it('classifies a prefix value before the prefix bound, not after', () => {
+    // Five strings, then an object. What a value IS does not depend on how many came before it: refused
+    // for its type reads as a value this channel will not carry, while left out by a bound reads as one
+    // that would have fitted in a larger event. Swapping them misreports why the evidence is short.
+    const body: Record<string, unknown> = {};
+    for (let i = 0; i < CAPTURE_LIMITS.prefixValues; i++) body[`field_${i}`] = `v${i}`;
+    body.field_last = { nested: true };
+
+    const taken = captureValues(derivePlan(rule(['post.field_*'])), resolverFor(request({ body })));
+
+    expect(taken.values.length).toBe(CAPTURE_LIMITS.prefixValues);
+    expect(taken.unsupported, 'the object was refused for its type').toBe(1);
+    expect(taken.omitted, 'and no bound left anything out').toBe(0);
+  });
+
+  it('gives raw its own allowance rather than a slot from the value total', () => {
+    // Raw is separately opted into and separately bounded. Making it consume a value slot would have an
+    // opt-in silently reduce the named evidence a reviewer needs.
+    const body = Object.fromEntries(Array.from({ length: 12 }, (_, i) => [`f${i}`, `v${i}`]));
+    const named = Array.from({ length: 12 }, (_, i) => `post.f${i}`);
+    const plan = derivePlan(rule([...named, 'raw'], { capture: { version: 1, raw_chars: 32 } }));
+    const taken = captureValues(plan, resolverFor(request({ body, _rawBody: 'r'.repeat(200) })));
+
+    expect(taken.values.length, 'the full value budget').toBe(CAPTURE_LIMITS.capturedValues);
+    expect(taken.raw, 'and raw besides').not.toBeNull();
+    expect(taken.raw.value.length).toBe(32);
+  });
+
+  it('records the resolved value: normalised, but not mutated by the rule', () => {
+    // Three forms of a parameter exist. The engine normalises the request, then a condition applies its
+    // own mutations. This records the middle one — what the resolver answers with — because reading
+    // either of the others would be a second interpretation of the request.
+    const encoded = '%3Cscript%3E';
+    const urlRule = {
+      id: 'r1',
+      rule_v2: [{ parameter: 'get.q', mutations: ['urldecode'], match: { type: 'contains', value: '<script>' } }],
+    };
+
+    // Normalisation decodes, so the captured value is decoded — the rule's own `urldecode` is not what
+    // did it.
+    expect(
+      captureValues(derivePlan(urlRule as never), resolverFor(request({ query: { q: encoded } })))
+        .values[0].value,
+    ).toBe('<script>');
+
+    // A mutation normalisation does NOT perform stays unapplied, which is the discriminating case: the
+    // subject is recorded as the resolver saw it, not as the matcher finally compared it.
+    const b64 = 'PHNjcmlwdD4=';
+    const b64Rule = {
+      id: 'r2',
+      rule_v2: [
+        { parameter: 'post.blob', mutations: ['base64_decode'], match: { type: 'contains', value: '<script>' } },
+      ],
+    };
+
+    expect(
+      captureValues(derivePlan(b64Rule as never), resolverFor(request({ body: { blob: b64 } })))
+        .values[0].value,
+      'still encoded, because the rule decoded it and normalisation did not',
+    ).toBe(b64);
+  });
+});
+
+describe('evidence comes from the reading the match was decided by', () => {
+  it('reads the snapshot the match was decided by, never the request again', () => {
+    // A request can answer differently every time it is asked. This one changes its body on every read —
+    // a getter, a stream, or anything lazy behaves this way. Capture that built its own resolver would
+    // record a value the rule never saw, and evidence disagreeing with the match it belongs to is worse
+    // than no evidence.
+    let reads = 0;
+    const req: any = {
+      method: 'POST',
+      url: '/checkout',
+      originalUrl: '/checkout',
+      headers: { 'content-type': 'application/json' },
+      query: {},
+      cookies: {},
+      get body() {
+        reads += 1;
+
+        return { title: `x-read-${reads}` };
+      },
+    };
+
+    const engine = new RuleEngine({
+      firewall: [{ id: 'r1', title: 'reads the title', rule_v2: [leafFor('post.title')] }],
+      whitelists: [],
+      whitelist_keys: {},
+    });
+    const result: any = engine.evaluate(req);
+
+    expect(result.blocked, 'the rule fired').toBe(true);
+    expect(result.resolver, 'the match hands out the reading it was decided by').toBeDefined();
+
+    const readsAfterEvaluation = reads;
+    const taken = captureValues(derivePlan(rule(['post.title'])), result.resolver);
+
+    expect(reads, 'capture asked the request nothing').toBe(readsAfterEvaluation);
+    expect(taken.values[0].value, 'the value the match was decided on').toBe(
+      result.resolver.resolve('post.title')[0],
+    );
+
+    // And what a second reading would have produced instead — the value capture must never record.
+    const fresh = new RequestResolver({ ...req, ...normalizeRequest(req) });
+
+    expect(fresh.resolve('post.title')[0], 'a fresh read answers differently').not.toBe(
+      taken.values[0].value,
+    );
   });
 });

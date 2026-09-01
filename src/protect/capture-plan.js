@@ -50,14 +50,23 @@ import { enforceableRuleProblem } from './rules/validate.js';
  */
 const NEVER_CAPTURABLE = new Set(['response']);
 
-/** Bounds every plan carries, so a permission cannot become an unbounded one. */
+/**
+ * Bounds every plan carries, so a permission cannot become an unbounded one.
+ *
+ * Named for what they count. `capturedValues` is the budget for named and prefix captures together; raw
+ * is NOT drawn from it, because raw is separately opted into and separately bounded by its own
+ * `raw.chars`, and making it consume a value slot would have a raw opt-in silently reduce the named
+ * evidence a reviewer needs. `prefixValues` counts resolved VALUES rather than matched keys: the
+ * resolver answers a wildcard with values, so keys are not available to count and claiming otherwise
+ * would describe a bound this cannot enforce.
+ */
 export const CAPTURE_LIMITS = Object.freeze({
-  /** Values in one event, across every permission it holds. */
-  values: 10,
+  /** Named and prefix values in one event, together. Raw has its own allowance. */
+  capturedValues: 10,
   /** Characters of any single captured value. */
   valueChars: 512,
-  /** Keys one prefix permission may match. */
-  prefixKeys: 5,
+  /** Resolved values one prefix permission may contribute. */
+  prefixValues: 5,
 });
 
 /** The parameters a rule reads, as the union over its conditions and nested groups. */
@@ -199,9 +208,10 @@ export function permitsAnything(plan) {
  * built for is accidental collision between the small number of plans a bundle produces, which that is
  * comfortably wide enough for.
  *
- * The algorithm and the canonical form are part of what `cp1-` means. Changing either changes what every
- * existing reference refers to, so it takes a new prefix rather than a new implementation under the old
- * one — a pinned vector in the tests is what makes that a decision instead of an accident.
+ * The algorithm and the canonical form are part of what the prefix means. Changing either changes what
+ * every existing reference refers to, so it takes a new prefix rather than a new implementation under the
+ * old one — a pinned vector in the tests is what makes that a decision instead of an accident. Renaming a
+ * limit changes the canonical form, which is why this reads `cp2-`.
  */
 const LANES = Object.freeze([0x811c9dc5, 0x01000193, 0x9e3779b9, 0x85ebca6b]);
 
@@ -228,7 +238,7 @@ export function planReference(plan) {
     return hash.toString(16).padStart(8, '0');
   }).join('');
 
-  return `cp1-${digest}`;
+  return `cp2-${digest}`;
 }
 
 /**
@@ -273,4 +283,165 @@ export function createPlanCache() {
       return derivations;
     },
   };
+}
+
+/**
+ * The evidence a plan permits, read from one request.
+ *
+ * Reads only what the plan names, in the plan's order, and through THE resolver the match was decided by
+ * — handed in, never built here. Building one would read the request a second time, and a request can
+ * answer differently twice: a getter, a stream, anything lazy. Evidence that disagrees with the match it
+ * belongs to is worse than no evidence, so the only reading available here is the one that already
+ * happened.
+ *
+ * **It is the resolved value, which is neither the bytes as sent nor the string the matcher compared.**
+ * Three forms of a parameter exist. The engine normalises a request first — URL-decoding, HTML-entity
+ * decoding, stripping comments and control characters, collapsing whitespace — and then applies whatever
+ * mutations a rule's own condition asks for. This records the middle one, because that is what the
+ * resolver answers with and reading either of the others would be a second interpretation of the request.
+ *
+ * So a percent-encoded payload arrives here decoded, while a rule's `base64_decode` is not applied and its
+ * subject arrives still encoded. Reproducing the matched subject would need condition-level evidence: the
+ * engine reports which RULE fired, not which condition, and this plan deliberately does not model one.
+ *
+ * Bounds apply, and each reports what it left out:
+ *
+ * - a total across named and prefix values, so one detection cannot carry an unbounded amount of an
+ *   application's data
+ * - a length per value, so one field cannot
+ * - a number of resolved values per prefix, so a prefix permission stays narrower than the body it sits in
+ *
+ * Raw is bounded separately by its own opt-in and does not draw on the value total.
+ *
+ * Absence and failure are different answers, and the result distinguishes them. A field that was not
+ * there, a value refused for its type, a parameter whose read threw, and a request nothing could be read
+ * from would otherwise all arrive as "no evidence" — letting a reviewer read incomplete evidence as
+ * complete. None of it is content: they are counts of what did not make it, and why.
+ *
+ * `unavailable` means no read completed at all: there was no resolver to read with, or every permitted
+ * read threw. It is the difference between "this request carried none of what the rule reads" and "this
+ * request could not be read", which are opposite conclusions from the same empty list.
+ */
+export function captureValues(plan, resolver) {
+  const nothing = { values: [], omitted: 0, unsupported: 0, failed: 0, unavailable: false, raw: null };
+  if (!plan || !permitsAnything(plan)) return nothing;
+  if (!resolver || typeof resolver.resolve !== 'function') return { ...nothing, unavailable: true };
+
+  const limits = plan.limits ?? CAPTURE_LIMITS;
+  const values = [];
+  let omitted = 0;
+  let unsupported = 0;
+  let failed = 0;
+  let attempted = 0;
+
+  const read = (parameter) => {
+    attempted += 1;
+    try {
+      const resolved = resolver.resolve(parameter);
+
+      return Array.isArray(resolved) ? resolved : [];
+    } catch {
+      // Fail-open for the application: a capture that cannot be taken is not taken. Counted, so that
+      // "nothing was captured" is not mistaken for "there was nothing to capture".
+      failed += 1;
+
+      return null;
+    }
+  };
+
+  /**
+   * What one resolved value is, before anything is decided about room for it.
+   *
+   * Classified here rather than inside the recording step, so that "refused for its type" and "left out
+   * by a bound" cannot swap places depending on where a value happens to fall in a request.
+   */
+  const classify = (value) => {
+    const text = asText(value);
+    if (text === null) {
+      unsupported += 1;
+
+      return null;
+    }
+
+    return text;
+  };
+
+  /** @returns {boolean} whether there was room for it */
+  const record = (parameter, text) => {
+    if (values.length >= limits.capturedValues) {
+      omitted += 1;
+
+      return false;
+    }
+
+    const capped = text.length > limits.valueChars;
+    values.push({
+      parameter,
+      value: capped ? text.slice(0, limits.valueChars) : text,
+      ...(capped ? { truncated: true } : {}),
+    });
+
+    return true;
+  };
+
+  for (const parameter of plan.named) {
+    // Every resolved value is offered, not just up to the first refusal: a parameter can resolve to many
+    // values, and stopping at the first excess would report one omission where there were several.
+    for (const value of read(parameter) ?? []) {
+      const text = classify(value);
+      if (text !== null) record(parameter, text);
+    }
+  }
+
+  for (const prefix of plan.prefixes) {
+    // The pattern the rule wrote, put back together: the plan holds the prefix, the resolver reads the
+    // wildcard. Labelled by the pattern rather than by the key it matched, because the resolver answers
+    // with values and inventing a key here would mean enumerating the request a second way.
+    const pattern = `${prefix}*`;
+    let taken = 0;
+    for (const value of read(pattern) ?? []) {
+      // Classified before the prefix bound is consulted, for the same reason as above: what a value IS
+      // does not depend on how many came before it.
+      const text = classify(value);
+      if (text === null) continue;
+      if (taken >= limits.prefixValues) {
+        omitted += 1;
+        continue;
+      }
+      if (record(pattern, text)) taken += 1;
+    }
+  }
+
+  let raw = null;
+  if (plan.raw !== null) {
+    const text = asText((read('raw') ?? [])[0]);
+    if (text !== null) {
+      const capped = text.length > plan.raw.chars;
+      raw = { value: capped ? text.slice(0, plan.raw.chars) : text, ...(capped ? { truncated: true } : {}) };
+    }
+  }
+
+  // Nothing was readable, as opposed to nothing being there to read.
+  const unavailable = attempted > 0 && failed === attempted;
+
+  return { values, omitted, unsupported, failed, unavailable, raw };
+}
+
+/**
+ * A value as text, or null when its type is not one a request carries as a value.
+ *
+ * An empty string is text. A rule can be written so that its finding IS that a parameter is empty, and
+ * collapsing that into absence would erase the evidence for exactly those rules — an absent field
+ * resolves to no value at all, which is already a different answer.
+ *
+ * An object is refused rather than serialised, because serialising it would reach past the field the plan
+ * named into whatever it contains: a permission for `post.profile` is not a permission for everything
+ * under it.
+ */
+function asText(value) {
+  if (typeof value === 'string') return value;
+  if (typeof value === 'number' && Number.isFinite(value)) return String(value);
+  if (typeof value === 'boolean') return String(value);
+
+  return null;
 }
