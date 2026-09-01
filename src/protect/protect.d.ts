@@ -242,7 +242,11 @@ export interface CreateProtectionOptions {
     message?: string;
     method?: string | null;
     path?: string | null;
+    /** The client address resolved for this request, or null when none could be established. */
     ip?: string | null;
+    /** Where `ip` came from: the transport peer, a forwarded header a declared trusted proxy set, or
+     *  nothing this guard can stand behind. `ip` is null when this is `unavailable`. */
+    clientIpSource?: "runtime" | "trusted-proxy" | "unavailable";
     userAgent?: string | null;
   }) => void;
 }

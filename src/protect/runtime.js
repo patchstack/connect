@@ -452,11 +452,15 @@ export async function createProtection(options = {}) {
   // Minimal request context for the response phase: what a response rule's `when` scope and any
   // request-header reference (Host/Origin) need — method, path, and request headers. No body.
   /**
-   * Present an Express request to the engine with the resolved address as an own property.
+   * Present an Express request to the engine with the resolved address, without touching the original.
    *
-   * The application's own request object is left untouched. `req.ip` on Express is an accessor defined by
-   * the framework and derived from its own `trust proxy` setting, so overwriting it would change what the
-   * application sees; a prototype-linked view shadows it for the engine only.
+   * Every field the engine reads is materialised as an OWN property. The engine normalises with
+   * `{ ...req, ...normalizeRequest(req) }`, and a spread copies own enumerable properties only — so a
+   * prototype-linked view would arrive carrying just the two properties added here, and a rule scoped to
+   * a method, or reading an uploaded file or a parsed cookie, would silently find nothing.
+   *
+   * The application's own request object is left alone: `req.ip` on Express is an accessor the framework
+   * defines from its own `trust proxy` setting, and overwriting it would change what the application sees.
    */
   const shapeExpressRequest = (req) => {
     const client = resolveClientIp({
@@ -464,11 +468,26 @@ export async function createProtection(options = {}) {
       headers: req?.headers ?? {},
       trustedProxy: options.trustedProxy,
     });
-    const shaped = Object.create(req);
-    Object.defineProperty(shaped, 'ip', { value: client.ip ?? '', enumerable: true, configurable: true });
-    shaped._clientIp = client;
 
-    return { shaped, client };
+    return {
+      client,
+      shaped: {
+        // Own copies of everything a rule can address. Listed rather than spread, so a field the engine
+        // gains has to be added here deliberately instead of appearing to work by accident.
+        method: req?.method,
+        url: req?.url,
+        originalUrl: req?.originalUrl,
+        headers: req?.headers,
+        query: req?.query,
+        body: req?.body,
+        files: req?.files,
+        cookies: req?.cookies,
+        socket: req?.socket,
+        // The resolved address, and the resolution itself for the consumers downstream.
+        ip: client.ip ?? '',
+        _clientIp: client,
+      },
+    };
   };
 
   /**

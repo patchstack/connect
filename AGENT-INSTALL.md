@@ -177,9 +177,17 @@ would have stopped while it is still in dry-run. Two separate paths, with differ
 What a detection report contains, per matched rule: the rule id, the request path **with any query string
 removed**, the parameter names that rule reads (from the rule's own definition), which phase matched,
 whether it was enforced, the identifier of the rule bundle in use, the revision of the rule itself when the
-bundle carried one, and a timestamp. Each batch also
+bundle carried one, the client address and where that address came from, and a timestamp. Each batch also
 carries a count of reports dropped when traffic outran the flush, so a partial sample is not read as a
 complete one.
+
+The client address is reported with its **provenance**, because an address is only as trustworthy as
+whatever supplied it. `client_ip_source` is one of `runtime` (the address the transport observed),
+`trusted-proxy` (read from a forwarded header, through peers you declared via `trustedProxy`), or
+`unavailable`. When it is `unavailable` the `client_ip` field is **omitted entirely** rather than sent
+empty, so a missing address cannot read as a failed lookup of a real one. A forwarded header is never
+trusted implicitly: with no `trustedProxy` policy the address is whatever the transport observed, and in a
+runtime that exposes no transport peer there is no address to report at all.
 
 The parameter names are **identifiers, and they name the request region they refer to** — `post.title`,
 `get.redirect_to`, `cookie.session`, `server.HTTP_AUTHORIZATION`. So a rule that inspects a cookie or an

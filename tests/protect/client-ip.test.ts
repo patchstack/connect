@@ -308,6 +308,14 @@ describe('the event fields', () => {
     expect(Object.hasOwn(fields, 'client_ip')).toBe(false);
   });
 
+  it('omit an address whose provenance does not support it', () => {
+    // `unavailable` means nothing was established. An address arriving with that provenance is
+    // incoherent, and reporting it would attach a value to a claim that denies it.
+    expect(clientIpFields({ ip: '203.0.113.9', source: 'unavailable' } as never)).toEqual({
+      client_ip_source: 'unavailable',
+    });
+  });
+
   it('carry both when an address was established', () => {
     expect(clientIpFields({ ip: PEER, source: 'runtime' })).toEqual({
       client_ip: PEER,

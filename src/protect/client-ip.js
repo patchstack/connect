@@ -454,7 +454,12 @@ export function resolveClientIp(input) {
  * present, because "this could not be established" is the part a reader needs.
  */
 export function clientIpFields(resolved) {
-  return resolved.ip === null
-    ? { client_ip_source: resolved.source }
-    : { client_ip: resolved.ip, client_ip_source: resolved.source };
+  // An address is only reported alongside a provenance that supports it. `unavailable` means nothing was
+  // established, so an address arriving with that provenance is incoherent — a caller that had one would
+  // have said where it came from — and reporting it would attach a value to a claim that denies it.
+  const reportable = resolved.ip !== null && resolved.source !== 'unavailable';
+
+  return reportable
+    ? { client_ip: resolved.ip, client_ip_source: resolved.source }
+    : { client_ip_source: resolved.source };
 }

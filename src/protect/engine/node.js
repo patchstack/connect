@@ -138,7 +138,9 @@ export function createNodeMiddleware(rulesData, options = {}) {
       let shaped;
       try {
         const rawBody = overflow ? '' : Buffer.concat(chunks).toString('utf8');
-        shaped = fromNodeRequest(req, rawBody); // shaping is inside the try too — never crash
+        // The caller's policy reaches the shaping, or this adapter would always report the socket peer
+        // even where its caller declared a trusted front end.
+        shaped = fromNodeRequest(req, rawBody, { trustedProxy: options.trustedProxy }); // never crash
         result = engine.evaluate(shaped);
       } catch (err) {
         notify(options.onError, err, 'onError');

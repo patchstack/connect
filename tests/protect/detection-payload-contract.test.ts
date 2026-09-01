@@ -37,7 +37,18 @@ const FIELD_DISCLOSURE: Record<string, RegExp> = {
   rules_etag: /identifier of the rule bundle/i,
   rule_revision: /revision of the rule/i,
   detected_at: /timestamp/i,
+  client_ip: /client address/i,
+  client_ip_source: /where that address came from/i,
 };
+
+/**
+ * Fields the payload omits rather than sends empty.
+ *
+ * `client_ip` is absent when no address could be established, which is the documented behaviour: a
+ * present-but-empty field reads as a failed lookup of a real address. So the completeness check below
+ * requires every OTHER documented field, and this one only when there was an address to report.
+ */
+const CONDITIONAL_FIELDS = new Set(['client_ip']);
 
 /** Envelope keys, described separately because they are per-batch rather than per-detection. */
 const ENVELOPE_DISCLOSURE: Record<string, RegExp> = {
@@ -136,7 +147,13 @@ describe('the detection payload matches what AGENT-INSTALL.md says about it', ()
     const { body } = await capturePayload();
     const detection = (body.detections as Array<Record<string, unknown>>)[0];
 
-    expect(Object.keys(detection).sort()).toEqual(Object.keys(FIELD_DISCLOSURE).sort());
+    const expected = Object.keys(FIELD_DISCLOSURE).filter(
+      (key) => !CONDITIONAL_FIELDS.has(key) || key in detection,
+    );
+
+    expect(Object.keys(detection).sort()).toEqual(expected.sort());
+    // And the conditional field is absent for the right reason, not missing by accident.
+    if (!('client_ip' in detection)) expect(detection.client_ip_source).toBe('unavailable');
     expect(Object.keys(body).sort()).toEqual(Object.keys(ENVELOPE_DISCLOSURE).sort());
   });
 

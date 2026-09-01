@@ -17,7 +17,20 @@ import { createProtection } from '../../src/protect/runtime.js';
 const drain = () => new Promise((resolve) => setTimeout(resolve, 0));
 
 /** Everything the payload is allowed to carry, and nothing else. */
-const ALLOWED_KEYS = ['rule_id', 'route', 'parameters', 'phase', 'enforced', 'rules_etag', 'rule_revision', 'detected_at'];
+// `client_ip` is not here: it is omitted when no address could be established, which is the case for a
+// reporter driven directly with no resolved address. `client_ip_source` is always present, because "this
+// could not be established" is the part a reader needs.
+const ALLOWED_KEYS = [
+  'rule_id',
+  'route',
+  'parameters',
+  'phase',
+  'enforced',
+  'rules_etag',
+  'rule_revision',
+  'client_ip_source',
+  'detected_at',
+];
 
 const pinnedRule = {
   id: 'pulse-1',

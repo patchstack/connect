@@ -1,4 +1,5 @@
 import { pulseAuthHeader } from '../pulse-token.js';
+import { clientIpFields } from './client-ip.js';
 import { isSafeOrigin } from './safe-origin.js';
 
 /**
@@ -244,6 +245,10 @@ export function createDetectionReporter(opts) {
         // one rule describe the document that rule has now. Passed through untouched, and null when the
         // bundle carried none.
         rule_revision: revisionOf(detection.rule),
+        // The client address and where it came from. `client_ip` is omitted entirely when there is none,
+        // so a present-but-empty field cannot read as a failed lookup of a real address; the provenance is
+        // always present, because "this could not be established" is the part a reader needs.
+        ...clientIpFields({ ip: detection.ip ?? null, source: detection.clientIpSource ?? 'unavailable' }),
         detected_at: new Date().toISOString(),
       });
 
