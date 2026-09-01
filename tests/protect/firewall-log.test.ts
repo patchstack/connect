@@ -203,8 +203,11 @@ describe('stopping the block log waits for what is outstanding, and is bounded',
       flushMs: 1,
       ...over,
     });
-  const record = (r: any, n = 1) => {
-    for (let i = 0; i < n; i++) r.record({ rule: { id: `r${i}` }, method: 'GET', path: '/a', ip: '1.2.3.4' });
+  let recorded = 0;
+  const record = (r: any, n = 1, tag = 'r') => {
+    for (let i = 0; i < n; i++) {
+      r.record({ rule: { id: `${tag}${i}` }, method: 'GET', path: `/a${recorded++}`, ip: '1.2.3.4' });
+    }
   };
   const tick = async () => { await new Promise((r) => setTimeout(r, 5)); };
 
@@ -315,6 +318,60 @@ describe('stopping the block log waits for what is outstanding, and is bounded',
 
     expect(settled, 'the wait is bounded').toBe(true);
     expect(aborted, `${phase} was let go of`).toContain(phase);
+  });
+
+  it('does not resolve while records buffered behind an armed interval are still going out', async () => {
+    vi.useFakeTimers();
+    // Send A is open. Records B sit in the queue with the flush interval armed behind them. A drain that
+    // waited on the sends it happened to find at the start would resolve the moment A finished — while
+    // the interval had quietly taken B and started a send of its own.
+    const posts: Array<{ release: (r: Response) => void; body: string }> = [];
+    const impl = vi.fn((url: string, init?: RequestInit) => {
+      if (String(url).includes('/oauth/token')) {
+        return Promise.resolve(
+          new Response(JSON.stringify({ access_token: 'jwt', expires_in: 3600 }), {
+            status: 200,
+            headers: { 'Content-Type': 'application/json' },
+          }),
+        );
+      }
+
+      return new Promise<Response>((resolve) => {
+        posts.push({ release: resolve, body: String(init?.body ?? '') });
+      });
+    });
+    // Short enough that the interval fires during the drain.
+    const r: any = reporter(impl, { flushMs: 10 });
+
+    record(r, 50, 'a'); // A: reaches the batch bound and starts a send
+    await vi.advanceTimersByTimeAsync(1);
+    record(r, 5, 'b'); // B: queued, with the interval now armed behind them
+    expect(posts.length, 'A is in flight').toBe(1);
+
+    let settled = false;
+    const done = r.stop().then(() => { settled = true; });
+
+    // The interval's moment passes FIRST, while A is still open — that is the whole race. An interval
+    // left armed takes B here, starting a send the drain never learns about.
+    await vi.advanceTimersByTimeAsync(50);
+
+    // Nothing took B: from the moment a shutdown begins, the drain owns the queue. Were the interval
+    // still armed it would have started B's send here, outside the drain's knowledge.
+    expect(posts.length, 'the interval did not take B').toBe(1);
+
+    // A finishes. A drain waiting on the sends it found at the start is now satisfied, and would resolve
+    // with B's send open.
+    posts[0].release(new Response('{}', { status: 200 }));
+    await vi.advanceTimersByTimeAsync(5);
+
+    expect(posts.length, "B's post has started").toBe(2);
+    expect(settled, 'and the shutdown is still waiting for it').toBe(false);
+    expect(posts[1].body, 'B is what is being sent').toContain('b0');
+
+    posts[1].release(new Response('{}', { status: 200 }));
+    await vi.advanceTimersByTimeAsync(1);
+    await done;
+    expect(settled).toBe(true);
   });
 
   it('runs nothing more once the shutdown has given up', async () => {

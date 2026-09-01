@@ -169,6 +169,8 @@ export function createFirewallLogReporter(opts) {
     // it came from is already empty. It never rejects: a caller that ignores it must not produce an
     // unhandled rejection, and one that awaits it is waiting for the attempt to finish, not asking
     // whether it succeeded.
+    /** @type {Promise<void>} */
+    let entry;
     const send = (async () => {
       try {
         const token = await fetchAccessToken(lifetime?.signal);
@@ -195,11 +197,15 @@ export function createFirewallLogReporter(opts) {
         if (p && typeof p.then === 'function') await p.catch(() => {});
       } catch {
         /* A delivery problem is never worth disturbing the app over. */
+      } finally {
+        // Here rather than in a `.then`: this runs before the promise settles, so a waiter that looks at
+        // the set the moment its wait resolves cannot see a send that has already finished.
+        outstanding.delete(entry);
       }
     })();
 
+    entry = send;
     outstanding.add(send);
-    void send.then(() => outstanding.delete(send));
 
     return send;
   };
@@ -247,6 +253,13 @@ export function createFirewallLogReporter(opts) {
       // drain is still running, and must not start a second drain behind it.
       if (drainPromise) return drainPromise;
       stopped = true;
+      // Before anything else. An armed interval would otherwise fire mid-drain, take the queued records
+      // for itself, and start a send the drain never learns about — leaving the drain to look at an empty
+      // queue, conclude it is finished, and resolve with that send still open.
+      if (timer) {
+        clearTimeout(timer);
+        timer = null;
+      }
 
       /**
        * End the drain, rather than merely stop waiting for it.
@@ -277,11 +290,19 @@ export function createFirewallLogReporter(opts) {
       });
 
       const work = (async () => {
-        // Sends already started, whose batches have left the queue and so cannot be found by looking at
-        // it, then the queue itself a batch at a time. The loop stops as soon as a pass cannot shrink the
-        // queue — with no usable transport there is nothing to wait for, and spinning would be worse.
-        await Promise.all([...outstanding]);
-        while (!ended && queue.length > 0) {
+        // Two things can be outstanding and each can produce the other: a send holds records that have
+        // left the queue, and the queue holds records that will become a send. So this asks again after
+        // every wait rather than taking one snapshot — a snapshot resolves as soon as the sends it
+        // happened to capture are done, whatever appeared in the meantime.
+        //
+        // It ends when both are empty, when a pass cannot shrink the queue (with no usable transport
+        // there is nothing to wait for, and spinning would be worse), or when the budget ends it.
+        while (!ended) {
+          if (outstanding.size > 0) {
+            await Promise.all([...outstanding]);
+            continue;
+          }
+          if (queue.length === 0) break;
           const before = queue.length;
           await flush();
           if (queue.length >= before) break;
