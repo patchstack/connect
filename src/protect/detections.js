@@ -73,8 +73,6 @@ export function worthRetrying(status) {
  */
 const ATTEMPT_TIMEOUT_MS = 10_000;
 
-/** Matches the rules path, so one app-wide setting governs both. */
-const DEFAULT_TIMEOUT_MS = 30_000;
 
 /**
  * How long `stop()` will wait for the drain before resolving anyway.
@@ -279,7 +277,7 @@ export function createDetectionReporter(opts) {
     return {
       record() {}, flush() {}, stop: () => Promise.resolve(), setRulesEtag() {}, announce() {}, dropped: () => 0,
       health: () => ({
-        sent: 0, delivered: 0, failed: 0, dropped: 0, retried: 0, lastDeliveredAt: null,
+        sent: 0, delivered: 0, failed: 0, dropped: 0, retried: 0, reauthorized: 0, lastDeliveredAt: null,
         capability: { announced: 0, acknowledged: 0, failed: 0, retried: 0, lastAcknowledgedAt: null },
       }),
     };
@@ -339,6 +337,9 @@ export function createDetectionReporter(opts) {
   let drainPromise = null;
   /** @type {ReturnType<typeof setTimeout> | null} */
   let budgetTimer = null;
+  /** Bumped when a drain is terminated, so a late response cannot move a counter after the fact. */
+  let epoch = 0;
+  let reauthorized = 0;
 
   // One send at a time, and one batch's worth of state while it runs.
   let sending = false;
@@ -385,26 +386,28 @@ export function createDetectionReporter(opts) {
   };
 
   /**
-   * The credential exchange's own bound, never longer than an attempt's.
+   * The credential exchange's own bound: this reporter's, not the application's.
    *
-   * The exchange is a separate request, so the attempt's abort signal does not reach it: a token call
-   * bounded above the attempt would hold the single send slot past the point the attempt was supposed to
-   * end. It must also be a number — the exchange bounds itself with a timeout built from this value, and
-   * an absent one makes that construction throw, which the exchange reports as "no token" and every
+   * It matches an attempt, because the exchange is a separate request that an attempt's abort signal does
+   * not reach — bounded any longer, a token call would hold the single send slot past the point the
+   * attempt was meant to end. It must also BE a number: the exchange builds its timeout from this value,
+   * and an absent one makes that construction throw, which the exchange reports as "no token" and every
    * site-addressed endpoint then refuses.
+   *
+   * Deliberately not a knob. Nothing in the public options feeds a value here, so reading one would be a
+   * setting a caller cannot set — always undefined, always falling through to a default.
    */
-  const configuredTimeout = Number(opts.timeoutMs) > 0 ? Number(opts.timeoutMs) : DEFAULT_TIMEOUT_MS;
-  const tokenTimeoutMs = Math.min(configuredTimeout, ATTEMPT_TIMEOUT_MS);
-  const authConfig = { pulseAuth: opts.pulseAuth, endpoint: baseUrl, timeoutMs: tokenTimeoutMs };
+  const authConfig = { pulseAuth: opts.pulseAuth, endpoint: baseUrl, timeoutMs: ATTEMPT_TIMEOUT_MS };
+  const detectionsUrl = `${baseUrl}/detections/${encodeURIComponent(siteUuid)}`;
 
-  const post = async (body, key, signal) =>
+  const post = async (body, key, signal, transport) =>
     // Through the shared Pulse path, which attaches the token and — on a 401 — discards it and retries
     // once with a fresh one. A cached token can stop being valid before it expires, and the server's
     // refusal is authoritative over our own clock; the batch's own headers, this key included, are
     // carried through both sends, so the redelivery is still recognisable as the same batch.
     pulseFetch(
       authConfig,
-      `${baseUrl}/detections/${encodeURIComponent(siteUuid)}`,
+      detectionsUrl,
       {
         method: 'POST',
         ...(signal ? { signal } : {}),
@@ -418,7 +421,7 @@ export function createDetectionReporter(opts) {
         },
         body: JSON.stringify(body),
       },
-      fetchImpl,
+      transport,
     );
 
   /** Give up on the batch in flight, counting what it carried. */
@@ -450,6 +453,7 @@ export function createDetectionReporter(opts) {
    */
   const attempt = async () => {
     if (!inFlight) return;
+    const mine = epoch;
     sending = true;
     inFlight.attempts += 1;
     if (inFlight.attempts > 1) {
@@ -471,8 +475,18 @@ export function createDetectionReporter(opts) {
     const timeout = controller
       ? unattended(setTimeout(() => controller.abort(), ATTEMPT_TIMEOUT_MS))
       : null;
+    // The credential path may send the same batch twice: once with a token the server refuses, once with
+    // a reissued one. That is a redelivery of this batch, so it is counted rather than invisible.
+    let sends = 0;
+    const counted = (url, init) => {
+      if (String(url) === detectionsUrl) sends += 1;
+
+      return fetchImpl(url, init);
+    };
     try {
-      const res = await post(body, inFlight.key, controller?.signal);
+      const res = await post(body, inFlight.key, controller?.signal, counted);
+      if (sends > 1) reauthorized += sends - 1;
+      if (mine !== epoch) return; // the drain was terminated while this was open
       if (res && res.ok) {
         settle();
         if (timeout) clearTimeout(timeout);
@@ -488,8 +502,13 @@ export function createDetectionReporter(opts) {
       status = null;
     } finally {
       if (timeout) clearTimeout(timeout);
-      if (inFlight) inFlight.controller = null;
+      // Only if it is still THIS attempt's. On the acknowledged path `settle()` and `finish()` run inside
+      // the block above, so by the time this executes `inFlight` can already be the NEXT batch — and
+      // clearing its controller would leave that batch with nothing to abort it by.
+      if (inFlight && inFlight.controller === controller) inFlight.controller = null;
     }
+
+    if (mine !== epoch) return;
 
     const retryable = worthRetrying(status);
     // Not after `stop()`: the guard is going away, and a timer that outlives it would keep a process
@@ -581,6 +600,27 @@ export function createDetectionReporter(opts) {
     sequence += 1;
     inFlight = { key: `${instanceId}-${sequence}`, events, dropped: droppedWith, state, attempts: 0 };
     void attempt();
+  };
+
+  /**
+   * End the drain now, because the shutdown budget is spent.
+   *
+   * Resolving alone would have been the promise claiming a completion that had not happened: the request
+   * would still be open, the queue unaccounted, and later batches free to follow. So the attempt is
+   * abandoned and counted, the queue is accounted for, and `epoch` moves — which is what stops a response
+   * that lands afterwards from moving any counter, since by then the numbers have already been reported
+   * as final.
+   */
+  const terminate = () => {
+    epoch += 1;
+    if (inFlight) {
+      inFlight.controller?.abort();
+      failed += inFlight.events.length;
+      if (inFlight.state !== null) capabilityFailed += 1;
+      inFlight = null;
+    }
+    sending = false;
+    drained();
   };
 
   /** Nothing left to send: whatever never left is counted rather than forgotten, and the wait ends. */
@@ -736,14 +776,10 @@ export function createDetectionReporter(opts) {
       drainPromise = new Promise((resolve) => {
         drainResolve = resolve;
       });
-      budgetTimer = unattended(
-        setTimeout(() => {
-          budgetTimer = null;
-          const resolve = drainResolve;
-          drainResolve = null;
-          if (resolve) resolve();
-        }, STOP_BUDGET_MS),
-      );
+      budgetTimer = unattended(setTimeout(() => {
+        budgetTimer = null;
+        terminate();
+      }, STOP_BUDGET_MS));
       if (timer) {
         clearTimeout(timer);
         timer = null;
@@ -794,6 +830,9 @@ export function createDetectionReporter(opts) {
       // Attempts beyond the first, counted in ATTEMPTS rather than events: a path that only ever
       // succeeds on a second try is working, and is worth telling apart from one that never retries.
       retried,
+      // Redeliveries the credential path made after a refused token, which are not backoff retries and
+      // would otherwise appear nowhere: a rotated or revoked credential is worth seeing as itself.
+      reauthorized,
       lastDeliveredAt,
       // Separate, because a capability announcement delivers no events. Reading zero here alongside a
       // non-zero `delivered` is a normal state, and so is the reverse.

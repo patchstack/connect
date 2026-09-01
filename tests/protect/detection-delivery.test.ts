@@ -912,21 +912,108 @@ describe('stopping can be awaited', () => {
     expect(r.health()).toMatchObject({ delivered: 60, dropped: 0 });
   });
 
-  it('gives up waiting rather than hanging on a request that never answers', async () => {
+  it('ends the drain when the budget runs out, rather than only ending the wait', async () => {
     vi.useFakeTimers();
-    const impl = vi.fn(() => new Promise<Response>(() => {}));
+    let landLate: ((r: Response) => void) | null = null;
+    let aborted = false;
+    const impl = vi.fn(
+      (_u: string, init?: RequestInit) =>
+        new Promise<Response>((resolve) => {
+          landLate = resolve;
+          init?.signal?.addEventListener('abort', () => { aborted = true; });
+        }),
+    );
     const r = reporterFor(impl);
 
     one(r);
+    one(r, '/b');
     r.flush();
     await vi.advanceTimersByTimeAsync(1);
 
     let settled = false;
     void r.stop().then(() => { settled = true; });
-    // The budget, not the attempt: a host shutting down has its own deadline, and an unbounded wait here
-    // would become a hung shutdown.
+    // A host shutting down has its own deadline, so the wait is bounded.
     await vi.advanceTimersByTimeAsync(5_000);
-    expect(settled, 'the wait is bounded').toBe(true);
+    expect(settled, 'the wait ended').toBe(true);
+
+    // And the promise means what it says. Resolving while the request was still open, the queue
+    // unaccounted and later batches free to follow would have been a claim of completion that had not
+    // happened.
+    const atBudget = r.health();
+    expect(atBudget.delivered + atBudget.failed + atBudget.dropped, 'everything is accounted for').toBe(2);
+    // Not asserted here: `stop()` aborts whatever was open when it was called, so this request was
+    // already abandoned before the budget mattered. The test below covers the batch the budget is for.
+    expect(aborted, 'the request stop() found was abandoned').toBe(true);
+    const sendsAtBudget = impl.mock.calls.length;
+
+    // A response landing after the drain ended must not move a number that has already been reported.
+    landLate?.(new Response('{}', { status: 202 }));
+    await vi.advanceTimersByTimeAsync(RETRY_CAP_MS * 4);
+
+    expect(r.health(), 'the final numbers stayed final').toEqual(atBudget);
+    expect(impl.mock.calls.length, 'and nothing followed it').toBe(sendsAtBudget);
+  });
+
+  it('abandons a batch the drain itself started, when the budget runs out', async () => {
+    vi.useFakeTimers();
+    // `stop()` aborts the request it finds. A LATER batch — one the drain starts on its own — is the one
+    // only the budget can end, so that is the request this hangs.
+    const aborts: boolean[] = [];
+    const impl = vi.fn((_u: string, init?: RequestInit) => {
+      if (impl.mock.calls.length === 1) return Promise.resolve(new Response('{}', { status: 202 }));
+      const index = aborts.length;
+      aborts.push(false);
+
+      return new Promise<Response>(() => {
+        init?.signal?.addEventListener('abort', () => { aborts[index] = true; });
+      });
+    });
+    const r = reporterFor(impl);
+
+    // Two batches' worth: the first goes, the second hangs.
+    for (let i = 0; i < 60; i++) one(r, `/p${i}`);
+    const done = r.stop();
+    await vi.advanceTimersByTimeAsync(1);
+    expect(impl.mock.calls.length, 'the drain moved on to a second batch').toBeGreaterThan(1);
+
+    await vi.advanceTimersByTimeAsync(5_000);
+    await done;
+
+    expect(aborts.some(Boolean), 'the hanging batch was let go of, not just left open').toBe(true);
+    const h = r.health();
+    expect(h.delivered + h.failed + h.dropped, 'and all 60 are accounted for').toBe(60);
+  });
+
+  it.each([
+    ['an acknowledgement', 202],
+    ['a refusal worth retrying', 503],
+    ['a refusal on the merits', 400],
+  ])('ignores %s that lands after the drain ended', async (_what, status) => {
+    vi.useFakeTimers();
+    let landLate: ((r: Response) => void) | null = null;
+    const impl = vi.fn(
+      () => new Promise<Response>((resolve) => { landLate = resolve; }),
+    );
+    const r = reporterFor(impl);
+
+    one(r);
+    r.flush();
+    await vi.advanceTimersByTimeAsync(1);
+    // The budget only elapses once the timers move, so the wait is started and then advanced.
+    const done = r.stop();
+    await vi.advanceTimersByTimeAsync(5_000);
+    await done;
+
+    const atBudget = r.health();
+    const sends = impl.mock.calls.length;
+
+    // Each outcome takes a different path through the attempt, and none of them may reach a counter or
+    // schedule a retry once the numbers have been reported as final.
+    landLate?.(new Response('{}', { status }));
+    await vi.advanceTimersByTimeAsync(RETRY_CAP_MS * 4);
+
+    expect(r.health()).toEqual(atBudget);
+    expect(impl.mock.calls.length).toBe(sends);
   });
 
   it('returns the same settled wait when stopped twice', async () => {
@@ -940,5 +1027,60 @@ describe('stopping can be awaited', () => {
 
     // A second stop must not restart a drain or hand back a promise nothing will settle.
     expect(impl.mock.calls.length).toBe(1);
+  });
+});
+
+describe('a redelivery after a refused token appears in the numbers', () => {
+  const AUTH = 'the-secret-40-chars-long-ish-value-here-987';
+
+  beforeEach(() => { clearPulseToken(); });
+  afterEach(() => { clearPulseToken(); });
+
+  it('counts an authenticated redelivery, apart from a backoff retry', async () => {
+    let posts = 0;
+    const impl = vi.fn(async (url: string) => {
+      if (String(url).endsWith('/token')) {
+        return new Response(JSON.stringify({ access_token: `jwt-${posts}`, expires_in: 3600 }), {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' },
+        });
+      }
+      posts++;
+
+      return new Response('{}', { status: posts === 1 ? 401 : 202 });
+    });
+    const r = reporterFor(impl, { pulseAuth: AUTH });
+
+    one(r);
+    r.flush();
+    await settle();
+
+    const h = r.health();
+    expect(posts, 'the batch was sent twice').toBe(2);
+    // The credential path sends the second one, so it is not a backoff retry — but it IS a redelivery of
+    // this batch, and a number that ignored it would say the batch went out once.
+    expect(h.reauthorized, 'the redelivery is visible').toBe(1);
+    expect(h.retried, 'and is not confused with a backoff retry').toBe(0);
+    expect(h).toMatchObject({ sent: 1, delivered: 1 });
+    r.stop();
+  });
+
+  it('reports no redelivery when the token was accepted', async () => {
+    const impl = vi.fn(async (url: string) =>
+      String(url).endsWith('/token')
+        ? new Response(JSON.stringify({ access_token: 'jwt', expires_in: 3600 }), {
+            status: 200,
+            headers: { 'Content-Type': 'application/json' },
+          })
+        : new Response('{}', { status: 202 }),
+    );
+    const r = reporterFor(impl, { pulseAuth: AUTH });
+
+    one(r);
+    r.flush();
+    await settle();
+
+    expect(r.health().reauthorized).toBe(0);
+    r.stop();
   });
 });

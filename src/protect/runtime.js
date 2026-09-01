@@ -246,7 +246,6 @@ export async function createProtection(options = {}) {
         rulesEtag: (await store.read())?.etag ?? null,
         fetchImpl: options.fetchImpl,
         flushMs: options.detectionFlushMs,
-        timeoutMs: options.timeoutMs,
       });
     } else if (!next.reports && detections) {
       detections.stop();
@@ -978,9 +977,14 @@ export async function createProtection(options = {}) {
   // that terminates regardless still wins — and ignoring the return behaves exactly as before.
   protection.stop = () => {
     loop?.stop();
-    firewallLog?.stop();
+    // Both reporters, because the promise says every buffer this reaches is finished with. Waiting only
+    // for one would resolve while the other still had records outstanding — and resolve immediately in a
+    // configuration where the one being waited for was never built.
+    const outstanding = [firewallLog?.stop(), detections?.stop()].filter(
+      (wait) => wait && typeof wait.then === 'function',
+    );
 
-    return detections?.stop() ?? Promise.resolve();
+    return Promise.all(outstanding).then(() => undefined);
   };
   // The name callers already have, kept as an alias for it.
   protection.stopRefresh = protection.stop;

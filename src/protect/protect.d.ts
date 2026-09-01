@@ -50,10 +50,12 @@ export interface Protection {
   /**
    * Stop everything holding a timer or a buffer.
    *
-   * Resolves when the detection reporter has finished draining — outstanding batches delivered, or
-   * counted if they could not be — so a shutdown handler can await it instead of racing process exit.
-   * Best-effort and bounded: a runtime that terminates regardless still wins, and the wait ends after an
-   * internal budget either way. Ignoring the promise behaves as it always has.
+   * Resolves once every buffer this reaches is finished with — the detection reporter and the block log,
+   * their outstanding batches delivered or else counted — so a shutdown handler can await it instead of
+   * racing process exit. Bounded: if an internal budget elapses first, the drain is ENDED rather than
+   * merely stopped being waited for, so nothing is left outstanding when this resolves. Still
+   * best-effort, because a runtime that terminates the process regardless still wins. Ignoring the
+   * promise behaves as it always has.
    */
   stop: () => Promise<void>;
   /** Alias of `stop`, under the name callers already have. */
@@ -86,9 +88,12 @@ export interface Protection {
     delivered: number;
     failed: number;
     dropped: number;
-    /** Attempts beyond the first. A path that only ever succeeds on a retry is working, and is worth
-     *  telling apart from one that never has to retry. */
+    /** Backoff attempts beyond the first. A path that only ever succeeds on a retry is working, and is
+     *  worth telling apart from one that never has to retry. */
     retried: number;
+    /** Redeliveries made after the endpoint refused a token, which are not backoff retries: a rotated or
+     *  revoked credential is worth seeing as itself rather than as a delivery failure. */
+    reauthorized: number;
     lastDeliveredAt: string | null;
     /** Capability announcements, counted separately: these carry no events, so they never move the
      *  counters above. Zero here alongside delivered events is normal, and so is the reverse. */

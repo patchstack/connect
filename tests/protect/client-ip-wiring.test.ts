@@ -1194,3 +1194,61 @@ describe('a host callback cannot rewrite what the platform is told', () => {
     p.stop();
   });
 });
+
+describe('stopping a guard waits for every buffer it reaches', () => {
+  it('waits for the block log, not only for the detection reporter', async () => {
+    // `stop()` promises that the buffers it reaches are finished with. Waiting for one reporter would
+    // resolve while the other still had records outstanding — and resolve at once in a configuration
+    // where the awaited one was never built.
+    let releaseLog: ((r: Response) => void) | null = null;
+    let logPosted = false;
+    const fetchImpl = vi.fn(async (url: string) => {
+      const target = String(url);
+      if (target.includes('/oauth/token')) {
+        return new Response(JSON.stringify({ access_token: 'jwt-abc', expires_in: 3600 }), {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' },
+        });
+      }
+      if (target.includes('/api/logs/log')) {
+        logPosted = true;
+
+        return new Promise<Response>((resolve) => { releaseLog = resolve; });
+      }
+
+      return new Response('{}', { status: 200, headers: { 'Content-Type': 'application/json' } });
+    });
+    vi.stubGlobal('fetch', fetchImpl);
+
+    const p: any = await createProtection({
+      rules: rules(),
+      mode: 'block',
+      // A block-log reporter and no detection reporter: no site uuid, so the detection path is a no-op
+      // and the block log is the only buffer with anything outstanding.
+      apiKey: 'secret0000000000000000000000000000000000-12345',
+      fetchImpl,
+    });
+
+    await throughExpress(
+      p,
+      expressReq({
+        method: 'GET',
+        url: '/api',
+        originalUrl: '/api',
+        headers: {},
+        socket: { remoteAddress: '198.51.100.7' },
+      }),
+    );
+
+    let settled = false;
+    const done = p.stop().then(() => { settled = true; });
+    await new Promise((r) => setTimeout(r, 20));
+
+    expect(logPosted, 'the block log is in flight').toBe(true);
+    expect(settled, 'and the wait has not finished with it').toBe(false);
+
+    releaseLog?.(new Response('{}', { status: 200 }));
+    await done;
+    expect(settled).toBe(true);
+  });
+});

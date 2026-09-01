@@ -72,7 +72,7 @@ export function resolveApiBase(pulseOrManifestUrl) {
 export function createFirewallLogReporter(opts) {
   const creds = parseApiKey(opts.apiKey);
   if (!creds) {
-    return { record() {}, flush() {}, stop() {} };
+    return { record() {}, flush: () => Promise.resolve(), stop: () => Promise.resolve() };
   }
 
   const apiBase = (opts.apiBase ?? DEFAULT_API_BASE).replace(/\/$/, '');
@@ -135,18 +135,22 @@ export function createFirewallLogReporter(opts) {
       clearTimeout(timer);
       timer = null;
     }
-    if (queue.length === 0 || typeof fetchImpl !== 'function') return;
+    if (queue.length === 0 || typeof fetchImpl !== 'function') return Promise.resolve();
 
     const batch = queue.splice(0, MAX_BATCH);
-    void (async () => {
-      const token = await fetchAccessToken();
-      if (!token) return;
 
-      const body = new URLSearchParams();
-      body.set('type', 'firewall');
-      body.set('logs', JSON.stringify(batch));
-
+    // The send is returned rather than discarded, so a shutdown can wait for it. It never rejects: a
+    // caller that ignores it must not produce an unhandled rejection, and one that awaits it is waiting
+    // for the attempt to finish, not asking whether it succeeded.
+    return (async () => {
       try {
+        const token = await fetchAccessToken();
+        if (!token) return;
+
+        const body = new URLSearchParams();
+        body.set('type', 'firewall');
+        body.set('logs', JSON.stringify(batch));
+
         const p = fetchImpl(`${apiBase}/api/logs/log`, {
           method: 'POST',
           headers: {
@@ -158,9 +162,9 @@ export function createFirewallLogReporter(opts) {
           },
           body,
         });
-        if (p && typeof p.then === 'function') p.catch(() => {});
+        if (p && typeof p.then === 'function') await p.catch(() => {});
       } catch {
-        /* ignore */
+        /* A delivery problem is never worth disturbing the app over. */
       }
     })();
   };
@@ -196,9 +200,23 @@ export function createFirewallLogReporter(opts) {
       if (!timer) timer = setTimeout(flush, flushMs);
     },
     flush,
+    /**
+     * Stop, and hand back a wait for what was outstanding.
+     *
+     * One flush sends at most a batch, so the queue is drained a batch at a time. The loop stops as soon
+     * as a pass cannot shrink the queue — with no usable transport there is nothing to wait for, and
+     * spinning would be worse than leaving the records where they are.
+     */
     stop() {
       stopped = true;
-      flush();
+
+      return (async () => {
+        while (queue.length > 0) {
+          const before = queue.length;
+          await flush();
+          if (queue.length >= before) return;
+        }
+      })();
     },
   };
 }
