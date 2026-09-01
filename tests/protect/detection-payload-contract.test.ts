@@ -48,6 +48,7 @@ const FIELD_DISCLOSURE: Record<string, RegExp> = {
   truncated: /which fields were shortened/i,
   capture: /values of the parameters a rule names/i,
   parameters_total: /how many parameters the rule reads/i,
+  query_keys_total: /how many query parameters the request carried/i,
 };
 
 /**
@@ -57,7 +58,13 @@ const FIELD_DISCLOSURE: Record<string, RegExp> = {
  * present-but-empty field reads as a failed lookup of a real address. So the completeness check below
  * requires every OTHER documented field, and this one only when there was an address to report.
  */
-const CONDITIONAL_FIELDS = new Set(['client_ip', 'truncated', 'parameters_total', 'capture']);
+const CONDITIONAL_FIELDS = new Set([
+  'client_ip',
+  'truncated',
+  'parameters_total',
+  'query_keys_total',
+  'capture',
+]);
 
 /** Envelope keys, described separately because they are per-batch rather than per-detection. */
 const ENVELOPE_DISCLOSURE: Record<string, RegExp> = {
@@ -187,7 +194,9 @@ async function captureTruncatedPayload(): Promise<Record<string, unknown>> {
     },
     phase: 'request',
     mode: 'block',
-    path: `/${'a'.repeat(400)}`,
+    // A long route AND more query parameters than one event carries, so every field that appears only
+    // when something was shortened is actually produced here.
+    path: `/${'a'.repeat(400)}?${Array.from({ length: 25 }, (_, i) => `k${i}=v${i}`).join('&')}`,
   } as never);
   reporter.flush();
   await vi.waitFor(() => expect(raw).not.toBe(''));
@@ -264,6 +273,9 @@ describe('the detection payload matches what AGENT-INSTALL.md says about it', ()
       'truncated',
     );
     expect(Object.keys(truncatedDetection)).toContain('parameters_total');
+    expect(Object.keys(truncatedDetection), 'and a shortened query list names its total').toContain(
+      'query_keys_total',
+    );
 
     for (const key of Object.keys(detection)) {
       const pattern = FIELD_DISCLOSURE[key];

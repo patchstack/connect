@@ -30,7 +30,9 @@ import { isSafeOrigin } from './safe-origin.js';
  * baseline, because a detection nobody can attribute is of little use.
  *
  * What it never carries: **the value of any OTHER parameter the matched rule does not name**, any
- * response value, or the query string's values. A channel that reports detections is a different thing from a
+ * response value, or the query string's values AS BASELINE METADATA — `route` and `query_keys` describe
+ * a URL without disclosing what was in it, while a rule naming `egress.url` captures that URL as the rule
+ * read it, which is the rule-scoped policy rather than an exception to it. A channel that reports detections is a different thing from a
  * copy of an application's traffic, and the plan is what keeps the difference.
  *
  * The route is the request PATH; the query travels as parameter NAMES only, because `?token=…` is a
@@ -182,61 +184,93 @@ function boundCapture(capture) {
   if (!capture || typeof capture !== 'object' || Array.isArray(capture)) return null;
 
   const truncated = [];
+  // Own properties only, each snapshotted once.
+  //
+  // A capture is an ordinary object, so a write to `Object.prototype` supplies any field it does not
+  // carry itself — and `Object.prototype.raw = { value: … }` would have a plan that permitted nothing
+  // transmit that value. Reading each field once also stops a getter answering differently between the
+  // check and the send. This guard shields applications against prototype pollution; its own reporting
+  // must not be the way one lands.
+  const own = (object, key) => (Object.hasOwn(object, key) ? object[key] : undefined);
+
+  const declaredPlan = own(capture, 'plan');
   // Validated, not coerced. `String(x)` runs whatever `toString` an object carries, which turns a value
   // this channel refuses into reportable content — and the refusal is the whole point of the type rule.
-  const plan = typeof capture.plan === 'string' ? capText(capture.plan, MAX_IDENTIFIER_CHARS) : null;
+  const plan = typeof declaredPlan === 'string' ? capText(declaredPlan, MAX_IDENTIFIER_CHARS) : null;
   if (plan === null) return null;
   if (plan.truncated) truncated.push('plan');
 
   const out = { plan: plan.value };
-  let dropped = 0;
+  // Counted apart, because they mean different things: one says the event was full, the other says the
+  // value was not something this channel reports.
+  let overCap = 0;
+  let rejected = 0;
 
-  if (Array.isArray(capture.values) && capture.values.length > 0) {
+  const declaredValues = own(capture, 'values');
+  if (Array.isArray(declaredValues) && declaredValues.length > 0) {
     const values = [];
-    for (const entry of capture.values) {
-      if (!entry || typeof entry !== 'object') {
-        dropped += 1;
+    for (const entry of declaredValues) {
+      if (!entry || typeof entry !== 'object' || Array.isArray(entry)) {
+        rejected += 1;
         continue;
       }
-      const parameter = typeof entry.parameter === 'string' ? entry.parameter : null;
-      const text = scalarText(entry.value);
-      if (parameter === null || text === null) {
-        dropped += 1;
+      const declaredParameter = own(entry, 'parameter');
+      const text = scalarText(own(entry, 'value'));
+      if (typeof declaredParameter !== 'string' || text === null) {
+        rejected += 1;
         continue;
       }
       if (values.length >= MAX_CAPTURED_VALUES) {
-        dropped += 1;
+        overCap += 1;
         continue;
       }
 
-      const label = capText(parameter, MAX_PARAMETER_CHARS);
+      const label = capText(declaredParameter, MAX_PARAMETER_CHARS);
       const value = capText(text, MAX_CAPTURED_VALUE_CHARS);
       if (label.truncated && !truncated.includes('parameter')) truncated.push('parameter');
       if (value.truncated && !truncated.includes('value')) truncated.push('value');
       values.push({
         parameter: label.value,
         value: value.value,
-        ...(entry.truncated === true || value.truncated ? { truncated: true } : {}),
+        ...(own(entry, 'truncated') === true || value.truncated ? { truncated: true } : {}),
       });
     }
-    if (dropped > 0) truncated.push('values');
+    if (overCap > 0) truncated.push('values');
     if (values.length > 0) out.values = values;
   }
 
-  if (capture.raw && typeof capture.raw === 'object' && typeof capture.raw.value === 'string') {
-    const raw = capText(capture.raw.value, MAX_CAPTURED_VALUE_CHARS);
-    out.raw = { value: raw.value, ...(capture.raw.truncated === true || raw.truncated ? { truncated: true } : {}) };
+  const declaredRaw = own(capture, 'raw');
+  if (declaredRaw !== undefined && declaredRaw !== null) {
+    const rawValue = declaredRaw && typeof declaredRaw === 'object' ? own(declaredRaw, 'value') : undefined;
+    if (typeof rawValue === 'string') {
+      const raw = capText(rawValue, MAX_CAPTURED_VALUE_CHARS);
+      out.raw = {
+        value: raw.value,
+        ...(own(declaredRaw, 'truncated') === true || raw.truncated ? { truncated: true } : {}),
+      };
+    } else {
+      // Raw evidence that is not raw evidence is accounted for the same way any refused value is.
+      rejected += 1;
+    }
   }
 
-  for (const key of ['omitted', 'unsupported', 'failed']) {
-    const count = Number.isFinite(capture[key]) && capture[key] > 0 ? Math.floor(capture[key]) : 0;
-    // What this gate drops is added to what the producer already left out. The documented promise is that
-    // values excluded by a bound are counted, and a reader cannot otherwise tell eleven values from two
-    // hundred.
-    const total = key === 'omitted' ? count + dropped : count;
+  const declaredCount = (key) => {
+    const value = own(capture, key);
+
+    return Number.isFinite(value) && value > 0 ? Math.floor(value) : 0;
+  };
+  // What this gate excluded is added to what the producer already excluded, in the matching counter: the
+  // documented promise is that a bound's exclusions and a type's refusals are countable separately, and a
+  // reader cannot otherwise tell eleven values from two hundred, or a full event from a refused one.
+  const totals = {
+    omitted: declaredCount('omitted') + overCap,
+    unsupported: declaredCount('unsupported') + rejected,
+    failed: declaredCount('failed'),
+  };
+  for (const [key, total] of Object.entries(totals)) {
     if (total > 0) out[key] = total;
   }
-  if (capture.unavailable === true) out.unavailable = true;
+  if (own(capture, 'unavailable') === true) out.unavailable = true;
   if (truncated.length > 0) out.truncated = truncated;
 
   return out;

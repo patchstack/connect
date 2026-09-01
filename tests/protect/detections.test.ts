@@ -787,8 +787,9 @@ describe('the wire gate validates what it is given', () => {
 
     const { capture } = posts[0].body.detections[0];
     expect(capture.values.length).toBe(10);
-    // What the producer left out, plus what this gate did.
+    // What the producer left out, plus what this gate did — in the matching counter.
     expect(capture.omitted).toBe(3 + 190);
+    expect(Object.hasOwn(capture, 'unsupported'), 'nothing here was refused for its type').toBe(false);
     expect(capture.truncated).toContain('values');
   });
 
@@ -813,7 +814,9 @@ describe('the wire gate validates what it is given', () => {
     expect(wire).not.toContain('SENTINEL-COERCED');
     const { capture } = posts[0].body.detections[0];
     expect(capture.values).toEqual([{ parameter: 'post.b', value: 'kept' }]);
-    expect(capture.omitted, 'and the refusal is counted').toBe(1);
+    // Refused for its type, which is a different fact from a bound leaving it out.
+    expect(capture.unsupported, 'counted as unsupported').toBe(1);
+    expect(Object.hasOwn(capture, 'omitted'), 'and not as omitted').toBe(false);
   });
 
   it('refuses a capture whose plan is not a plan', async () => {
@@ -846,5 +849,82 @@ describe('the wire gate validates what it is given', () => {
 
     expect(reads, 'one read, so what was checked is what was sent').toBe(1);
     expect(posts[0].body.detections[0].capture.values[0].value).toBe('read-1');
+  });
+});
+
+describe('the wire gate reads only what the capture itself carries', () => {
+  const record = (reporter: any, capture: unknown) =>
+    reporter.record({ rule: pinnedRule, phase: 'request', mode: 'block', path: '/a', capture } as never);
+
+  afterEach(() => {
+    for (const key of ['raw', 'values', 'plan', 'unavailable']) delete (Object.prototype as any)[key];
+  });
+
+  it('does not transmit raw evidence that a prototype supplied', async () => {
+    // A plan that permitted nothing must transmit nothing. This guard shields applications against
+    // prototype pollution; its own reporting must not be the way one lands.
+    const { reporter, posts } = reporterWith();
+    (Object.prototype as any).raw = { value: 'SENTINEL-INHERITED-RAW' };
+
+    record(reporter, { plan: 'cp2-abc' });
+    reporter.flush();
+    await drain();
+
+    const { capture } = posts[0].body.detections[0];
+    expect(JSON.stringify(posts[0].body)).not.toContain('SENTINEL-INHERITED-RAW');
+    expect(Object.hasOwn(capture, 'raw')).toBe(false);
+  });
+
+  it('does not transmit values that a prototype supplied', async () => {
+    const { reporter, posts } = reporterWith();
+    (Object.prototype as any).values = [{ parameter: 'post.a', value: 'SENTINEL-INHERITED-VALUE' }];
+
+    record(reporter, { plan: 'cp2-abc' });
+    reporter.flush();
+    await drain();
+
+    expect(JSON.stringify(posts[0].body)).not.toContain('SENTINEL-INHERITED-VALUE');
+    expect(Object.hasOwn(posts[0].body.detections[0].capture, 'values')).toBe(false);
+  });
+
+  it('does not accept a plan that only a prototype names', async () => {
+    const { reporter, posts } = reporterWith();
+    (Object.prototype as any).plan = 'cp2-inherited';
+
+    record(reporter, { values: [{ parameter: 'post.a', value: 'v' }] });
+    reporter.flush();
+    await drain();
+
+    // No plan of its own means no capture at all: a report that named someone else's policy would be
+    // worse than one that named none.
+    expect(Object.hasOwn(posts[0].body.detections[0], 'capture')).toBe(false);
+    expect(JSON.stringify(posts[0].body)).not.toContain('cp2-inherited');
+  });
+
+  it('does not let a prototype claim a capture was unavailable', async () => {
+    const { reporter, posts } = reporterWith();
+    (Object.prototype as any).unavailable = true;
+
+    record(reporter, { plan: 'cp2-abc', values: [{ parameter: 'post.a', value: 'v' }] });
+    reporter.flush();
+    await drain();
+
+    const { capture } = posts[0].body.detections[0];
+    expect(capture.values.length, 'the values were read').toBe(1);
+    expect(Object.hasOwn(capture, 'unavailable'), 'and nothing claimed they were not').toBe(false);
+  });
+
+  it('does not let an entry inherit its parameter or value', async () => {
+    const { reporter, posts } = reporterWith();
+    const bare: any = Object.create({ parameter: 'post.inherited', value: 'SENTINEL-INHERITED-ENTRY' });
+
+    record(reporter, { plan: 'cp2-abc', values: [bare, { parameter: 'post.a', value: 'kept' }] });
+    reporter.flush();
+    await drain();
+
+    const { capture } = posts[0].body.detections[0];
+    expect(JSON.stringify(posts[0].body)).not.toContain('SENTINEL-INHERITED-ENTRY');
+    expect(capture.values).toEqual([{ parameter: 'post.a', value: 'kept' }]);
+    expect(capture.unsupported).toBe(1);
   });
 });

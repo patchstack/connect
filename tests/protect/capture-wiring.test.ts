@@ -418,10 +418,14 @@ describe('the baseline reaches every runtime and every phase', () => {
       whitelist_keys: {},
     };
     const { bodies, impl } = stub(rules);
-    const p = await guardFor(impl, { egress: true });
+    // The built-in egress rules are replaced, so the rule under test is the one that fires — otherwise
+    // `egress-internal-address` runs first and every assertion below describes a different rule.
+    const p = await guardFor(impl, { egress: true, egressRules: [] });
 
     try {
-      await fetch('http://169.254.169.254/latest/meta-data/?probe=1', { method: 'PUT' });
+      await fetch('http://169.254.169.254/latest/meta-data/?probe=1&token=SENTINEL-EGRESS-VALUE', {
+        method: 'PUT',
+      });
     } catch {
       // Blocked, which is the point.
     }
@@ -430,13 +434,18 @@ describe('the baseline reaches every runtime and every phase', () => {
 
     const events = eventsFrom(bodies).filter((e: any) => e.phase === 'egress');
     expect(events.length, 'the outbound call was reported').toBeGreaterThan(0);
+    expect(events[0].rule_id, 'the rule under test, not a built-in one').toBe('ssrf-1');
     expect(events[0].method, 'the outbound method').toBe('PUT');
     expect(events[0].route, 'the outbound path').toBe('/latest/meta-data/');
-    expect(events[0].query_keys).toEqual(['probe']);
+    expect(events[0].query_keys).toEqual(['probe', 'token']);
     // No client to attribute an outbound call to: the app made it, not a visitor.
     expect(events[0].user_agent).toBeNull();
     expect(events[0].client_ip_source).toBe('unavailable');
-    // The destination reaches the report through capture, because the rule names `egress.url`.
-    expect(JSON.stringify(events[0].capture)).toContain('169.254.169.254');
+    // The rule names `egress.url`, so its capture carries the URL as the rule read it — query values
+    // included. That is the rule-scoped policy working, and the baseline `query_keys` above is what
+    // carries names only.
+    const captured = events[0].capture.values.find((v: any) => v.parameter === 'egress.url');
+    expect(captured.value).toContain('169.254.169.254');
+    expect(captured.value, 'the URL as the rule read it').toContain('SENTINEL-EGRESS-VALUE');
   });
 });

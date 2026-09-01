@@ -184,7 +184,9 @@ complete one.
 Every field is bounded in size, and an event that had to be shortened says so.
 `truncated` lists **which fields were shortened**.
 `parameters_total` records **how many parameters the rule reads**, when a rule reads more than the event
-names. Both appear only when something really was shortened, so their absence is not a claim of its own —
+names.
+`query_keys_total` records **how many query parameters the request carried**, when it carried more than
+the event lists. Both appear only when something really was shortened, so their absence is not a claim of its own —
 and a shortened route or rule id is marked rather than passed off as complete, because a reader must not
 use one as a key believing it names the whole thing.
 
@@ -248,9 +250,17 @@ contained.
 
 ### What values a report can contain
 
-A report always carries the request's method, path, the query string's parameter **names**, the user
-agent, the client address with its provenance, and a timestamp.
-Beyond that it can include the **values of the parameters a rule names** — and nothing else. Counting that a
+**A request or response detection** carries the request's method and path,
+the query string's parameter **names**,
+the user agent, the client address with its provenance, and a timestamp.
+
+**An egress detection** — a rule that fired on a request your application made outbound — carries the
+outbound method and path, the query's parameter names, and a timestamp. It carries **no user agent and no
+client address**: the call was your application's own, so there is no visitor to attribute it to, and
+those fields read `null` and `unavailable` rather than being guessed at.
+
+Beyond that baseline, either can include the **values of the parameters a rule names** — and nothing
+else. Counting that a
 rule fired is not enough to act on it: whoever triages a detection still has to decide whether the request
 was really an attack, and for that they need to see what the rule saw.
 
@@ -284,15 +294,21 @@ reports which rule fired, not which of its conditions did, so a rule reading `po
 `cookie.session` permits both values whichever one triggered the detection. A rule scoped to one parameter
 captures one; a broad rule captures what it is broad about.
 
-**One header value always travels, whatever the rule names: the User-Agent.** It is part of the baseline
-above, because attribution is what this channel is for and a detection without it cannot be told from
-another client's. It is the only exception to the rule-scoped policy, and the only header value sent
-without a rule naming it.
+**One header value always travels, whatever the rule names: the User-Agent** — on a request or response
+detection, where there is a client to attribute. It is part of the baseline above, because attribution is
+what this channel is for and a detection without it cannot be told from another client's. It is the only
+exception to the rule-scoped policy, and the only header value sent without a rule naming it.
 
 **What a report never contains:** the value of any parameter the matched rule does not name — the
 User-Agent above excepted; any response body, header or status value;
 the request body, other than the reviewed raw prefix above;
-and anything at all from a rule that reads the whole request without that opt-in. The value recorded is the request as the
+and anything at all from a rule that reads the whole request without that opt-in.
+
+**One qualification on the query string.** The exclusion above is about baseline URL metadata: `route` and
+`query_keys` describe a URL without disclosing what was in it. It is not a promise about captured
+evidence. A rule that names `egress.url` reads the outbound URL, so its capture carries that URL as the
+rule read it — query values included. That is the rule-scoped policy working as described, not an
+exception to it: the rule named the parameter, so the parameter's value travels. The value recorded is the request as the
 engine resolved it — URL- and entity-decoded — and not the result of a rule's own further mutations.
 
 Reports are batched, capped in memory, retried a bounded number of times, and dropped if Patchstack cannot

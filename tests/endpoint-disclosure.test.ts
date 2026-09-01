@@ -268,6 +268,28 @@ describe('shipped docs disclose every endpoint the package calls', () => {
     }
   });
 
+  it('states the egress baseline separately, since it is a different baseline', () => {
+    // An egress detection has no client and no user agent, and a single "every report carries" claim
+    // would be false for it in both directions.
+    expect(agentInstall, 'egress must have its own baseline').toMatch(
+      /\*\*An egress detection\*\*/i,
+    );
+    expect(agentInstall, 'and must say it carries no client attribution').toMatch(
+      /no user agent and no\s+client address/i,
+    );
+  });
+
+  it('qualifies the query-value exclusion as being about baseline metadata', () => {
+    // A rule naming `egress.url` captures that URL as it read it, query values included. An unqualified
+    // "query values are never sent" would be false, in the direction that flatters us.
+    expect(agentInstall, 'the qualification must be present').toMatch(
+      /One qualification on the query string/i,
+    );
+    expect(agentInstall, 'and must name the case it covers').toMatch(
+      /names `egress\.url`[^.]*query values included|query values included/i,
+    );
+  });
+
   it('states which sources can never be captured, however a rule is written', () => {
     // These are the refusals that hold regardless of what a rule names, so they are the ones a reader
     // most needs stated rather than inferred.

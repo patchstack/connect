@@ -177,7 +177,10 @@ export interface CreateProtectionOptions {
    * out is counted. The User-Agent is the one exception to the rule-scoped policy: it is part of the
    * baseline and travels whether or not a rule names it, because a detection nobody can attribute is of
    * little use. It does NOT send the value of any other parameter the matched rule does not name, any
-   * response value, or the query string's values.
+   * response value, or the query string's values as baseline metadata — `route` and `query_keys`
+   * describe a URL without disclosing what was in it, while a rule naming `egress.url` captures that URL
+   * as the rule read it. An egress detection has no user agent and no client address: the call was the
+   * application's own, so there is no visitor to attribute it to.
    *
    * `AGENT-INSTALL.md` carries the full statement, and is the version to read before enabling this.
    *
