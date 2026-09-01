@@ -308,11 +308,74 @@ describe('the event fields', () => {
     expect(Object.hasOwn(fields, 'client_ip')).toBe(false);
   });
 
+  it.each([
+    // The only three coherent pairs. Everything else contradicts itself.
+    [{ ip: '203.0.113.9', source: 'runtime' }, { client_ip: '203.0.113.9', client_ip_source: 'runtime' }],
+    [
+      { ip: '203.0.113.9', source: 'trusted-proxy' },
+      { client_ip: '203.0.113.9', client_ip_source: 'trusted-proxy' },
+    ],
+    [{ ip: null, source: 'unavailable' }, { client_ip_source: 'unavailable' }],
+  ])('emits %o as %o', (resolved, expected) => {
+    expect(clientIpFields(resolved as never)).toEqual(expected);
+  });
+
+  it.each([
+    // An address with a provenance that denies one.
+    { ip: '203.0.113.9', source: 'unavailable' },
+    // A provenance asserting an address was established, with no address named.
+    { ip: null, source: 'runtime' },
+    { ip: null, source: 'trusted-proxy' },
+    { ip: '', source: 'runtime' },
+    { ip: '', source: 'trusted-proxy' },
+    // Nothing recognisable at all.
+    { ip: null, source: 'made-up' },
+    {},
+  ])('normalises the self-contradicting %o to unavailable', (resolved) => {
+    // The one thing that can be said honestly about a contradicting pair is that nothing was
+    // established — so that is what it says, rather than passing half of it on.
+    expect(clientIpFields(resolved as never)).toEqual({ client_ip_source: 'unavailable' });
+  });
+
   it('omit an address whose provenance does not support it', () => {
     // `unavailable` means nothing was established. An address arriving with that provenance is
     // incoherent, and reporting it would attach a value to a claim that denies it.
     expect(clientIpFields({ ip: '203.0.113.9', source: 'unavailable' } as never)).toEqual({
       client_ip_source: 'unavailable',
+    });
+  });
+
+  it.each([
+    'not-an-ip',
+    'localhost',
+    'client.example.com',
+    '203.0.113.256',
+    // Leading zeros: the same digits, a different address to a resolver that accepts them.
+    '203.0.113.010',
+    '203.0.113.9:8080',
+    '<script>alert(1)</script>',
+    // Parses, but names nobody — an event carrying it would attribute itself to no one, in a field
+    // whose whole job is attribution.
+    '0.0.0.0',
+    '::',
+    '::ffff:0.0.0.0',
+  ])('refuses %s as an address, whatever its provenance claims', (ip) => {
+    // This function states the payload invariant, so it checks rather than assumes. A resolver bypass —
+    // a future adapter, or a record rebuilt elsewhere — must not be able to put a hostname or a
+    // nobody-address into retained evidence.
+    for (const source of ['runtime', 'trusted-proxy'] as const) {
+      expect(clientIpFields({ ip, source } as never)).toEqual({ client_ip_source: 'unavailable' });
+    }
+  });
+
+  it.each([
+    ['::FFFF:198.51.100.9', '198.51.100.9'],
+    ['2001:0DB8:0000:0000:0000:0000:0000:0001', '2001:db8::1'],
+  ])('emits %s in its canonical form %s', (ip, canonical) => {
+    // One address must not appear as two records depending on how a hop happened to spell it.
+    expect(clientIpFields({ ip, source: 'trusted-proxy' } as never)).toEqual({
+      client_ip: canonical,
+      client_ip_source: 'trusted-proxy',
     });
   });
 

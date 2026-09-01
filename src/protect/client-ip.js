@@ -454,12 +454,23 @@ export function resolveClientIp(input) {
  * present, because "this could not be established" is the part a reader needs.
  */
 export function clientIpFields(resolved) {
-  // An address is only reported alongside a provenance that supports it. `unavailable` means nothing was
-  // established, so an address arriving with that provenance is incoherent — a caller that had one would
-  // have said where it came from — and reporting it would attach a value to a claim that denies it.
-  const reportable = resolved.ip !== null && resolved.source !== 'unavailable';
+  // Three states are coherent, and nothing else is emitted:
+  //
+  //   `runtime` or `trusted-proxy` WITH an address — something was established, and this is where from
+  //   `unavailable` WITHOUT an address                — nothing was established
+  //
+  // Every other combination contradicts itself. An address carrying `unavailable` attaches a value to a
+  // claim that denies it; `runtime` or `trusted-proxy` carrying no address asserts that an address was
+  // established and then declines to name one. Both are normalised to `unavailable`, because the one
+  // thing that can be said honestly about a self-contradicting pair is that nothing was established.
+  const established = resolved?.source === 'runtime' || resolved?.source === 'trusted-proxy';
+  // Validated here rather than assumed. This is the function that states the payload invariant, so it
+  // checks the address itself: a caller that has not been through the resolver — a future adapter, or a
+  // record reconstructed from somewhere else — must not be able to put a hostname, a malformed literal or
+  // an address that identifies nobody into a retained event.
+  const address = identifyingIp(resolved?.ip);
 
-  return reportable
-    ? { client_ip: resolved.ip, client_ip_source: resolved.source }
-    : { client_ip_source: resolved.source };
+  return established && address !== null
+    ? { client_ip: address, client_ip_source: resolved.source }
+    : { client_ip_source: 'unavailable' };
 }

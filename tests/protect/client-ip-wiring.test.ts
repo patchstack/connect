@@ -14,7 +14,13 @@ import { createProtection } from '../../src/protect/runtime.js';
  * So the resolution happens once and is threaded. These tests assert the sharing rather than the
  * resolver's own rules, which are covered exhaustively elsewhere.
  */
-const RULES = {
+/**
+ * A fresh ruleset per call.
+ *
+ * Nested objects are what a callback can reach, so a shared constant would let one test's mutation change
+ * the policy a later test enforces — and these tests exist to prove exactly that cannot happen.
+ */
+const rules = () => ({
   firewall: [
     {
       id: 'ip-rule',
@@ -25,7 +31,7 @@ const RULES = {
   ],
   whitelists: [],
   whitelist_keys: {},
-};
+});
 
 afterEach(() => { vi.unstubAllGlobals(); });
 
@@ -64,7 +70,7 @@ describe('one resolution per request, reused everywhere', () => {
     });
 
     const p: any = await createProtection({
-      rules: RULES,
+      rules: rules(),
       mode: 'block',
       trustedProxy: { isTrusted },
       onDetect: (d: any) => detections.push(d),
@@ -209,7 +215,7 @@ describe('one resolution per request, reused everywhere', () => {
     // header must not become one — for the engine any more than for the record.
     const detections: any[] = [];
     const p: any = await createProtection({
-      rules: RULES,
+      rules: rules(),
       mode: 'block',
       trustedProxy: { isTrusted: () => true },
       onDetect: (d: any) => detections.push(d),
@@ -374,7 +380,7 @@ describe('the transported detection carries the address', () => {
   }) {
     const served = opts.ruleOverride
       ? { firewall: [opts.ruleOverride], whitelists: [], whitelist_keys: {} }
-      : RULES;
+      : rules();
     const bodies: any[] = [];
     const fetchImpl = vi.fn(async (url: string, init?: RequestInit) => {
       const target = String(url);
@@ -470,12 +476,21 @@ describe('the transported detection carries the address', () => {
 describe('the response phase reuses the request phase resolution', () => {
   it('gives a response rule the same address, without resolving again', async () => {
     const detections: any[] = [];
-    const seen: string[] = [];
-    const isTrusted = vi.fn((ip: string) => {
-      seen.push(ip);
+    // Counting the PREDICATE would prove nothing here: a Fetch request has no transport peer, so
+    // `resolveClientIp` returns before consulting it and one resolution looks the same as ten. The policy
+    // object is read while the policy is parsed, which happens on every resolution — so a trap on it
+    // counts resolutions whether or not an address is ever established.
+    let policyReads = 0;
+    const trustedProxy = new Proxy(
+      { isTrusted: (ip: string) => ip.startsWith('10.') },
+      {
+        ownKeys(target) {
+          policyReads++;
 
-      return ip.startsWith('10.');
-    });
+          return Reflect.ownKeys(target);
+        },
+      },
+    );
 
     const p: any = await createProtection({
       // A response rule that reads the address the request phase resolved.
@@ -493,10 +508,11 @@ describe('the response phase reuses the request phase resolution', () => {
         whitelist_keys: {},
       },
       mode: 'block',
-      trustedProxy: { isTrusted },
+      trustedProxy,
       onDetect: (d: any) => detections.push(d),
     });
 
+    const readsAfterBoot = policyReads;
     const handler = async () => new Response('body', { status: 200, headers: { 'content-type': 'text/plain' } });
     const res = await p.fetch(handler)(
       new Request('https://app.test/api', {
@@ -509,8 +525,8 @@ describe('the response phase reuses the request phase resolution', () => {
     expect(res.status).toBe(200);
     const response = detections.filter((d) => d.phase === 'response');
     expect(response, 'the response phase saw no address either').toEqual([]);
-    // And the resolution happened at most once for the request: the response phase did not repeat it.
-    expect(seen.length, 'no second resolution for the response').toBe(0);
+    // Exactly one resolution for the request, and none added by the response phase.
+    expect(policyReads - readsAfterBoot, 'the response phase did not resolve again').toBe(1);
     p.stop();
   });
 
@@ -665,5 +681,194 @@ describe('the standalone Node adapter honours its own configuration', () => {
     });
 
     expect(blocked, 'without a policy the forwarded header is not read').toEqual([]);
+  });
+});
+
+describe('the Express view carries evidence a reconstructed body cannot', () => {
+  it('keeps the verbatim body for a raw rule', async () => {
+    // A body that did not parse leaves the parsed body empty, so a raw view reconstructed from it carries
+    // nothing. The verbatim text is the only place the payload survives — which is what a raw rule is
+    // for, and a body declared as JSON that is not JSON is an ordinary way to arrive there.
+    const p: any = await createProtection({
+      rules: {
+        firewall: [
+          {
+            id: 'raw-proto',
+            title: 'reads the verbatim body',
+            rule_v2: [{ parameter: 'raw', match: { type: 'contains', value: '__proto__' } }],
+          },
+        ],
+        whitelists: [],
+        whitelist_keys: {},
+      },
+      mode: 'block',
+    });
+
+    const rawBody = 'not-json __proto__ {{payload}}';
+    const req = expressReq({
+      headers: { 'content-type': 'application/json' },
+      // What a parser leaves behind when the body is not the type it claims to be.
+      body: {},
+      _rawBody: rawBody,
+    });
+
+    expect(JSON.stringify(req.body), 'the parsed body carries no evidence at all').not.toContain(
+      '__proto__',
+    );
+    expect(await throughExpress(p, req), 'the raw rule reads the verbatim body').toBe(403);
+    p.stop();
+  });
+});
+
+describe('a host callback cannot rewrite what the platform is told', () => {
+  /**
+   * One blocked request through a guard whose `onDetect` rewrites everything it can reach, returning what
+   * each internal reporter transported.
+   *
+   * Both reporters are captured, and each is asserted in its own test. Asserting both inside one test
+   * would hide the second set behind the first failure, so a change affecting only the block log would
+   * read as covered while never having been checked.
+   */
+  const hostileRun = async () => {
+    const bodies: any[] = [];
+    const logged: any[] = [];
+    const fetchImpl = vi.fn(async (url: string, init?: RequestInit) => {
+      const target = String(url);
+      if (target.includes('/detections/')) bodies.push(JSON.parse(String(init?.body ?? '{}')));
+      if (target.includes('/api/logs/log')) {
+        const form = new URLSearchParams(String(init?.body ?? ''));
+        logged.push(...JSON.parse(form.get('logs') ?? '[]'));
+      }
+      if (target.includes('/oauth/token')) {
+        return new Response(JSON.stringify({ access_token: 'jwt-abc', expires_in: 3600 }), {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' },
+        });
+      }
+
+      return new Response(JSON.stringify({ ...rules(), enforcement: 'block' }), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json', ETag: '"v1"' },
+      });
+    });
+    vi.stubGlobal('fetch', fetchImpl);
+
+    const p: any = await createProtection({
+      siteUuid: 'site-1',
+      pulseRulesUrl: 'https://x.test/monitor/pulse',
+      pulseAuth: 'the-secret-40-chars-long-ish-value-here-987',
+      apiKey: 'secret0000000000000000000000000000000000-12345',
+      detectionFlushMs: 1,
+      fetchImpl,
+      onDetect: (d: any) => {
+        // A callback doing the worst thing it can reach.
+        d.ip = '203.0.113.250';
+        d.clientIpSource = 'trusted-proxy';
+        d.path = '/somewhere-else';
+        if (d.rule) d.rule.id = 'not-the-rule-that-fired';
+      },
+    });
+
+    await throughExpress(
+      p,
+      expressReq({
+        method: 'GET',
+        url: '/api',
+        originalUrl: '/api',
+        headers: {},
+        socket: { remoteAddress: '198.51.100.7' },
+      }),
+    );
+    p.stop();
+    await new Promise((r) => setTimeout(r, 15));
+
+    return { events: bodies.flatMap((b) => b.detections ?? []), logged };
+  };
+
+  it('reports the detection the engine produced, not the one the callback substituted', async () => {
+    const { events } = await hostileRun();
+
+    expect(events.length, 'a detection was reported').toBeGreaterThan(0);
+    expect(events[0].client_ip, 'the engine’s address was transported').toBe('198.51.100.7');
+    expect(events[0].client_ip_source).toBe('runtime');
+    expect(events[0].rule_id, 'the rule that actually fired').toBe('ip-rule');
+    expect(events[0].route).toBe('/api');
+  });
+
+  it('logs the block the engine produced, not the one the callback substituted', async () => {
+    // The block log builds its own record from the same detection, so it needs its own assertion: the
+    // reporters share no code, and a defence that held for one is not evidence about the other.
+    const { logged } = await hostileRun();
+
+    expect(logged.length, 'a block record was posted').toBeGreaterThan(0);
+    expect(logged[0].ip, 'the engine’s address reached the block log').toBe('198.51.100.7');
+    expect(logged[0].fid, 'the rule that actually fired').toBe('ip-rule');
+    expect(logged[0].request_uri).toBe('/api');
+  });
+
+  it('still reports a rule a structured clone refuses, without the live object', async () => {
+    // A rule is a JSON document, but `rules:` is a programmatic option, so a caller can pass one carrying
+    // something no clone accepts. That must neither throw inside the detection path nor fall back to
+    // handing out the live rule.
+    const seen: any[] = [];
+    const uncloneable = {
+      ...rules(),
+      firewall: rules().firewall.map((r) => ({ ...r, onSomething: () => {} })),
+    };
+    const p: any = await createProtection({
+      rules: uncloneable,
+      mode: 'block',
+      onDetect: (d: any) => {
+        seen.push(d.rule);
+        if (d.rule?.rule_v2?.[0]?.match) d.rule.rule_v2[0].match.value = 'never-matches-anything';
+      },
+    });
+
+    const req = () =>
+      expressReq({
+        method: 'GET',
+        url: '/api',
+        originalUrl: '/api',
+        headers: {},
+        socket: { remoteAddress: '198.51.100.7' },
+      });
+
+    expect(await throughExpress(p, req()), 'the rule still blocks').toBe(403);
+    expect(seen.length, 'the callback still ran').toBeGreaterThan(0);
+    expect(seen[0].id, 'the rule is still identified').toBe('ip-rule');
+    // The projection, not the live rule: nothing nested came through for a callback to reach.
+    expect(seen[0].rule_v2, 'no nested policy was handed out').toBeUndefined();
+    expect(await throughExpress(p, req()), 'the policy survived').toBe(403);
+    p.stop();
+  });
+
+  it('does not let a callback edit the running ruleset', async () => {
+    // The interesting parts of a rule are nested — `rule_v2`, and the match objects inside it — so a
+    // shallow copy would still share them. This mutates a match value through the callback and then sends
+    // a second request through the SAME guard: if the clone were shallow, the guard would now be
+    // screening for something the callback chose.
+    const p: any = await createProtection({
+      rules: rules(),
+      mode: 'block',
+      onDetect: (d: any) => {
+        if (d.rule?.rule_v2?.[0]?.match) d.rule.rule_v2[0].match.value = 'never-matches-anything';
+        if (d.rule?.when) d.rule.when.method = 'OPTIONS';
+        if (d.rule) d.rule.id = 'rewritten';
+      },
+    });
+
+    const req = () =>
+      expressReq({
+        method: 'GET',
+        url: '/api',
+        originalUrl: '/api',
+        headers: {},
+        socket: { remoteAddress: '198.51.100.7' },
+      });
+
+    expect(await throughExpress(p, req()), 'the rule matches on the first request').toBe(403);
+    // Same guard, same request: the policy is unchanged, so it still matches.
+    expect(await throughExpress(p, req()), 'the policy survived the callback').toBe(403);
+    p.stop();
   });
 });

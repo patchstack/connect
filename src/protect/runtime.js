@@ -96,8 +96,35 @@ export async function createProtection(options = {}) {
   // Minimal payload by design; see `detections.js`.
   let detections = null;
 
+  /**
+   * A rule a callback can hold without reaching the policy in force.
+   *
+   * The rule handed to `onDetect` is the object the engine is matching against, and its interesting parts
+   * are nested: `rule_v2`, `when`, and the match and action objects inside them. A shallow copy shares all
+   * of those, so a callback can rewrite a match value and change what every later request through this
+   * guard is screened for.
+   *
+   * A deep clone breaks that link. Where a rule cannot be cloned — anything a structured clone refuses —
+   * the fields consumers read are projected instead, because passing the live object would be worse than
+   * passing less of it.
+   */
+  const isolateRule = (rule) => {
+    try {
+      return structuredClone(rule);
+    } catch {
+      return { id: rule?.id, category: rule?.category };
+    }
+  };
+
   const onDetect = (detection) => {
-    notify(userOnDetect, detection, 'onDetect');
+    // What the platform is told is the engine's account of the request, and a host callback cannot change
+    // it. A synchronous callback that replaced `ip`, `clientIpSource`, `rule` or `path` would otherwise
+    // decide what the platform is told a rule matched and who it matched — silently, and
+    // indistinguishably from a correct report.
+    //
+    // The callback gets its own object, so what it writes reaches nothing else; each internal reporter
+    // builds its own record from the detection itself. Reading before the callback runs is not what
+    // carries this — it is defence in depth for the case where the copy is later weakened.
     if (detections) detections.record(detection);
     if (firewallLog && detection?.mode === 'block') {
       firewallLog.record({
@@ -108,6 +135,8 @@ export async function createProtection(options = {}) {
         userAgent: detection.userAgent,
       });
     }
+
+    notify(userOnDetect, { ...detection, ...(detection?.rule ? { rule: isolateRule(detection.rule) } : {}) }, 'onDetect');
   };
 
   // One tiered store (memory → filesystem/pluggable) shared by the initial load and every refresh.
@@ -483,6 +512,11 @@ export async function createProtection(options = {}) {
         files: req?.files,
         cookies: req?.cookies,
         socket: req?.socket,
+        // The verbatim body, when a caller kept one. A `raw` rule reads it directly, and the engine
+        // otherwise reconstructs raw by re-serialising the parsed body — which cannot carry what parsing
+        // did not keep: a body that failed to parse at all, a duplicate key where only the last value
+        // survives, or the exact bytes a signature was written against.
+        _rawBody: req?._rawBody,
         // The resolved address, and the resolution itself for the consumers downstream.
         ip: client.ip ?? '',
         _clientIp: client,
