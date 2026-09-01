@@ -261,6 +261,31 @@ describe('only real addresses are accepted', () => {
   });
 });
 
+describe('an address that identifies nobody is no address', () => {
+  it.each(['0.0.0.0', '::', '::0'])('does not accept %s as a peer', (peer) => {
+    // Syntactically valid, and still not an identity: the unspecified addresses mean "no particular
+    // host", so a runtime reporting one has not said who connected.
+    expect(resolveClientIp({ peer })).toEqual({ ip: null, source: 'unavailable' });
+  });
+
+  it('does not report an unspecified address out of a chain', () => {
+    const resolved = resolveClientIp({
+      peer: PROXY,
+      headers: { 'x-forwarded-for': `0.0.0.0, 10.0.0.3` },
+      trustedProxy: POLICY,
+    });
+
+    expect(resolved).toEqual({ ip: PROXY, source: 'runtime' });
+  });
+
+  it('still parses them as addresses, because they are', () => {
+    // The distinction is deliberate: they are well-formed, so validation accepts them and only the
+    // resolution refuses to treat them as an identity.
+    expect(isIpAddress('0.0.0.0')).toBe(true);
+    expect(canonicalIp('::0')).toBe('::');
+  });
+});
+
 describe('no transport peer means no answer', () => {
   it.each([undefined, '', '   ', 'unknown', null])('is unavailable for the peer %s', (peer) => {
     // A generic Fetch runtime exposes no transport peer. Nothing distinguishes a header a front end set

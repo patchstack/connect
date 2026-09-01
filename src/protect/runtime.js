@@ -15,6 +15,7 @@
 // Runtime guards: .express(), .node(), .fetch(handler) / .fetchGuard() — same policy,
 // every runtime an AI builder deploys to.
 // Vendored node-waf engine (this package is self-contained — no @patchstack/node-waf dep).
+import { resolveClientIp } from './client-ip.js';
 import { RuleEngine } from './engine/index.js';
 import { matchValue, walkLeaves, safeRegExp, jwtClaimSpans } from './engine/engine.js';
 import { PulseRuleClient } from './engine/pulse-client.js';
@@ -353,6 +354,9 @@ export async function createProtection(options = {}) {
       method: ctx.method,
       path: ctx.path,
       ip: ctx.ip,
+      // Provenance travels with the address. Without it a consumer cannot tell an observed peer from a
+      // value read out of a forwarded header, and `null` from "there was no address to establish".
+      clientIpSource: ctx.clientIpSource,
       userAgent: ctx.userAgent,
     });
     return effectiveMode === 'block' ? block() : allow();
@@ -389,7 +393,17 @@ export async function createProtection(options = {}) {
       // dry-run must not redact or withhold a body either: "detect until justified" is meaningless if the
       // rule still rewrites what the user sees.
       const responseMode = ruleMode(rule);
-      onDetect({ phase: 'response', mode: responseMode, category: rule.category, rule, message: result.message });
+      // The same request metadata a request-phase detection carries, taken from the originating request's
+      // own resolution. Omitting it left a response detection with no client at all, so a reviewer could
+      // not tell which request produced it.
+      onDetect({
+        phase: 'response',
+        mode: responseMode,
+        category: rule.category,
+        rule,
+        message: result.message,
+        ...requestMetaFromContext(reqCtx),
+      });
       if (responseMode !== 'block') continue; // dry-run: observe only
       if (redactors && redactors.length) {
         // Span redactors on a mutation-decoded rule can't map back to the raw body → fail closed.
@@ -437,19 +451,90 @@ export async function createProtection(options = {}) {
 
   // Minimal request context for the response phase: what a response rule's `when` scope and any
   // request-header reference (Host/Origin) need — method, path, and request headers. No body.
-  const reqContextFromFetch = (request) => {
+  /**
+   * Present an Express request to the engine with the resolved address as an own property.
+   *
+   * The application's own request object is left untouched. `req.ip` on Express is an accessor defined by
+   * the framework and derived from its own `trust proxy` setting, so overwriting it would change what the
+   * application sees; a prototype-linked view shadows it for the engine only.
+   */
+  const shapeExpressRequest = (req) => {
+    const client = resolveClientIp({
+      peer: req?.socket?.remoteAddress,
+      headers: req?.headers ?? {},
+      trustedProxy: options.trustedProxy,
+    });
+    const shaped = Object.create(req);
+    Object.defineProperty(shaped, 'ip', { value: client.ip ?? '', enumerable: true, configurable: true });
+    shaped._clientIp = client;
+
+    return { shaped, client };
+  };
+
+  /**
+   * Screen a fetch request once, and hand back both the decision and the address it resolved.
+   *
+   * Shared by `fetchGuard()` and `fetch(handler)` so the response phase can reuse the request phase's
+   * resolution instead of making its own.
+   */
+  const screenFetchRequest = async (request) => {
+    let result;
+    let shaped;
+    try {
+      shaped = await fromFetchRequest(request, { trustedProxy: options.trustedProxy });
+      result = engine.evaluate(shaped);
+    } catch (err) {
+      notify(onError, err, 'onError');
+
+      return { blocked: null, client: undefined }; // fail open
+    }
+    const blocked = decide(
+      'request',
+      result,
+      () => blockResponse(result, request),
+      () => null,
+      requestMeta(shaped, request),
+    );
+
+    return { blocked, client: shaped?._clientIp };
+  };
+
+  const reqContextFromFetch = (request, client) => {
     try {
       const u = new URL(request.url);
       const headers = headerObject(request.headers);
       // A fetch Request doesn't expose the Host header (it's set at send time), so derive it from the
       // URL — response rules that compare origins (open-redirect / CORS) need the request Host.
       if (!headers.host) headers.host = u.host;
-      return { method: request.method, originalUrl: u.pathname + u.search, headers };
+      // `client` is the resolution the request phase already made for this request, when there was one.
+      // Resolving again here could disagree with it, and a response detection naming a different address
+      // than the request detection for the same request describes two clients that do not exist.
+      const resolved = client ?? { ip: null, source: 'unavailable' };
+
+      return {
+        method: request.method,
+        originalUrl: u.pathname + u.search,
+        headers,
+        ip: resolved.ip ?? '',
+        _clientIp: resolved,
+      };
     } catch {
       return undefined;
     }
   };
-  const reqContextFromNode = (req) => (req ? { method: req.method, originalUrl: req.url, headers: req.headers || {} } : undefined);
+  // The response phase evaluates against the ORIGINATING request, so the resolution travels with it: a
+  // response rule reading `server.ip`, and a response detection's record, get the same address the
+  // request phase used.
+  const reqContextFromNode = (req, client) =>
+    req
+      ? {
+          method: req.method,
+          originalUrl: req.url,
+          headers: req.headers || {},
+          ip: client?.ip ?? '',
+          _clientIp: client ?? { ip: null, source: 'unavailable' },
+        }
+      : undefined;
 
   // Screen a fetch Response (used by .fetch() and — via protection.screenResponse — the Supabase guard).
   const screenResp = async (response, reqCtx) => {
@@ -594,30 +679,36 @@ export async function createProtection(options = {}) {
 
     // Screen a fetch Response through the response-phase rules (redact/block). Used by
     // .fetch(), and by the Supabase guard on its forwarded upstream response.
-    screenResponse: (response, request) => screenResp(response, request ? reqContextFromFetch(request) : undefined),
+    // A standalone response screen with no request phase of its own — the Supabase guard's forwarded
+    // upstream response. It resolves once here, which is the only resolution for this call.
+    screenResponse: (response, request) =>
+      screenResp(
+        response,
+        request
+          ? reqContextFromFetch(
+              request,
+              resolveClientIp({ headers: headerObject(request.headers), trustedProxy: options.trustedProxy }),
+            )
+          : undefined,
+      ),
 
     // (request) => Response | null   (null = allow, caller proceeds). Request phase only.
     fetchGuard() {
-      return async (request) => {
-        let result;
-        try {
-          result = engine.evaluate(await fromFetchRequest(request));
-        } catch (err) {
-          notify(onError, err, 'onError');
-          return null; // fail open
-        }
-        return decide('request', result, () => blockResponse(result, request), () => null, fetchRequestMeta(request));
-      };
+      return async (request) => (await screenFetchRequest(request)).blocked;
     },
 
     // Wrap a fetch handler: screens the request, then the response (redact/block).
     fetch(handler) {
-      const guard = protection.fetchGuard();
       return async (request, ...rest) => {
-        const blocked = await guard(request);
+        // The request phase's own resolution is carried into the response phase rather than the response
+        // screening making a second one. Two resolutions for one request can disagree, and a response
+        // detection naming a different address than the request detection describes two clients that do
+        // not exist.
+        const { blocked, client } = await screenFetchRequest(request);
         if (blocked) return blocked;
         const response = await handler(request, ...rest);
-        return screenResp(response, reqContextFromFetch(request));
+
+        return screenResp(response, reqContextFromFetch(request, client));
       };
     },
 
@@ -626,11 +717,15 @@ export async function createProtection(options = {}) {
     express(exprOptions = {}) {
       return (req, res, next) => {
         let result;
+        // Resolved once, before evaluation, and reused by the engine, the response screening and the
+        // block record below. Three consumers deriving it separately could attribute one request to
+        // three different addresses.
+        const { shaped, client } = shapeExpressRequest(req);
         try {
-          result = engine.evaluate(req);
+          result = engine.evaluate(shaped);
         } catch (err) {
           notify(onError, err, 'onError');
-          if (exprOptions.screenResponses) wrapNodeResponse(res, reqContextFromNode(req));
+          if (exprOptions.screenResponses) wrapNodeResponse(res, reqContextFromNode(req, client));
           return next();
         }
         decide(
@@ -644,10 +739,10 @@ export async function createProtection(options = {}) {
             }
           },
           () => {
-            if (exprOptions.screenResponses) wrapNodeResponse(res, reqContextFromNode(req));
+            if (exprOptions.screenResponses) wrapNodeResponse(res, reqContextFromNode(req, client));
             next();
           },
-          nodeRequestMeta(req),
+          nodeRequestMeta(req, client),
         );
       };
     },
@@ -696,7 +791,7 @@ export async function createProtection(options = {}) {
         let shaped;
         let result;
         try {
-          shaped = fromNodeRequest(req, rawBody);
+          shaped = fromNodeRequest(req, rawBody, { trustedProxy: options.trustedProxy });
           if (parsedBody !== undefined && parsedBody !== null) shaped.body = parsedBody;
           result = engine.evaluate(shaped);
         } catch (err) {
@@ -720,10 +815,11 @@ export async function createProtection(options = {}) {
             // This guard consumed the request stream to screen it; re-expose the parsed
             // body so a downstream handler (without its own body-parser) can read it.
             if (req.body === undefined) req.body = shaped.body;
-            if (nodeOptions.screenResponses) wrapNodeResponse(res, reqContextFromNode(req));
+            // The resolution the shaping already made, carried into the response phase and the record.
+            if (nodeOptions.screenResponses) wrapNodeResponse(res, reqContextFromNode(req, shaped?._clientIp));
             next();
           },
-          nodeRequestMeta(req),
+          nodeRequestMeta(req, shaped?._clientIp),
         );
       }
     },
@@ -1380,33 +1476,73 @@ function defaultOnDetect({ phase, mode, category, rule, message }) {
   console.warn(`[patchstack] ${tag} phase=${phase ?? 'request'} category=${category ?? '?'} rule=${rule?.id ?? '?'} ${message ?? ''}`.trim());
 }
 
-/** @param {Request} request */
-function fetchRequestMeta(request) {
-  if (!request) return {};
-  let path = null;
-  try {
-    path = new URL(request.url).pathname;
-  } catch {
-    path = typeof request.url === 'string' ? request.url : null;
-  }
+/**
+ * Request metadata for a detection or a block record, using the address already resolved for it.
+ *
+ * `shaped` is the object the engine evaluated, which carries the one resolution for this request. The
+ * original request is only consulted for the path, the method and the user agent — never for an address,
+ * because a second derivation could disagree with the first and attribute one request to two clients.
+ *
+ * @param {{ ip?: string, _clientIp?: { ip: string | null, source: string } } | undefined} shaped
+ * @param {Request | undefined} request
+ */
+/**
+ * Request metadata from a response-phase context.
+ *
+ * The context is the originating request, already carrying its own resolution — so a response detection
+ * names the same client as the request detection for that request.
+ */
+function requestMetaFromContext(reqCtx) {
+  if (!reqCtx) return {};
+  const client = reqCtx._clientIp ?? { ip: null, source: 'unavailable' };
+
   return {
-    method: request.method ?? null,
-    path,
-    ip: request.headers?.get?.('x-forwarded-for') ?? null,
-    userAgent: request.headers?.get?.('user-agent') ?? null,
+    method: reqCtx.method ?? null,
+    path: typeof reqCtx.originalUrl === 'string' ? reqCtx.originalUrl.split('?')[0] : null,
+    ip: client.ip,
+    clientIpSource: client.source,
+    userAgent: reqCtx.headers?.['user-agent'] ?? null,
   };
 }
 
-/** @param {import('http').IncomingMessage & { ip?: string, originalUrl?: string }} req */
-function nodeRequestMeta(req) {
+function requestMeta(shaped, request) {
+  const client = shaped?._clientIp ?? { ip: null, source: 'unavailable' };
+  let path = null;
+  let method = null;
+  let userAgent = null;
+
+  if (request) {
+    try {
+      path = new URL(request.url).pathname;
+    } catch {
+      path = typeof request.url === 'string' ? request.url : null;
+    }
+    method = request.method ?? null;
+    userAgent = request.headers?.get?.('user-agent') ?? null;
+  }
+
+  return { method, path, ip: client.ip, clientIpSource: client.source, userAgent };
+}
+
+/**
+ * Request metadata on the Node and Express paths, using the address already resolved for the request.
+ *
+ * @param {import('http').IncomingMessage & { originalUrl?: string }} req
+ * @param {{ ip: string | null, source: string } | undefined} client
+ */
+function nodeRequestMeta(req, client) {
   if (!req) return {};
   const headers = req.headers ?? {};
   const ua = headers['user-agent'] ?? headers['User-Agent'];
-  const fwd = headers['x-forwarded-for'] ?? headers['X-Forwarded-For'];
+  const resolved = client ?? { ip: null, source: 'unavailable' };
+
   return {
     method: req.method ?? null,
     path: req.originalUrl || req.url || null,
-    ip: req.ip ?? (typeof fwd === 'string' ? fwd : null),
+    // Never `req.ip`: under Express's `trust proxy` that is header-derived by a policy this guard has not
+    // verified, and a second derivation could disagree with the one the engine evaluated.
+    ip: resolved.ip,
+    clientIpSource: resolved.source,
     userAgent: typeof ua === 'string' ? ua : Array.isArray(ua) ? ua[0] : null,
   };
 }

@@ -184,6 +184,38 @@ export interface CreateProtectionOptions {
     read(): unknown | Promise<unknown>;
     write(envelope: unknown): unknown | Promise<unknown>;
   };
+  /**
+   * Declare which peers are this deployment's own reverse proxies, so a forwarded header can be believed.
+   *
+   * With no policy, the client address is whatever the transport observed — the socket peer on Node, and
+   * nothing at all in a runtime that exposes no peer, where the provenance reads `unavailable`. A
+   * forwarded header is never trusted implicitly: it is ordinary request input that any caller can send.
+   *
+   * A policy must say WHO is trusted, not just which header to read. Declare at least one of:
+   *
+   * - `peers` — CIDRs or bare addresses of your front end. An empty list means no peer is trusted, and
+   *   one unparseable entry rejects the whole policy.
+   * - `hops` — the number of trusted proxies counting from the peer inward, as in the numeric form of
+   *   Express's `trust proxy`.
+   * - `isTrusted` — a predicate over an address.
+   *
+   * `header` defaults to `x-forwarded-for`. The chain is read from the application side inward, stopping
+   * at the first address that is not trusted, because a proxy appends rather than replaces — so a value
+   * the caller prepended is ignored.
+   *
+   * Any unrecognised key, or any malformed value, rejects the policy rather than being ignored. There are
+   * no provider presets: a provider's name does not establish that the provider overwrote the header.
+   *
+   * Note that `req.ip` is never consulted on the Express path. Under `trust proxy` it is itself
+   * header-derived by a policy this guard has not verified, so an application behind a proxy sees the
+   * proxy's address until it declares a policy here.
+   */
+  trustedProxy?: {
+    peers?: string[];
+    hops?: number;
+    header?: string;
+    isTrusted?: (ip: string) => boolean;
+  };
   /** Override the default response-phase (secret-leak) rule set. */
   responseRules?: unknown[];
   /** Override the default egress-phase (SSRF) rule set. */

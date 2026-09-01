@@ -352,6 +352,22 @@ function isTrustedPeer(policy, value) {
   return false;
 }
 
+/**
+ * Addresses that are syntactically valid but identify nobody.
+ *
+ * The unspecified addresses mean "no particular host". A runtime reporting one has not told us who
+ * connected, and a chain carrying one names no client — so neither may be reported as an address, even
+ * though both parse. Kept separate from parsing, because they are perfectly well-formed.
+ */
+const UNSPECIFIED = new Set(['0.0.0.0', '::']);
+
+/** The canonical form of an address that identifies a host, or null. */
+function identifyingIp(value) {
+  const canonical = canonicalIp(value);
+
+  return canonical === null || UNSPECIFIED.has(canonical) ? null : canonical;
+}
+
 /** The forwarded chain, in wire order (client-most first), with only real addresses kept. */
 function chainFrom(headers, header) {
   // Own property only. A header inherited through the prototype chain was not sent with this request, so
@@ -378,8 +394,9 @@ function chainFrom(headers, header) {
  */
 export function resolveClientIp(input) {
   const headers = input.headers ?? {};
-  // Canonical from here on, so every surface stores and matches the same spelling.
-  const peer = canonicalIp(input.peer);
+  // Canonical from here on, so every surface stores and matches the same spelling. An address that
+  // identifies nobody is treated as no address at all.
+  const peer = identifyingIp(input.peer);
   const policy = readTrustPolicy(input.trustedProxy);
 
   // No peer means no transport-level anchor. A forwarded header here is indistinguishable from one the
@@ -411,7 +428,7 @@ export function resolveClientIp(input) {
     const index = chain.length - policy.hops;
     const candidate = index >= 0 ? chain[index] : undefined;
 
-    const canonical = canonicalIp(candidate);
+    const canonical = identifyingIp(candidate);
 
     return canonical === null ? { ip: peer, source: 'runtime' } : { ip: canonical, source: 'trusted-proxy' };
   }
@@ -420,7 +437,7 @@ export function resolveClientIp(input) {
   // is not one of ours is the client. An entry that is not an address at all stops the walk: the chain
   // cannot be reasoned about past something that is not a hop.
   for (let i = chain.length - 1; i >= 0; i--) {
-    const canonical = canonicalIp(chain[i]);
+    const canonical = identifyingIp(chain[i]);
     if (canonical === null) return { ip: peer, source: 'runtime' };
     if (!isTrustedPeer(policy, canonical)) return { ip: canonical, source: 'trusted-proxy' };
   }

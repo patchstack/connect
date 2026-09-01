@@ -6,7 +6,11 @@ export function createMiddleware(rulesData, options = {}) {
   const engine = new RuleEngine(rulesData);
 
   const middleware = (req, res, next) => {
-    const result = engine.evaluate(req);
+    // The address resolved for this request, when the caller supplied a resolver. Without one the engine
+    // sees whatever own `ip` the request carries, and this record says the same.
+    const client = typeof options.resolveClient === 'function' ? options.resolveClient(req) : null;
+    const evaluated = client === null ? req : client.shaped;
+    const result = engine.evaluate(evaluated);
 
     if (result.blocked) {
       // Contained: a throw here would replace the 403 below with the callback's exception, which for
@@ -17,7 +21,10 @@ export function createMiddleware(rulesData, options = {}) {
         request: {
           method: req.method,
           url: req.url,
-          ip: req.ip ?? req.socket?.remoteAddress
+          // Never `req.ip`: under Express's `trust proxy` that is header-derived by a policy this guard
+          // has not verified. The engine's own value is what this record reports, so the two agree.
+          ip: typeof evaluated.ip === 'string' ? evaluated.ip : null,
+          clientIpSource: client?.client?.source ?? null,
         }
       }, 'onBlock');
 

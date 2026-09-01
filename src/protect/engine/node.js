@@ -6,12 +6,13 @@
 // This complements the Express `createMiddleware` (which assumes `req.body`/`req.query`
 // are already populated) and the Web-Fetch adapter (Workers/edge). Mount it FIRST, before
 // any body-parser — it consumes the stream and exposes the parsed body as `req.body`.
+import { resolveClientIp } from '../client-ip.js';
 import { RuleEngine } from './engine.js';
 import { parseBody } from './fetch.js';
 import { notify } from '../notify.js';
 
 // Build the engine's request shape from a Node IncomingMessage + its raw body text.
-export function fromNodeRequest(req, rawBody = '') {
+export function fromNodeRequest(req, rawBody = '', options = {}) {
   const method = (req.method || 'GET').toUpperCase();
 
   const headers = {};
@@ -54,8 +55,13 @@ export function fromNodeRequest(req, rawBody = '') {
   }
 
   const uri = url.pathname + url.search;
-  const forwarded =
-    headers['cf-connecting-ip'] || headers['x-forwarded-for'] || headers['x-real-ip'] || '';
+  // Resolved once, from the socket peer the transport observed. `req.ip` is deliberately not consulted:
+  // under Express's `trust proxy` it is itself header-derived by a policy this guard has not verified.
+  const client = resolveClientIp({
+    peer: req.socket?.remoteAddress,
+    headers,
+    trustedProxy: options.trustedProxy,
+  });
 
   return {
     method,
@@ -65,7 +71,8 @@ export function fromNodeRequest(req, rawBody = '') {
     body,
     files,
     headers,
-    ip: forwarded.split(',')[0].trim() || (req.socket && req.socket.remoteAddress) || '',
+    ip: client.ip ?? '',
+    _clientIp: client,
     cookies: parseCookies(headers.cookie),
     // Verbatim body text: preserves literal keys (e.g. `__proto__`) that JSON.stringify drops.
     _rawBody: rawBody
