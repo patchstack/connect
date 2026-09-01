@@ -26,8 +26,11 @@ import { isSafeOrigin } from './safe-origin.js';
  * and length, and what a bound leaves out is counted, so a short list is never mistaken for a complete
  * one.
  *
- * What it never carries: **the value of any parameter the matched rule does not name**, any response
- * value, or the query string's values. A channel that reports detections is a different thing from a
+ * The user agent is the one exception, and travels whether or not a rule names it: it is part of the
+ * baseline, because a detection nobody can attribute is of little use.
+ *
+ * What it never carries: **the value of any OTHER parameter the matched rule does not name**, any
+ * response value, or the query string's values. A channel that reports detections is a different thing from a
  * copy of an application's traffic, and the plan is what keeps the difference.
  *
  * The route is the request PATH; the query travels as parameter NAMES only, because `?token=…` is a
@@ -120,6 +123,7 @@ const MAX_CAPTURED_VALUES = 10;
 const MAX_CAPTURED_VALUE_CHARS = 512;
 /** Query-string parameter NAMES from the request line. Names, never values — see `queryKeysOf`. */
 const MAX_QUERY_KEYS = 10;
+const MAX_METHOD_CHARS = 16;
 /**
  * The body bound, set where a full batch can actually reach it.
  *
@@ -141,11 +145,12 @@ const MAX_BODY_BYTES = 64 * 1024;
  * @returns {string[]}
  */
 export function queryKeysOf(path) {
-  if (typeof path !== 'string') return [];
+  if (typeof path !== 'string') return { keys: [], total: 0 };
   const start = path.indexOf('?');
-  if (start === -1) return [];
+  if (start === -1) return { keys: [], total: 0 };
 
-  const out = [];
+  const seen = new Set();
+  const keys = [];
   for (const pair of path.slice(start + 1).split('&')) {
     if (pair === '') continue;
     const name = pair.split('=')[0];
@@ -156,11 +161,13 @@ export function queryKeysOf(path) {
     } catch {
       // A name that will not decode is reported as sent: it is still a name, and guessing is worse.
     }
-    if (!out.includes(decoded)) out.push(decoded);
-    if (out.length >= MAX_QUERY_KEYS) break;
+    if (seen.has(decoded)) continue;
+    seen.add(decoded);
+    // Counted past the cap as well as under it, so a reader knows the list is short rather than complete.
+    if (keys.length < MAX_QUERY_KEYS) keys.push(decoded);
   }
 
-  return out;
+  return { keys, total: seen.size };
 }
 
 /**
@@ -172,41 +179,76 @@ export function queryKeysOf(path) {
  * produced the capture, and marks what it shortened.
  */
 function boundCapture(capture) {
-  if (!capture || typeof capture !== 'object') return null;
+  if (!capture || typeof capture !== 'object' || Array.isArray(capture)) return null;
 
   const truncated = [];
-  const out = { plan: capText(String(capture.plan ?? ''), MAX_IDENTIFIER_CHARS).value };
-  if (out.plan !== String(capture.plan ?? '')) truncated.push('plan');
+  // Validated, not coerced. `String(x)` runs whatever `toString` an object carries, which turns a value
+  // this channel refuses into reportable content — and the refusal is the whole point of the type rule.
+  const plan = typeof capture.plan === 'string' ? capText(capture.plan, MAX_IDENTIFIER_CHARS) : null;
+  if (plan === null) return null;
+  if (plan.truncated) truncated.push('plan');
+
+  const out = { plan: plan.value };
+  let dropped = 0;
 
   if (Array.isArray(capture.values) && capture.values.length > 0) {
-    const kept = capture.values.slice(0, MAX_CAPTURED_VALUES);
-    if (capture.values.length > kept.length) truncated.push('values');
-    out.values = kept.map((entry) => {
-      const parameter = capText(String(entry?.parameter ?? ''), MAX_PARAMETER_CHARS);
-      const value = capText(String(entry?.value ?? ''), MAX_CAPTURED_VALUE_CHARS);
-      if (parameter.truncated && !truncated.includes('parameter')) truncated.push('parameter');
-      if (value.truncated && !truncated.includes('value')) truncated.push('value');
+    const values = [];
+    for (const entry of capture.values) {
+      if (!entry || typeof entry !== 'object') {
+        dropped += 1;
+        continue;
+      }
+      const parameter = typeof entry.parameter === 'string' ? entry.parameter : null;
+      const text = scalarText(entry.value);
+      if (parameter === null || text === null) {
+        dropped += 1;
+        continue;
+      }
+      if (values.length >= MAX_CAPTURED_VALUES) {
+        dropped += 1;
+        continue;
+      }
 
-      return {
-        parameter: parameter.value,
+      const label = capText(parameter, MAX_PARAMETER_CHARS);
+      const value = capText(text, MAX_CAPTURED_VALUE_CHARS);
+      if (label.truncated && !truncated.includes('parameter')) truncated.push('parameter');
+      if (value.truncated && !truncated.includes('value')) truncated.push('value');
+      values.push({
+        parameter: label.value,
         value: value.value,
-        ...(entry?.truncated || value.truncated ? { truncated: true } : {}),
-      };
-    });
+        ...(entry.truncated === true || value.truncated ? { truncated: true } : {}),
+      });
+    }
+    if (dropped > 0) truncated.push('values');
+    if (values.length > 0) out.values = values;
   }
 
-  if (capture.raw && typeof capture.raw.value === 'string') {
+  if (capture.raw && typeof capture.raw === 'object' && typeof capture.raw.value === 'string') {
     const raw = capText(capture.raw.value, MAX_CAPTURED_VALUE_CHARS);
-    out.raw = { value: raw.value, ...(capture.raw.truncated || raw.truncated ? { truncated: true } : {}) };
+    out.raw = { value: raw.value, ...(capture.raw.truncated === true || raw.truncated ? { truncated: true } : {}) };
   }
 
   for (const key of ['omitted', 'unsupported', 'failed']) {
-    if (Number.isFinite(capture[key]) && capture[key] > 0) out[key] = Math.floor(capture[key]);
+    const count = Number.isFinite(capture[key]) && capture[key] > 0 ? Math.floor(capture[key]) : 0;
+    // What this gate drops is added to what the producer already left out. The documented promise is that
+    // values excluded by a bound are counted, and a reader cannot otherwise tell eleven values from two
+    // hundred.
+    const total = key === 'omitted' ? count + dropped : count;
+    if (total > 0) out[key] = total;
   }
   if (capture.unavailable === true) out.unavailable = true;
   if (truncated.length > 0) out.truncated = truncated;
 
   return out;
+}
+
+/** A value as text, or null when its type is not one this channel reports. */
+function scalarText(value) {
+  if (typeof value === 'string') return value;
+  if (typeof value === 'number' && Number.isFinite(value)) return String(value);
+  if (typeof value === 'boolean') return String(value);
+
+  return null;
 }
 
 /** A per-reporter identity, so idempotency keys from two guards cannot collide. */
@@ -787,13 +829,27 @@ export function createDetectionReporter(opts) {
       // who cannot tell a shortened route from a complete one will read it as a different route.
       // `null` survives: there being no route is not the same as the route being empty, and a cap that
       // turned one into the other would invent a known path where none was established.
-      const queryKeys = queryKeysOf(detection.path);
+      const query = queryKeysOf(detection.path);
+      const method = typeof detection.method === 'string' ? capText(detection.method, MAX_METHOD_CHARS) : null;
+      const userAgent =
+        typeof detection.userAgent === 'string' && detection.userAgent !== ''
+          ? capText(detection.userAgent, MAX_IDENTIFIER_CHARS)
+          : null;
+      const queryKeys = query.keys.map((name) => capText(name, MAX_PARAMETER_CHARS));
+      // Computed once: calling the gate twice would let a getter or a proxy answer differently between
+      // the check and the send.
+      const capture = boundCapture(detection.capture);
       const rawRoute = routeOf(detection.path);
       const route = typeof rawRoute === 'string' ? capText(rawRoute, MAX_ROUTE_CHARS) : { value: rawRoute, truncated: false };
       const allParameters = ruleParameters(detection.rule);
       const parameters = allParameters.slice(0, MAX_PARAMETERS).map((name) => capText(name, MAX_PARAMETER_CHARS));
       const truncated = [];
       if (route.truncated) truncated.push('route');
+      if (method?.truncated) truncated.push('method');
+      if (userAgent?.truncated) truncated.push('user_agent');
+      if (query.total > queryKeys.length || queryKeys.some((entry) => entry.truncated)) {
+        truncated.push('query_keys');
+      }
       if (allParameters.length > MAX_PARAMETERS || parameters.some((entry) => entry.truncated)) {
         truncated.push('parameters');
       }
@@ -818,15 +874,14 @@ export function createDetectionReporter(opts) {
         // Only when parameters were actually left out. Reporting a total because some OTHER field was
         // shortened states that parameters were omitted when none were.
         ...(truncated.includes('parameters') ? { parameters_total: allParameters.length } : {}),
-        method: typeof detection.method === 'string' ? capText(detection.method, 16).value : null,
+        method: method === null ? null : method.value,
         // The rest of the URL, as names only. `route` is the path; together they say what was requested
         // without saying what was in it.
-        query_keys: queryKeys.map((name) => capText(name, MAX_PARAMETER_CHARS).value),
+        query_keys: queryKeys.map((entry) => entry.value),
+        // Present only when the list is short, so its absence is not a claim of its own.
+        ...(query.total > queryKeys.length ? { query_keys_total: query.total } : {}),
         // Who asked. Capped, since it is client-supplied text and this is an event with a size bound.
-        user_agent:
-          typeof detection.userAgent === 'string' && detection.userAgent !== ''
-            ? capText(detection.userAgent, MAX_IDENTIFIER_CHARS).value
-            : null,
+        user_agent: userAgent === null ? null : userAgent.value,
         phase: detection.phase ?? null,
         // The state this detection was handled under, which is the whole point: `false` is a rule that
         // saw traffic it would have stopped.
@@ -839,7 +894,7 @@ export function createDetectionReporter(opts) {
         rule_revision: revisionOf(detection.rule) === null ? null : revision.value,
         // What the rule was permitted to show, and what it showed. Present only when a plan was derived,
         // which is to say only for a phase that has a reading to derive from.
-        ...(boundCapture(detection.capture) ? { capture: boundCapture(detection.capture) } : {}),
+        ...(capture ? { capture } : {}),
         // The client address and where it came from. `client_ip` is omitted entirely when there is none,
         // so a present-but-empty field cannot read as a failed lookup of a real address; the provenance is
         // always present, because "this could not be established" is the part a reader needs.

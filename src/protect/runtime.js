@@ -759,12 +759,26 @@ export async function createProtection(options = {}) {
     // Same for egress: a dry-run rule records the outbound attempt without preventing it. Blocking a
     // request the app makes is at least as disruptive as blocking one it receives.
     const egressMode = ruleMode(result.rule);
+    // The outbound request's own method and path. An egress detection has no client address and no user
+    // agent by nature: the call is the application's, not a visitor's, so there is nobody to attribute it
+    // to. Its destination host reaches the report through capture, for a rule that names `egress.url` or
+    // `egress.host` — which the internal-host rules do.
+    let egressPath = null;
+    try {
+      const u = new URL(url);
+      egressPath = u.pathname + u.search;
+    } catch {
+      egressPath = typeof url === 'string' ? url : null;
+    }
+
     onDetect({
       phase: 'egress',
       mode: egressMode,
       category: result.rule?.category,
       rule: result.rule,
       message: result.message,
+      method: typeof method === 'string' ? method : null,
+      path: egressPath,
       capture: evidenceFrom(result),
     });
     return egressMode === 'block';
@@ -1619,7 +1633,9 @@ function requestMetaFromContext(reqCtx) {
 
   return {
     method: reqCtx.method ?? null,
-    path: typeof reqCtx.originalUrl === 'string' ? reqCtx.originalUrl.split('?')[0] : null,
+    // Path AND query. The reporter is what drops the query's VALUES, keeping its parameter names, so
+    // trimming it here would leave a Fetch or response detection unable to say what was requested.
+    path: typeof reqCtx.originalUrl === 'string' ? reqCtx.originalUrl : null,
     ip: client.ip,
     clientIpSource: client.source,
     userAgent: reqCtx.headers?.['user-agent'] ?? null,
@@ -1634,7 +1650,8 @@ function requestMeta(shaped, request) {
 
   if (request) {
     try {
-      path = new URL(request.url).pathname;
+      const u = new URL(request.url);
+      path = u.pathname + u.search;
     } catch {
       path = typeof request.url === 'string' ? request.url : null;
     }

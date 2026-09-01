@@ -317,6 +317,28 @@ describe('a response detection names its capture policy too', () => {
     expect(JSON.stringify(bodies)).not.toContain('SENTINEL-RESP');
   });
 
+  it('carries the originating query names, which only the response path can lose', async () => {
+    // A response detection takes its metadata from the originating request's context. That context is
+    // built separately from the request path's, so a query trimmed there is invisible to every
+    // request-phase test.
+    const { bodies, impl } = stub(responseRules());
+    const p = await guardFor(impl);
+    await throughResponse(
+      p,
+      expressReq({
+        method: 'GET',
+        url: '/page?ref=email&id=SENTINEL-QUERY-VALUE',
+        originalUrl: '/page?ref=email&id=SENTINEL-QUERY-VALUE',
+      }),
+      'SENTINEL-RESP body',
+    );
+
+    const events = eventsFrom(bodies).filter((e: any) => e.phase === 'response');
+    expect(events[0].route).toBe('/page');
+    expect(events[0].query_keys).toEqual(['ref', 'id']);
+    expect(JSON.stringify(bodies), 'names, never values').not.toContain('SENTINEL-QUERY-VALUE');
+  });
+
   it('captures a request parameter a response rule also names', async () => {
     // A response-phase rule can scope on the request, and those sources are capturable — so "response
     // rules capture nothing" would be the wrong generalisation.
@@ -343,5 +365,78 @@ describe('a response detection names its capture policy too', () => {
     const events = eventsFrom(bodies).filter((e: any) => e.phase === 'response');
     expect(events[0].capture.values?.map((v: any) => v.parameter)).toEqual(['server.HTTP_USER_AGENT']);
     expect(JSON.stringify(bodies)).toContain('SENTINEL-UA');
+  });
+});
+
+describe('the baseline reaches every runtime and every phase', () => {
+  it('sends query names from a Fetch request, not only from Express', async () => {
+    // The Fetch path builds its own request metadata. Trimming the query there left `query_keys` working
+    // on Node and Express and always empty on Workers, Deno, Bun and edge — the runtimes this exists for.
+    const rules = {
+      firewall: [
+        {
+          id: 'q1',
+          title: 'reads a query parameter',
+          rule_v2: [{ parameter: 'get.q', match: { type: 'contains', value: 'boom' } }],
+        },
+      ],
+      whitelists: [],
+      whitelist_keys: {},
+    };
+    const { bodies, impl } = stub(rules);
+    const p = await guardFor(impl);
+
+    await p.fetchGuard()(
+      new Request('https://app.test/search?q=boom&token=SENTINEL-QUERY-VALUE', {
+        headers: { 'user-agent': 'scanner/2.0' },
+      }),
+    );
+    p.stop();
+    await new Promise((r) => setTimeout(r, 20));
+
+    const [event] = eventsFrom(bodies);
+    expect(event.route).toBe('/search');
+    expect(event.query_keys).toEqual(['q', 'token']);
+    expect(event.user_agent).toBe('scanner/2.0');
+    // Names, never values — the rule named `get.q`, so its value travels and the other's does not.
+    expect(JSON.stringify(bodies)).not.toContain('SENTINEL-QUERY-VALUE');
+    expect(JSON.stringify(bodies)).toContain('boom');
+  });
+
+  it('sends the outbound method and path for an egress detection', async () => {
+    const rules = {
+      firewall: [
+        {
+          id: 'ssrf-1',
+          title: 'internal host',
+          phase: 'egress',
+          action: 'block',
+          rule_v2: [{ parameter: 'egress.url', match: { type: 'internal_host', value: '' } }],
+        },
+      ],
+      whitelists: [],
+      whitelist_keys: {},
+    };
+    const { bodies, impl } = stub(rules);
+    const p = await guardFor(impl, { egress: true });
+
+    try {
+      await fetch('http://169.254.169.254/latest/meta-data/?probe=1', { method: 'PUT' });
+    } catch {
+      // Blocked, which is the point.
+    }
+    p.stop();
+    await new Promise((r) => setTimeout(r, 20));
+
+    const events = eventsFrom(bodies).filter((e: any) => e.phase === 'egress');
+    expect(events.length, 'the outbound call was reported').toBeGreaterThan(0);
+    expect(events[0].method, 'the outbound method').toBe('PUT');
+    expect(events[0].route, 'the outbound path').toBe('/latest/meta-data/');
+    expect(events[0].query_keys).toEqual(['probe']);
+    // No client to attribute an outbound call to: the app made it, not a visitor.
+    expect(events[0].user_agent).toBeNull();
+    expect(events[0].client_ip_source).toBe('unavailable');
+    // The destination reaches the report through capture, because the rule names `egress.url`.
+    expect(JSON.stringify(events[0].capture)).toContain('169.254.169.254');
   });
 });

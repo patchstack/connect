@@ -715,3 +715,136 @@ describe('the rule revision travels with the detection', () => {
     for (const event of posts[0].body.detections) expect(event.rule_revision).toBeNull();
   });
 });
+
+describe('every shortened field says so, including the baseline ones', () => {
+  it('marks a capped method, user agent and query-key list, and gives the key total', async () => {
+    const { reporter, posts } = reporterWith();
+    const manyKeys = Array.from({ length: 25 }, (_, i) => `k${i}=v${i}`).join('&');
+
+    reporter.record({
+      rule: pinnedRule,
+      phase: 'request',
+      mode: 'block',
+      path: `/api/preview?${manyKeys}&${'n'.repeat(200)}=x`,
+      method: 'M'.repeat(40),
+      userAgent: 'u'.repeat(600),
+    } as never);
+    reporter.flush();
+    await drain();
+
+    const [event] = posts[0].body.detections;
+    // A cap nobody reports is a cap a reader cannot allow for.
+    expect(event.truncated).toContain('method');
+    expect(event.truncated).toContain('user_agent');
+    expect(event.truncated).toContain('query_keys');
+    expect(event.query_keys.length).toBe(10);
+    expect(event.query_keys_total, 'so a short list is not read as a complete one').toBe(26);
+    expect(event.method.length).toBeLessThanOrEqual(16);
+    expect(event.user_agent.length).toBeLessThanOrEqual(256);
+  });
+
+  it('says nothing about truncation when the baseline fitted', async () => {
+    const { reporter, posts } = reporterWith();
+
+    reporter.record({
+      rule: pinnedRule,
+      phase: 'request',
+      mode: 'block',
+      path: '/api/preview?url=x',
+      method: 'GET',
+      userAgent: 'curl/8.0',
+    } as never);
+    reporter.flush();
+    await drain();
+
+    const [event] = posts[0].body.detections;
+    expect(Object.hasOwn(event, 'truncated')).toBe(false);
+    expect(Object.hasOwn(event, 'query_keys_total')).toBe(false);
+  });
+});
+
+describe('the wire gate validates what it is given', () => {
+  const withCapture = (capture: unknown) => ({
+    rule: pinnedRule,
+    phase: 'request',
+    mode: 'block',
+    path: '/a',
+    capture,
+  });
+
+  it('counts what it dropped, so eleven values are not mistaken for two hundred', async () => {
+    const { reporter, posts } = reporterWith();
+
+    reporter.record(
+      withCapture({
+        plan: 'cp2-abc',
+        omitted: 3,
+        values: Array.from({ length: 200 }, (_, i) => ({ parameter: `post.f${i}`, value: `v${i}` })),
+      }) as never,
+    );
+    reporter.flush();
+    await drain();
+
+    const { capture } = posts[0].body.detections[0];
+    expect(capture.values.length).toBe(10);
+    // What the producer left out, plus what this gate did.
+    expect(capture.omitted).toBe(3 + 190);
+    expect(capture.truncated).toContain('values');
+  });
+
+  it('refuses a value whose type this channel does not report, rather than coercing it', async () => {
+    const { reporter, posts } = reporterWith();
+    // `String(x)` would run whatever `toString` an object carries, turning a refused value into content.
+    const hostile = { toString: () => 'SENTINEL-COERCED' };
+
+    reporter.record(
+      withCapture({
+        plan: 'cp2-abc',
+        values: [
+          { parameter: 'post.a', value: hostile },
+          { parameter: 'post.b', value: 'kept' },
+        ],
+      }) as never,
+    );
+    reporter.flush();
+    await drain();
+
+    const wire = JSON.stringify(posts[0].body);
+    expect(wire).not.toContain('SENTINEL-COERCED');
+    const { capture } = posts[0].body.detections[0];
+    expect(capture.values).toEqual([{ parameter: 'post.b', value: 'kept' }]);
+    expect(capture.omitted, 'and the refusal is counted').toBe(1);
+  });
+
+  it('refuses a capture whose plan is not a plan', async () => {
+    const { reporter, posts } = reporterWith();
+
+    reporter.record(withCapture({ plan: { toString: () => 'SENTINEL-PLAN' }, values: [] }) as never);
+    reporter.flush();
+    await drain();
+
+    const wire = JSON.stringify(posts[0].body);
+    expect(wire).not.toContain('SENTINEL-PLAN');
+    expect(Object.hasOwn(posts[0].body.detections[0], 'capture')).toBe(false);
+  });
+
+  it('reads the capture once, so a getter cannot answer differently twice', async () => {
+    const { reporter, posts } = reporterWith();
+    let reads = 0;
+    const detection: any = withCapture(undefined);
+    Object.defineProperty(detection, 'capture', {
+      get() {
+        reads += 1;
+
+        return { plan: 'cp2-abc', values: [{ parameter: 'post.a', value: `read-${reads}` }] };
+      },
+    });
+
+    reporter.record(detection);
+    reporter.flush();
+    await drain();
+
+    expect(reads, 'one read, so what was checked is what was sent').toBe(1);
+    expect(posts[0].body.detections[0].capture.values[0].value).toBe('read-1');
+  });
+});

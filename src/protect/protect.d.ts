@@ -174,7 +174,9 @@ export interface CreateProtectionOptions {
    * A rule earns each captured value by naming what it reads. A rule reading the whole request (`raw`,
    * `all`) permits nothing; response values are never captured; raw request bytes need an explicit,
    * reviewed opt-in on the rule itself. Values are bounded in number and length, and what a bound left
-   * out is counted. It does NOT send the value of any parameter the matched rule does not name, any
+   * out is counted. The User-Agent is the one exception to the rule-scoped policy: it is part of the
+   * baseline and travels whether or not a rule names it, because a detection nobody can attribute is of
+   * little use. It does NOT send the value of any other parameter the matched rule does not name, any
    * response value, or the query string's values.
    *
    * `AGENT-INSTALL.md` carries the full statement, and is the version to read before enabling this.

@@ -258,7 +258,12 @@ describe('shipped docs disclose every endpoint the package calls', () => {
         /values of the parameters the matched rule names|values of the parameters a rule names/i,
       );
       expect(text, 'must scope the exclusion to unnamed parameters').toMatch(
-        /any parameter the matched rule does not name/i,
+        /any (other )?parameter the matched rule does not name/i,
+      );
+      // The User-Agent travels whether or not a rule names it, so an absolute exclusion would be false.
+      // Pinned in every place the claim is made, because a carve-out stated in one is not stated at all.
+      expect(text, 'must carve out the baseline user agent').toMatch(
+        /user.agent is the one exception|exception to the rule-scoped policy/i,
       );
     }
   });
@@ -274,6 +279,9 @@ describe('shipped docs disclose every endpoint the package calls', () => {
     );
     expect(agentInstall, 'raw bytes need a reviewed per-rule opt-in').toMatch(
       /raw request bytes\*\* need an explicit, reviewed opt-in/i,
+    );
+    expect(agentInstall, 'and the one header that always travels must be named').toMatch(
+      /User-Agent\*\*\. It is part of the baseline|One header value always travels/i,
     );
     expect(agentInstall, 'and a parameter the rule does not name is never sent').toMatch(
       /never contains:\*\* the value of any parameter the matched rule does not name/i,

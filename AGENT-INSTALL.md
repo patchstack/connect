@@ -284,9 +284,15 @@ reports which rule fired, not which of its conditions did, so a rule reading `po
 `cookie.session` permits both values whichever one triggered the detection. A rule scoped to one parameter
 captures one; a broad rule captures what it is broad about.
 
-**What a report never contains:** the value of any parameter the matched rule does not name; any response
-body, header or status value; the request body, other than the reviewed raw prefix above; and anything at
-all from a rule that reads the whole request without that opt-in. The value recorded is the request as the
+**One header value always travels, whatever the rule names: the User-Agent.** It is part of the baseline
+above, because attribution is what this channel is for and a detection without it cannot be told from
+another client's. It is the only exception to the rule-scoped policy, and the only header value sent
+without a rule naming it.
+
+**What a report never contains:** the value of any parameter the matched rule does not name — the
+User-Agent above excepted; any response body, header or status value;
+the request body, other than the reviewed raw prefix above;
+and anything at all from a rule that reads the whole request without that opt-in. The value recorded is the request as the
 engine resolved it — URL- and entity-decoded — and not the result of a rule's own further mutations.
 
 Reports are batched, capped in memory, retried a bounded number of times, and dropped if Patchstack cannot
