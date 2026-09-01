@@ -39,6 +39,8 @@ const FIELD_DISCLOSURE: Record<string, RegExp> = {
   detected_at: /timestamp/i,
   client_ip: /client address/i,
   client_ip_source: /where that address came from/i,
+  truncated: /which fields were shortened/i,
+  parameters_total: /how many parameters the rule reads/i,
 };
 
 /**
@@ -48,7 +50,7 @@ const FIELD_DISCLOSURE: Record<string, RegExp> = {
  * present-but-empty field reads as a failed lookup of a real address. So the completeness check below
  * requires every OTHER documented field, and this one only when there was an address to report.
  */
-const CONDITIONAL_FIELDS = new Set(['client_ip']);
+const CONDITIONAL_FIELDS = new Set(['client_ip', 'truncated', 'parameters_total']);
 
 /** Envelope keys, described separately because they are per-batch rather than per-detection. */
 const ENVELOPE_DISCLOSURE: Record<string, RegExp> = {
@@ -118,10 +120,57 @@ async function capturePayload(): Promise<{ raw: string; body: Record<string, unk
   return { raw, body: JSON.parse(raw) as Record<string, unknown> };
 }
 
+/**
+ * The same reporter, on a detection large enough to be shortened.
+ *
+ * The fields that only appear when something was truncated would otherwise never be emitted here, and
+ * their disclosure entries would sit in the table above describing a payload this test never produces.
+ */
+async function captureTruncatedPayload(): Promise<Record<string, unknown>> {
+  let raw = '';
+  const fetchImpl = vi.fn(async (_url: string, init: RequestInit) => {
+    raw = String(init.body);
+
+    return new Response('{}', { status: 202 });
+  });
+  const reporter = createDetectionReporter({
+    siteUuid: 'site-contract',
+    baseUrl: 'https://api.test/monitor/pulse',
+    fetchImpl: fetchImpl as unknown as typeof fetch,
+  });
+
+  reporter.record({
+    rule: {
+      id: 'PS-CVE-2026-0002',
+      rule_v2: Array.from({ length: 40 }, (_, i) => ({
+        parameter: `post.field_${i}`,
+        match: { type: 'contains', value: 'x' },
+      })),
+    },
+    phase: 'request',
+    mode: 'block',
+    path: `/${'a'.repeat(400)}`,
+  } as never);
+  reporter.flush();
+  await vi.waitFor(() => expect(raw).not.toBe(''));
+
+  return (JSON.parse(raw).detections as Array<Record<string, unknown>>)[0];
+}
+
 describe('the detection payload matches what AGENT-INSTALL.md says about it', () => {
   it('describes every field it emits', async () => {
     const { body } = await capturePayload();
-    const detection = (body.detections as Array<Record<string, unknown>>)[0];
+    const truncatedDetection = await captureTruncatedPayload();
+    const detection = {
+      ...(body.detections as Array<Record<string, unknown>>)[0],
+      ...truncatedDetection,
+    };
+
+    // The conditional fields are only conditional; they still have to be produced somewhere.
+    expect(Object.keys(truncatedDetection), 'a shortened payload names what it shortened').toContain(
+      'truncated',
+    );
+    expect(Object.keys(truncatedDetection)).toContain('parameters_total');
 
     for (const key of Object.keys(detection)) {
       const pattern = FIELD_DISCLOSURE[key];

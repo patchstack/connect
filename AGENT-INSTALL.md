@@ -181,6 +181,21 @@ bundle carried one, the client address and where that address came from, and a t
 carries a count of reports dropped when traffic outran the flush, so a partial sample is not read as a
 complete one.
 
+Every field is bounded in size, and an event that had to be shortened says so.
+`truncated` lists **which fields were shortened**.
+`parameters_total` records **how many parameters the rule reads**, when a rule reads more than the event
+names. Both appear only when something really was shortened, so their absence is not a claim of its own —
+and a shortened route or rule id is marked rather than passed off as complete, because a reader must not
+use one as a key believing it names the whole thing.
+
+Delivery is retried, up to four attempts per batch, with exponential backoff and jitter, honouring a
+`Retry-After` header when the endpoint sets one. Only failures worth retrying are retried — unreachable,
+rate-limited, or a server error; a batch that was refused on its merits is not sent again. Every attempt
+of one batch carries the same `Idempotency-Key` header, so a batch that was committed before its
+acknowledgement was lost is not counted twice. One request is in flight at a time, so a slow endpoint
+slows the queue rather than opening more sockets, and a batch that exhausts its attempts is dropped and
+counted rather than retried forever.
+
 The client address is reported with its **provenance**, because an address is only as trustworthy as
 whatever supplied it. `client_ip_source` is one of `runtime` (the address the transport observed),
 `trusted-proxy` (read from a forwarded header, through peers you declared via `trustedProxy`), or

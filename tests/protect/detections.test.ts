@@ -599,7 +599,9 @@ describe('delivery health', () => {
     // The capability declaration says a guard intends to report. Only an acknowledgement says anything
     // arrived, and without counting the refusals a delivery path that rejects everything reads the same
     // as an app where no rule fired.
-    let status = 500;
+    // A terminal refusal, so the outcome is settled on the first attempt: a retryable status would be
+    // retried, and this test is about which counter moves, not about when.
+    let status = 400;
     const fetchImpl = vi.fn(async () => new Response('{}', { status }));
     const reporter = createDetectionReporter({
       siteUuid: 'site-1',

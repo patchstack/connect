@@ -41,7 +41,8 @@ function stubFetch(opts: { rulesOk?: boolean; etag?: string; refuseDetections?: 
       bodies.push(JSON.parse(String(init?.body ?? '{}')));
 
       return new Response('{}', {
-        status: opts.refuseDetections ? 503 : 200,
+        // Terminal, so a refusal is counted on the first attempt. Retry behaviour has its own tests.
+        status: opts.refuseDetections ? 400 : 200,
         headers: { 'Content-Type': 'application/json' },
       });
     }

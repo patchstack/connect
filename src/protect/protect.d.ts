@@ -78,6 +78,9 @@ export interface Protection {
     delivered: number;
     failed: number;
     dropped: number;
+    /** Attempts beyond the first. A path that only ever succeeds on a retry is working, and is worth
+     *  telling apart from one that never has to retry. */
+    retried: number;
     lastDeliveredAt: string | null;
     /** Capability announcements, counted separately: these carry no events, so they never move the
      *  counters above. Zero here alongside delivered events is normal, and so is the reverse. */
