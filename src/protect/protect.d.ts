@@ -166,10 +166,14 @@ export interface CreateProtectionOptions {
    * Why it exists: a rule that blocks nothing reports nothing, so a rule that is quietly wrong and a rule
    * that is protecting look identical from the outside.
    *
-   * What it sends, per detection: the rule id and its revision, the request path, the query string's
-   * parameter NAMES, the method, the user agent, the client address with its provenance, the parameters
-   * the rule reads, the phase, whether it was enforced, the rule-bundle ETag, a timestamp — and the
-   * values of the parameters the matched rule names, under a capture plan derived from that rule.
+   * What it sends on EVERY detection: the rule id and its revision, the request path, the query string's
+   * parameter NAMES, the method, the parameters the rule reads, the phase, whether it was enforced, the
+   * rule-bundle ETag, and a timestamp — plus the values of the parameters the matched rule names, under a
+   * capture plan derived from that rule.
+   *
+   * Two fields depend on the phase. A request or response detection also carries the user agent and the
+   * client address with its provenance. An egress detection carries neither: the call was the
+   * application's own, so there is no visitor to attribute it to, and both read `null`/`unavailable`.
    *
    * A rule earns each captured value by naming what it reads. A rule reading the whole request (`raw`,
    * `all`) permits nothing; response values are never captured; raw request bytes need an explicit,

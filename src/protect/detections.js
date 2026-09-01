@@ -26,8 +26,10 @@ import { isSafeOrigin } from './safe-origin.js';
  * and length, and what a bound leaves out is counted, so a short list is never mistaken for a complete
  * one.
  *
- * The user agent is the one exception, and travels whether or not a rule names it: it is part of the
- * baseline, because a detection nobody can attribute is of little use.
+ * The user agent is the one exception, and travels whether or not a rule names it.
+ * That is so on a request or response detection, where there is a client to attribute. It is part of that baseline, because a
+ * detection nobody can attribute is of little use. An EGRESS detection carries no user agent and no
+ * client address at all: the call was the application's own, so there is no visitor to attribute it to.
  *
  * What it never carries: **the value of any OTHER parameter the matched rule does not name**, any
  * response value, or the query string's values AS BASELINE METADATA — `route` and `query_keys` describe
@@ -151,24 +153,30 @@ export function queryKeysOf(path) {
   const start = path.indexOf('?');
   if (start === -1) return { keys: [], total: 0 };
 
-  const seen = new Set();
-  const keys = [];
-  for (const pair of path.slice(start + 1).split('&')) {
-    if (pair === '') continue;
-    const name = pair.split('=')[0];
-    if (name === '') continue;
-    let decoded = name;
-    try {
-      decoded = decodeURIComponent(name);
-    } catch {
-      // A name that will not decode is reported as sent: it is still a name, and guessing is worse.
-    }
-    if (seen.has(decoded)) continue;
-    seen.add(decoded);
-    // Counted past the cap as well as under it, so a reader knows the list is short rather than complete.
-    if (keys.length < MAX_QUERY_KEYS) keys.push(decoded);
+  let names;
+  try {
+    // `URLSearchParams`, because that is how the guard itself addresses a query parameter: `+` is a
+    // space, percent sequences are decoded, and an invalid one is left as written. Decoding by hand here
+    // would report `first+name` for a parameter every rule addresses as `first name` — a name that
+    // matches nothing a reviewer could look up.
+    names = [...new URLSearchParams(path.slice(start + 1)).keys()];
+  } catch {
+    return { keys: [], total: 0 };
   }
 
+  const seen = new Set();
+  const keys = [];
+  for (const name of names) {
+    // A parameter with no name addresses nothing, so there is nothing to report.
+    if (name === '') continue;
+    if (seen.has(name)) continue;
+    seen.add(name);
+    // Counted past the cap as well as under it, so a reader knows the list is short rather than complete.
+    if (keys.length < MAX_QUERY_KEYS) keys.push(name);
+  }
+
+  // DISTINCT names, matching the list above: a parameter repeated three times is one name to look up, and
+  // a total that counted repeats would not describe the list it accompanies.
   return { keys, total: seen.size };
 }
 

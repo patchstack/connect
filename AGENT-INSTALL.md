@@ -174,19 +174,28 @@ would have stopped while it is still in dry-run. Two separate paths, with differ
   Without it, a guard with rule refreshing switched off would leave Patchstack holding the pre-resolution
   answer for the life of the process.
 
-What a detection report contains, per matched rule: the rule id, the request path **with any query string
-removed**, the parameter names that rule reads (from the rule's own definition), which phase matched,
-whether it was enforced, the identifier of the rule bundle in use, the revision of the rule itself when the
-bundle carried one, the client address and where that address came from, and a timestamp. Each batch also
-carries a count of reports dropped when traffic outran the flush, so a partial sample is not read as a
-complete one.
+What a detection report contains, per matched rule — on every phase, whatever fired it: the rule id, the revision of the rule when the
+bundle carried one, the identifier of the rule bundle in use, which phase matched,
+whether it was enforced, the request path **with the query string's values removed**,
+that query's parameter names, the method, and a timestamp. Each batch also carries a count of reports dropped when traffic outran the flush,
+so a partial sample is not read as a complete one.
+
+Two fields depend on the phase, because one kind of detection has a client and the other does not. A
+**request or response** detection also carries the user agent,
+and the client address together with where that address came from.
+An **egress** detection — a rule that fired on a call your application made outbound — carries neither:
+the call was your application's own, so there is no visitor to attribute it to, and those fields read
+`null` and `unavailable` rather than being guessed at. "What values a report can contain" below says the
+same thing about captured evidence.
 
 Every field is bounded in size, and an event that had to be shortened says so.
 `truncated` lists **which fields were shortened**.
 `parameters_total` records **how many parameters the rule reads**, when a rule reads more than the event
 names.
-`query_keys_total` records **how many query parameters the request carried**, when it carried more than
-the event lists. Both appear only when something really was shortened, so their absence is not a claim of its own —
+`query_keys_total` records **how many query parameters the request carried**, counted as DISTINCT names,
+when it carried more than the event lists — a parameter repeated three times is one name to look up. The
+names themselves are the ones the guard addresses a parameter by, so `?first+name=x` is reported as
+`first name`. Both appear only when something really was shortened, so their absence is not a claim of its own —
 and a shortened route or rule id is marked rather than passed off as complete, because a reader must not
 use one as a key believing it names the whole thing.
 

@@ -928,3 +928,51 @@ describe('the wire gate reads only what the capture itself carries', () => {
     expect(capture.unsupported).toBe(1);
   });
 });
+
+describe('reported query names are the names the guard addresses', () => {
+  const keysFor = async (query: string) => {
+    const { reporter, posts } = reporterWith();
+
+    reporter.record({ rule: pinnedRule, phase: 'request', mode: 'block', path: `/a?${query}` } as never);
+    reporter.flush();
+    await drain();
+
+    return posts[0].body.detections[0];
+  };
+
+  it('reads a plus as a space, as a rule addressing that parameter does', async () => {
+    // A rule addresses this parameter as `first name`. Reporting `first+name` would name something no
+    // reviewer could look up.
+    expect((await keysFor('first+name=x')).query_keys).toEqual(['first name']);
+  });
+
+  it('decodes a percent sequence', async () => {
+    expect((await keysFor('a%20b=1&%2Fslash=2')).query_keys).toEqual(['a b', '/slash']);
+  });
+
+  it('leaves an invalid percent sequence as written, rather than dropping the parameter', async () => {
+    expect((await keysFor('bad%ZZ=1')).query_keys).toEqual(['bad%ZZ']);
+  });
+
+  it('names a repeated parameter once, and counts distinct names', async () => {
+    const event = await keysFor('dup=1&dup=2&dup=3&other=4');
+
+    expect(event.query_keys).toEqual(['dup', 'other']);
+    // A parameter repeated three times is one name to look up, so the total describes the list.
+    expect(Object.hasOwn(event, 'query_keys_total'), 'nothing was left out').toBe(false);
+  });
+
+  it('reports a parameter with no value, and skips one with no name', async () => {
+    expect((await keysFor('flag&=novalue&real=1')).query_keys).toEqual(['flag', 'real']);
+  });
+
+  it('carries no names when there is no query at all', async () => {
+    const { reporter, posts } = reporterWith();
+
+    reporter.record({ rule: pinnedRule, phase: 'request', mode: 'block', path: '/a' } as never);
+    reporter.flush();
+    await drain();
+
+    expect(posts[0].body.detections[0].query_keys).toEqual([]);
+  });
+});

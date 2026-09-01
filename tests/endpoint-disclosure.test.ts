@@ -265,6 +265,40 @@ describe('shipped docs disclose every endpoint the package calls', () => {
       expect(text, 'must carve out the baseline user agent').toMatch(
         /user.agent is the one exception|exception to the rule-scoped policy/i,
       );
+      // And the carve-out itself is phase-dependent: an egress detection has no client to attribute, so a
+      // surface that promised a user agent or an address on every detection would be wrong there.
+      expect(text, 'must scope the client fields to the phases that have a client').toMatch(
+        /request or response detection/i,
+      );
+      expect(text, 'and must say an egress detection carries neither').toMatch(
+        /egress detection[^.]*(carries neither|no user agent)/i,
+      );
+    }
+  });
+
+  it('qualifies the client fields in each place it lists them, not just once', () => {
+    // Two sections list what a report carries. A single "the phrase appears somewhere" check passes when
+    // one of them is qualified and the other still promises a user agent and an address on every
+    // detection — which is false for egress, and false in the direction that flatters us.
+    const sections = {
+      'the per-detection summary': agentInstall.slice(
+        agentInstall.indexOf('What a detection report contains'),
+        agentInstall.indexOf('Every field is bounded'),
+      ),
+      'the captured-values section': agentInstall.slice(
+        agentInstall.indexOf('### What values a report can contain'),
+        agentInstall.indexOf('One header value always travels'),
+      ),
+    };
+
+    for (const [where, text] of Object.entries(sections)) {
+      expect(text.length, `${where} should be findable`).toBeGreaterThan(200);
+      expect(text, `${where} must scope the client fields to the phases that have a client`).toMatch(
+        /request or response/i,
+      );
+      expect(text, `${where} must not promise them on every detection`).not.toMatch(
+        /(every|any|each) detection[^.]*(user agent|client address)/i,
+      );
     }
   });
 
