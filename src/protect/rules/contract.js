@@ -12,7 +12,7 @@
 // `rule-contract.json` is the published form. `tests/protect/rule-contract.test.ts` reads the engine's own
 // source and asserts these descriptions match what it implements.
 
-export const CONTRACT_VERSION = '2.7';
+export const CONTRACT_VERSION = '2.8';
 
 /**
  * Every parameter source, and what it accepts after the dot.
@@ -354,7 +354,59 @@ export const RULE_PROPERTIES = Object.freeze([
   'message', 'enforcement', 'source_revision', 'prefilter',
   'max_bytes', 'bypass_limit',
   'set_headers', 'remove_headers', 'cookie_flags', 'ensure',
+  'capture',
 ]);
+
+/**
+ * The reviewed opt-in that lets one rule's evidence include raw request bytes.
+ *
+ * Versioned, because it authorises collection: a guard that met a `capture` it did not understand and
+ * guessed would be guessing about what may be gathered from an application. An unrecognised version
+ * grants nothing, which is the only safe direction — a newer server can then extend this without an
+ * older guard quietly capturing under rules it cannot read.
+ *
+ * `raw_chars` is a request for a bounded PREFIX of the body, never the whole of it, and the runtime caps
+ * it regardless of what is asked for. The property says a reviewer agreed raw bytes are needed for this
+ * rule; it does not let the rule set its own bounds.
+ */
+export const CAPTURE_VERSION = 1;
+export const CAPTURE_KEYS = Object.freeze(['version', 'raw_chars']);
+/** The most raw characters any opt-in can obtain, whatever it asks for. Published, so it is agreed. */
+export const CAPTURE_RAW_CHARS_MAX = 512;
+
+/**
+ * Properties whose null does NOT refuse the rule.
+ *
+ * A null is normally a value that was meant to be something and is not, and refusing it stops a rule
+ * running on a default nobody chose. These are the exception because they authorise collection rather
+ * than protection: `capture: null` says "collect nothing", which is already the default and costs no
+ * shielding.
+ */
+export const NULL_EXEMPT_PROPERTIES = Object.freeze(['capture']);
+
+/**
+ * @returns {string|null} why a `capture` opt-in cannot be honoured as written, or null
+ */
+export function captureProblem(capture) {
+  if (capture === undefined || capture === null) return null;
+  if (typeof capture !== 'object' || Array.isArray(capture)) return 'capture must be an object';
+
+  for (const key of Object.keys(capture)) {
+    if (!CAPTURE_KEYS.includes(key)) return `capture has no "${key}" — it takes ${CAPTURE_KEYS.join(', ')}`;
+  }
+  if (!Object.hasOwn(capture, 'version')) return 'capture must name the version it was written against';
+  if (capture.version !== CAPTURE_VERSION) {
+    return `capture version ${String(capture.version)} is not one this guard understands`;
+  }
+  if (!Object.hasOwn(capture, 'raw_chars')) return 'capture must say what it is opting into';
+
+  const chars = capture.raw_chars;
+  if (typeof chars !== 'number' || !Number.isInteger(chars) || chars <= 0) {
+    return 'capture.raw_chars must be a positive whole number of characters';
+  }
+
+  return null;
+}
 
 /**
  * What each action needs, what it defaults, and which phases can carry it out.
@@ -447,6 +499,10 @@ export function parameterProblem(parameter) {
   if (Array.isArray(parameter)) {
     if (parameter.length === 0) return 'parameter list is empty';
     for (const member of parameter) {
+      // One level, because the engine expands one level: it resolves each member of the list, and a
+      // member that is itself a list resolves to nothing. Accepting it would validate a rule that names
+      // parameters and matches on none of them.
+      if (Array.isArray(member)) return 'a parameter list holds parameters, not more lists';
       const problem = parameterProblem(member);
       if (problem !== null) return problem;
     }
@@ -598,6 +654,7 @@ export function nullPropertyProblem(rule) {
   if (!rule || typeof rule !== 'object') return null;
 
   for (const property of RULE_PROPERTIES) {
+    if (NULL_EXEMPT_PROPERTIES.includes(property)) continue;
     if (property in rule && rule[property] === null) {
       return `"${property}" is present but null; omit it to mean the default, since a null is a value that `
         + 'was meant to be something and is not';
@@ -619,6 +676,12 @@ export function rulePropertyProblem(rule) {
     if (problem) return `"${property}" ${problem}`;
   }
 
+  // `capture` is deliberately NOT checked here. It authorises collection, and a rule is a mitigation:
+  // letting a capture value the guard cannot read decide whether the rule runs would turn a question
+  // about evidence into the loss of the protection itself — a newer server adding a capture version
+  // would switch off shielding on every older guard. An unreadable capture grants no capture; the rule
+  // still applies. `captureProblem` is where that is decided, and the plan is its only caller.
+  //
   // `enforcement` is deliberately NOT checked here, and this is the one place in the contract where a
   // value the runtime does not recognise is left alone on purpose.
   //
@@ -697,9 +760,30 @@ export function ruleContract() {
     ),
     when_keys: [...WHEN_KEYS],
     null_valued_properties: NULL_VALUED_PROPERTIES,
+    // Except these. They authorise collection rather than protection, so a malformed one costs evidence
+    // and never the mitigation — a consumer deriving the general rule would otherwise refuse a document
+    // this guard runs.
+    null_exempt_properties: [...NULL_EXEMPT_PROPERTIES],
     rule_property_shapes: { ...RULE_PROPERTY_SHAPES },
     enforcement_values: [...ENFORCEMENT_VALUES],
     rule_properties: [...RULE_PROPERTIES],
+    capture: {
+      version: CAPTURE_VERSION,
+      required: ['version', 'raw_chars'],
+      additional_properties: false,
+      properties: {
+        version: { type: 'integer', const: CAPTURE_VERSION },
+        raw_chars: { type: 'integer', minimum: 1 },
+      },
+      // The runtime's ceiling, published apart from the schema on purpose. A schema maximum would have a
+      // consumer refuse a rule this guard accepts and runs: asking for more than the ceiling is not an
+      // authoring error, it is a request the runtime answers with the ceiling.
+      raw_chars_effective_maximum: CAPTURE_RAW_CHARS_MAX,
+      // What a guard does with a capture it cannot read, stated rather than left to be discovered.
+      unknown_version: 'grants no capture; the rule still applies',
+      unreadable: 'grants no capture; the rule still applies',
+      raw_chars_note: 'a request for a bounded PREFIX of the body; more than the effective maximum yields the maximum',
+    },
     limits: { ...LIMITS },
   };
 }
