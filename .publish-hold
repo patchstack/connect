@@ -1,0 +1,22 @@
+Publication is on hold until the rules service is ready for this release.
+
+Two changes have to land on the server before this package is published, because the
+package's own behaviour depends on them and a published version cannot be withdrawn
+from anyone who already installed it:
+
+1. The detections endpoint must deduplicate on `Idempotency-Key`. Connect sends a
+   stable key for every attempt at a batch and a fresh one per batch, so a redelivery
+   is identifiable — but whether a redelivery is counted once is the endpoint's to
+   decide. Published ahead of that, a retry after a lost acknowledgement inflates the
+   very counts these reports are read for.
+
+2. Ingest must accept and store the current payload: the `capture` object, the
+   baseline fields `method`, `user_agent`, `query_keys` and `query_keys_total`, and
+   `reporting_state` on the detections body. An endpoint that rejects or silently
+   drops them turns every report into a delivery failure, or into a record missing
+   the evidence it was sent to carry.
+
+Remove this file in its own commit, naming the server change that made it safe. The
+`Release` and `Publish` workflows refuse to run while it exists — deliberately, so
+the decision is a commit someone reviews rather than a line in a pull request nobody
+has to read.

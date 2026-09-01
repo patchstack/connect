@@ -28,6 +28,18 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
+      - name: Refuse to publish while a hold is in place
+        # An enforced gate, not a note. `.publish-hold` exists when the server side of this package's
+        # behaviour is not ready, and a published version cannot be withdrawn from anyone who already
+        # installed it. Checked before anything else so no tag, release or dry-run happens first.
+        run: |
+          if [ -f .publish-hold ]; then
+            echo "::error::Publication is on hold. See .publish-hold:"
+            cat .publish-hold
+            exit 1
+          fi
+          echo "No publication hold in place."
+
       - name: Setup Node
         uses: actions/setup-node@v4
         with:
