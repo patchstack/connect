@@ -1,5 +1,9 @@
 import { describe, it, expect, vi, afterEach } from 'vitest';
 import { createDetectionReporter, routeOf, ruleParameters } from '../../src/protect/detections.js';
+// @ts-expect-error -- plain ESM runtime module
+import { readRuleParameters } from '../../src/protect/rule-parameters.js';
+// @ts-expect-error -- plain ESM runtime module
+import { LIMITS } from '../../src/protect/rules/contract.js';
 import { createProtection } from '../../src/protect/runtime.js';
 
 /**
@@ -212,6 +216,82 @@ describe('the helpers', () => {
 
     expect(ruleParameters(undefined)).toEqual([]);
     expect(ruleParameters({ rule_v2: 'nonsense' })).toEqual([]);
+  });
+
+  it('collects a condition that names a list of parameters', () => {
+    // The engine reads every member of a list, so a rule written this way reads all of them — and a list
+    // that omitted them would report the empty set for a rule that reads two, with no cap exceeded and
+    // no name shortened, so nothing marking it as short.
+    expect(
+      ruleParameters({
+        rule_v2: [{ parameter: ['get.a', 'post.b'], match: { type: 'contains', value: 'x' } }],
+      }),
+    ).toEqual(['get.a', 'post.b']);
+
+    // Mixed forms, and a list inside a nested group.
+    expect(
+      ruleParameters({
+        rule_v2: [
+          { parameter: 'raw', match: { type: 'contains', value: 'x' } },
+          { parameter: 'rules', rules: [{ parameter: ['get.q', 'cookie.sid'], match: { type: 'contains', value: 'x' } }] },
+        ],
+      }),
+    ).toEqual(['raw', 'get.q', 'cookie.sid']);
+  });
+
+  it('does not name what the engine cannot read', () => {
+    // One level, because the engine expands one level: a nested list resolves to nothing there, so
+    // flattening it would name a parameter no match can read, and would grant the plan a permission for
+    // one.
+    expect(
+      ruleParameters({ rule_v2: [{ parameter: [['get.q']], match: { type: 'contains', value: 'x' } }] }),
+    ).toEqual([]);
+
+    // `rules` is a grouping wrapper, in the list form as well as the string form.
+    expect(
+      ruleParameters({ rule_v2: [{ parameter: ['rules', 'get.q'], match: { type: 'contains', value: 'x' } }] }),
+    ).toEqual(['get.q']);
+  });
+
+  it('says when it could not see the whole rule', () => {
+    // A caller that reads this list to decide what a rule is ALLOWED to do needs the difference between
+    // "reads no body" and "the walk stopped short of knowing". The bound is the contract's, and rules
+    // reach the runtime unvalidated, so it is reachable.
+    let deep: Record<string, unknown> = { parameter: 'response.body', match: { type: 'isset' } };
+    for (let i = 0; i <= LIMITS.maxNestingDepth; i++) deep = { parameter: 'rules', rules: [deep] };
+
+    const cut = readRuleParameters({ rule_v2: [{ parameter: 'get.q', match: { type: 'isset' } }, deep] });
+
+    expect(cut.complete).toBe(false);
+    expect(cut.parameters).toEqual(['get.q']);
+
+    // Inside the bound, the same shape is complete.
+    const whole = readRuleParameters({
+      rule_v2: [{ parameter: 'rules', rules: [{ parameter: 'get.q', match: { type: 'isset' } }] }],
+    });
+    expect(whole.complete).toBe(true);
+  });
+
+  it('stops where the contract says a rule ends', () => {
+    // The bound is the contract's, not a copy: stopping later accepts a rule validation rejects, and
+    // stopping earlier calls a valid rule incomplete.
+    let deep: Record<string, unknown> = { parameter: 'get.q', match: { type: 'isset' } };
+    for (let i = 0; i < LIMITS.maxNestingDepth; i++) deep = { parameter: 'rules', rules: [deep] };
+
+    expect(readRuleParameters({ rule_v2: [deep] }).complete).toBe(true);
+    expect(readRuleParameters({ rule_v2: [{ parameter: 'rules', rules: [deep] }] }).complete).toBe(false);
+  });
+
+  it('stops following nested groups at a bounded depth', () => {
+    // An unbounded walk over a self-referential shape is a stack overflow inside a guard whose contract
+    // is to fail open.
+    let nested: Record<string, unknown> = { parameter: 'get.deep', match: { type: 'contains', value: 'x' } };
+    for (let i = 0; i < 60; i++) nested = { parameter: 'rules', rules: [nested] };
+
+    expect(() => ruleParameters({ rule_v2: [nested] })).not.toThrow();
+    // Past the bound, so the deep parameter is not reported — and not reported is the safe direction
+    // here, since the engine stops grouping at the same depth.
+    expect(ruleParameters({ rule_v2: [nested] })).toEqual([]);
   });
 });
 

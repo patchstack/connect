@@ -40,6 +40,7 @@ import {
   parameterProblem,
 } from './rules/contract.js';
 import { enforceableRuleProblem } from './rules/validate.js';
+import { ruleParameters } from './rule-parameters.js';
 
 /**
  * `response.*` is the one keyed source a rule can never capture from.
@@ -69,36 +70,6 @@ export const CAPTURE_LIMITS = Object.freeze({
   prefixValues: 5,
 });
 
-/** The parameters a rule reads, as the union over its conditions and nested groups. */
-function parametersOf(rule) {
-  const out = new Set();
-  // A condition may name one parameter or a list of them, and the engine reads every member. A walker
-  // that saw only the string form would derive an empty plan from a rule that reads a dozen fields.
-  const add = (parameter) => {
-    if (typeof parameter === 'string' && parameter !== 'rules') out.add(parameter);
-  };
-  const collect = (parameter) => {
-    // One level, because the engine expands one level. A nested list resolves to nothing there, so
-    // flattening it here would grant a permission for a parameter no match can read.
-    if (Array.isArray(parameter)) {
-      for (const member of parameter) add(member);
-
-      return;
-    }
-    add(parameter);
-  };
-  const walk = (conditions, depth) => {
-    if (!Array.isArray(conditions) || depth > 20) return;
-    for (const condition of conditions) {
-      if (!condition || typeof condition !== 'object') continue;
-      collect(condition.parameter);
-      if (Array.isArray(condition.rules)) walk(condition.rules, depth + 1);
-    }
-  };
-  walk(rule?.rule_v2, 0);
-
-  return [...out];
-}
 
 /**
  * The raw-body opt-in a rule carries, if it carries a valid one.
@@ -153,7 +124,7 @@ export function derivePlan(rule) {
   // The contract decides what is a parameter at all. Judging that here would be a second grammar to keep
   // in step with the engine's, and the two drifting apart means authorising capture of something no rule
   // can even read — `server.HTTP_*` and `egress.anything` are refused there, not here.
-  const parameters = parametersOf(rule).filter((parameter) => parameterProblem(parameter) === null);
+  const parameters = ruleParameters(rule).filter((parameter) => parameterProblem(parameter) === null);
 
   for (const parameter of parameters) {
     const dot = parameter.indexOf('.');
