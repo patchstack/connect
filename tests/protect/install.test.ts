@@ -216,6 +216,8 @@ export const startInstance = createStart(() => ({
     runProtect(dir);
     report = runVerify(dir);
     expect(report.wired).toBe(true);
-    expect(report.checks.every((c: any) => c.ok)).toBe(true);
+    // Wiring only. The report also carries reporting checks, which answer a separate question and one
+    // this fixture has no site identity for.
+    expect(report.checks.filter((c: any) => c.group !== 'reporting').every((c: any) => c.ok)).toBe(true);
   });
 });
