@@ -27,6 +27,35 @@ const rule = (parameters: string[], extra: Record<string, unknown> = {}) => ({
   ...extra,
 });
 
+import { ruleParameters } from '../../src/protect/rule-parameters.js';
+
+/**
+ * The reported parameters and the derived plan come from ONE walker.
+ *
+ * They answer the same question — which parameters does this rule read — for two consumers, so they must
+ * describe the same set. This is the test that fails if they are ever separated.
+ */
+describe('one answer for what a rule reads', () => {
+  const shapes = [
+    { parameter: 'get.q', match: { type: 'contains', value: 'x' } },
+    { parameter: ['get.a', 'post.b'], match: { type: 'contains', value: 'x' } },
+    { parameter: ['get.a', 'rules'], match: { type: 'contains', value: 'x' } },
+    { parameter: [['nested']], match: { type: 'contains', value: 'x' } },
+    { parameter: 'rules', rules: [{ parameter: ['cookie.sid'], match: { type: 'contains', value: 'x' } }] },
+  ];
+
+  it.each(shapes)('agrees with the plan about %o', (condition) => {
+    const rule = { id: 'r', category: 't', action: 'block', rule_v2: [condition] };
+    const plan = derivePlan(rule);
+
+    // The plan filters the reported set by what the contract accepts as a parameter, so it is a subset
+    // and never a superset: a permitted parameter the report does not name would be a false report.
+    for (const permitted of plan.named) {
+      expect(ruleParameters(rule)).toContain(permitted);
+    }
+  });
+});
+
 describe('a rule permits what it names', () => {
   it('reads every member of a parameter list', () => {
     // A condition may name one parameter or a list of them, and the engine reads each. A plan blind to

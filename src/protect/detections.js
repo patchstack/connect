@@ -1,5 +1,6 @@
 import { pulseFetch } from '../pulse-token.js';
 import { clientIpFields } from './client-ip.js';
+import { readRuleParameters, ruleParameters } from './rule-parameters.js';
 import { isSafeOrigin } from './safe-origin.js';
 
 /**
@@ -378,34 +379,6 @@ function unattended(timer) {
 }
 
 /**
- * The parameters a rule reads, from its own definition.
- *
- * NOT "the condition that matched": the engine reports a rule, not which of its conditions fired, and
- * threading that out would mean changing evaluation for the sake of a reporting field. A narrowly scoped
- * rule reads exactly one parameter, so the two answers coincide there; for a broad rule this is the set
- * it reads, which is what the field name says.
- *
- * @param {any} rule
- * @returns {string[]}
- */
-export function ruleParameters(rule) {
-  const out = new Set();
-  const walk = (conditions) => {
-    if (!Array.isArray(conditions)) return;
-    for (const condition of conditions) {
-      if (!condition || typeof condition !== 'object') continue;
-      if (typeof condition.parameter === 'string' && condition.parameter !== 'rules') {
-        out.add(condition.parameter);
-      }
-      if (Array.isArray(condition.rules)) walk(condition.rules);
-    }
-  };
-  walk(rule?.rule_v2);
-
-  return [...out];
-}
-
-/**
  * The rule's own revision, from the served rule.
  *
  * Read off the delivered rule rather than derived: whoever served it knows what document this is, and a
@@ -432,6 +405,8 @@ export function revisionOf(rule) {
  * @param {unknown} path
  * @returns {string | null}
  */
+export { ruleParameters };
+
 export function routeOf(path) {
   if (typeof path !== 'string' || path === '') return null;
   const cut = path.search(/[?#]/);
@@ -885,7 +860,7 @@ export function createDetectionReporter(opts) {
       const capture = boundCapture(detection.capture);
       const rawRoute = routeOf(detection.path);
       const route = typeof rawRoute === 'string' ? capText(rawRoute, MAX_ROUTE_CHARS) : { value: rawRoute, truncated: false };
-      const allParameters = ruleParameters(detection.rule);
+      const { parameters: allParameters, complete: sawEveryParameter } = readRuleParameters(detection.rule);
       const parameters = allParameters.slice(0, MAX_PARAMETERS).map((name) => capText(name, MAX_PARAMETER_CHARS));
       const truncated = [];
       if (route.truncated) truncated.push('route');
@@ -894,7 +869,9 @@ export function createDetectionReporter(opts) {
       if (query.total > queryKeys.length || queryKeys.some((entry) => entry.truncated)) {
         truncated.push('query_keys');
       }
-      if (allParameters.length > MAX_PARAMETERS || parameters.some((entry) => entry.truncated)) {
+      // Marked when the walk was cut short as well as when this cap shortened the list: an unmarked
+      // short list claims the rule reads less than it does.
+      if (!sawEveryParameter || allParameters.length > MAX_PARAMETERS || parameters.some((entry) => entry.truncated)) {
         truncated.push('parameters');
       }
 
@@ -917,7 +894,12 @@ export function createDetectionReporter(opts) {
         ...(truncated.length > 0 ? { truncated } : {}),
         // Only when parameters were actually left out. Reporting a total because some OTHER field was
         // shortened states that parameters were omitted when none were.
-        ...(truncated.includes('parameters') ? { parameters_total: allParameters.length } : {}),
+        // Only when the walk saw the whole rule. Shortened by the cap, this is the true total; cut short
+        // by the nesting bound, it is the count of what was seen, and sending that as the total states a
+        // size nobody established. The mark travels either way, so a short list is always marked as one.
+        ...(truncated.includes('parameters') && sawEveryParameter
+          ? { parameters_total: allParameters.length }
+          : {}),
         method: method === null ? null : method.value,
         // The rest of the URL, as names only. `route` is the path; together they say what was requested
         // without saying what was in it.

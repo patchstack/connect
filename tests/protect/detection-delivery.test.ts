@@ -7,6 +7,8 @@ import {
   splitToFit,
   worthRetrying,
 } from '../../src/protect/detections.js';
+// @ts-expect-error -- plain ESM runtime module
+import { LIMITS } from '../../src/protect/rules/contract.js';
 
 /**
  * Delivery, not payload.
@@ -316,6 +318,32 @@ describe('an event is bounded in size, and says when it was', () => {
     expect(event.parameters.length).toBe(25);
     expect(event.truncated).toContain('parameters');
     expect(event.parameters_total, 'so a reader knows what was left out').toBe(40);
+  });
+
+  it('marks a shortened parameter list without claiming a size for it', async () => {
+    // Two reasons the list is short, and only one of them knows the real total. Shortened by the cap,
+    // the total is known. Cut off by the contract's nesting bound it is not, and sending the count of
+    // what was seen would state a size nobody established. The mark travels either way, so a short list
+    // is always marked as one.
+    const { bodies, impl } = capture();
+    const r = reporterFor(impl);
+
+    let deep: Record<string, unknown> = { parameter: 'post.hidden', match: { type: 'contains', value: 'x' } };
+    for (let i = 0; i <= LIMITS.maxNestingDepth; i++) deep = { parameter: 'rules', rules: [deep] };
+
+    r.record({
+      rule: { id: 'deep', rule_v2: [{ parameter: 'get.q', match: { type: 'contains', value: 'x' } }, deep] },
+      phase: 'request',
+      mode: 'block',
+      path: '/a',
+    });
+    r.flush();
+    await settle();
+
+    const event = bodies[0].detections[0];
+    expect(event.parameters).toEqual(['get.q']);
+    expect(event.truncated).toContain('parameters');
+    expect(Object.hasOwn(event, 'parameters_total'), 'the total is not known here').toBe(false);
   });
 
   it('says nothing about truncation when nothing was truncated', async () => {
