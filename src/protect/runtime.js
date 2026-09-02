@@ -33,6 +33,7 @@ import { resolveRules } from './rules/source.js';
 import { startRefresh, makeRefreshHandler } from './rules/refresh.js';
 import { createDetectionReporter } from './detections.js';
 import { reportingState } from './reporting-state.js';
+import { hardensWithoutBody } from './response-hardening.js';
 import { notify } from './notify.js';
 import { createFirewallLogReporter, resolveApiBase, telemetryEnabled } from './firewall-log.js';
 
@@ -433,12 +434,17 @@ export async function createProtection(options = {}) {
   // Response phase core: screen a text body → { verdict: 'pass'|'block'|'redact', body? }.
   // redact masks matched spans; block withholds; block wins over redact. Enforcement only in
   // block mode (dry-run records via onDetect but returns 'pass').
-  const screenText = (text, meta, reqCtx) => {
+  const screenText = (text, meta, reqCtx, only) => {
     let blockRule = null;
     const redactions = [];
     const headerMutations = [];
     let lowerText = null; // lazily lowercased body, only if a rule uses a prefilter
     for (const { rule, engine: re, redactors, prefilter, mutatedSpan } of responseRuleSet) {
+      // `only` narrows the set to the rules a caller is entitled to run. The no-body path uses it to
+      // exclude every rule that reads the body, rather than evaluating one against an empty string —
+      // `not_contains` matches everything when there is nothing there, so that is not an undecided rule
+      // but a wrongly decided one.
+      if (only && !only(rule)) continue;
       // Cheap pre-filter: if none of the rule's literal anchors is in the body, its regex can't
       // match — skip the full scan (the common no-secret case) before touching the engine.
       if (prefilter) {
@@ -647,13 +653,84 @@ export async function createProtection(options = {}) {
       // Nothing was screened — a leak/PII rule cannot have applied. Record it (a live stream and a
       // binary body are by design; a body-cap or read failure is a coverage hole worth alerting on).
       if (read.skip !== 'not-a-response') recordSkip('response', read.skip, { status: response?.status });
-      return response;
+      if (read.skip === 'not-a-response') return response;
+
+      // Header hardening still applies: it needs no body, and a header does not become expensive
+      // because the body beside it is large. `readTextResponse` reads a CLONE and drains it, so the
+      // original body is untouched and can be handed on as it is.
+      return hardenHeadersOnly(response, reqCtx);
     }
     const text = read.text;
     const r = screenText(text, { status: response.status, headers: headerObject(response.headers) }, reqCtx);
     if (r.verdict === 'block') return leakResponse();
     if (r.verdict === 'redact') return rebuildResponse(response, r.body, r.headers);
     return response;
+  };
+
+  /**
+   * Did the mutations actually change a header?
+   *
+   * Presence and value are separate questions. A header that was absent and is now set is a change
+   * whatever it is set to, including the empty string — a rule that sets one deliberately empty is a rule
+   * doing something, and folding absence into `''` discards it. Removal is `null`, a change only where
+   * the header was there to remove. A multi-valued header (`Set-Cookie`) is compared entry by entry,
+   * since hardening one cookie of several is a change and re-emitting them unchanged is not.
+   */
+  const headersChanged = (before, after) => {
+    for (const [name, value] of Object.entries(after)) {
+      const was = before[name];
+      const had = Object.hasOwn(before, name) && was !== undefined && was !== null;
+
+      if (value === null || value === undefined) {
+        if (had) return true;
+
+        continue;
+      }
+
+      if (!had) return true;
+
+      if (Array.isArray(value) || Array.isArray(was)) {
+        const a = Array.isArray(was) ? was : [was];
+        const b = Array.isArray(value) ? value : [value];
+        if (a.length !== b.length || b.some((item, i) => String(item) !== String(a[i]))) return true;
+
+        continue;
+      }
+
+      if (String(value) !== String(was)) return true;
+    }
+
+    return false;
+  };
+
+  /**
+   * Apply the header mutations that need no body, and pass the body through untouched.
+   *
+   * Separate from `rebuildResponse`, which replaces a body it has already rewritten: there is no rewritten
+   * body here, and reading one to rebuild it would defeat the cap that sent the response down this path.
+   */
+  const hardenHeadersOnly = (response, reqCtx) => {
+    try {
+      const meta = { status: response.status, headers: headerObject(response.headers) };
+      const r = screenText('', meta, reqCtx, hardensWithoutBody);
+      // `block` cannot arise: only header actions were eligible.
+      if (r.verdict !== 'redact' || !r.headers) return response;
+
+      // A matched rule is not a changed header. `harden-cookie` on a response that sets no cookie,
+      // `remove-header` for a header that is absent, and `ensure` where the header is already there all
+      // match and mutate nothing. Rebuilding for those replaces the object, drops `Content-Length`, and
+      // loses `url`, `redirected` and `type` — on the streamed and binary responses this path exists to
+      // hand on untouched.
+      if (!headersChanged(meta.headers, r.headers)) return response;
+
+      return rebuildResponse(response, response.body, r.headers);
+    } catch (err) {
+      // Fail open, like every other path: an unhardened response is worse than none, and a thrown
+      // error here would withhold a response the guard was only meant to add a header to.
+      notify(onError, err, 'onError');
+
+      return response;
+    }
   };
 
   // Wrap a Node ServerResponse so its (buffered, text) body is screened before it's sent.
