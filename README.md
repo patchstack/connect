@@ -160,6 +160,12 @@ PATCHSTACK_ENVIRONMENT=sandbox npx @patchstack/connect setup
 
 The generated `prebuild` scan deliberately carries no hard-coded environment. A production builder with no override reports `production`; a preview/sandbox builder must receive `PATCHSTACK_ENVIRONMENT=sandbox` from its host. Runtime protection itself is not environment-specific: `PATCHSTACK_ENVIRONMENT` labels manifests only. Use `PATCHSTACK_MODE=dry-run` when protection should observe rather than block.
 
+### `scan` as a build hook
+
+`setup` wires `scan` into `postinstall`, `prebuild`, or the Bun `build` chain. Run from one of those, a report Patchstack cannot accept — no credential in the build environment, a rejected credential, a site that no longer exists, an outage — is printed on stderr and `scan` exits 0, so the install or build it is attached to carries on. Patchstack keeps the last manifest it accepted for the site until a scan that can report. Run directly (`npx @patchstack/connect scan`), the same failure exits 1.
+
+A deploy never has `.patchstackrc.local.json`, so the usual cause is a missing `PATCHSTACK_API_KEY` in the platform's environment (see *Configuration*). The hook is recognised through `npm_lifecycle_event`, which npm, pnpm, Yarn and `bun run` set to the running script's name. `bun install` does not set it, so a `postinstall` scan under Bun still fails the install when it cannot report.
+
 ## Production virtual-patch demo
 
 The `node-serialize` scenario demonstrates dependency detection and a live, version-scoped virtual patch against a throwaway Express application. Connect/provision the project first, deliberately add the known-vulnerable package, then run:

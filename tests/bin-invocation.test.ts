@@ -1,6 +1,9 @@
 import { describe, expect, it } from 'vitest';
-import { execFileSync } from 'node:child_process';
-import { existsSync, mkdtempSync, rmSync, symlinkSync } from 'node:fs';
+import { execFile, execFileSync } from 'node:child_process';
+import { promisify } from 'node:util';
+import { copyFileSync, existsSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import { createServer } from 'node:http';
+import type { AddressInfo } from 'node:net';
 import { fileURLToPath } from 'node:url';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
@@ -77,5 +80,101 @@ describe.skipIf(!built)('the packaged bin, invoked as npm invokes it', () => {
       encoding: 'utf8',
     }));
     expect(pkg['patchstack-connect']).toBe('./dist/cli.js');
+  });
+
+  /**
+   * A report the server refuses must not fail the build `scan` is hooked into, and must fail a direct run.
+   *
+   * Driven through the real bin against a local server that refuses everything, because the decision sits
+   * between the network failure and the process exit code, and only the process can show both.
+   */
+  describe('a report the server refuses', () => {
+    async function refusingServer(): Promise<{ endpoint: string; close: () => Promise<void> }> {
+      const server = createServer((_req, res) => {
+        res.writeHead(401, { 'Content-Type': 'application/json' });
+        res.end('{"error":"unauthorized"}');
+      });
+      await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+      const { port } = server.address() as AddressInfo;
+
+      return {
+        endpoint: `http://127.0.0.1:${port}/monitor/pulse/manifest`,
+        close: () => new Promise<void>((resolve) => server.close(() => resolve())),
+      };
+    }
+
+    // An existing site with no credential anywhere: the state a deploy is in when the credential file
+    // stayed behind on the developer's machine.
+    function projectWithSite(): string {
+      const dir = mkdtempSync(path.join(tmpdir(), 'ps-bin-hook-'));
+      writeFileSync(
+        path.join(dir, 'package.json'),
+        JSON.stringify({ name: 'example-app', version: '1.0.0', dependencies: { axios: '^1.6.0', lodash: '^4.17.21' } }),
+      );
+      copyFileSync(path.join(root, 'tests', 'fixtures', 'package-lock-v3.json'), path.join(dir, 'package-lock.json'));
+      writeFileSync(path.join(dir, '.patchstackrc.json'), JSON.stringify({ siteUuid: '11111111-1111-4111-8111-111111111111' }));
+
+      return dir;
+    }
+
+    // The environment is built from scratch rather than inherited: the parent may itself be running under
+    // a package manager, and the lifecycle name it exported is the very thing under test. Asynchronous
+    // because the refusing server lives on this thread's event loop, and a blocking spawn would starve it.
+    async function runScan(
+      cwd: string,
+      endpoint: string,
+      lifecycleEvent?: string,
+    ): Promise<{ status: number; stderr: string }> {
+      const env: NodeJS.ProcessEnv = {
+        PATH: process.env.PATH,
+        HOME: process.env.HOME,
+        PATCHSTACK_ENDPOINT: endpoint,
+        PATCHSTACK_TIMEOUT_MS: '5000',
+      };
+      if (lifecycleEvent !== undefined) env.npm_lifecycle_event = lifecycleEvent;
+
+      try {
+        const { stderr } = await promisify(execFile)('node', [bin, 'scan'], { cwd, env, encoding: 'utf8' });
+
+        return { status: 0, stderr };
+      } catch (err) {
+        const failed = err as { code?: unknown; stderr?: unknown };
+
+        return {
+          status: typeof failed.code === 'number' ? failed.code : -1,
+          stderr: typeof failed.stderr === 'string' ? failed.stderr : '',
+        };
+      }
+    }
+
+    it('exits 0 from a build hook and says what was not reported', async () => {
+      const server = await refusingServer();
+      const dir = projectWithSite();
+      try {
+        const result = await runScan(dir, server.endpoint, 'build');
+
+        expect(result.status).toBe(0);
+        expect(result.stderr).toContain('manifest not reported');
+        expect(result.stderr).toContain('PATCHSTACK_API_KEY');
+      } finally {
+        await server.close();
+        rmSync(dir, { recursive: true, force: true });
+      }
+    });
+
+    it('exits 1 for the same refusal when run directly', async () => {
+      const server = await refusingServer();
+      const dir = projectWithSite();
+      try {
+        const result = await runScan(dir, server.endpoint);
+
+        expect(result.status).toBe(1);
+        expect(result.stderr).toContain('Error (UNAUTHORIZED)');
+        expect(result.stderr).not.toContain('continuing the build');
+      } finally {
+        await server.close();
+        rmSync(dir, { recursive: true, force: true });
+      }
+    });
   });
 });

@@ -55,8 +55,9 @@ import { runProtect, runVerify } from './protect/install/index.js';
 import { runMap } from './map-command.js';
 import { getStringFlag } from './flags.js';
 import { setupProtection, wireBuildScripts } from './setup.js';
+import { isInstallOrBuildHook, undeliveredReportLines } from './build-hook.js';
 import { detectStack, type StackDescriptor } from './stack.js';
-import { PatchstackError } from './types.js';
+import { PatchstackError, type StoreManifestResponse } from './types.js';
 import { buildWidgetTag, ensureSourceWidget, ensureWidgetInHtml } from './widget.js';
 
 const HELP = `@patchstack/connect — scan your lockfile and report packages to Patchstack.
@@ -69,7 +70,11 @@ Usage:
                                                      disclosure-widget <script> tag in the root
                                                      HTML shell (index.html, public/index.html,
                                                      or src/app.html) — opt out with
-                                                     "widget": false in .patchstackrc.json
+                                                     "widget": false in .patchstackrc.json.
+                                                     Run as a postinstall/prebuild/build hook, a
+                                                     report Patchstack cannot accept is printed
+                                                     and exits 0 so the build goes on; run
+                                                     directly, the same failure exits 1
   patchstack-connect setup  [options]                Finish the bounded project setup: run scan,
                                                      manage the widget, install + verify runtime
                                                      protection, and wire dependency/build scans.
@@ -428,7 +433,16 @@ async function runScan(
     console.log('No site UUID configured — provisioning a new Patchstack site from this manifest…');
   }
 
-  const response = await postManifest(config, payload);
+  // Hooked into an install or build, the report is this command's concern and the build is not: the
+  // failure is said in full on stderr and the build goes on. A direct `scan` still exits non-zero for it.
+  let response: StoreManifestResponse;
+  try {
+    response = await postManifest(config, payload);
+  } catch (err) {
+    if (!(err instanceof PatchstackError) || !isInstallOrBuildHook()) throw err;
+    for (const line of undeliveredReportLines(err, config, process.cwd())) console.error(line);
+    return 0;
+  }
 
   // The server always returns the UUID. If we didn't have one, persist it so
   // every subsequent scan targets the same site.
