@@ -19,6 +19,14 @@ export interface WireResult {
 export interface VerifyCheck {
   label: string;
   ok: boolean;
+  /**
+   * Which question this line answers.
+   *
+   * `wiring` is whether the guard screens requests, and it decides the exit status. `reporting` is
+   * whether the platform hears about what it screened — worth knowing, and never a reason to fail the
+   * command, since an app deliberately reporting nothing is correctly configured. Absent means wiring.
+   */
+  group?: 'wiring' | 'reporting';
   /** How to fix it, shown when `ok` is false. */
   hint?: string;
   /**

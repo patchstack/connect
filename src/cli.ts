@@ -617,15 +617,25 @@ async function runProtectCommand(args: ParsedArgs): Promise<number> {
   if (args.flags.get('check') === true) {
     const report = runVerify(process.cwd());
     console.log(`patchstack protect --check (${report.stack}):`);
-    for (const c of report.checks) {
+    const line = (c: (typeof report.checks)[number]) => {
       // Three states, not two. A check this machine cannot answer is marked `?` and always prints its
       // note: shown as a tick it would claim something nobody established, and as a cross it would fail a
       // correctly configured deployment.
       const mark = c.unverifiable ? '?' : c.ok ? '✓' : '✗';
       const note = c.unverifiable || !c.ok ? c.hint : undefined;
       console.log(`  ${mark} ${c.label}${note ? ` — ${note}` : ''}`);
-    }
+    };
+
+    for (const c of report.checks.filter((c) => c.group !== 'reporting')) line(c);
     console.log(report.wired ? 'guard is wired ✓' : 'guard is NOT fully wired ✗');
+
+    // Printed apart, and after the verdict, because they answer a different question and none of them
+    // decides it. A failing line here does not mean the app is unprotected.
+    const reporting = report.checks.filter((c) => c.group === 'reporting');
+    if (reporting.length > 0) {
+      console.log('reporting to Patchstack (does not affect the verdict above):');
+      for (const c of reporting) line(c);
+    }
     if (report.checks.some((c) => c.unverifiable)) {
       console.log('One or more checks could not be answered from here — see the `?` lines above.');
     }

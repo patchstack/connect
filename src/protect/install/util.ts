@@ -24,8 +24,14 @@ export function hasDependency(cwd: string, name: string): boolean {
  * and the note is printed either way. Reads the files directly rather than going through config resolution
  * so that verification stays synchronous and never throws.
  */
-export function hasResolvableCredential(cwd: string): boolean {
-  if ((process.env.PATCHSTACK_API_KEY ?? '') !== '' || (process.env.PATCHSTACK_PULSE_AUTH ?? '') !== '') {
+export function hasResolvableCredential(
+  cwd: string,
+  env: Record<string, string | undefined> = process.env,
+): boolean {
+  // The environment is a parameter so that a caller judging one environment judges it consistently: a
+  // check that read the injected environment for one fact and `process.env` for another would be
+  // answering about two different machines in the same sentence.
+  if ((env.PATCHSTACK_API_KEY ?? '') !== '' || (env.PATCHSTACK_PULSE_AUTH ?? '') !== '') {
     return true;
   }
 
@@ -44,6 +50,16 @@ export function hasResolvableCredential(cwd: string): boolean {
 
 const SITE_UUID_PLACEHOLDER = '__PATCHSTACK_SITE_UUID__';
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+/**
+ * Is this a usable site identity?
+ *
+ * Exported so the scaffolder's idea of a usable identity and the one `protect --check` reports on are
+ * the same idea: a value the scaffolder will not bake is not an enrolment worth reporting.
+ */
+export function isSiteUuid(value: unknown): value is string {
+  return typeof value === 'string' && UUID_RE.test(value);
+}
 
 /**
  * Bake the site UUID written by `scan` into a managed runtime-guard template.
