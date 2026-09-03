@@ -458,10 +458,9 @@ export async function createProtection(options = {}) {
       }
       let result;
       try {
-        // Spread the originating request (method / originalUrl / headers) alongside the response,
-        // so a response rule's `when` route/method scope resolves against the REAL request and so
-        // request Host/Origin are visible to response rules — rather than the phantom empty request
-        // the response phase used to build (which made `when` on a response rule inert).
+        // Include the originating request's method, path and headers so a response rule's `when`
+        // route/method scope and any Host/Origin comparison resolve against the request that produced
+        // this response.
         result = re.evaluate({ ...(reqCtx || {}), _response: { ...meta, body: text } });
       } catch (err) {
         notify(onError, err, 'onError');
@@ -1803,9 +1802,9 @@ function rebuildResponse(response, body, redactedHeaders) {
       if (value === null || value === undefined) {
         try { headers.delete(name); } catch { /* skip */ } // header-mutation removal
       } else if (typeof value === 'string') {
-        // `get` has to be inside the guard too: it throws on an invalid field name just as `set` does,
-        // and it runs first — so an unusable name from a rule crashed response screening instead of
-        // being skipped, taking the fail-open guarantee with it.
+        // Both `get` and `set` are inside the guard, because `Headers` rejects an invalid field name on
+        // either. An unusable name supplied by a rule is skipped, which is what keeps response
+        // screening fail-open.
         try {
           if (headers.get(name) !== value) headers.set(name, value);
         } catch { /* invalid header name — skip */ }
