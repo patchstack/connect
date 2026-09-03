@@ -304,7 +304,7 @@ export async function createProtection(options = {}) {
   let screenCap; // max body we'll buffer/screen (rules can raise it)
   let engine;
   let responseRuleSet;
-  let egressEngine;
+  let egressRuleSet;
 
   // Split the delivered ruleset by phase (default "request"), merging phase defaults +
   // per-call overrides. Detection is fully rule-driven — nothing hardcoded.
@@ -338,7 +338,12 @@ export async function createProtection(options = {}) {
         ? rule.prefilter.map((s) => String(s).toLowerCase())
         : null,
     }));
-    egressEngine = new RuleEngine({ firewall: egressRules, onError });
+    // One engine per rule, as the response phase does. It preserves the identity of every rule that
+    // matches: each is evaluated on its own, and each match is attributable to the rule that made it.
+    egressRuleSet = egressRules.map((rule) => ({
+      rule,
+      engine: new RuleEngine({ firewall: [rule], onError }),
+    }));
   };
 
   applyBundle(bundle);
@@ -989,17 +994,7 @@ export async function createProtection(options = {}) {
   const allow = new Set((options.allowHosts ?? []).map((h) => String(h).toLowerCase()));
   const egressShouldBlock = (url, host, method) => {
     if (host && allow.has(host.toLowerCase())) return false;
-    let result;
-    try {
-      result = egressEngine.evaluate({ _egress: { url, host, method } });
-    } catch (err) {
-      notify(onError, err, 'onError');
-      return false;
-    }
-    if (!result.blocked) return false;
-    // Same for egress: a dry-run rule records the outbound attempt without preventing it. Blocking a
-    // request the app makes is at least as disruptive as blocking one it receives.
-    const egressMode = ruleMode(result.rule);
+
     // The outbound request's own method and path. An egress detection has no client address and no user
     // agent by nature: the call is the application's, not a visitor's, so there is nobody to attribute it
     // to. Its destination host reaches the report through capture, for a rule that names `egress.url` or
@@ -1012,17 +1007,42 @@ export async function createProtection(options = {}) {
       egressPath = typeof url === 'string' ? url : null;
     }
 
-    onDetect({
-      phase: 'egress',
-      mode: egressMode,
-      category: result.rule?.category,
-      rule: result.rule,
-      message: result.message,
-      method: typeof method === 'string' ? method : null,
-      path: egressPath,
-      capture: evidenceFrom(result),
-    });
-    return egressMode === 'block';
+    // Every rule is asked, and every match is reported under its own rule. Two rules matching one call
+    // are two matches of one outbound attempt, not two attempts: these events are per-rule evidence,
+    // and nothing here identifies the attempt they share.
+    let block = false;
+    for (const { rule, engine: re } of egressRuleSet) {
+      let result;
+      try {
+        result = re.evaluate({ _egress: { url, host, method } });
+      } catch (err) {
+        notify(onError, err, 'onError');
+
+        continue;
+      }
+      if (!result.blocked) continue;
+
+      // A dry-run rule records the outbound attempt without preventing it. Blocking a request the app
+      // makes is at least as disruptive as blocking one it receives.
+      const egressMode = ruleMode(rule);
+
+      onDetect({
+        phase: 'egress',
+        mode: egressMode,
+        category: rule?.category,
+        rule,
+        message: result.message,
+        method: typeof method === 'string' ? method : null,
+        path: egressPath,
+        capture: evidenceFrom(result),
+      });
+
+      // Any enforcing match blocks, whatever else matched and in whatever order: an observing rule
+      // beside an enforcing one records the attempt and does not soften it.
+      if (egressMode === 'block') block = true;
+    }
+
+    return block;
   };
 
   const protection = {
