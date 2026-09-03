@@ -676,31 +676,98 @@ export async function createProtection(options = {}) {
    * the header was there to remove. A multi-valued header (`Set-Cookie`) is compared entry by entry,
    * since hardening one cookie of several is a change and re-emitting them unchanged is not.
    */
-  const headersChanged = (before, after) => {
-    for (const [name, value] of Object.entries(after)) {
-      const was = before[name];
-      const had = Object.hasOwn(before, name) && was !== undefined && was !== null;
+  const headerValueChanged = (was, value) => {
+    const had = was !== undefined && was !== null;
 
-      if (value === null || value === undefined) {
-        if (had) return true;
+    if (value === null || value === undefined) return had;
+    if (!had) return true;
 
-        continue;
-      }
+    if (Array.isArray(value) || Array.isArray(was)) {
+      const a = Array.isArray(was) ? was : [was];
+      const b = Array.isArray(value) ? value : [value];
 
-      if (!had) return true;
-
-      if (Array.isArray(value) || Array.isArray(was)) {
-        const a = Array.isArray(was) ? was : [was];
-        const b = Array.isArray(value) ? value : [value];
-        if (a.length !== b.length || b.some((item, i) => String(item) !== String(a[i]))) return true;
-
-        continue;
-      }
-
-      if (String(value) !== String(was)) return true;
+      return a.length !== b.length || b.some((item, i) => String(item) !== String(a[i]));
     }
 
-    return false;
+    return String(value) !== String(was);
+  };
+
+  const headersChanged = (before, after) =>
+    Object.entries(after).some(([name, value]) => headerValueChanged(before[name], value));
+
+  /**
+   * The header argument of `writeHead(status[, statusMessage][, headers])`, and how to put changed
+   * values back into it.
+   *
+   * Its shape is preserved. An object cannot carry a name twice, but either array form can — two
+   * `Set-Cookie`s — so rebuilding one as an object would silently drop all but the last.
+   */
+  const writeHeadHeaderIndex = (args) => {
+    const at = typeof args[1] === 'string' ? 2 : 1;
+    const value = args[at];
+
+    return value !== null && typeof value === 'object' ? at : -1;
+  };
+
+  const writeHeadEntries = (headers) => {
+    if (!Array.isArray(headers)) return Object.entries(headers);
+    // `[[name, value], …]` and a flat `[name, value, name, value, …]` are both accepted here.
+    if (headers.length && headers.every((entry) => Array.isArray(entry) && entry.length === 2)) {
+      return headers.map(([name, value]) => [String(name), value]);
+    }
+
+    const entries = [];
+    for (let i = 0; i + 1 < headers.length; i += 2) entries.push([String(headers[i]), headers[i + 1]]);
+
+    return entries;
+  };
+
+  /** The same headers as a lower-cased map, a repeated name collapsing into the array it stands for. */
+  const writeHeadHeaderObject = (headers) => {
+    const out = {};
+    for (const [name, value] of writeHeadEntries(headers)) {
+      const key = name.toLowerCase();
+      out[key] = Object.hasOwn(out, key) ? [].concat(out[key], value) : value;
+    }
+
+    return out;
+  };
+
+  /** `changed` is keyed by lower-cased name; a null or undefined value removes the header. */
+  const rewriteWriteHeadHeaders = (headers, changed) => {
+    const replaced = new Set();
+    const entries = [];
+
+    for (const [name, value] of writeHeadEntries(headers)) {
+      const key = name.toLowerCase();
+      if (!changed.has(key)) {
+        entries.push([name, value]);
+
+        continue;
+      }
+
+      // The rule's value stands for every entry under this name, so later ones are dropped rather
+      // than left behind next to it.
+      if (replaced.has(key)) continue;
+      replaced.add(key);
+
+      const replacement = changed.get(key);
+      if (replacement === null || replacement === undefined) continue;
+      entries.push([name, replacement]);
+    }
+
+    // An object holds a multi-valued header as one property whose value is the array, so the array
+    // stays whole. Expanded into repeated entries it would reach `Object.fromEntries`, which keeps
+    // only the last — two hardened cookies would ship as one.
+    if (!Array.isArray(headers)) return Object.fromEntries(entries);
+
+    // An array carries each value under its own copy of the name, so here it is expanded.
+    const paired = headers.length > 0 && headers.every((entry) => Array.isArray(entry) && entry.length === 2);
+    const expanded = entries.flatMap(([name, value]) =>
+      Array.isArray(value) ? value.map((item) => [name, item]) : [[name, value]],
+    );
+
+    return paired ? expanded : expanded.flat();
   };
 
   /**
@@ -743,6 +810,96 @@ export async function createProtection(options = {}) {
     let size = 0;
     let overflow = false;
     const MAX = screenCap;
+
+    /**
+     * Header hardening, applied before the first byte leaves.
+     *
+     * On this path the body is buffered and screened at `end`, but a body over the cap abandons
+     * buffering and flushes what it has — and once a byte has gone, the headers have gone with it. So
+     * the mutations that need no body are applied up front, where they still can be: over the cap, a
+     * binary body, a live stream, or an ordinary one.
+     *
+     * Runs once, and the rules it answers are then left out of the pass at `end` — a rule that matched
+     * has already been reported, and reporting it again would say two responses were hardened when one
+     * was. The pass at `end` keeps the rules this one cannot answer, which is how a body-READING
+     * hardening rule is still honoured.
+     *
+     * `content-length` is left alone. The pass at `end` drops it because it rewrote the body; nothing is
+     * rewritten here, so the length still describes what the client will receive.
+     */
+    let hardened = false;
+    let answeredWithoutBody = false;
+    const hardenBeforeFlush = (effective) => {
+      if (hardened) return null;
+      hardened = true;
+      try {
+        // Nothing can be changed once the headers are on the wire, and saying so is better than
+        // throwing from inside a write.
+        if (res.headersSent || typeof res.setHeader !== 'function') return null;
+
+        const set = typeof res.getHeaders === 'function' ? res.getHeaders() : {};
+        // What the client will actually receive. `writeHead` supplies its own status and its own
+        // headers, and its headers beat anything set beforehand — so a rule judging only the set it
+        // does not see would be judging a response nobody gets.
+        const headers = effective && effective.headers ? { ...set, ...effective.headers } : set;
+        const status = effective && effective.status !== undefined ? effective.status : res.statusCode;
+        const r = screenText('', { status, headers }, reqCtx, hardensWithoutBody);
+        // These rules have now been evaluated and their detections recorded, whatever the verdict, so
+        // the pass at `end` must not evaluate them a second time and report the same detection twice.
+        answeredWithoutBody = true;
+        if (r.verdict !== 'redact' || !r.headers) return null;
+
+        // `content-length` needs no special handling: nothing here rewrites the body, so the length
+        // still describes what the client will receive and the value written back is the one already
+        // there. The pass at `end` drops it for the opposite reason.
+        const changed = new Map();
+        for (const [name, value] of Object.entries(r.headers)) {
+          if (!headerValueChanged(headers[name], value)) continue;
+
+          changed.set(name.toLowerCase(), value);
+          try {
+            if (value === null || value === undefined) res.removeHeader?.(name);
+            else res.setHeader(name, value);
+          } catch {
+            // An unusable header name from a rule is skipped, like everywhere else on this path.
+          }
+        }
+
+        return changed.size ? changed : null;
+      } catch (err) {
+        notify(onError, err, 'onError');
+
+        return null;
+      }
+    };
+
+    // The rules the pass above did not answer: the ones that read the body, which is why a
+    // body-reading hardening rule is still honoured at `end`.
+    const stillToAnswer = (rule) => !hardensWithoutBody(rule);
+
+    // Every way the first byte can leave. `writeHead` is included because an application may call it
+    // itself, and it carries both the status the response goes out with and headers that beat anything
+    // set beforehand — so its argument is what a rule is shown, and what the hardened values go back
+    // into. Set with `setHeader` alone, a header the application also passes here would be overwritten
+    // on the way out.
+    if (typeof res.writeHead === 'function') {
+      const origWriteHead = res.writeHead.bind(res);
+      res.writeHead = function (...args) {
+        const at = writeHeadHeaderIndex(args);
+        const given = at === -1 ? null : args[at];
+        const changed = hardenBeforeFlush({
+          status: typeof args[0] === 'number' ? args[0] : undefined,
+          headers: given ? writeHeadHeaderObject(given) : null,
+        });
+
+        if (!changed || !given) return origWriteHead(...args);
+
+        const rewritten = [...args];
+        rewritten[at] = rewriteWriteHeadHeaders(given, changed);
+
+        return origWriteHead(...rewritten);
+      };
+    }
     const collect = (chunk, enc) => {
       if (chunk == null) return;
       const buf = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk, typeof enc === 'string' ? enc : 'utf8');
@@ -761,6 +918,7 @@ export async function createProtection(options = {}) {
       chunks.push(buf);
     };
     res.write = function (chunk, enc, cb) {
+      hardenBeforeFlush();
       if (overflow) return origWrite(chunk, enc, cb);
       collect(chunk, enc);
       if (typeof enc === 'function') enc();
@@ -768,6 +926,7 @@ export async function createProtection(options = {}) {
       return true;
     };
     res.end = function (chunk, enc, cb) {
+      hardenBeforeFlush();
       if (typeof chunk === 'function') { cb = chunk; chunk = undefined; enc = undefined; }
       else if (typeof enc === 'function') { cb = enc; enc = undefined; }
       if (overflow) { if (chunk != null) origWrite(chunk, enc); return origEnd(cb); }
@@ -786,7 +945,12 @@ export async function createProtection(options = {}) {
       const text = buffer.toString('utf8');
       let r;
       try {
-        r = screenText(text, { status: res.statusCode, headers: res.getHeaders ? res.getHeaders() : {} }, reqCtx);
+        r = screenText(
+          text,
+          { status: res.statusCode, headers: res.getHeaders ? res.getHeaders() : {} },
+          reqCtx,
+          answeredWithoutBody ? stillToAnswer : undefined,
+        );
       } catch (err) {
         notify(onError, err, 'onError');
         for (const c of chunks) origWrite(c);
