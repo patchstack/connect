@@ -10,18 +10,40 @@
 // the scan entirely. This cuts CPU/latency and shrinks the regex/ReDoS surface. (Honored by the
 // response phase once the prefilter mechanism lands; a no-op before that.)
 
-// Response phase — secret / info exposure. Default action `redact` masks only the
-// offending span and still serves the page (a legit response that leaks one key gets
-// that key masked, not withheld). Use `action: "block"` to withhold the whole response.
+// Response phase — secret / info exposure.
+//
+// `redact` masks the span a pattern matched and serves the rest of the page. It is used only where the
+// match is the whole of the disclosure, which holds for a credential with a grammar: a provider token
+// has a prefix, an alphabet and a length, so matching it matches all of it.
+//
+// `block` withholds the response and replaces it with a generic error. It is used where a pattern can
+// identify a disclosure but not delimit it — a private key, a stack trace, a database error, an
+// exception dump, a connection URI in free text. The material that matters sits after the part the
+// pattern can recognise, so a mask would leave file names, line numbers, query text, frames, key
+// material or a host and database name in a response that reports itself protected.
 export const DEFAULT_RESPONSE_RULES = [
   {
     id: 'resp-private-key',
     title: 'Private key in response body',
     phase: 'response',
     category: 'secret-exposure',
-    action: 'redact',
+    // Withheld: the key material sits after the marker and this pattern does not delimit it.
+    action: 'block',
     prefilter: ['PRIVATE KEY'],
-    rule_v2: [{ parameter: 'response.body', match: { type: 'regex', value: '/-----BEGIN (?:RSA |EC |OPENSSH |DSA |PGP )?PRIVATE KEY-----/' } }]
+    // Matches a PEM BEGIN line whose label contains `PRIVATE KEY`, with up to 32 further label
+    // characters — uppercase letters, digits, spaces and hyphens — on either side of it. That covers
+    // the enumerated types (`RSA`, `EC`, `OPENSSH`, `DSA`, `ENCRYPTED`), a label carrying words after
+    // `PRIVATE KEY` (`PGP PRIVATE KEY BLOCK`), a hyphenated or otherwise unlisted type, and a bare
+    // `-----BEGIN PRIVATE KEY-----`. `PUBLIC KEY` and `CERTIFICATE` do not match, and neither does
+    // prose that mentions a private key without a BEGIN line.
+    //
+    // No footer required: a truncated response or an absent END marker does not make the material
+    // above it less of a key. Two bounded character classes rather than a repeated group — a
+    // quantifier inside a quantified group is the shape the engine refuses as a backtracking risk, and
+    // a refused pattern is a rule that never fires.
+    //
+    // A lowercase label, or one longer than 32 characters on either side, is not matched.
+    rule_v2: [{ parameter: 'response.body', match: { type: 'regex', value: '/-----BEGIN [A-Z0-9 -]{0,32}PRIVATE KEY[A-Z0-9 -]{0,32}-----/' } }]
   },
   {
     id: 'resp-aws-access-key',
@@ -98,26 +120,66 @@ export const DEFAULT_RESPONSE_RULES = [
     title: 'Database connection string with credentials in response body',
     phase: 'response',
     category: 'secret-exposure',
-    action: 'redact',
+    // Withheld. The credentials are only the first half of the disclosure — the host, port, database
+    // name and query name the system they open — and a URI's own grammar admits commas, parentheses
+    // and semicolons, so no end-of-URI character class delimits it in free text without either
+    // stopping inside a real URI or consuming the punctuation around it. The pattern therefore
+    // identifies the URI and the response is withheld rather than partly rewritten.
+    action: 'block',
     prefilter: ['mongodb', 'postgres', 'mysql', 'redis', 'amqp'],
-    rule_v2: [{ parameter: 'response.body', match: { type: 'regex', value: '/\\b(?:mongodb(?:\\+srv)?|postgres(?:ql)?|mysql|redis|amqps?):\\/\\/[^\\s:@\\/]+:[^\\s:@\\/]+@/i' } }]
+    // A scheme this application connects with, a user, a password and an `@`. Credentials are
+    // required, so a URL without them is not matched.
+    //
+    // The username is the userinfo grammar without `:`; the password is the same grammar with it. Every
+    // other character either class admits may appear raw in a real credential, so a narrower one turns
+    // a live credential into a rule that says nothing — `postgres://user:p;ss@host` is an ordinary DSN.
+    //
+    // The first raw colon separates username from password. Excluding it from the username makes the
+    // separator unambiguous and keeps matching linear; the password continues to admit raw colons. A
+    // username that contains a colon carries it as `%3A`.
+    //
+    // Both classes admitting `:` would leave every colon available as the separator, so a candidate
+    // run with no `@` is re-split at every position. The screening cap does not bound that: a rule may
+    // raise it with `max_bytes` or remove it with `bypass_limit`.
+    //
+    // What terminates a candidate is everything the grammar excludes: whitespace, `/`, `?`, `#`, `@`,
+    // quotes, backslashes, angle and square brackets and braces. That is what keeps the run inside one
+    // value. Expressed as "anything but `:`, `@`, `/` and whitespace" it crosses structure instead: in
+    // `{"docs":"postgres://db.internal","contact":"user@example.com"}` it consumes the closing quote,
+    // the comma and the next key, reaching the `:` and `@` of an unrelated property and withholding a
+    // response that discloses nothing.
+    //
+    // The consequence is deliberate: a run of punctuation-joined text that parses as a credential URI
+    // is treated as one. `postgres://db.internal;contact:admin@example.com` has username
+    // `db.internal;contact`, password `admin` and host `example.com` — indistinguishable from a leak,
+    // so it is withheld. Ordinary prose separates with whitespace, which terminates the candidate.
+
+    rule_v2: [{ parameter: 'response.body', match: { type: 'regex', value: '/\\b(?:mongodb(?:\\+srv)?|postgres(?:ql)?|mysql|redis|amqps?):\\/\\/[A-Za-z0-9._~%!$&\'()*+,;=-]+:[A-Za-z0-9._~%!$&\'()*+,;=:-]+@/i' } }]
   },
   {
     id: 'resp-stack-trace',
     title: 'Node stack trace leaking in response body',
     phase: 'response',
     category: 'info-exposure',
-    action: 'redact',
+    // Withheld. A frame is recognised by its shape and the trace has no end the pattern can rely on,
+    // so masking the frames it happens to match leaves the message, the remaining frames and every
+    // path and line number in them.
+    action: 'block',
     // No prefilter: a Node stack frame has no single distinctive literal (` at ` is too common to
     // gate on). The pattern is linearly bounded per line, so it runs on every screened body.
-    rule_v2: [{ parameter: 'response.body', match: { type: 'regex', value: '/\\n\\s+at\\s+.+\\(.+:\\d+:\\d+\\)/' } }]
+    //
+    // Accepts a real newline and a JSON-escaped one. Most traces reach a client inside a JSON error
+    // body, where the newline is the two characters `\` and `n`.
+    rule_v2: [{ parameter: 'response.body', match: { type: 'regex', value: '/(?:\\n|\\\\n)\\s*at\\s+.+\\(.+:\\d+:\\d+\\)/' } }]
   },
   {
     id: 'resp-sql-error',
     title: 'SQL / ORM error disclosure in response body',
     phase: 'response',
     category: 'info-exposure',
-    action: 'redact',
+    // Withheld. The signature is the start of the disclosure: masking `SQLSTATE[23000]` and serving
+    // the constraint name, the column and the offending value discloses the schema anyway.
+    action: 'block',
     prefilter: ['SQLSTATE', 'Sequelize', 'ER_', 'ORA-', 'PG::', 'SQLITE_ERROR', 'SQL syntax'],
     rule_v2: [{ parameter: 'response.body', match: { type: 'regex', value: '/(SQLSTATE\\[[0-9A-Z]+\\]|SequelizeDatabaseError|ER_[A-Z_]+|ORA-\\d{5}|PG::[A-Za-z]+Error|SQLITE_ERROR|You have an error in your SQL syntax)/i' } }]
   },
@@ -126,7 +188,9 @@ export const DEFAULT_RESPONSE_RULES = [
     title: 'Backend exception / stack trace disclosure in response body',
     phase: 'response',
     category: 'info-exposure',
-    action: 'redact',
+    // Withheld, for the same reason as the trace above: the marker opens the dump and the file names,
+    // line numbers and frames after it are the disclosure.
+    action: 'block',
     // Multi-language exception/traceback signatures a normal API response never carries:
     // Python traceback, Java "Exception in thread", .NET System.*Exception, JVM stack frames,
     // Go goroutine dumps. (Node `at fn (file:line:col)` frames are handled by resp-stack-trace.)

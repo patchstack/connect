@@ -108,16 +108,23 @@ function policyNamed(id: string): unknown {
 }
 
 /**
- * Screen a body through ONE policy.
+ * Screen a body through ONE policy, and report whether that policy fired.
  *
- * Isolated deliberately. Run through the whole shipped set, "the sample was masked" says only that
- * something masked it, and a case could pass while the policy it names matched nothing at all.
+ * Isolated deliberately. Run through the whole shipped set, "the sample was handled" says only that
+ * something handled it, and a case could pass while the policy it names matched nothing at all.
+ *
+ * The answer is whether the policy FIRED, not whether the sample survived. A policy that withholds a
+ * response removes the sample and so does one that masks it — and a sample the body never contained
+ * verbatim, because JSON escaped its newlines, is absent without anything having happened. What each
+ * policy leaves on the wire is asserted in `response-policy-wire-behaviour.test.ts`.
  */
-async function screen(policy: string, body: string, extra: Record<string, string> = {}): Promise<string> {
+async function screen(policy: string, body: string, extra: Record<string, string> = {}) {
+  const fired: string[] = [];
   const p: any = await createProtection({
     rules: { firewall: [], whitelists: [], whitelist_keys: {} },
     mode: 'block',
     responseRules: [policyNamed(policy)],
+    onDetect: (event: any) => fired.push(String(event.rule?.id)),
   });
   const out = await p.screenResponse(
     new Response(JSON.stringify({ field: body, ...extra }), {
@@ -127,26 +134,25 @@ async function screen(policy: string, body: string, extra: Record<string, string
     new Request('https://app.test/', { method: 'GET' }),
   );
 
-  return out.text();
+  return { fired: fired.length > 0, status: out.status, body: await out.text() };
 }
 
 describe('every shipped response policy has a sample it matches', () => {
   it.each(RESPONSE_CASES.map((c) => [c.policy, c] as const))('%s', async (policy, testCase) => {
-    expect(await screen(policy, testCase.matches)).not.toContain(testCase.matches);
+    expect((await screen(policy, testCase.matches)).fired, 'the policy did not fire').toBe(true);
   });
 });
 
 describe('and the nearest thing it must leave alone', () => {
   it.each(RESPONSE_CASES.map((c) => [c.policy, c] as const))('%s: %o', async (policy, testCase) => {
-    // The policy's OWN matching sample travels in the same response as the benign one. "The benign
-    // value survived" is also what an unreached policy looks like, so this is what tells the two
-    // apart: the same rule, in the same body, masking one and leaving the other.
-    const out = await screen(policy, testCase.benign, { canary: testCase.matches });
+    // Screened on its own. The policy's own matching sample cannot travel alongside as a control,
+    // because a policy that withholds would take the benign value with it — the matching case above
+    // is what proves this policy fires at all.
+    const result = await screen(policy, testCase.benign);
 
-    expect(out, 'this policy matched nothing in this response').not.toContain(testCase.matches);
-    // Verbatim, because a redaction that masks part of it has still changed a response it had no
-    // business changing.
-    expect(out, testCase.why).toContain(testCase.benign);
+    expect(result.fired, testCase.why).toBe(false);
+    expect(result.status).toBe(200);
+    expect(result.body, testCase.why).toContain(testCase.benign);
   });
 });
 
