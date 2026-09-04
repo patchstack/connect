@@ -65,12 +65,17 @@ describe('verbose-error suppression — backend exceptions/tracebacks', () => {
 });
 
 describe('verbose-error suppression (SQL/ORM disclosure)', () => {
-  it('redacts a SQL/ORM error signature from the response body', async () => {
+  it('withholds a response carrying a SQL/ORM error signature', async () => {
+    // Withheld rather than masked: the signature opens the disclosure and the relation name, the
+    // column and the offending value come after it, so masking the signature discloses the schema
+    // anyway.
     const p = await createProtection({ mode: 'block' });
     const res: any = await p.screenResponse(json('{"error":"SequelizeDatabaseError: relation users does not exist"}', {}));
     const body = await res.text();
-    expect(body.includes('SequelizeDatabaseError')).toBe(false);
-    expect(body).toContain('[REDACTED]');
+    expect(res.status).toBe(500);
+    expect(body).not.toContain('SequelizeDatabaseError');
+    expect(body).not.toContain('relation users');
+    expect(body).toContain('withheld by Patchstack');
   });
 
   it('leaves a benign error body unchanged', async () => {
