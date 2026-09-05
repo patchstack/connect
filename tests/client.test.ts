@@ -8,6 +8,7 @@ import {
   fetchSiteStatus,
   postManifest,
   postPackageRemoved,
+  buildManifestBody,
 } from '../src/client.js';
 import { PatchstackError } from '../src/types.js';
 
@@ -308,6 +309,53 @@ describe('postManifest', () => {
     expect(body.ecosystem).toBe('npm');
   });
 
+  it('sends where the app is published, so a placeholder site can learn its address', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(
+      new Response(JSON.stringify({ stored: true }), { status: 200 }),
+    );
+    vi.stubGlobal('fetch', fetchMock);
+
+    await postManifest(
+      {
+        siteUuid: 'uuid',
+        siteUrl: 'https://shop.example.com',
+        endpoint: 'https://example.com',
+        timeoutMs: 30_000,
+        widget: true,
+        environment: 'production',
+      },
+      { ecosystem: 'npm', packages: [{ name: 'lodash', version: '4.17.21' }] },
+    );
+
+    const [, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+    const body = JSON.parse(init.body as string) as { url?: string };
+    expect(body.url).toBe('https://shop.example.com');
+  });
+
+  it('omits the url entirely when the build knows of none', async () => {
+    // Not sent as null or an empty string: the server treats an absent url as "nothing to say about
+    // this site's address", and a present-but-empty one as a value to consider.
+    const fetchMock = vi.fn().mockResolvedValue(
+      new Response(JSON.stringify({ stored: true }), { status: 200 }),
+    );
+    vi.stubGlobal('fetch', fetchMock);
+
+    await postManifest(
+      {
+        siteUuid: 'uuid',
+        siteUrl: null,
+        endpoint: 'https://example.com',
+        timeoutMs: 30_000,
+        widget: true,
+        environment: 'production',
+      },
+      { ecosystem: 'npm', packages: [{ name: 'lodash', version: '4.17.21' }] },
+    );
+
+    const [, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+    expect(JSON.parse(init.body as string)).not.toHaveProperty('url');
+  });
+
   it('throws SITE_NOT_FOUND on 404', async () => {
     vi.stubGlobal(
       'fetch',
@@ -399,5 +447,97 @@ describe('postManifest', () => {
         { ecosystem: 'npm', packages: [] },
       ),
     ).rejects.toMatchObject({ code: 'NETWORK_TIMEOUT' });
+  });
+});
+
+describe('postManifest site name', () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it('sends the site name when known, and omits the field when not', async () => {
+    // A fresh Response per call: a body can only be read once.
+    const fetchMock = vi.fn().mockImplementation(
+      async () => new Response(JSON.stringify({ stored: true }), { status: 200 }),
+    );
+    vi.stubGlobal('fetch', fetchMock);
+
+    const base = {
+      siteUuid: 'uuid',
+      apiKey: null,
+      pulseAuth: null,
+      siteUrl: null,
+      endpoint: 'https://example.com',
+      timeoutMs: 30_000,
+      widget: true,
+      environment: 'production' as const,
+    };
+    const payload = { ecosystem: 'npm' as const, packages: [{ name: 'lodash', version: '4.17.21' }] };
+
+    await postManifest({ ...base, siteName: 'ToDo Application' }, payload);
+    expect(JSON.parse(fetchMock.mock.calls[0][1].body as string).name).toBe('ToDo Application');
+
+    await postManifest({ ...base, siteName: null }, payload);
+    expect(JSON.parse(fetchMock.mock.calls[1][1].body as string)).not.toHaveProperty('name');
+  });
+
+  it('omits both fields for a Config built without them', async () => {
+    // `Config` is exported, so a consumer can build one. Theirs predates these fields, and a push that
+    // says nothing about the address is exactly right for a caller that knows nothing about it.
+    const fetchMock = vi.fn().mockImplementation(
+      async () => new Response(JSON.stringify({ stored: true }), { status: 200 }),
+    );
+    vi.stubGlobal('fetch', fetchMock);
+
+    await postManifest(
+      {
+        siteUuid: 'uuid',
+        apiKey: null,
+        pulseAuth: null,
+        endpoint: 'https://example.com',
+        timeoutMs: 30_000,
+        widget: true,
+        environment: 'production',
+      },
+      { ecosystem: 'npm', packages: [{ name: 'lodash', version: '4.17.21' }] },
+    );
+
+    const body = JSON.parse(fetchMock.mock.calls[0][1].body as string);
+    expect(body).not.toHaveProperty('url');
+    expect(body).not.toHaveProperty('name');
+    expect(body.environment).toBe('production');
+  });
+});
+
+describe('buildManifestBody', () => {
+  const base = {
+    siteUuid: 'uuid',
+    apiKey: null,
+    pulseAuth: null,
+    endpoint: 'https://example.com',
+    timeoutMs: 30_000,
+    widget: true,
+    environment: 'production' as const,
+  };
+  const payload = { ecosystem: 'npm' as const, packages: [{ name: 'lodash', version: '4.17.21' }] };
+
+  it('is the whole body, so --dry-run and the post cannot describe different requests', () => {
+    expect(
+      buildManifestBody({ ...base, siteUrl: 'https://shop.example.com', siteName: 'Shop' }, payload),
+    ).toEqual({
+      ecosystem: 'npm',
+      packages: [{ name: 'lodash', version: '4.17.21' }],
+      environment: 'production',
+      url: 'https://shop.example.com',
+      name: 'Shop',
+    });
+  });
+
+  it('leaves out what is not known rather than sending an empty value', () => {
+    expect(buildManifestBody({ ...base, siteUrl: null, siteName: '' }, payload)).toEqual({
+      ecosystem: 'npm',
+      packages: [{ name: 'lodash', version: '4.17.21' }],
+      environment: 'production',
+    });
   });
 });

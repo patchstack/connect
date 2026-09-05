@@ -226,11 +226,19 @@ Lower-level pieces are also exported: `scanLockfile`, `buildWirePayload`, `postM
     { "name": "axios",  "version": "1.6.0" },
     { "name": "lodash", "version": "4.17.15" },
     { "name": "lodash", "version": "4.17.21" }
-  ]
+  ],
+  "url": "https://your-app.example.com",
+  "name": "ToDo Application"
 }
 ```
 
-That's the entire payload. No source code, no environment variable values, no file paths — just the package names and versions from your lockfile.
+That's the entire payload: the package names and versions from your lockfile, plus what your project says about the site itself — its public address and its name. No source code, no file paths, no secrets.
+
+The address is included so the site in your dashboard shows where it lives instead of a placeholder, and so Patchstack can check the published page still carries what was scanned. It is taken from `url` in `.patchstackrc.json` (or `PATCHSTACK_SITE_URL`) if you set one; otherwise from the one variable a host publishes to name its own production URL — `VERCEL_PROJECT_PRODUCTION_URL` on a Vercel production deployment, Netlify's `URL` in the production context, `RENDER_EXTERNAL_URL`, `RAILWAY_PUBLIC_DOMAIN` in a production environment. No other environment variable's value is read, and `url` is left out entirely when none of those says anything — a build on your own machine sends no address. An address that is not how the public reaches a website is refused: any IP address, any single-label host such as `localhost`, and the reserved suffixes (`.local`, `.internal`, `.test`, `.invalid`). If you set `url` yourself and it fails those checks, `scan` stops and says so rather than sending a different address.
+
+The name is what the dashboard calls the site. It is taken from `name` in `.patchstackrc.json` (or `PATCHSTACK_SITE_NAME`) if you set one; otherwise from the `<title>` of the project's root `index.html`; otherwise from the `name` in `package.json`, unless that is a template placeholder such as `vite_react_shadcn_ts`. It is left out when nothing qualifies. Those two files are read only by `scan` — the commands that never post a manifest do not open them.
+
+You can see exactly what would be sent, without sending it, by running `npx @patchstack/connect scan --dry-run`: the preview it prints is the request body itself. Patchstack only applies either field to a site that does not have one yet: it never re-points a site whose address is real, and never replaces a name set in the dashboard.
 
 ### `scan --install-paths` (opt-in)
 

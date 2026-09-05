@@ -25,3 +25,4 @@ test-build/.work/
 # A lockfile committed from that directory would put the vulnerable package into the repository's
 # dependency graph, where its advisories cannot be told apart from advisories about the shipped package.
 examples/protect/package-lock.json
+.public-types-check/
