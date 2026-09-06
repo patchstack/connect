@@ -83,6 +83,52 @@ describe.skipIf(!built)('the packaged bin, invoked as npm invokes it', () => {
   });
 
   /**
+   * `--dry-run` is how someone finds out what a scan would send before sending it, so a field the preview
+   * omits is a field nobody gets to object to. The request body is built once and used for both, and this
+   * drives the real bin to prove the preview is that body — including the address and name, which are the
+   * two fields a reader is most likely to want to check.
+   */
+  it('previews every field a real post would send', () => {
+    const project = mkdtempSync(path.join(tmpdir(), 'ps-bin-dry-'));
+    try {
+      writeFileSync(
+        path.join(project, 'package.json'),
+        JSON.stringify({ name: 'example-app', version: '1.0.0' }),
+      );
+      copyFileSync(
+        path.join(root, 'tests', 'fixtures', 'package-lock-v3.json'),
+        path.join(project, 'package-lock.json'),
+      );
+      writeFileSync(path.join(project, 'index.html'), '<title>Recipe Box</title>');
+      writeFileSync(
+        path.join(project, '.patchstackrc.json'),
+        JSON.stringify({
+          siteUuid: '11111111-1111-4111-8111-111111111111',
+          url: 'https://recipes.example.com',
+        }),
+      );
+
+      const stdout = execFileSync('node', [bin, 'scan', '--dry-run'], {
+        cwd: project,
+        env: { PATH: process.env.PATH, HOME: process.env.HOME },
+        encoding: 'utf8',
+      });
+
+      // Said in prose before the preview, so it is noticed here rather than in the dashboard.
+      expect(stdout).toContain(`Reporting this app's address as https://recipes.example.com.`);
+      expect(stdout).toContain(`Reporting this app's name as "Recipe Box".`);
+
+      const preview = stdout.slice(stdout.indexOf('Payload preview:'));
+      expect(preview).toContain('"url": "https://recipes.example.com"');
+      expect(preview).toContain('"name": "Recipe Box"');
+      expect(preview).toContain('"environment": "production"');
+      expect(preview).toContain('"packages"');
+    } finally {
+      rmSync(project, { recursive: true, force: true });
+    }
+  });
+
+  /**
    * A report the server refuses must not fail the build `scan` is hooked into, and must fail a direct run.
    *
    * Driven through the real bin against a local server that refuses everything, because the decision sits

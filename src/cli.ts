@@ -6,6 +6,7 @@ import { buildWirePayload } from './normalize.js';
 import { computeManifestChecksum } from './checksum.js';
 import {
   postInputMap,
+  buildManifestBody,
   DEFAULT_ENDPOINT,
   buildClaimUrl,
   fetchSiteStatus,
@@ -366,6 +367,8 @@ async function runScan(
     cwd: process.cwd(),
     cliSiteUuid: getStringFlag(args.flags, 'site-uuid'),
     cliEndpoint: getStringFlag(args.flags, 'endpoint'),
+    // The one command that reports them, so the one command that resolves them.
+    detectSiteIdentity: true,
   });
   const manifest = await scanLockfile(process.cwd());
   for (const warning of manifest.warnings ?? []) {
@@ -404,6 +407,16 @@ async function runScan(
     );
   }
 
+  // Ahead of the --dry-run return, so a preview says what a real run would report. This is the part of
+  // the payload someone might disagree with, and it is easier to disagree with here than in the dashboard.
+  const body = buildManifestBody(config, payload);
+  if (typeof body.url === 'string') {
+    console.log(`Reporting this app's address as ${body.url}.`);
+  }
+  if (typeof body.name === 'string') {
+    console.log(`Reporting this app's name as "${body.name}".`);
+  }
+
   if (dryRun) {
     console.log('');
     if (config.siteUuid === null) {
@@ -412,7 +425,7 @@ async function runScan(
       console.log(`--dry-run: not posting to Patchstack (site UUID ${config.siteUuid}).`);
     }
     console.log('Payload preview:');
-    const preview = JSON.stringify(payload, null, 2).split('\n');
+    const preview = JSON.stringify(body, null, 2).split('\n');
     console.log(preview.slice(0, Math.min(preview.length, 30)).join('\n'));
     if (preview.length > 30) {
       console.log(`  ... (${preview.length - 30} more lines)`);
