@@ -63,6 +63,16 @@ const TEMPLATE_TITLES: ReadonlySet<string> = new Set([
   'app',
 ]);
 
+/**
+ * The named entities an HTML title realistically carries. `&` is the one that has to be escaped in HTML,
+ * so `&amp;` is what actually turns up; the rest cost nothing to decode alongside it.
+ *
+ * Numeric entities (`&#233;`, `&#x1F600;`) are deliberately NOT decoded, and are left as the text they
+ * were. Any editor writing a UTF-8 file puts those characters in literally, so decoding them bought
+ * close to nothing — and it meant turning arbitrary numbers out of a file this package did not write
+ * into code points, which throws for anything that is not a Unicode scalar value. A prettier dashboard
+ * name does not justify a crash in the settings every command resolves.
+ */
 const NAMED_ENTITIES: Record<string, string> = {
   amp: '&',
   lt: '<',
@@ -80,31 +90,8 @@ export function normaliseSiteName(value: string | undefined | null): string | nu
   return collapsed.slice(0, NAME_MAX_LENGTH);
 }
 
-/**
- * Whether `code` is a Unicode scalar value, the only thing `String.fromCodePoint` accepts.
- *
- * Everything else in the numeric range an HTML author can write throws: past `0x10FFFF` there is no
- * character, and a lone surrogate is half of one. `<title>` is arbitrary text from a file this package
- * did not write, so a number it cannot represent has to be left as the text it was.
- */
-function isScalarValue(code: number): boolean {
-  return (
-    Number.isInteger(code) && code >= 0 && code <= 0x10ffff && !(code >= 0xd800 && code <= 0xdfff)
-  );
-}
-
 function decodeEntities(text: string): string {
-  return text.replace(/&(#x[0-9a-f]+|#\d+|[a-z]+);/gi, (whole, body: string) => {
-    if (body.startsWith('#x') || body.startsWith('#X')) {
-      const code = Number.parseInt(body.slice(2), 16);
-      return isScalarValue(code) ? String.fromCodePoint(code) : whole;
-    }
-    if (body.startsWith('#')) {
-      const code = Number.parseInt(body.slice(1), 10);
-      return isScalarValue(code) ? String.fromCodePoint(code) : whole;
-    }
-    return NAMED_ENTITIES[body.toLowerCase()] ?? whole;
-  });
+  return text.replace(/&([a-z]+);/gi, (whole, name: string) => NAMED_ENTITIES[name.toLowerCase()] ?? whole);
 }
 
 /**

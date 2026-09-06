@@ -29,9 +29,9 @@ describe('normaliseSiteName', () => {
 });
 
 describe('nameFromHtmlTitle', () => {
-  it('reads the static title and decodes entities', () => {
-    const html = '<!doctype html><html><head><title>Arch &amp; Studio &#8211; Design</title></head></html>';
-    expect(nameFromHtmlTitle(html)).toBe('Arch & Studio – Design');
+  it('reads the static title and decodes the entity HTML forces an author to write', () => {
+    const html = '<!doctype html><html><head><title>Arch &amp; Studio</title></head></html>';
+    expect(nameFromHtmlTitle(html)).toBe('Arch & Studio');
   });
 
   it('ignores attributes on the tag and whitespace inside it', () => {
@@ -51,18 +51,19 @@ describe('nameFromHtmlTitle', () => {
   });
 });
 
-describe('nameFromHtmlTitle: numeric entities it cannot represent', () => {
-  it('leaves a code point outside Unicode as the text it was, instead of throwing', () => {
-    // `<title>` is arbitrary text out of a file this package did not write, and `String.fromCodePoint`
-    // throws on anything that is not a scalar value. resolveConfig is shared, so a throw here would take
-    // down whichever command happened to resolve the config.
-    for (const entity of ['&#9999999999;', '&#x110000;', '&#xFFFFFFFF;', '&#55296;', '&#xD800;']) {
+describe('nameFromHtmlTitle: numeric entities', () => {
+  it('leaves them as the text they were, rather than turning numbers into code points', () => {
+    // Decoding these meant handing arbitrary numbers out of a file this package did not write to
+    // `String.fromCodePoint`, which throws for anything that is not a Unicode scalar value — and it
+    // threw out of `resolveConfig`, which every command calls. `&#9999999999;` is that crash; the rest
+    // are the neighbouring cases. Kept as a regression guard: decoding these again needs a scalar check.
+    for (const entity of ['&#9999999999;', '&#x110000;', '&#xFFFFFFFF;', '&#55296;', '&#xD800;', '&#233;']) {
       expect(nameFromHtmlTitle(`<title>Shop ${entity}</title>`)).toBe(`Shop ${entity}`);
     }
   });
 
-  it('still decodes the ones that are characters', () => {
-    expect(nameFromHtmlTitle('<title>Caf&#233; &#x1F600; &amp; Bar</title>')).toBe('Café 😀 & Bar');
+  it('reads a title whose characters are written literally, which is what a UTF-8 file does', () => {
+    expect(nameFromHtmlTitle('<title>Café 😀 &amp; Bar</title>')).toBe('Café 😀 & Bar');
   });
 });
 
