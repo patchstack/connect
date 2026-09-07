@@ -49,6 +49,7 @@ import {
   installCommand,
   renderGuideChecklist,
   resolveWidgetFileHint,
+  widgetTagInPlace,
 } from './guide.js';
 import { login, readPendingLogin, redeemIfApproved, startLogin, waitForApproval } from './login.js';
 import { runProtect, runVerify } from './protect/install/index.js';
@@ -839,6 +840,16 @@ async function runSetup(args: ParsedArgs): Promise<number> {
     console.log('');
     console.log(`Setup applied its bounded changes; ${remaining} manual step(s) remain above.`);
   }
+
+  // Setup ends on a page the user is already looking at, which loaded before the widget
+  // tag existed, and against a deployed site still serving its previous build. Nothing
+  // here can reach either one, so the agent relaying these is the whole mechanism.
+  console.log('');
+  console.log('Tell the user:');
+  if (widgetTagInPlace(after)) {
+    console.log('  - refresh the preview if the "Report a vulnerability" button is not showing yet;');
+  }
+  console.log('  - deploy (or hit Publish) when ready, so the live site serves these changes.');
   return 0;
 }
 

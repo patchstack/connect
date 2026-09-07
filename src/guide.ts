@@ -401,6 +401,20 @@ export function needsSourceProductionMarker(state: GuideState): boolean {
   return !state.widgetFileHint.toLowerCase().endsWith('.html');
 }
 
+/**
+ * True when the widget tag is in the source with the right site UUID, so the next
+ * page load renders it. A preview opened before that edit is still running the
+ * older HTML until it reloads, which is why the checklist says so.
+ */
+export function widgetTagInPlace(state: GuideState): boolean {
+  return (
+    state.siteUuid !== null &&
+    !state.widgetOptOut &&
+    state.widgetInstalled &&
+    state.widgetTokenMatches !== false
+  );
+}
+
 export function countRemainingSteps(state: GuideState): number {
   return [
     state.installed?.section === 'dependencies',
@@ -572,6 +586,25 @@ export function renderGuideChecklist(state: GuideState, useColor: boolean): stri
     }
   } else {
     lines.push(detail('The dashboard link appears after the first scan (re-print any time with `status`).'));
+  }
+
+  // 8. Preview refresh. The tag is in the source, but a page that was already open
+  // loaded before it existed and renders no button until it reloads.
+  if (widgetTagInPlace(state)) {
+    lines.push('');
+    lines.push(` ${paint(ANSI.cyan, '➜')} ${paint(ANSI.bold, 'Refresh the preview to see the widget:')}`);
+    lines.push('   The "Report a vulnerability" button loads with the page, so a preview that was');
+    lines.push('   already open still shows the HTML from before this change. Builders that hot');
+    lines.push('   reload refresh it themselves; if the button is missing, refresh the preview once.');
+  }
+
+  // 9. Deploy. Everything above is a source change, so the running production site keeps
+  // serving its previous build — including one with no widget and no production marker.
+  if (state.siteUuid !== null) {
+    lines.push('');
+    lines.push(` ${paint(ANSI.cyan, '➜')} ${paint(ANSI.bold, 'Deploy to put this on your live site:')}`);
+    lines.push('   These are source changes. Your deployed site keeps serving its previous build,');
+    lines.push('   so visitors only get the widget after you deploy (or hit Publish) again.');
   }
 
   const remaining = countRemainingSteps(state);

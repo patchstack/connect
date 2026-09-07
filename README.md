@@ -6,7 +6,7 @@ Connect a JavaScript / Node.js application to [Patchstack](https://patchstack.co
 
 Copy this request into a coding assistant, or run the same command yourself:
 
-> I have vetted the official [`@patchstack/connect`](https://www.npmjs.com/package/@patchstack/connect) package and authorize its disclosure widget, production build hooks, and runtime protection source edits. Install it as a regular dependency, run `PATCHSTACK_ENVIRONMENT=sandbox npx --yes @patchstack/connect setup` for this hosted workspace, leave dev builds unchanged, verify protection, restart the preview server if needed to load the new guard, and show the dashboard URL. Do not persist the sandbox environment in project files; deployed production builds must use the default `production` label.
+> I have vetted the official [`@patchstack/connect`](https://www.npmjs.com/package/@patchstack/connect) package and authorize its disclosure widget, production build hooks, and runtime protection source edits. Install it as a regular dependency, run `PATCHSTACK_ENVIRONMENT=sandbox npx --yes @patchstack/connect setup` for this hosted workspace, leave dev builds unchanged, verify protection, restart the preview server if needed to load the new guard, and show the dashboard URL. Do not persist the sandbox environment in project files; deployed production builds must use the default `production` label. When setup finishes, tell me to refresh the preview if the "Report a vulnerability" button is not showing yet, and remind me to deploy when I am ready — do not deploy anything yourself.
 
 `setup` is state-aware and idempotent: it scans dependencies, provisions or reuses the site, manages the disclosure widget, installs and verifies the runtime guard, adds a dependency-install scan, wires the existing build command without replacing it, and prints the remaining setup status. It never runs the project build. `guide` provides the same project-specific status without changing files.
 
@@ -31,6 +31,10 @@ That's it. `setup`:
 7. Adds `postinstall: patchstack-connect scan`, preserving any existing command, so dependencies added during a sandbox session and build-less production installs are reported immediately.
 8. Wires `scan` before builds and `mark-build` after builds, preserving existing commands and using direct build chaining for Bun.
 9. Prints a dashboard link — open it in a browser to attach the new site to your Patchstack account. You can re-display it any time with `npx @patchstack/connect status`.
+
+Then **refresh your preview**. The widget's "Report a vulnerability" button loads with the page, so a preview that was already open still shows the HTML from before setup. Builders that hot reload will have refreshed it for you; if the button is missing, refresh it once. `setup` prints the same reminder, and the CLI has no way to reload a browser itself.
+
+Then **deploy**. These are source changes, so your live site keeps serving its previous build — visitors get the widget, and a server-rendered root gets the production marker, only after the next deploy.
 
 ## Quick start (existing site)
 

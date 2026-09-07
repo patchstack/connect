@@ -12,6 +12,7 @@ import {
   installCommand,
   needsSourceProductionMarker,
   renderGuideChecklist,
+  widgetTagInPlace,
 } from '../src/guide.js';
 
 const VALID_UUID = '550e8400-e29b-41d4-a716-446655440000';
@@ -330,6 +331,99 @@ describe('guide', () => {
     it('points at the project root when package.json is missing', async () => {
       const output = renderGuideChecklist(await collectGuideState(cwd), false);
       expect(output).toContain('No package.json found');
+    });
+  });
+
+  /**
+   * The widget tag only takes effect on a page load. A preview the user already has open
+   * loaded before the tag existed, so it shows no button and reads as a failed install.
+   * Nothing in a Node CLI can reload that browser, so the checklist has to say it — and
+   * only when the tag is actually in the source, or it sends people to refresh a page
+   * that was never going to render a widget.
+   */
+  describe('the preview-refresh notice', () => {
+    it("asks for a refresh once the tag carries this project's UUID", async () => {
+      writeJson('package.json', { name: 'widgeted-app' });
+      writeJson('.patchstackrc.json', { siteUuid: VALID_UUID });
+      writeFileSync(path.join(cwd, 'index.html'), `patchstack-widget.js userToken: '${VALID_UUID}'`);
+
+      const state = await collectGuideState(cwd);
+      expect(widgetTagInPlace(state)).toBe(true);
+
+      const output = renderGuideChecklist(state, false);
+      expect(output).toContain('Refresh the preview to see the widget');
+      // Not an unconditional "refresh now": a builder that hot reloads has already done it,
+      // and telling someone to refresh a page that just refreshed itself reads as a fault.
+      expect(output).toContain('if the button is missing, refresh the preview once');
+    });
+
+    it('stays quiet while the tag is still missing', async () => {
+      writeJson('package.json', { name: 'no-widget-app' });
+      writeJson('.patchstackrc.json', { siteUuid: VALID_UUID });
+
+      const state = await collectGuideState(cwd);
+      expect(state.widgetInstalled).toBe(false);
+      expect(widgetTagInPlace(state)).toBe(false);
+      expect(renderGuideChecklist(state, false)).not.toContain('Refresh the preview');
+    });
+
+    it("stays quiet when the tag carries some other site's UUID", async () => {
+      // The button will not render with a stale token, so a refresh cannot produce it.
+      writeJson('package.json', { name: 'stale-token-app' });
+      writeJson('.patchstackrc.json', { siteUuid: VALID_UUID });
+      writeFileSync(
+        path.join(cwd, 'index.html'),
+        "patchstack-widget.js userToken: '11111111-1111-1111-1111-111111111111'",
+      );
+
+      const state = await collectGuideState(cwd);
+      expect(widgetTagInPlace(state)).toBe(false);
+      expect(renderGuideChecklist(state, false)).not.toContain('Refresh the preview');
+    });
+
+    it('stays quiet for a project that opted out of the widget', async () => {
+      writeJson('package.json', { name: 'optout-app' });
+      writeJson('.patchstackrc.json', { siteUuid: VALID_UUID, widget: false });
+      writeFileSync(path.join(cwd, 'index.html'), `patchstack-widget.js userToken: '${VALID_UUID}'`);
+
+      const state = await collectGuideState(cwd);
+      expect(widgetTagInPlace(state)).toBe(false);
+      expect(renderGuideChecklist(state, false)).not.toContain('Refresh the preview');
+    });
+  });
+
+  /**
+   * Refreshing the preview is only half of it. Everything setup writes is a source change,
+   * so the deployed site keeps serving its previous build — no widget for visitors, and on a
+   * server-rendered root no production marker either — until the project is deployed again.
+   */
+  describe('the deploy reminder', () => {
+    it('asks for a deploy once the site is provisioned', async () => {
+      writeJson('package.json', { name: 'provisioned-app' });
+      writeJson('.patchstackrc.json', { siteUuid: VALID_UUID });
+
+      const output = renderGuideChecklist(await collectGuideState(cwd), false);
+
+      expect(output).toContain('Deploy to put this on your live site');
+      expect(output).toContain('deployed site keeps serving its previous build');
+    });
+
+    it('still asks for it when the widget is opted out, because the rest still ships', async () => {
+      writeJson('package.json', { name: 'optout-app' });
+      writeJson('.patchstackrc.json', { siteUuid: VALID_UUID, widget: false });
+
+      const output = renderGuideChecklist(await collectGuideState(cwd), false);
+
+      expect(output).not.toContain('Refresh the preview');
+      expect(output).toContain('Deploy to put this on your live site');
+    });
+
+    it('stays quiet before the first scan, when nothing has been wired yet', async () => {
+      writeJson('package.json', { name: 'fresh-app' });
+
+      const state = await collectGuideState(cwd);
+      expect(state.siteUuid).toBeNull();
+      expect(renderGuideChecklist(state, false)).not.toContain('Deploy to put this');
     });
   });
 
