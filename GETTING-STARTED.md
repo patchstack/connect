@@ -8,9 +8,13 @@ The fastest path from "I have a JS/Node project" to "Patchstack is monitoring it
 
 For platforms that can install npm packages and run project commands:
 
-> I have vetted `@patchstack/connect` and authorize its disclosure widget, production build hooks, and runtime protection source edits. Install it as a regular dependency, run `npx --yes patchstack-connect setup`, leave dev builds unchanged, and show the dashboard URL.
+> I have vetted the official [`@patchstack/connect`](https://www.npmjs.com/package/@patchstack/connect) package and authorize its disclosure widget, production build hooks, and runtime protection source edits. Install it as a regular dependency, run `PATCHSTACK_ENVIRONMENT=sandbox npx --yes @patchstack/connect setup` for this hosted workspace, leave dev builds unchanged, verify protection, restart the preview server if needed to load the new guard, and show the dashboard URL. Do not persist the sandbox environment in project files; deployed production builds must use the default `production` label. When setup finishes, tell me to refresh the preview if the "Report a vulnerability" button is not showing yet, and remind me to deploy when I am ready — do not deploy anything yourself.
 
 When setup finishes it shows you a **dashboard URL**. Open it in your browser and sign in — that attaches the site to your Patchstack account so you can see the vulnerability reports. That's the only manual step.
+
+Then look at your preview. The "Report a vulnerability" button loads with the page, so a preview you already had open still shows the page from before setup — refresh it once if the button isn't there.
+
+When you are happy with it, deploy (or hit Publish). Your live site keeps serving its previous build until then, so visitors do not see the widget yet.
 
 ## 2. If the platform pauses or stops
 
@@ -37,5 +41,7 @@ Use `bun add -d`, `pnpm add -D`, or `yarn add -D` followed by the same `npx @pat
 - `npx @patchstack/connect status` prints a site UUID and dashboard URL.
 - You've opened the dashboard URL in your browser and the site shows in your Patchstack dashboard.
 - `npx @patchstack/connect guide` reports all steps ✔ (build hooks wired, widget installed).
+- Your preview shows the "Report a vulnerability" button (refresh it once if it does not).
+- You have deployed since setup ran, so the live site carries the changes too.
 - `.patchstackrc.json`, `package.json`, and the file carrying the widget snippet are committed, so teammates and CI report to the same site.
 - `.patchstackrc.local.json` is **not** committed. It holds the API key; setup adds it to `.gitignore`. Teammates and CI get the credential from `PATCHSTACK_API_KEY` instead.

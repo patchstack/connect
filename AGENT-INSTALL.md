@@ -70,6 +70,10 @@ Only `map` reads your source, and only `map --upload` sends anything derived fro
 
    In a hosted builder, run setup with `PATCHSTACK_ENVIRONMENT=sandbox` scoped to the workspace process/command, ensure the CLI's on-disk edits are adopted into the platform's persisted project state, then restart any already-running preview/server process so it loads the guard. Do not persist `"environment": "sandbox"` in `.patchstackrc.json`: deployed builds use the same committed files and should default to `production`. A client-only SPA has no server request path to guard; do not call it protected unless `protect --check` succeeds after a real server or edge seam is wired.
 
+   **Finish by telling the user to refresh their preview.** The widget's "Report a vulnerability" button loads with the page, so a preview that was already open still shows the HTML from before setup — the button is missing there until it reloads. Nothing in the CLI can reach the user's browser, so relaying this is your job. Phrase it as a check rather than a required step: a builder that hot reloads, or a preview server you restarted, may have refreshed it already.
+
+   **Then tell them to deploy.** Setup changes source files, and the deployed site keeps serving its previous build until the next deploy — so visitors get no widget, and on a server-rendered root no production marker, until the user deploys (or hits Publish) again. Say it as a reminder; do not deploy anything yourself.
+
 ## Manual setup
 
 1. **First scan** — provisions a Patchstack site automatically, writes the UUID to `.patchstackrc.json`, and installs the disclosure widget's `<script>` tag into the root HTML shell (`index.html`, `public/index.html`, or `src/app.html`) when one exists — or, when the root shell is JSX, the production marker instead. No signup, dashboard step, or UUID is needed up front:
@@ -348,7 +352,8 @@ Two more endpoints the package can call, for completeness:
 
 - `npx @patchstack/connect status` re-prints the site UUID and dashboard URL, and checks whether the site still exists on Patchstack (`Site status: active / removed / could not be verified`).
 - `npx @patchstack/connect protect --check` verifies the runtime guard is connected to the request path.
-- Load the site in a browser — the "Report a vulnerability" button should appear.
+- Load the site in a browser — the "Report a vulnerability" button should appear. Refresh a page that was already open before the tag was added: the button only loads with the page.
+- On the deployed site, the button appears only after a deploy that includes these source changes.
 
 ## Answering "is Patchstack installed?" / "is Patchstack removed?"
 
