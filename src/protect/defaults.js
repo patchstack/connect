@@ -206,6 +206,11 @@ export const DEFAULT_EGRESS_RULES = [
     title: 'Outbound request to an internal / metadata address (SSRF)',
     phase: 'egress',
     category: 'ssrf',
+    // Declared, not implied. Nothing in the egress path reads it — a match refuses the call, and the
+    // rule's mode decides whether it actually did — but the action is part of how a rule describes
+    // itself to whatever reports on it, and a rule that declares nothing is reported as a rule nobody
+    // can classify.
+    action: 'block',
     rule_v2: [{ parameter: 'egress.host', match: { type: 'internal_host' } }]
   }
 ];

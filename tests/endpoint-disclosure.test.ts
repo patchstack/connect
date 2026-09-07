@@ -270,6 +270,18 @@ describe('shipped docs disclose every endpoint the package calls', () => {
       expect(text, 'must scope the client fields to the phases that have a client').toMatch(
         /request or response detection/i,
       );
+      // The classification, on the same terms. A payload field described in AGENT-INSTALL.md and
+      // nowhere else is documented for whoever reads that file and undocumented for the caller whose
+      // editor shows the type declaration — and the completeness check over the payload reads only
+      // AGENT-INSTALL.md, so it cannot notice.
+      expect(text, "must say the rule's class travels").toMatch(
+        /category and the action it declares/i,
+      );
+      // And that it is not the same fact as enforcement, which is the pair a reader is most likely to
+      // conflate: a rule declaring `block` while observing enforces nothing.
+      expect(text, 'must separate the declared action from what was enforced').toMatch(
+        /declaring `?block`? while (only )?observing/i,
+      );
       expect(text, 'and must say an egress detection carries neither').toMatch(
         /egress detection[^.]*(carries neither|no user agent)/i,
       );

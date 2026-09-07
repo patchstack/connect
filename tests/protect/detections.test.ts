@@ -32,6 +32,8 @@ const ALLOWED_KEYS = [
   'user_agent',
   'parameters',
   'phase',
+  'category',
+  'action',
   'enforced',
   'rules_etag',
   'rule_revision',
@@ -83,6 +85,10 @@ describe('the detection payload', () => {
       query_keys: ['url'],
       parameters: ['server.REQUEST_URI', 'get.url'],
       phase: 'request',
+      // Null because `pinnedRule` declares neither, which is the honest report for a rule that says
+      // nothing — distinguishable from a rule whose class we do know.
+      category: null,
+      action: null,
       // The point of the channel: this rule did not block, and that is the interesting case.
       enforced: false,
       rules_etag: '"v7"',

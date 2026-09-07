@@ -39,6 +39,8 @@ const FIELD_DISCLOSURE: Record<string, RegExp> = {
   user_agent: /user\s+agent/i,
   parameters: /parameter names/i,
   phase: /which phase matched/i,
+  category: /the rule's category and the action it declares/i,
+  action: /the rule's category and the action it declares/i,
   enforced: /whether it was enforced/i,
   rules_etag: /identifier of the rule bundle/i,
   rule_revision: /revision of the rule/i,
