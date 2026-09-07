@@ -180,8 +180,16 @@ would have stopped while it is still in dry-run. Two separate paths, with differ
 
 What a detection report contains, per matched rule — on every phase, whatever fired it: the rule id, the revision of the rule when the
 bundle carried one, the identifier of the rule bundle in use, which phase matched,
-whether it was enforced, the request path **with the query string's values removed**,
-that query's parameter names, the method, and a timestamp. Each batch also carries a count of reports dropped when traffic outran the flush,
+the rule's category and the action it declares, whether it was enforced,
+the request path **with the query string's values removed**,
+that query's parameter names, the method, and a timestamp.
+
+The category and the declared action say what KIND of rule matched — "a secret-exposure rule that
+redacts", "an SSRF rule that blocks". Both are read from the rule your guard was served, and both are
+`null` when that rule declares neither: a rule whose class nobody can state is reported as one, not
+filled in. Neither is the same as `enforced`, which is whether the rule acted on this particular
+request: a rule declaring `block` while only observing reports exactly that, and that is what a
+detect-only deployment consists of. Each batch also carries a count of reports dropped when traffic outran the flush,
 so a partial sample is not read as a complete one.
 
 Two fields depend on the phase, because one kind of detection has a client and the other does not. A
