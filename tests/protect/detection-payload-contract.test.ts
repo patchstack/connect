@@ -42,6 +42,7 @@ const FIELD_DISCLOSURE: Record<string, RegExp> = {
   category: /the rule's category and the action it declares/i,
   action: /the rule's category and the action it declares/i,
   enforced: /whether it was enforced/i,
+  event: /which call it belongs to/i,
   rules_etag: /identifier of the rule bundle/i,
   rule_revision: /revision of the rule/i,
   detected_at: /timestamp/i,

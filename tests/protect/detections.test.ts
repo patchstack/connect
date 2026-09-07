@@ -35,6 +35,7 @@ const ALLOWED_KEYS = [
   'category',
   'action',
   'enforced',
+  'event',
   'rules_etag',
   'rule_revision',
   'client_ip_source',

@@ -199,6 +199,25 @@ const MAX_IDENTIFIER_CHARS = 256;
  * discarded, and sending a truncated one spends it to have the wrong thing recorded.
  */
 const MAX_CLASS_CHARS = 64;
+
+/**
+ * The shape an event identity has to have to be reported: 32 lowercase hexadecimal characters.
+ *
+ * What this establishes is that the value is the SHAPE this guard mints, and no more than that. It is
+ * not evidence the value means nothing — a hash of an address or an account name has the same shape, and
+ * no check on the value could tell one from a token drawn from randomness. What keeps it meaningless is
+ * where it comes from, one function away, and that is not something a consumer can read off the value.
+ *
+ * It is still worth refusing everything else. A value that is plainly something else — a path, an
+ * address, a name — is dropped rather than sent, whatever set it, and the field keeps to one
+ * representation: another needs a version or a tag saying so, and a decision about what it may contain.
+ */
+const EVENT_PATTERN = /^[0-9a-f]{32}$/;
+
+/** An identity as it can be reported, or null when there is nothing reportable. */
+function eventIdentity(value) {
+  return typeof value === 'string' && EVENT_PATTERN.test(value) ? value : null;
+}
 /**
  * Bounds re-applied to captured evidence at the wire.
  *
@@ -1023,6 +1042,15 @@ export function createDetectionReporter(opts) {
         // know, and `truncated` distinguishes the second from the first.
         category: classCategory.value,
         action: classAction.value,
+        // Which call this detection belongs to, so a consumer can tell one call two rules saw from two
+        // separate calls. Two rules matching one call is the ordinary case — a rule that enforces and a
+        // rule that only observes are meant to match the same thing — so without this, adding these up
+        // reports one call more than once.
+        //
+        // Nothing about the request goes into it: it is only ever compared with other identities, so
+        // deriving it from the address or the path would carry something about whoever made the request
+        // into a place nothing needs it. That is a property of how it is minted, not of its shape.
+        event: eventIdentity(detection.event),
         // The state this detection was handled under, which is the whole point: `false` is a rule that
         // saw traffic it would have stopped.
         enforced: detection.mode === 'block',

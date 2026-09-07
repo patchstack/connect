@@ -181,8 +181,20 @@ would have stopped while it is still in dry-run. Two separate paths, with differ
 What a detection report contains, per matched rule — on every phase, whatever fired it: the rule id, the revision of the rule when the
 bundle carried one, the identifier of the rule bundle in use, which phase matched,
 the rule's category and the action it declares, whether it was enforced,
-the request path **with the query string's values removed**,
+which call it belongs to, the request path **with the query string's values removed**,
 that query's parameter names, the method, and a timestamp.
+
+Which call it belongs to is a token your guard mints and repeats on every rule that matched the same
+request or the same outbound call. It exists because two rules matching one call is ordinary rather than
+unusual — a rule that enforces and a rule that only observes are meant to match the same thing — so
+without it, adding these reports up counts one call more than once.
+
+Nothing about the request goes into it: not the address, not the path, not a header. It is drawn from
+your runtime's randomness where that exists, and from the clock plus `Math.random` where it does not,
+which is how this package already makes its own instance id. It is never a secret and never a boundary —
+nothing is authorised by holding it — so what it has to do is not collide between two calls. A request and the response to it share one token; an
+outbound call gets its own, because an outbound attempt is a thing in its own right and one made outside
+any request has no request to belong to.
 
 The category and the declared action say what KIND of rule matched — "a secret-exposure rule that
 redacts", "an SSRF rule that blocks". Both are read from the rule your guard was served, and both are

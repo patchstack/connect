@@ -412,8 +412,15 @@ export async function createProtection(options = {}) {
     return { plan: entry.reference, ...captureValues(entry.plan, result.resolver) };
   };
 
-  const decide = (phase, result, block, allow, ctx = {}) => {
+  /**
+   * `describe` is called only when a detection is actually raised.
+   *
+   * A function rather than a value: the description costs a URL parse, a header read and an identity,
+   * and most requests match nothing, so none of it is done until there is a detection to describe.
+   */
+  const decide = (phase, result, block, allow, describe = () => ({})) => {
     if (!result || !result.blocked) return allow();
+    const ctx = describe() ?? {};
     const effectiveMode = ruleMode(result.rule);
     onDetect({
       phase,
@@ -426,6 +433,9 @@ export async function createProtection(options = {}) {
       method: ctx.method,
       path: ctx.path,
       ip: ctx.ip,
+      // Which call this was. Named here rather than spread from `ctx` for the same reason as everything
+      // else in this payload: a field reaches the wire because someone listed it.
+      event: ctx.event ?? null,
       // Provenance travels with the address. Without it a consumer cannot tell an observed peer from a
       // value read out of a forwarded header, and `null` from "there was no address to establish".
       clientIpSource: ctx.clientIpSource,
@@ -607,7 +617,7 @@ export async function createProtection(options = {}) {
       result,
       () => blockResponse(result, request),
       () => null,
-      requestMeta(shaped, request),
+      () => requestMeta(shaped, request),
     );
 
     return { blocked, client: shaped?._clientIp };
@@ -631,6 +641,11 @@ export async function createProtection(options = {}) {
         headers,
         ip: resolved.ip ?? '',
         _clientIp: resolved,
+        // The request itself, so the identity can be asked for LATER. This context is built on every
+        // request whether or not anything matches, so asking here would mint one for every request —
+        // and asking of the context rather than of the request would give the response a different
+        // identity from the request that caused it, reporting one call as two.
+        _eventOf: request,
       };
     } catch {
       return undefined;
@@ -647,6 +662,9 @@ export async function createProtection(options = {}) {
           headers: req.headers || {},
           ip: client?.ip ?? '',
           _clientIp: client ?? { ip: null, source: 'unavailable' },
+          // The request itself, for the same reasons as on the fetch path above: asked for later, and
+          // asked of the request rather than of this context.
+          _eventOf: req,
         }
       : undefined;
 
@@ -1007,8 +1025,11 @@ export async function createProtection(options = {}) {
     }
 
     // Every rule is asked, and every match is reported under its own rule. Two rules matching one call
-    // are two matches of one outbound attempt, not two attempts: these events are per-rule evidence,
-    // and nothing here identifies the attempt they share.
+    // are two matches of one outbound attempt, not two attempts — and the identity below is what says so,
+    // so a consumer counting attempts is not counting rules.
+    //
+    // Minted once for the call, before any rule is asked, so every match on it reports the same one.
+    const egressEvent = mintEvent();
     let block = false;
     for (const { rule, engine: re } of egressRuleSet) {
       let result;
@@ -1031,6 +1052,14 @@ export async function createProtection(options = {}) {
         category: rule?.category,
         rule,
         message: result.message,
+        // One identity for this outbound call, shared by every rule that matches it — the egress phase
+        // evaluates all of them rather than stopping at the first, so without this two rules refusing one
+        // call would count as two calls refused.
+        //
+        // Its own identity, not the identity of whatever request the application was serving when it made
+        // the call. An outbound attempt is a thing that happened in its own right, and a call made outside
+        // any request — a job, a timer — has no request to belong to.
+        event: egressEvent,
         method: typeof method === 'string' ? method : null,
         path: egressPath,
         capture: evidenceFrom(result),
@@ -1127,7 +1156,7 @@ export async function createProtection(options = {}) {
             if (exprOptions.screenResponses) wrapNodeResponse(res, reqContextFromNode(req, client));
             next();
           },
-          nodeRequestMeta(req, client),
+          () => nodeRequestMeta(req, client),
         );
       };
     },
@@ -1204,7 +1233,7 @@ export async function createProtection(options = {}) {
             if (nodeOptions.screenResponses) wrapNodeResponse(res, reqContextFromNode(req, shaped?._clientIp));
             next();
           },
-          nodeRequestMeta(req, shaped?._clientIp),
+          () => nodeRequestMeta(req, shaped?._clientIp),
         );
       }
     },
@@ -1882,6 +1911,81 @@ function defaultOnDetect({ phase, mode, category, rule, message }) {
  * @param {Request | undefined} request
  */
 /**
+ * The identity of the event a detection belongs to.
+ *
+ * A detection says a rule matched. It does not say WHAT it matched, so two detections cannot be told
+ * apart as one call two rules saw from two separate calls — and two rules matching one call is the
+ * ordinary case, not an edge one: a rule that enforces and a rule that only observes are meant to match
+ * the same thing, and the response phase and the egress phase both evaluate every rule rather than
+ * stopping at the first match. Without an identity, anything adding those counts up reports one call
+ * more than once.
+ *
+ * Drawn from randomness, and nothing about the request goes into it — not the address, not the path, not
+ * a header — because it is only ever compared with other identities, and anything derived from the
+ * request would carry something about whoever made it into a place nothing needs it.
+ *
+ * That is a property of where the value comes from, not of how it looks. Its shape says only that this
+ * guard minted it; a hash of an address would look the same, so nothing downstream can establish from
+ * the value alone that it means nothing. This is the only place that can.
+ *
+ * Held against the request object rather than written onto it: two phases of one request are one event,
+ * and a weak key means an identity lives exactly as long as the request it names and is never a leak.
+ *
+ * @type {WeakMap<object, string>}
+ */
+const eventIdentities = new WeakMap();
+
+/**
+ * 32 hexadecimal characters naming one call.
+ *
+ * Web crypto where the runtime has it. Where it does not — Node 18 exposes no global `crypto` — the
+ * clock and `Math.random` stand in, which is what this package already does for its reporter's own
+ * instance id and is enough here for the same reason: this identity is never a secret and never a
+ * boundary. Nothing is authorised by holding it and nothing is denied by guessing it. What it has to do
+ * is not collide between two calls, and a millisecond plus eighty-odd bits does that.
+ *
+ * A runtime with neither would be one with no clock, so there is no null case to handle. Wrapped anyway,
+ * because a throw here would be a request that never gets screened over a field used for counting.
+ */
+function mintEvent() {
+  try {
+    const bytes = globalThis.crypto?.getRandomValues?.(new Uint8Array(16));
+    if (bytes) return Array.from(bytes, (byte) => byte.toString(16).padStart(2, '0')).join('');
+  } catch {
+    // Falls through to the clock below.
+  }
+
+  try {
+    let hex = Date.now().toString(16);
+    while (hex.length < 32) hex += Math.floor(Math.random() * 0xffffffff).toString(16).padStart(8, '0');
+
+    return hex.slice(0, 32);
+  } catch {
+    // Fail-open, like everything else here: no identity is a detection that cannot be grouped, which is
+    // a worse count than one nobody can group. It is not a reason to fail a request.
+    return null;
+  }
+}
+
+/**
+ * The identity for a request, minted the first time anything asks.
+ *
+ * Lazily, so a request that matches nothing costs nothing. Every phase of one request asks with the same
+ * request object and so gets the same answer, whichever of them fires first.
+ */
+function eventFor(request) {
+  if (request === null || typeof request !== 'object') return mintEvent();
+
+  const existing = eventIdentities.get(request);
+  if (existing !== undefined) return existing;
+
+  const minted = mintEvent();
+  if (minted !== null) eventIdentities.set(request, minted);
+
+  return minted;
+}
+
+/**
  * Request metadata from a response-phase context.
  *
  * The context is the originating request, already carrying its own resolution — so a response detection
@@ -1893,6 +1997,9 @@ function requestMetaFromContext(reqCtx) {
 
   return {
     method: reqCtx.method ?? null,
+    // The originating request's identity, so a response detection and the request detection for the same
+    // request are one event rather than two. Asked for here, which is inside a detection being raised.
+    event: eventFor(reqCtx._eventOf),
     // Path AND query. The reporter is what drops the query's VALUES, keeping its parameter names, so
     // trimming it here would leave a Fetch or response detection unable to say what was requested.
     path: typeof reqCtx.originalUrl === 'string' ? reqCtx.originalUrl : null,
@@ -1919,7 +2026,7 @@ function requestMeta(shaped, request) {
     userAgent = request.headers?.get?.('user-agent') ?? null;
   }
 
-  return { method, path, ip: client.ip, clientIpSource: client.source, userAgent };
+  return { method, path, ip: client.ip, clientIpSource: client.source, userAgent, event: eventFor(request) };
 }
 
 /**
@@ -1942,5 +2049,6 @@ function nodeRequestMeta(req, client) {
     ip: resolved.ip,
     clientIpSource: resolved.source,
     userAgent: typeof ua === 'string' ? ua : Array.isArray(ua) ? ua[0] : null,
+    event: eventFor(req),
   };
 }

@@ -168,12 +168,19 @@ export interface CreateProtectionOptions {
    *
    * What it sends on EVERY detection: the rule id and its revision, the request path, the query string's
    * parameter NAMES, the method, the parameters the rule reads, the phase, whether it was enforced, the
-   * rule-bundle ETag, a timestamp, and the rule's category and the action it declares — plus
-   * the values of the parameters the matched rule names, under a plan derived from that rule.
+   * rule-bundle ETag, a timestamp, the rule's category and the action it declares, and which call it
+   * belongs to — plus the values of the parameters the matched rule names, under a plan derived from
+   * that rule.
    *
    * The category and the declared action say what KIND of rule matched. Both are read from the rule
    * itself and are `null` when it declares neither. Neither is the same as `enforced`:
    * a rule declaring `block` while only observing reports that action with `enforced` false.
+   *
+   * Which call it belongs to is a token this guard mints and repeats on every rule that matched the same
+   * request or outbound call, so one call seen by two rules can be told from two calls. Nothing about
+   * the request goes into it — it is drawn from the runtime's randomness, or from the clock and
+   * `Math.random` where there is none. A request and its response share one; an outbound call gets its
+   * own. It is never a secret and never a boundary: what it has to do is not collide between two calls.
    *
    * Two fields depend on the phase. A request or response detection also carries the user agent and the
    * client address with its provenance. An egress detection carries neither: the call was the
