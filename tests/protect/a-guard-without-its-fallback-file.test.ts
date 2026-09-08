@@ -47,7 +47,12 @@ async function loadGuard(name: string, rules: string | null): Promise<Record<str
   dirs.push(dir);
   writeFileSync(join(dir, 'package.json'), JSON.stringify({ type: commonjs ? 'commonjs' : 'module' }));
 
-  const record = 'async (options) => { (globalThis.__psOptions ??= []).push(options); return {}; }';
+  // A protection complete enough for each seam to use: what these cases are about is the bundle it was
+  // asked for, so nothing here should fail for want of a method.
+  const usable =
+    '{ express: () => (_req, _res, next) => next(), node: () => (_req, _res, next) => next(),' +
+    ' fetchGuard: () => async () => null, screenResponse: async (response) => response }';
+  const record = `async (options) => { (globalThis.__psOptions ??= []).push(options); return ${usable}; }`;
   const stub = commonjs ? 'stub.cjs' : 'stub.mjs';
   writeFileSync(
     join(dir, stub),
@@ -78,8 +83,15 @@ async function loadGuard(name: string, rules: string | null): Promise<Record<str
 async function build(api: Record<string, any>): Promise<void> {
   try {
     if (typeof api.getProtection === 'function') await api.getProtection();
-    else if (typeof api.patchstackFastify === 'function') await api.patchstackFastify({ addHook: () => {} });
-    else await api.patchstackMiddleware({ method: 'GET', url: '/', headers: {} }, { setHeader: () => {} }, () => {});
+    else if (typeof api.patchstackFastify === 'function') {
+      // The Fastify plugin builds on the first request its hook sees, not at registration, so the hook
+      // is what has to run.
+      const hooks: Array<(request: unknown, reply: unknown) => unknown> = [];
+      await api.patchstackFastify({ addHook: (_event: string, hook: never) => hooks.push(hook) });
+      for (const hook of hooks) {
+        await hook({ method: 'GET', url: '/', headers: {} }, { code: () => {}, header: () => {}, send: () => {} });
+      }
+    } else await api.patchstackMiddleware({ method: 'GET', url: '/', headers: {} }, { setHeader: () => {} }, () => {});
   } catch {
     // The stub is not a policy.
   }
