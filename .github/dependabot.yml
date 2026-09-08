@@ -1,0 +1,35 @@
+version: 2
+updates:
+  - package-ecosystem: "npm"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    open-pull-requests-limit: 5
+    # Let releases age before adopting them so compromised/yanked versions are
+    # caught upstream first. Security updates bypass cooldown, so CVE fixes are
+    # never delayed.
+    cooldown:
+      default-days: 7
+      semver-major-days: 30
+      semver-minor-days: 7
+      semver-patch-days: 3
+    labels:
+      - "dependencies"
+    groups:
+      non-major:
+        update-types: ["minor", "patch"]
+
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    open-pull-requests-limit: 3
+    cooldown:
+      default-days: 7
+    labels:
+      - "dependencies"
+      - "ci"
+    groups:
+      # Batch routine action updates; majors remain individually reviewable.
+      actions:
+        update-types: ["minor", "patch"]
