@@ -1,5 +1,6 @@
 import { describe, it, expect, afterEach } from 'vitest';
 import { readFileSync, readdirSync, mkdtempSync, writeFileSync, rmSync } from 'node:fs';
+import { spawnSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
@@ -21,6 +22,20 @@ afterEach(() => {
 });
 
 /**
+ * Whatever Node reports when it refuses to parse a file, or null when it parses.
+ *
+ * Node decides what an app can load, and it is stricter than the transform this test file is imported
+ * through: a guard the runner accepts and Node rejects would pass here and fail in the app it was
+ * scaffolded into. `--check` reads the file in the module goal its extension and the enclosing
+ * package's `type` give it, which is the goal it has in that app.
+ */
+function nodeRefuses(file: string): string | null {
+  const parsed = spawnSync(process.execPath, ['--check', file], { encoding: 'utf8' });
+
+  return parsed.status === 0 ? null : parsed.stderr;
+}
+
+/**
  * Load a scaffolded guard with its protection factory replaced by one the test controls.
  *
  * The module under test is the file we ship; the factory is redirected through a global because the
@@ -35,12 +50,12 @@ async function loadGuard(name: string): Promise<{ getProtection: () => Promise<u
   const dir = mkdtempSync(join(tmpdir(), 'ps-init-'));
   dirs.push(dir);
   const file = join(dir, 'guard.mjs');
-  writeFileSync(
-    file,
-    ['const createProtection = (options) => globalThis.__psCreate(options);', source, 'export { getProtection };'].join(
-      '\n',
-    ),
-  );
+  // Nothing is added to the template's own exports: it exports `getProtection` itself, and a second
+  // `export { getProtection }` alongside it is a duplicate export — a SyntaxError, not a re-export.
+  writeFileSync(file, ['const createProtection = (options) => globalThis.__psCreate(options);', source].join('\n'));
+
+  const refused = nodeRefuses(file);
+  if (refused) throw new Error(`Node will not parse the guard this test wrote:\n${refused}`);
 
   return import(pathToFileURL(file).href) as Promise<{ getProtection: () => Promise<unknown> }>;
 }
@@ -97,6 +112,27 @@ describe('every scaffolded guard', () => {
 
       expect(source, name).not.toMatch(/\b_?protection\s*=\s*await createProtection\(/);
       expect(source, name).toMatch(/\b_?protection\s*=\s*buildProtection\(\)/);
+    }
+  });
+
+  it('is a file Node can parse under the package type it is scaffolded into', () => {
+    // The pairing the scaffolder makes: a `.js` guard goes into a `"type": "module"` package and a `.cjs`
+    // guard into a CommonJS one, and that goal decides whether the template's own syntax is legal at all.
+    // All six sources, so none of them depends on some stack having an install test: those parse the
+    // guard a few stacks end up with, and `npm run typecheck` covers the `.ts` templates.
+    const templates = readdirSync(new URL(TEMPLATE_DIR)).filter((name) => /\.(?:js|cjs)$/.test(name));
+    expect(templates.length).toBeGreaterThan(5);
+
+    const dir = mkdtempSync(join(tmpdir(), 'ps-parse-'));
+    dirs.push(dir);
+    writeFileSync(join(dir, 'package.json'), JSON.stringify({ type: 'module' }));
+
+    for (const name of templates) {
+      // Named as the scaffolder names it, so the extension carries the goal rather than the test.
+      const file = join(dir, name.endsWith('.cjs') ? 'guard.cjs' : 'guard.js');
+      writeFileSync(file, readFileSync(new URL(name, TEMPLATE_DIR)));
+
+      expect(nodeRefuses(file), name).toBeNull();
     }
   });
 });
