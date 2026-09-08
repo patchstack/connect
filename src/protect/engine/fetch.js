@@ -6,6 +6,7 @@
 // The engine already consumes a runtime-neutral request shape; this adapter builds that
 // shape from a `Request`, so no engine changes are needed beyond keeping the hot path
 // free of Node-only APIs.
+import { resolveClientIp } from '../client-ip.js';
 import { RuleEngine } from './engine.js';
 import { notify } from '../notify.js';
 
@@ -49,8 +50,10 @@ export async function fromFetchRequest(request, options = {}) {
   }
 
   const uri = url.pathname + url.search;
-  const forwarded =
-    headers['cf-connecting-ip'] || headers['x-forwarded-for'] || headers['x-real-ip'] || '';
+  // The client address, resolved once for this request, with its provenance. A WHATWG Request exposes no
+  // transport peer, so a generic Fetch runtime has none to observe and the answer is `unavailable` unless
+  // the deployment declared a trust policy this runtime can satisfy.
+  const client = resolveClientIp({ peer: options.peer, headers, trustedProxy: options.trustedProxy });
 
   return {
     method,
@@ -60,7 +63,10 @@ export async function fromFetchRequest(request, options = {}) {
     body,
     files,
     headers,
-    ip: forwarded.split(',')[0].trim(),
+    // The resolved address, as an own property. Nothing downstream re-derives or falls back: a consumer
+    // that guessed differently would attribute one request to two addresses.
+    ip: client.ip ?? '',
+    _clientIp: client,
     cookies: parseCookies(headers.cookie),
     // Verbatim body text: preserves literal keys (e.g. `__proto__`) that JSON.stringify
     // drops, so prototype-pollution rules on `raw` are robust.

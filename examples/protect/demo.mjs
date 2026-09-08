@@ -5,13 +5,15 @@
 // and blocked — with an auditable proof. Also demonstrates response secret-leak redaction
 // and egress SSRF blocking. Public CVE + demo rules only; no tokens/secrets.
 //
-//   cd examples/protect && npm install && node demo.mjs
+//   npm install && npm run build   (repo root), then cd examples/protect && npm run setup && node demo.mjs
 import { readFileSync } from 'node:fs';
-import _ from 'lodash';
-import { createProtection } from '../../src/protect/runtime.js';
+import { DEMO_TARGET, loadRuntime, requireDemoTarget } from './demo-target.mjs';
+
+const { createProtection } = await loadRuntime();
 
 const rules = JSON.parse(readFileSync(new URL('./rules.demo.json', import.meta.url), 'utf8'));
-const LODASH = _.VERSION; // 4.17.11 (vulnerable; fixed in 4.17.12)
+const _ = await requireDemoTarget();
+const LODASH = DEMO_TARGET.version;
 
 let ok = true;
 const line = (pass, msg) => { ok = pass && ok; console.log(`  ${pass ? '✓' : '✗'}  ${msg}`); };

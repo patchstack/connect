@@ -1,6 +1,7 @@
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
+import ts from 'typescript';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import {
   MARKER_ATTR,
@@ -183,6 +184,38 @@ describe('ensureMarkerInJsxShell', () => {
   const doc = (body: string): string =>
     ['export const Root = () => (', '  <html>', '    <head>', '    </head>', '    <body>', body, '    </body>', '  </html>', ');'].join('\n');
 
+  const syntaxErrors = (source: string): readonly ts.Diagnostic[] =>
+    (ts.transpileModule(source, {
+      fileName: '__root.tsx',
+      reportDiagnostics: true,
+      compilerOptions: {
+        jsx: ts.JsxEmit.ReactJSX,
+        module: ts.ModuleKind.ESNext,
+        target: ts.ScriptTarget.ES2022,
+      },
+    }).diagnostics ?? []).filter(
+      (diagnostic) => diagnostic.category === ts.DiagnosticCategory.Error,
+    );
+
+  const multilineWidgetDoc = [
+    'const patchstackConfig = { siteUuid: "00000000-0000-4000-8000-000000000000" };',
+    'export const Root = () => (',
+    '  <html>',
+    '    <head>',
+    '      <title>Example</title>',
+    '    </head>',
+    '    <body>',
+    '      <main />',
+    '      <script',
+    '        src="https://cdn.patchstack.com/patchstack-widget.js"',
+    '        data-site-uuid={patchstackConfig.siteUuid}',
+    '        defer',
+    '      />',
+    '    </body>',
+    '  </html>',
+    ');',
+  ].join('\n');
+
   it('inserts the marker above the widget tag, so it runs first', () => {
     const { source, action } = ensureMarkerInJsxShell(doc(widgetLine), 'tanstack-start');
     expect(action).toBe('added');
@@ -196,11 +229,171 @@ describe('ensureMarkerInJsxShell', () => {
     expect(source.indexOf('__PATCHSTACK_PROD__')).toBeLessThan(source.indexOf('</head>'));
   });
 
+  it('finds the end of an attributed multiline head tag', () => {
+    const attributedHead = [
+      'const count = 1;',
+      'export const Root = () => (',
+      '  <html>',
+      '    <head',
+      '      data-label="one > zero"',
+      '      data-active={count > 0}',
+      '    >',
+      '      <title>Example</title>',
+      '    </head>',
+      '  </html>',
+      ');',
+    ].join('\n');
+
+    const { source, action } = ensureMarkerInJsxShell(attributedHead, 'tanstack-start');
+
+    expect(action).toBe('added');
+    expect(source.indexOf('__PATCHSTACK_PROD__')).toBeGreaterThan(source.indexOf('\n    >'));
+    expect(source.indexOf('__PATCHSTACK_PROD__')).toBeLessThan(source.indexOf('<title>'));
+    expect(syntaxErrors(source)).toEqual([]);
+  });
+
+  it('does not insert outside a self-closing shell tag', () => {
+    const selfClosing = [
+      'export const Root = () => (',
+      '  <html>',
+      '    <body />',
+      '  </html>',
+      ');',
+    ].join('\n');
+
+    const result = ensureMarkerInJsxShell(selfClosing, 'tanstack-start');
+
+    expect(result.action).toBe('no-anchor');
+    expect(result.source).toBe(selfClosing);
+  });
+
+  it('is byte-idempotent when the opening tag has an inline child', () => {
+    const inline = [
+      'export const Root = () => (',
+      '  <html>',
+      '    <head><title>Example</title></head>',
+      '  </html>',
+      ');',
+    ].join('\n');
+
+    const once = ensureMarkerInJsxShell(inline, 'tanstack-start').source;
+    const twice = ensureMarkerInJsxShell(once, 'tanstack-start').source;
+
+    expect(twice).toBe(once);
+    expect(syntaxErrors(twice)).toEqual([]);
+  });
+
+  it('keeps a multiline widget tag syntactically valid', () => {
+    const { source, action } = ensureMarkerInJsxShell(multilineWidgetDoc, 'tanstack-start');
+
+    expect(action).toBe('added');
+    expect(source.indexOf('__PATCHSTACK_PROD__')).toBeGreaterThan(source.indexOf('<head>'));
+    expect(source.indexOf('__PATCHSTACK_PROD__')).toBeLessThan(source.indexOf('<title>'));
+    expect(source).toContain(
+      '<script\n        src="https://cdn.patchstack.com/patchstack-widget.js"',
+    );
+    expect(syntaxErrors(source)).toEqual([]);
+  });
+
+  it('does not treat a widget URL in route metadata as a JSX anchor', () => {
+    const tanstackRoot = [
+      'export const Route = createRootRoute({',
+      '  head: () => ({',
+      '    scripts: [',
+      '      {',
+      '        src: "https://cdn.patchstack.com/patchstack-widget.js",',
+      '        defer: true,',
+      '      },',
+      '    ],',
+      '  }),',
+      '  component: RootDocument,',
+      '});',
+      'function RootDocument() {',
+      '  return (',
+      '    <html>',
+      '      <head>',
+      '        <HeadContent />',
+      '      </head>',
+      '      <body />',
+      '    </html>',
+      '  );',
+      '}',
+    ].join('\n');
+
+    const { source, action } = ensureMarkerInJsxShell(tanstackRoot, 'tanstack-start');
+
+    expect(action).toBe('added');
+    expect(source).toContain(
+      'scripts: [\n      {\n        src: "https://cdn.patchstack.com/patchstack-widget.js",',
+    );
+    expect(source.indexOf('__PATCHSTACK_PROD__')).toBeGreaterThan(source.indexOf('<head>'));
+    expect(source.indexOf('__PATCHSTACK_PROD__')).toBeLessThan(source.indexOf('<HeadContent />'));
+    expect(syntaxErrors(source)).toEqual([]);
+  });
+
   it('is idempotent — a re-run refreshes the block instead of stacking copies', () => {
     const once = ensureMarkerInJsxShell(doc(widgetLine), 'tanstack-start').source;
     const twice = ensureMarkerInJsxShell(once, 'tanstack-start').source;
     expect((twice.match(/__PATCHSTACK_PROD__/g) ?? []).length).toBe(1);
     expect((twice.match(/#region patchstack/g) ?? []).length).toBe(1);
+  });
+
+  it('repairs a managed block inserted inside multiline script attributes', () => {
+    const misplacedBlock = [
+      '{/* #region patchstack (managed by patchstack-connect — do not edit) */}',
+      ...buildSourceMarkerSnippet('tanstack-start').split('\n'),
+      '{/* #endregion patchstack */}',
+    ]
+      .map((line) => `        ${line}`)
+      .join('\n');
+    const broken = multilineWidgetDoc.replace(
+      '        src="https://cdn.patchstack.com/patchstack-widget.js"',
+      `${misplacedBlock}\n        src="https://cdn.patchstack.com/patchstack-widget.js"`,
+    );
+
+    expect(syntaxErrors(broken)).not.toEqual([]);
+
+    const repaired = ensureMarkerInJsxShell(broken, 'tanstack-start');
+    const rerun = ensureMarkerInJsxShell(repaired.source, 'tanstack-start');
+
+    expect(repaired.action).toBe('added');
+    expect(repaired.source.indexOf('__PATCHSTACK_PROD__')).toBeGreaterThan(
+      repaired.source.indexOf('<head>'),
+    );
+    expect(repaired.source.indexOf('__PATCHSTACK_PROD__')).toBeLessThan(
+      repaired.source.indexOf('<title>'),
+    );
+    expect((repaired.source.match(/#region patchstack/g) ?? []).length).toBe(1);
+    expect(syntaxErrors(repaired.source)).toEqual([]);
+    expect(rerun.source).toBe(repaired.source);
+  });
+
+  it('removes a misplaced managed block when no safe document anchor exists', () => {
+    const source = [
+      'export const head = {',
+      '  scripts: [',
+      '    {',
+      '      src: "https://cdn.patchstack.com/patchstack-widget.js",',
+      '    },',
+      '  ],',
+      '};',
+    ].join('\n');
+    const misplacedBlock = [
+      '{/* #region patchstack (managed by patchstack-connect — do not edit) */}',
+      ...buildSourceMarkerSnippet('tanstack-start').split('\n'),
+      '{/* #endregion patchstack */}',
+    ]
+      .map((line) => `      ${line}`)
+      .join('\n');
+    const broken = source.replace(
+      '      src: "https://cdn.patchstack.com/patchstack-widget.js",',
+      `${misplacedBlock}\n      src: "https://cdn.patchstack.com/patchstack-widget.js",`,
+    );
+
+    const result = ensureMarkerInJsxShell(broken, 'tanstack-start');
+
+    expect(result.action).toBe('no-anchor');
+    expect(result.source).toBe(source);
   });
 
   it('adopts a hand-placed marker rather than adding a second one', () => {
@@ -251,5 +444,20 @@ describe('ensureSourceMarker', () => {
 
     expect(ensureSourceMarker(root, shell, 'tanstack-start').action).toBe('no-anchor');
     expect(readFileSync(path.join(root, shell), 'utf8')).toBe('export const x = 1;\n');
+  });
+
+  it('persists cleanup when a stale managed block has no new anchor', () => {
+    const shell = 'root.tsx';
+    const clean = 'export const x = 1;\n';
+    const stale = [
+      '{/* #region patchstack (managed by patchstack-connect — do not edit) */}',
+      buildSourceMarkerSnippet('tanstack-start'),
+      '{/* #endregion patchstack */}',
+      clean,
+    ].join('\n');
+    writeFileSync(path.join(root, shell), stale);
+
+    expect(ensureSourceMarker(root, shell, 'tanstack-start').action).toBe('no-anchor');
+    expect(readFileSync(path.join(root, shell), 'utf8')).toBe(clean);
   });
 });

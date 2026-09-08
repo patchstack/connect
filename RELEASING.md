@@ -68,6 +68,25 @@ You can also publish an existing tag directly:
 gh workflow run publish.yml -f version=0.3.3
 ```
 
+## Before publishing detection reporting
+
+Detection reporting depends on two server-side behaviours. Check both before cutting a
+release that includes it, because a published version cannot be withdrawn from anyone
+who has already installed it:
+
+- **The detections endpoint deduplicates on `Idempotency-Key`.** Connect sends a stable
+  key for every attempt at a batch and a fresh one per batch, so a redelivery is
+  identifiable — but whether it is counted once is the endpoint's to decide. Published
+  ahead of that, a retry after a lost acknowledgement inflates the counts these reports
+  are read for.
+- **Ingest accepts and stores the current payload:** the `capture` object, the baseline
+  fields `method`, `user_agent`, `query_keys` and `query_keys_total`, and
+  `reporting_state` on the detections body. An endpoint that rejects or silently drops
+  them turns every report into a delivery failure, or into a record missing the evidence
+  it was sent to carry.
+
+Delete this section once both have shipped.
+
 ## Notes
 
 - Tags must be `vX.Y.Z` (the leading `v` is stripped to get the npm version).

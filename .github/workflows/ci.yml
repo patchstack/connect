@@ -142,6 +142,13 @@ jobs:
       - name: Bundle an edge guard and attack it
         run: npm run test:bundled
 
+      # The demos are the artifact shown to somebody to establish the product does what it claims, so a
+      # demo that cannot start is a claim with nothing behind it. Each must exit zero, print no failed
+      # step, reach its own verdict line, AND print the proof it exists to print. Installing the
+      # on-demand demo target is part of the run.
+      - name: Every demo runs and proves what it claims
+        run: npm run test:demos
+
   # The generated `.cmd` launcher and path handling are Windows-only code paths in npm's shim, not ours,
   # and they are exactly what breaks a bin that works everywhere else. One smoke test rather than the whole
   # matrix: the question is whether the launcher runs and resolves, not whether four managers agree.

@@ -248,8 +248,15 @@ jobs:
           test -n "$VERSION" || { echo "::error::No published version was passed to this job."; exit 1; }
 
           before=$(node -p 'require("./package.json").version')
+          # Read before the tree is touched, and passed to the commit as its expected parent. The commit
+          # is made through the API rather than from this checkout, so the two have to be tied together
+          # explicitly or it could be parented on a `main` that moved while this job was running.
+          echo "main_oid=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+
           # `npm version` is what writes all three recorded copies (manifest, lockfile top level, lockfile
-          # root entry). Doing it by hand is how one of the three gets left behind.
+          # root entry). Doing it by hand is how one of the three gets left behind — and the lockfile
+          # carries the same version string for every dependency that happens to sit at that number, so
+          # editing the text rewrites a dependency's pin.
           npm version "$VERSION" --no-git-tag-version --allow-same-version >/dev/null
 
           echo "before=$before" >> "$GITHUB_OUTPUT"
@@ -283,6 +290,27 @@ jobs:
       # `!cancelled()` rather than a bare condition: a condition without a status function is implicitly
       # ANDed with `success()`, which would skip this step whenever the check above failed — precisely when
       # the pull request matters most.
+      # The commit, made through GitHub's API rather than with the git CLI.
+      #
+      # `main` requires signed commits and `GITHUB_TOKEN` has no signing key, so a commit pushed from here
+      # is unsigned and the pull request carrying it cannot merge — it looks ready and is not. Commits
+      # created by `createCommitOnBranch` are signed by GitHub itself.
+      #
+      # The sequence, the checks and the compare-and-swap live in the script, which is tested: what has to
+      # hold is an ORDER — staged elsewhere, checked, then moved onto this branch in one leased step — and
+      # an order is not observable from its result.
+      - name: Commit the recorded version, signed
+        if: ${{ !cancelled() && steps.apply.outputs.changed == 'true' }}
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          node scripts/record-published-version.mjs \
+            --version "$VERSION" \
+            --previous "${{ steps.apply.outputs.before }}" \
+            --main "${{ steps.apply.outputs.main_oid }}" \
+            --run-id "$GITHUB_RUN_ID"
+
       - name: Open or update the pull request
         if: ${{ !cancelled() && steps.apply.outputs.changed == 'true' }}
         env:
@@ -290,26 +318,6 @@ jobs:
           TITLE: "Record published version ${{ env.VERSION }}"
         run: |
           set -euo pipefail
-          git config user.name 'github-actions[bot]'
-          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
-
-          # The checkout fetched one ref, so on any run after the first there is no remote-tracking ref
-          # for this branch and a bare `--force-with-lease` would refuse the push as stale — opening the
-          # pull request once and never updating it again while still reporting success.
-          git fetch --depth=1 origin "+refs/heads/${BRANCH}:refs/remotes/origin/${BRANCH}" 2>/dev/null || true
-
-          if git rev-parse --verify -q "refs/remotes/origin/$BRANCH" >/dev/null; then
-            lease="--force-with-lease=${BRANCH}:$(git rev-parse "refs/remotes/origin/${BRANCH}")"
-          else
-            # An empty expected value means "expect this branch not to exist" — the honest lease for a
-            # first push, and it still refuses to clobber a branch somebody created meanwhile.
-            lease="--force-with-lease=${BRANCH}:"
-          fi
-
-          git checkout -B "$BRANCH"
-          git add package.json package-lock.json
-          git commit -m "$TITLE" -m "Prepared automatically after publishing v${VERSION}. Not auto-merged."
-          git push "$lease" origin "$BRANCH"
 
           {
             echo "\`${VERSION}\` is published; \`main\` records \`${{ steps.apply.outputs.before }}\`."

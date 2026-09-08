@@ -29,24 +29,47 @@ async function withEgress(opts: any, fn: (p: any) => Promise<void>) {
 }
 
 describe('response phase — redaction depth', () => {
-  it('redacts every default secret type, still serving the page', async () => {
+  it('masks every atomic secret type, still serving the page', async () => {
+    // Each of these patterns matches the whole secret, so masking the match removes the whole secret
+    // and the response around it stays usable. Where the match is only the OPENING of a disclosure —
+    // a private key, a stack trace — masking it would leave the rest, so those withhold instead; see
+    // the case below.
     const p = await createProtection({ mode: 'block' });
     const cases: Array<[string, string]> = [
-      ['private-key', '-----BEGIN RSA PRIVATE KEY-----\nMIIabc'],
       ['aws', 'key=AKIAIOSFODNN7EXAMPLE'],
       ['gcp', 'k=AIzaSyD1234567890abcdefghij1234567890xy'],
       // A `service_role` JWT, not any JWT. This case used to be the generic token below, which the
       // default rule masked on shape alone — and that masked the Supabase anon key and users' own
       // access tokens along with it. Synthetic payload: {"role":"service_role"}.
       ['supabase-service-role', 'eyJhbGciOiJIUzI1NiJ9.eyJyb2xlIjoic2VydmljZV9yb2xlIn0.c2ln'],
-      ['db', 'mongodb://user:secret@db.host:27017/app'],
-      ['stack', 'oops\n    at handler (/srv/app/index.js:42:13)'],
     ];
     for (const [label, secret] of cases) {
       const r: any = await p.fetch(resp(`{"x":"${secret}"}`, 'text/plain'))(req());
       const body = await bodyOf(r);
       expect(r.status, label).toBe(200);
       expect(body.includes('[REDACTED]'), `${label} masked`).toBe(true);
+      expect(body.includes(secret.slice(-8)), `${label} tail survived`).toBe(false);
+    }
+  });
+
+  it('withholds the page for a disclosure masking cannot bound', async () => {
+    const p = await createProtection({ mode: 'block' });
+    const cases: Array<[string, string, string]> = [
+      // The marker establishes the leak; the key material follows it and has no bound the pattern
+      // can reach, so masking the marker alone would publish the key.
+      ['private-key', '-----BEGIN RSA PRIVATE KEY-----\nMIIabc', 'MIIabc'],
+      // Likewise a frame: the path, line and the frames under it are the disclosure.
+      ['stack', 'oops\n    at handler (/srv/app/index.js:42:13)', 'index.js'],
+      // And a connection URI: the credentials are followed by the host, port and database name, and a
+      // URI in free text has no end character that is not also ordinary punctuation.
+      ['db', 'mongodb://user:secret@db.host:27017/app', 'db.host'],
+    ];
+    for (const [label, secret, residue] of cases) {
+      const r: any = await p.fetch(resp(`{"x":"${secret}"}`, 'text/plain'))(req());
+      const body = await bodyOf(r);
+      expect(r.status, label).toBe(500);
+      expect(body.includes(residue), `${label} residue survived`).toBe(false);
+      expect(body, label).toContain('withheld by Patchstack');
     }
   });
 

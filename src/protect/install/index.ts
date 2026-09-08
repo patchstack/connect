@@ -16,6 +16,7 @@ import { nestjsAdapter } from './adapters/nestjs.js';
 import { fastifyAdapter } from './adapters/fastify.js';
 import { expressAdapter } from './adapters/express.js';
 import { scaffoldGeneric, wiringPlan, genericVerify } from './generic.js';
+import { reportingChecks } from './reporting.js';
 import { hasResolvableCredential } from './util.js';
 import type { Adapter, VerifyCheck, WireOptions, ProtectResult, VerifyReport } from './types.js';
 
@@ -96,16 +97,30 @@ function credentialNote(cwd: string, adapterName: string): VerifyCheck[] {
   ];
 }
 
-/** Verify the guard is correctly wired (backs `protect --check`). Fail-open — never throws. */
+/**
+ * Verify the guard is correctly wired (backs `protect --check`). Fail-open — never throws.
+ *
+ * Wiring decides the exit status; the reporting checks are informational and never do. A deployment that
+ * has deliberately switched reporting off is correctly configured, and a check that failed the command
+ * over it would teach people to ignore the command.
+ */
 export function runVerify(cwd: string): VerifyReport {
   try {
     const adapter = ADAPTERS.find((a) => a.detect(cwd));
     if (adapter) {
       const result = adapter.verify(cwd);
-      return { stack: adapter.label, ...result, checks: [...result.checks, ...credentialNote(cwd, adapter.name)] };
+      return {
+        stack: adapter.label,
+        ...result,
+        checks: [...result.checks, ...credentialNote(cwd, adapter.name), ...reportingChecks(cwd)],
+      };
     }
     const generic = genericVerify(cwd);
-    return { stack: 'generic', ...generic, checks: [...generic.checks, ...credentialNote(cwd, 'generic')] };
+    return {
+      stack: 'generic',
+      ...generic,
+      checks: [...generic.checks, ...credentialNote(cwd, 'generic'), ...reportingChecks(cwd)],
+    };
   } catch (err) {
     return { stack: 'unknown', wired: false, checks: [{ label: 'verification failed', ok: false, hint: String((err as Error)?.message ?? err) }] };
   }

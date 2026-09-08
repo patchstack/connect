@@ -524,7 +524,7 @@ describe('a check this machine cannot answer', () => {
     scaffoldGeneric(cwd, { cwd, force: false } as never);
 
     const report = runVerify(cwd);
-    const note = report.checks.find((c) => c.unverifiable);
+    const note = report.checks.find((c) => c.unverifiable && c.group !== 'reporting');
 
     expect(note).toBeDefined();
     expect(note?.label).toMatch(/PATCHSTACK_API_KEY/);
@@ -533,8 +533,10 @@ describe('a check this machine cannot answer', () => {
   });
 
   it('is absent for a runtime that reads the file itself', () => {
-    // The control: a Node app reads its own config, so there is no unanswerable question to raise — and a
-    // note printed everywhere would be a note nobody reads.
+    // The control: a Node app reads its own config, so there is no unanswerable question to raise about
+    // the CREDENTIAL, and a note printed everywhere would be a note nobody reads. Scoped to the wiring
+    // group, because reporting raises unanswerable questions on every stack — delivery health lives in
+    // the running guard, and no runtime makes it readable from here.
     const cwd = project({
       'package.json': JSON.stringify({ name: 'fixture', dependencies: { express: '^4.19.2' } }),
       'src/server.js': [
@@ -547,6 +549,10 @@ describe('a check this machine cannot answer', () => {
     });
     expressAdapter.wire(cwd, { cwd, force: false } as never);
 
-    expect(runVerify(cwd).checks.some((c) => c.unverifiable)).toBe(false);
+    const checks = runVerify(cwd).checks;
+    expect(checks.some((c) => c.unverifiable && c.group !== 'reporting')).toBe(false);
+    // And the reporting group still raises its own, on every stack, so this control cannot be read as
+    // "nothing here is unanswerable".
+    expect(checks.some((c) => c.unverifiable && c.group === 'reporting')).toBe(true);
   });
 });

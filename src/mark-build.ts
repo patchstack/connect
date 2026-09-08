@@ -182,12 +182,85 @@ export interface SourceMarkerResult {
   action: SourceMarkerAction;
 }
 
+interface JsxShellAnchor {
+  end: number;
+  indent: string;
+}
+
+/**
+ * Find a literal JSX opening tag at the start of a line. JSX attributes may
+ * contain `>` inside strings or braced expressions, so the tag boundary needs
+ * a small lexical scan rather than a character class. Self-closing tags cannot
+ * carry the marker as a child and are skipped.
+ */
+function findJsxShellAnchor(source: string, tagName: 'head' | 'body'): JsxShellAnchor | null {
+  const candidates = new RegExp(`^([ \\t]*)<${tagName}(?=[\\s/>])`, 'gm');
+  let candidate: RegExpExecArray | null;
+
+  while ((candidate = candidates.exec(source)) !== null) {
+    let quote: "'" | '"' | '`' | null = null;
+    let escaped = false;
+    let braces = 0;
+    let blockComment = false;
+    let lineComment = false;
+
+    for (let index = candidates.lastIndex; index < source.length; index += 1) {
+      const char = source[index];
+      const next = source[index + 1];
+
+      if (lineComment) {
+        if (char === '\n') lineComment = false;
+        continue;
+      }
+      if (blockComment) {
+        if (char === '*' && next === '/') {
+          blockComment = false;
+          index += 1;
+        }
+        continue;
+      }
+      if (quote !== null) {
+        if (escaped) {
+          escaped = false;
+        } else if (char === '\\') {
+          escaped = true;
+        } else if (char === quote) {
+          quote = null;
+        }
+        continue;
+      }
+
+      if (char === "'" || char === '"' || char === '`') {
+        quote = char;
+      } else if (braces > 0 && char === '/' && next === '*') {
+        blockComment = true;
+        index += 1;
+      } else if (braces > 0 && char === '/' && next === '/') {
+        lineComment = true;
+        index += 1;
+      } else if (char === '{') {
+        braces += 1;
+      } else if (char === '}') {
+        if (braces === 0) break;
+        braces -= 1;
+      } else if (char === '>' && braces === 0) {
+        const openingTag = source.slice(candidate.index, index + 1);
+        if (/\/\s*>$/.test(openingTag)) break;
+        return { end: index + 1, indent: candidate[1] ?? '' };
+      }
+    }
+  }
+
+  return null;
+}
+
 /**
  * Insert the production marker into a JSX root shell, idempotently.
  *
- * Anchors on the widget tag when one is present, so the marker is ordered ahead
- * of it in the document; otherwise on `<head>`, then `<body>`. A marker the
- * developer placed themselves is adopted rather than duplicated.
+ * Anchors as the first child of `<head>`, then `<body>`, so the marker runs
+ * before the deferred widget without relying on how that widget is expressed
+ * in source. A marker the developer placed themselves is adopted rather than
+ * duplicated.
  */
 export function ensureMarkerInJsxShell(source: string, framework: string | null): SourceMarkerResult {
   if (!hasJsxShell(framework)) {
@@ -196,7 +269,7 @@ export function ensureMarkerInJsxShell(source: string, framework: string | null)
 
   const stripped = source.replace(REGION_RE, '');
   if (stripped.includes(PROD_MARKER_GLOBAL)) {
-    return { source, action: 'manual' };
+    return { source: stripped, action: 'manual' };
   }
 
   const block = (indent: string): string =>
@@ -204,29 +277,20 @@ export function ensureMarkerInJsxShell(source: string, framework: string | null)
       .map((line) => `${indent}${line}`)
       .join('\n');
 
-  const widget = stripped.match(/^([ \t]*).*patchstack-widget.*$/m);
-  if (widget?.index !== undefined) {
-    const indent = widget[1] ?? '';
+  for (const tagName of ['head', 'body'] as const) {
+    const anchor = findJsxShellAnchor(stripped, tagName);
+    if (anchor === null) continue;
+
+    const indent = `${anchor.indent}  `;
+    const remainder = stripped.slice(anchor.end);
+    const separator = remainder.startsWith('\n') || remainder.startsWith('\r') ? '' : '\n';
     return {
-      source: `${stripped.slice(0, widget.index)}${block(indent)}\n${stripped.slice(widget.index)}`,
+      source: `${stripped.slice(0, anchor.end)}\n${block(indent)}${separator}${remainder}`,
       action: 'added',
     };
   }
 
-  for (const anchor of [/^([ \t]*)<head>[ \t]*$/m, /^([ \t]*)<body>[ \t]*$/m]) {
-    const match = stripped.match(anchor);
-    if (match?.index === undefined) {
-      continue;
-    }
-    const end = match.index + match[0].length;
-    const indent = `${match[1] ?? ''}  `;
-    return {
-      source: `${stripped.slice(0, end)}\n${block(indent)}${stripped.slice(end)}`,
-      action: 'added',
-    };
-  }
-
-  return { source, action: 'no-anchor' };
+  return { source: stripped, action: 'no-anchor' };
 }
 
 export interface EnsureSourceMarkerResult extends SourceMarkerResult {
@@ -250,7 +314,7 @@ export function ensureSourceMarker(
   const file = path.resolve(cwd, shell);
   const before = readFileSync(file, 'utf8');
   const result = ensureMarkerInJsxShell(before, framework);
-  if (result.source !== before && result.action === 'added') {
+  if (result.source !== before) {
     writeFileSync(file, result.source);
   }
   return { ...result, shell };

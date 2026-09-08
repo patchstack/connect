@@ -18,7 +18,7 @@ The deep "why" — the AI-agent refusal modes each clause guards against — liv
 
 ## The prompt lives in three places — keep them identical
 
-`README.md` (Install prompt section), `GETTING-STARTED.md` (step 1), and `field-test/prompt.txt`. `prompt.txt` is the artifact the harness actually tests. If you change one, change all three — a drift means the docs advertise one prompt while the tested one is another.
+`README.md` (Install prompt section), `GETTING-STARTED.md` (step 1), and `field-test/prompt.txt`. `prompt.txt` is the artifact the harness actually tests. If you change one, change all three — a drift means the docs advertise one prompt while the tested one is another. `tests/install-prompt.test.ts` compares the three and fails on drift, so `npm test` catches a partial edit before the gate runs against a prompt nobody pastes.
 
 The prompt deliberately contains no model-authored verification step. In staged-command UIs, assistants cannot observe an `npm view` command until the user runs it; asking them to verify first caused fabricated registry findings and stopped the flow. Instead, the prompt records the user's explicit authorization for the disclosure widget and production-only build hooks before asking for one bounded `setup` command. Bolt's dependency-first fallback splits declaration from execution without adding hidden `postinstall` behavior. Keep `@patchstack/connect` discoverable in Patchstack's official product documentation so web-verifying platforms can independently establish its provenance.
 

@@ -6,8 +6,10 @@
 //
 //   cd examples/protect && node gallery.mjs
 import { readFileSync } from 'node:fs';
-import { createProtection } from '../../src/protect/runtime.js';
 import { runDemoBundle } from './demo-runner.mjs';
+import { loadRuntime } from './demo-target.mjs';
+
+const { createProtection } = await loadRuntime();
 
 const bundle = JSON.parse(readFileSync(new URL('./demo-rules.json', import.meta.url), 'utf8'));
 const results = await runDemoBundle(bundle, createProtection);
@@ -29,7 +31,14 @@ for (const r of results) {
 }
 
 const passed = results.filter((r) => r.pass).length;
-const ok = passed === results.length;
+// `passed === results.length` alone is satisfied by zero of zero, so an empty gallery would report
+// completion. A gallery with nothing in it has demonstrated nothing.
+const ok = results.length > 0 && passed === results.length;
 console.log(`\n  ${passed}/${results.length} demonstrations passed across ${new Set(results.map((r) => r.phase)).size} phases.`);
-console.log(ok ? '\n✓ gallery complete\n' : '\n✗ some demonstrations failed\n');
+
+if (results.length === 0) {
+  console.log('\n✗ the gallery ran no demonstrations\n');
+} else {
+  console.log(ok ? '\n✓ gallery complete\n' : '\n✗ some demonstrations failed\n');
+}
 process.exit(ok ? 0 : 1);

@@ -412,7 +412,12 @@ describe('what the delivered-bundle validator does with it', () => {
     // a quirk of those three fields rather than a rule about documents. It now covers all of them.
     const leaf = { parameter: 'get.q', match: { type: 'contains', value: 'x' } };
 
-    for (const property of ruleContract().rule_properties) {
+    const { rule_properties, null_exempt_properties } = ruleContract();
+
+    for (const property of rule_properties) {
+      // Read from the contract, not written out here. A consumer has only the artifact, so an exception
+      // this test knew and the artifact did not would be an exception nobody else could honour.
+      if (null_exempt_properties.includes(property)) continue;
       // `rule_v2` last would be overwritten by the spread, so the null goes last and wins for every one.
       expect(ruleReasonFor({ rule_v2: [leaf], [property]: null }), property)
         .toMatch(/present but null/);
@@ -422,6 +427,15 @@ describe('what the delivered-bundle validator does with it', () => {
     // says "the default", and that has to keep working.
     expect(ruleReasonFor({ rule_v2: [leaf] })).toBeNull();
     expect(ruleReasonFor({ phase: 'request', action: 'block', rule_v2: [leaf] })).toBeNull();
+
+    // The other side of the same policy: every exemption the artifact publishes really is exempt, and
+    // there is at least one — a published list nothing honours would be worse than no list.
+    expect(null_exempt_properties.length).toBeGreaterThan(0);
+    for (const property of null_exempt_properties) {
+      // These authorise collection rather than protection, so a malformed one costs evidence and never
+      // the mitigation. Dropping the rule would trade a working shield for a piece of metadata.
+      expect(ruleReasonFor({ rule_v2: [leaf], [property]: null }), property).toBeNull();
+    }
 
     // ...and it is a rule about the PROPERTY being present, not about nulls appearing anywhere in the
     // document. A null inside a condition is judged by the condition's own rules.

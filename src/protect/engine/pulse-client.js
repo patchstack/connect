@@ -28,9 +28,9 @@ export class PulseRuleClient {
   #etag;
   #pulseAuth;
 
-  #reportsDetections;
+  #detectionState;
 
-  constructor({ siteUuid, baseUrl, cacheTtl, etag, timeoutMs, pulseAuth, reportsDetections } = {}) {
+  constructor({ siteUuid, baseUrl, cacheTtl, etag, timeoutMs, pulseAuth, detectionState } = {}) {
     // Bounded so app STARTUP can't hang on a slow API: hosted platforms fail a deploy whose health
     // check is slow, and we always have a cache/bundled fallback to boot from.
     this.#timeoutMs = Number(timeoutMs) > 0 ? Number(timeoutMs) : 30_000;
@@ -49,7 +49,7 @@ export class PulseRuleClient {
     //
     // A capability, not a timestamp: the server records when IT saw this, because a client clock is a
     // value from outside and "alive as of" is exactly the claim a stale or wrong clock would fake.
-    this.#reportsDetections = reportsDetections === true;
+    this.#detectionState = typeof detectionState === 'string' ? detectionState : null;
     if (!this.#siteUuid) {
       throw new Error('Patchstack site UUID is required. Pass { siteUuid } or set PATCHSTACK_SITE_UUID.');
     }
@@ -78,8 +78,12 @@ export class PulseRuleClient {
       //
       // A courtesy, never the guarantee: a client-side gate only removes the accidental case. Anything
       // acting on this header has to require a verified token itself before believing it.
-      if (this.#reportsDetections && typeof auth.Authorization === 'string') {
-        headers['X-Patchstack-Detections'] = 'enabled';
+      // The state itself, not a bit. "No events arrived" has several causes — nothing matched, an
+      // explicit opt-out, never enrolled, no credential — and a boolean collapses them into the
+      // reassuring reading. Sent on the fetch the guard already makes, so the platform learns the state
+      // without waiting for a rule to fire.
+      if (this.#detectionState !== null && typeof auth.Authorization === 'string') {
+        headers['X-Patchstack-Detections'] = this.#detectionState;
       }
       if (this.#etag) headers['If-None-Match'] = this.#etag;
       const response = await fetch(url, { method: 'GET', headers, signal: AbortSignal.timeout(this.#timeoutMs) });

@@ -244,7 +244,21 @@ describe('when the destination is the only chokepoint', () => {
     const entry = { id: `shape:${ID}`, title: s.title, category: s.category, phase: s.phase, rule_v2: s.rule_v2 };
     const original = globalThis.fetch;
     globalThis.fetch = (async () => new Response('stub')) as any;
-    const p: any = await createProtection({ rules: { firewall: [entry] }, mode: 'block', egress: true, ...opts });
+    const p: any = await createProtection({
+      rules: { firewall: [entry] },
+      mode: 'block',
+      egress: true,
+      // No resolver, so nothing here waits on one. The guard screens a hostname by resolving it, and
+      // these destinations are either literal IPs — which never reach a resolver — or names that do not
+      // exist, so a live lookup adds a round trip to every case and decides none of them. With this off
+      // the guard builds no resolver at all, and the hostname and address rules these tests are about
+      // still apply.
+      //
+      // What the screen does with an address it resolves is `egress-dns.test.ts`, which builds the guard
+      // directly and injects the addresses it is asking about.
+      screenDns: false,
+      ...opts,
+    });
     try {
       await fn(globalThis.fetch);
     } finally {
