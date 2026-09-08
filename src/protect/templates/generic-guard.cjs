@@ -1,7 +1,17 @@
 // Patchstack runtime protection — GENERIC guard (CommonJS). Managed by `patchstack-connect protect`.
 // Wire whichever helper fits your server into your request path, then run `protect --check`.
 const { createProtection } = require("@patchstack/connect/protect");
-const fallbackRules = require("./rules.json");
+// The fallback bundle is optional at RUNTIME. This file is imported on the app's own module path, so a
+// throw here is the app failing to boot rather than protection failing open — and a rules file can be
+// absent for ordinary reasons: a bundler that copied no JSON, a partial deploy, a half-written edit.
+// Without it the guard holds no local bundle, and says so. Its other two rule sources are untouched:
+// live rules for a configured site, and the engine's own compiled response/egress policy.
+let fallbackRules;
+try {
+  fallbackRules = require("./rules.json");
+} catch (err) {
+  console.warn("[patchstack] ./rules.json was not read (" + err.message + "); the guard holds no local rules");
+}
 
 const PS_SITE_UUID = "__PATCHSTACK_SITE_UUID__";
 let protection;
