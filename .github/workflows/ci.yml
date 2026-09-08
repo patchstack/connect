@@ -178,10 +178,16 @@ jobs:
       fail-fast: false
       matrix:
         node-version:
+          # The floor `engines` claims, through to the current release line. 18 and 20 are past their
+          # upstream support, and are kept deliberately: this package exists to protect apps on whatever
+          # runtime a builder platform happens to give them, so the oldest runtime it claims to support is
+          # the one where a regression matters most. That is not theoretical — the Node 18 job is what
+          # caught a detection field arriving empty there because the runtime exposes no global `crypto`.
           - 18.x
           - 20.x
           - 22.x
           - 24.x
+          - 26.x
 
     steps:
       - name: Checkout
