@@ -75,8 +75,42 @@ export function createServerFnGuard({ protection }) {
   };
 }
 
+/**
+ * An option that has to be a list: the value when it is one, the default when it is absent, and the
+ * default plus a report when it is neither.
+ *
+ * Every shape a caller can pass reaches one of those three outcomes, and which one never depends on
+ * what the value could be read AS. The engine's own policy for that phase is what applies, exactly as
+ * it does when nothing was configured, and the option is named in the report so the mistake is visible
+ * rather than absorbed.
+ *
+ * Ignored rather than adapted: reading one string as a one-element list is a guess about policy, and
+ * "the host you named is allowed" and "no host is allowed" are different policies.
+ *
+ * The report is the whole of the guard's answer, because `createProtection` does not refuse a
+ * configuration: a construction that throws is a request that fails, or an application that does not
+ * start, depending on where the seam holding it builds it.
+ */
+function listOption(value, fallback, name, onError) {
+  // Absent means `undefined`, and nothing else. The declared type is a list or nothing, so `null` is a
+  // value someone wrote, and a value someone wrote and the guard silently discarded is the outcome this
+  // whole function exists to avoid.
+  if (value === undefined) return fallback;
+  if (Array.isArray(value)) return value;
+  notify(onError, new Error(`patchstack: \`${name}\` has to be an array; the value configured is ignored`), 'onError');
+
+  return fallback;
+}
+
 export async function createProtection(options = {}) {
   const onError = options.onError;
+  // Every list option is read here, once. Their readers run more than once — the egress guard and the
+  // request-phase check both want `allowHosts`, and the rules are rebuilt on every refresh — and a
+  // configuration mistake does not change while the process lives, so reading it per use would report
+  // the same immutable mistake for as long as the guard runs.
+  const allowHosts = listOption(options.allowHosts, [], 'allowHosts', onError);
+  const configuredResponseRules = listOption(options.responseRules, DEFAULT_RESPONSE_RULES, 'responseRules', onError);
+  const configuredEgressRules = listOption(options.egressRules, DEFAULT_EGRESS_RULES, 'egressRules', onError);
   const userOnDetect = options.onDetect ?? defaultOnDetect;
 
   // Report enforced blocks via existing connector POST /api/logs/log (WP path).
@@ -311,9 +345,9 @@ export async function createProtection(options = {}) {
   const applyBundle = (delivered) => {
     const incoming = delivered.firewall ?? [];
     requestRules = byPhase(incoming, 'request');
-    responseRules = [...(options.responseRules ?? DEFAULT_RESPONSE_RULES), ...byPhase(incoming, 'response')];
+    responseRules = [...configuredResponseRules, ...byPhase(incoming, 'response')];
     screenCap = responseScreenCap(responseRules);
-    egressRules = [...(options.egressRules ?? DEFAULT_EGRESS_RULES), ...byPhase(incoming, 'egress')];
+    egressRules = [...configuredEgressRules, ...byPhase(incoming, 'egress')];
     engine = new RuleEngine({
       firewall: requestRules,
       whitelists: delivered.whitelists,
@@ -1008,7 +1042,7 @@ export async function createProtection(options = {}) {
   };
 
   // Egress phase: is this outbound call blocked? (records detection either way)
-  const allow = new Set((options.allowHosts ?? []).map((h) => String(h).toLowerCase()));
+  const allow = new Set(allowHosts.map((h) => String(h).toLowerCase()));
   const egressShouldBlock = (url, host, method) => {
     if (host && allow.has(host.toLowerCase())) return false;
 
@@ -1248,7 +1282,7 @@ export async function createProtection(options = {}) {
       // same skip accounting as the request/response phases.
       onSkip: ({ reason, detail }) => recordSkip('egress', reason, detail),
       dnsScreen: options.screenDns !== false,
-      allowHosts: options.allowHosts,
+      allowHosts,
     });
   }
 
