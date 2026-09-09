@@ -173,18 +173,31 @@ jobs:
   validate:
     name: Validate on Node ${{ matrix.node-version }}
     runs-on: ubuntu-latest
+    env:
+      # The maintainer runtime range is a claim like any other, and npm treats an `engines` mismatch as
+      # a warning unless told otherwise — so a tool that raises its floor would keep this job green
+      # until it happened to reach an API the runtime lacks. Strict, so the install is the check.
+      NPM_CONFIG_ENGINE_STRICT: 'true'
 
     strategy:
       fail-fast: false
       matrix:
         node-version:
-          # The floor `engines` claims, through to the current release line. 18 and 20 are past their
-          # upstream support, and are kept deliberately: this package exists to protect apps on whatever
-          # runtime a builder platform happens to give them, so the oldest runtime it claims to support is
-          # the one where a regression matters most. That is not theoretical — the Node 18 job is what
-          # caught a detection field arriving empty there because the runtime exposes no global `crypto`.
-          - 18.x
+          # Run with the maintainer toolchain, whose runtime range is `^20.19.0 || >=22.12.0` — the
+          # Vite/Rolldown the test runner brings. That is a union, not a floor: Node 21, and 22.0
+          # through 22.11, are outside it. So both exact ends are pinned, because a floating `20.x` or
+          # `22.x` would stay green after something starts requiring a version released after the one
+          # documented, and the floating lines are kept beside them for the current releases.
+          #
+          # The floor `engines` claims for CONSUMERS is a different number and is tested by
+          # `declared-floor`, which installs none of this.
+          #
+          # 20 is past its upstream support and is kept deliberately: this package exists to protect
+          # apps on whatever runtime a builder platform gives them, so the oldest line it claims is
+          # where a regression matters most.
+          - 20.19.0
           - 20.x
+          - 22.12.0
           - 22.x
           - 24.x
           - 26.x
@@ -257,6 +270,106 @@ jobs:
       - name: Audit published dependency tree
         run: npm audit --omit=dev --audit-level=moderate
 
+  # The tarball, built once on the version releases are built with, for the floor job below to consume.
+  #
+  # Separate because packing runs `prepare`, which needs the repository's development dependencies —
+  # and those are not installable on every runtime a consumer may be on. A floor job that installed them
+  # would be testing the maintainer toolchain at that version, which is the opposite of the question.
+  pack:
+    name: 📦 Pack the artifact
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Setup Node
+        uses: actions/setup-node@v7
+        with:
+          node-version-file: .node-version
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Pack
+        # The directory first: `--pack-destination` does not create one, and npm's failure for a missing
+        # destination is an ENOENT on the tarball it was about to write.
+        run: |
+          mkdir -p packed
+          npm pack --pack-destination ./packed
+
+      - name: Upload
+        uses: actions/upload-artifact@v7
+        with:
+          name: packed-tarball
+          path: packed/*.tgz
+          if-no-files-found: error
+          retention-days: 1
+
+  # The floor `engines.node` claims, tested with the published artifact and without this repository's
+  # devDependencies.
+  #
+  # `--self-contained` runs six explicitly named package/runtime shapes whose fixtures install nothing
+  # but the tarball, including guard screening through both published module formats. The compiler probes
+  # install `typescript` and `@types/node` at floating versions, and this job is strict, so a floor either
+  # of them raises later would turn it red over something that is not this package. The ordinary consumer
+  # matrix runs all nine shapes on Node 22; only this declared-floor job narrows the set.
+  #
+  # `engines` is a CONSUMER contract: npm checks it when someone installs this package. The maintainer
+  # toolchain is a different question with a different answer — the test runner's Vite/Rolldown need
+  # 20.19 — and letting that decide `engines` would understate what the artifact supports. So the claim
+  # is tested the way it is made: install the tarball on the lowest version it names, and put a request
+  # through the guard. No root `npm ci` here, by design.
+  #
+  # The version is DERIVED from the manifest, not written here: a hard-coded one keeps testing the old
+  # floor when the claim moves, and tests above the new floor when it drops. And `engine-strict` makes
+  # `engines` refuse rather than warn, so a runtime the package does not admit fails this job instead of
+  # passing it with a warning.
+  #
+  # One manager, not the five above: the question here is the runtime, and whether managers agree is
+  # already answered by that matrix.
+  declared-floor:
+    name: 📦 Consumers on the declared Node floor
+    needs: pack
+    runs-on: ubuntu-latest
+    env:
+      NPM_CONFIG_ENGINE_STRICT: 'true'
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: The floor `engines.node` claims
+        id: floor
+        run: |
+          floor="$(node scripts/engines-floor.mjs)"
+          # An empty value would reach `setup-node` as "no version asked for", which resolves to
+          # whatever the runner already has — a green job on a runtime nobody named.
+          if [ -z "${floor}" ]; then
+            echo "::error::Could not read a floor out of engines.node."
+            exit 1
+          fi
+          echo "engines.node admits ${floor} as its lowest version"
+          echo "version=${floor}" >> "$GITHUB_OUTPUT"
+
+      - name: Setup Node
+        uses: actions/setup-node@v7
+        with:
+          node-version: ${{ steps.floor.outputs.version }}
+
+      - name: Download the packed artifact
+        uses: actions/download-artifact@v8
+        with:
+          name: packed-tarball
+          path: packed
+
+      - name: Install the tarball and exercise the guard
+        run: |
+          tarball="$(ls packed/*.tgz)"
+          echo "consuming ${tarball} on $(node -v), engine-strict on"
+          node scripts/compat-matrix.mjs --manager npm --self-contained --tarball "${tarball}"
+
   # One status for branch protection to require.
   #
   # Requiring the jobs above directly means branch protection names a matrix label — `Consumers on npm
@@ -274,6 +387,8 @@ jobs:
     needs:
       - capability-contract
       - consumers
+      - pack
+      - declared-floor
       - bundled-consumer
       - windows-smoke
       - validate
@@ -295,8 +410,8 @@ jobs:
           # otherwise leave a green required check that verifies nothing at all — the one failure mode a
           # gate must not have, since it is indistinguishable from a working one.
           count=$(printf '%s' "$RESULTS" | python3 -c 'import json, sys; print(len(json.load(sys.stdin)))')
-          if [ "$count" -lt 6 ]; then
-            echo "::error::This gate is standing on ${count} job(s); it is meant to require 6. A required check that verifies nothing passes exactly when something is broken."
+          if [ "$count" -lt 8 ]; then
+            echo "::error::This gate is standing on ${count} job(s); it is meant to require 8. A required check that verifies nothing passes exactly when something is broken."
             exit 1
           fi
 

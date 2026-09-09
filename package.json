@@ -84,7 +84,7 @@
     "rule-contract:check": "node scripts/emit-rule-contract.mjs --check"
   },
   "engines": {
-    "node": ">=18"
+    "node": ">=20"
   },
   "publishConfig": {
     "access": "public",
@@ -95,7 +95,7 @@
     "fastify": "^5.12.1",
     "tsup": "^8.0.0",
     "typescript": "^5.4.0",
-    "vitest": "^3.0.0",
+    "vitest": "^4.1.11",
     "yaml": "^2.9.0"
   },
   "overrides": {

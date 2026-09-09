@@ -29,8 +29,18 @@ nvm use "$(cat .node-version)"     # or: fnm use / nodenv local
 npm ci
 ```
 
-Consumers are supported from Node 18 — `engines.node` is that contract, and it is a different question
-from the version this repository is developed and released on.
+Consumers are supported from Node 20 — `engines.node` is that contract, and CI tests it at exactly that
+floor (`Consumers on the declared Node floor`) with the published artifact and without the
+devDependencies below. The version that job runs on is read out of `engines.node`, so moving the claim
+moves the test; installs there run with `engine-strict`, so the claim refuses rather than warns.
+
+Working on the repository needs more than consuming it does: **`^20.19.0 || >=22.12.0`**, which is what
+the test runner's Vite and Rolldown require. It is a union rather than a floor — Node 21, and 22.0
+through 22.11, are outside it — and CI pins both exact ends (`20.19.0`, `22.12.0`) beside the floating
+lines, installing with `engine-strict` so a tool that raises its own floor fails the install rather than
+warning. That is a maintainer requirement and deliberately not `engines`: letting it set the consumer
+contract would understate what the artifact supports. `.node-version` (24) is the version releases are
+built with, which is a third question again.
 
 ## The loop
 
