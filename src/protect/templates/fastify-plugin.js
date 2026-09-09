@@ -45,10 +45,38 @@ async function buildProtection() {
   );
 }
 
+
+// A protection that could not be built must not become an app that cannot answer. Each seam below asks
+// for one, steps aside when it cannot have one, and leaves the app to carry on unscreened.
+// `getProtection` clears its slot on a failed build, so the next request builds again — one bad start
+// does not switch protection off for the life of the process.
+//
+// Only the FIRST failure is reported: enough to know the guard is not screening, without a line per
+// request. A later failure is not reported, including one with a different cause.
+let psUnavailable = false;
+function psStepAside(err) {
+  if (!psUnavailable) {
+    psUnavailable = true;
+    console.warn(
+      "[patchstack] protection is unavailable; traffic may pass through unscreened until a later attempt succeeds. Reported once per process. Cause: " +
+        (err instanceof Error ? err.message : String(err)),
+    );
+  }
+
+  return null;
+}
 export async function patchstackFastify(fastify) {
-  const protection = await getProtection();
-  const guard = protection.fetchGuard();
+  // Built here, at registration, and NOT only on the first request: building the protection is also
+  // what installs egress screening, and an app's startup work makes outbound calls before any request
+  // arrives. A failure is swallowed rather than propagated, because registering a plugin must not be
+  // able to fail — and the hook asks again, so a build that failed at startup is retried rather than
+  // leaving every route unscreened for the life of the process.
+  await getProtection().catch(psStepAside);
+
   fastify.addHook("preHandler", async (request, reply) => {
+    const protection = await getProtection().catch(psStepAside);
+    if (!protection) return; // the route answers this request, unscreened
+    const guard = protection.fetchGuard();
     const method = (request.method ?? "GET").toUpperCase();
     const host = request.headers?.host ?? "localhost";
     const url = `http://${host}${request.url ?? "/"}`;

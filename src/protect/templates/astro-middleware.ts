@@ -42,9 +42,30 @@ async function buildProtection() {
   );
 }
 
+
+// A protection that could not be built must not become an app that cannot answer. Each seam below asks
+// for one, steps aside when it cannot have one, and leaves the app to carry on unscreened.
+// `getProtection` clears its slot on a failed build, so the next request builds again — one bad start
+// does not switch protection off for the life of the process.
+//
+// Only the FIRST failure is reported: enough to know the guard is not screening, without a line per
+// request. A later failure is not reported, including one with a different cause.
+let psUnavailable = false;
+function psStepAside(err: unknown) {
+  if (!psUnavailable) {
+    psUnavailable = true;
+    console.warn(
+      "[patchstack] protection is unavailable; traffic may pass through unscreened until a later attempt succeeds. Reported once per process. Cause: " +
+        (err instanceof Error ? err.message : String(err)),
+    );
+  }
+
+  return null;
+}
 // #region patchstack-astro (managed by patchstack-connect protect — do not edit)
 export const onRequest: MiddlewareHandler = async (context, next) => {
-  const protection = await getProtection();
+  const protection = await getProtection().catch(psStepAside);
+  if (!protection) return next();
   const blocked = await protection.fetchGuard()(context.request);
   if (blocked) return blocked; // 403 — blocked before it reaches your route
   // Response rules can be scoped to a route or a method, and the engine can only apply that scope if it is
