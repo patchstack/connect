@@ -3,7 +3,17 @@
 import { readFileSync } from "node:fs";
 import { createProtection } from "@patchstack/connect/protect";
 
-const fallbackRules = JSON.parse(readFileSync(new URL("./rules.json", import.meta.url), "utf8"));
+// The fallback bundle is optional at RUNTIME. This file is imported on the app's own module path, so a
+// throw here is the app failing to boot rather than protection failing open — and a rules file can be
+// absent for ordinary reasons: a bundler that copied no JSON, a partial deploy, a half-written edit.
+// Without it the guard holds no local bundle, and says so. Its other two rule sources are untouched:
+// live rules for a configured site, and the engine's own compiled response/egress policy.
+let fallbackRules;
+try {
+  fallbackRules = JSON.parse(readFileSync(new URL("./rules.json", import.meta.url), "utf8"));
+} catch (err) {
+  console.warn("[patchstack] ./rules.json was not read (" + err.message + "); the guard holds no local rules");
+}
 const PS_SITE_UUID = "__PATCHSTACK_SITE_UUID__";
 let protection;
 
@@ -35,10 +45,33 @@ async function buildProtection() {
   );
 }
 
+
+// A protection that could not be built must not become an app that cannot answer. Each seam below asks
+// for one, steps aside when it cannot have one, and leaves the app to carry on unscreened.
+// `getProtection` clears its slot on a failed build, so the next request builds again — one bad start
+// does not switch protection off for the life of the process.
+//
+// Only the FIRST failure is reported: enough to know the guard is not screening, without a line per
+// request. A later failure is not reported, including one with a different cause.
+let psUnavailable = false;
+function psStepAside(err) {
+  if (!psUnavailable) {
+    psUnavailable = true;
+    console.warn(
+      "[patchstack] protection is unavailable; traffic may pass through unscreened until a later attempt succeeds. Reported once per process. Cause: " +
+        (err instanceof Error ? err.message : String(err)),
+    );
+  }
+
+  return null;
+}
 // Web-Fetch: export default { fetch: protectFetch(originalFetch) }
 export function protectFetch(handler) {
   return async (request, ...rest) => {
-    const active = await getProtection();
+    const active = await getProtection().catch(psStepAside);
+    // The handler, and nothing around it: an exception the app throws is the app's, not a protection
+    // failure, and must not be read as one or answered twice.
+    if (!active) return handler(request, ...rest);
     const blocked = await active.fetchGuard()(request);
     if (blocked) return blocked;
     // Response rules can be scoped to a route or a method, and the engine can only apply that scope if it is
@@ -51,7 +84,27 @@ export function protectFetch(handler) {
 // Node / Connect: app.use(patchstackMiddleware) — before any body parser. This guard reads the request
 // stream itself and exposes what it read as req.body, so a parser is not also needed.
 export function patchstackMiddleware(req, res, next) {
-  getProtection()
-    .then((active) => active.node()(req, res, next))
-    .catch(() => next()); // fail open
+  // `next` is wrapped so it can run at most once, whatever happens. That is what makes the two
+  // handlers below safe: a rejection handler passed to `then` sees only a failed build, the trailing
+  // one sees whatever the guard or the app's own chain threw and reports it — and neither can pass a
+  // request on that was already passed on, nor leave one that never was.
+  let passedOn = false;
+  const carryOn = (err) => {
+    if (passedOn) return;
+    passedOn = true;
+    next(err);
+  };
+  getProtection().then(
+    (active) => active.node()(req, res, carryOn),
+    (err) => {
+      psStepAside(err);
+      carryOn();
+    },
+  ).catch((err) => {
+    // Not a failed build: the guard, or the app's own chain, threw after this point. Reported, and the
+    // request is carried on only if it never was — an error here must not take the process down and
+    // must not answer twice.
+    psStepAside(err);
+    carryOn();
+  });
 }

@@ -26,10 +26,10 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - name: Setup Node
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v7
         with:
           node-version: 24.x
           registry-url: https://registry.npmjs.org
@@ -96,12 +96,12 @@ jobs:
           echo "url=https://www.npmjs.com/package/@patchstack/connect/v/$version" >> "$GITHUB_OUTPUT"
 
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           ref: refs/tags/v${{ steps.version.outputs.version }}
 
       - name: Setup Node
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v7
         with:
           node-version: 24.x
           registry-url: https://registry.npmjs.org
@@ -135,12 +135,12 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           ref: refs/tags/v${{ needs.publish.outputs.version }}
 
       - name: Setup Node
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v7
         with:
           node-version: 24.x
           cache: npm
@@ -229,14 +229,14 @@ jobs:
 
     steps:
       - name: Checkout the default branch
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           # Deliberately the default branch, not the tag: the proposal targets `main`, and checking out
           # the tag would carry every difference between the tag and `main` into the diff.
           ref: ${{ github.event.repository.default_branch }}
 
       - name: Setup Node
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v7
         with:
           node-version: 24.x
           cache: npm

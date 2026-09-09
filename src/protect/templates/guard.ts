@@ -74,6 +74,26 @@ async function buildProtection() {
   );
 }
 
+
+// A protection that could not be built must not become an app that cannot answer. Each seam below asks
+// for one, steps aside when it cannot have one, and leaves the app to carry on unscreened.
+// `getProtection` clears its slot on a failed build, so the next request builds again — one bad start
+// does not switch protection off for the life of the process.
+//
+// Only the FIRST failure is reported: enough to know the guard is not screening, without a line per
+// request. A later failure is not reported, including one with a different cause.
+let psUnavailable = false;
+function psStepAside(err: unknown) {
+  if (!psUnavailable) {
+    psUnavailable = true;
+    console.warn(
+      "[patchstack] protection is unavailable; traffic may pass through unscreened until a later attempt succeeds. Reported once per process. Cause: " +
+        (err instanceof Error ? err.message : String(err)),
+    );
+  }
+
+  return null;
+}
 // Request-middleware path: the browser tunnels its direct Supabase calls here.
 let _handle: ((request: Request) => Promise<Response>) | undefined;
 export async function handleGuardRequest(request: Request): Promise<Response> {
@@ -91,7 +111,10 @@ export async function handleGuardRequest(request: Request): Promise<Response> {
 let _inspect: ((data: unknown) => Promise<{ rule?: string; message: string } | null>) | undefined;
 export async function inspectServerFn(data: unknown): Promise<{ rule?: string; message: string } | null> {
   if (!_inspect) {
-    _inspect = createServerFnGuard({ protection: await getProtection() });
+    const protection = await getProtection().catch(psStepAside);
+    // Null is "allow" here, which is what the two paths below already answer when they cannot screen.
+    if (!protection) return null;
+    _inspect = createServerFnGuard({ protection });
   }
   return _inspect(data);
 }
@@ -105,12 +128,17 @@ export async function inspectServerFn(data: unknown): Promise<{ rule?: string; m
 // route or a method, and the engine can only apply that scope if it is given the request the response
 // belongs to. Without it a scoped response rule is delivered, counted as protection, and matches nothing.
 export async function screenResponse<T>(response: T, request?: Request): Promise<T> {
+  if (!(response instanceof Response)) return response;
+  const protection = await getProtection().catch(psStepAside);
+  if (!protection) return response;
   try {
-    if (!(response instanceof Response)) return response;
-    const protection = await getProtection();
     return (protection.screenResponse ? await protection.screenResponse(response, request) : response) as T;
-  } catch {
-    return response; // fail open
+  } catch (err) {
+    // Reported, then the response goes out as it is. A response that was never screened and a response
+    // that had nothing to redact look identical from here, so silence would make them one.
+    psStepAside(err);
+
+    return response;
   }
 }
 
@@ -120,10 +148,16 @@ export async function screenResponse<T>(response: T, request?: Request): Promise
 // WAF false-positive surface, so it is opt-in. `request.clone()` so the app can still read the body.
 let _reqGuard: ((request: Request) => Promise<Response | null>) | undefined;
 export async function guardRequest(request: Request): Promise<Response | null> {
+  if (!_reqGuard) {
+    const protection = await getProtection().catch(psStepAside);
+    if (!protection) return null; // null is "allow" here
+    _reqGuard = protection.fetchGuard();
+  }
   try {
-    if (!_reqGuard) _reqGuard = (await getProtection()).fetchGuard();
     return await _reqGuard(request.clone());
-  } catch {
-    return null; // fail open
+  } catch (err) {
+    psStepAside(err);
+
+    return null;
   }
 }

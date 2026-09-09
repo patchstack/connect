@@ -1,4 +1,5 @@
 import { pulseFetch } from '../pulse-token.js';
+import { ACTIONS } from './rules/contract.js';
 import { clientIpFields } from './client-ip.js';
 import { readRuleParameters, ruleParameters } from './rule-parameters.js';
 import { isSafeOrigin } from './safe-origin.js';
@@ -17,8 +18,13 @@ import { isSafeOrigin } from './safe-origin.js';
  * ## The payload is deliberately small
  *
  * `rule_id`, route PATH, the parameters the rule reads, a timestamp, whether it was enforced, the phase,
- * the bundle identity, and the rule's own revision where the bundle carried one. That is enough to count
- * hits per rule, compare them against traffic, and decide whether a rule is wrong.
+ * the rule's category and the action it declares, the bundle identity, and the rule's own revision where
+ * the bundle carried one. That is enough to count hits per rule, compare them against traffic, and
+ * decide whether a rule is wrong.
+ *
+ * The category and the declared action say what KIND of rule matched, so a redaction and a blocked
+ * request are not one number. Both come from the rule and are `null` when it declares neither.
+ * Neither is `enforced`: a rule declaring `block` while only observing enforces nothing.
  *
  * It also carries the values of the parameters the matched rule NAMES, under a plan derived from that
  * rule — because counting that a rule fired is not enough to act on it. What may be captured is the
@@ -99,6 +105,69 @@ const ATTEMPT_TIMEOUT_MS = 10_000;
 const STOP_BUDGET_MS = 5_000;
 
 /**
+ * The shape a category has to have to mean anything to the platform receiving it.
+ *
+ * No length bound here: the bound is applied separately, so a category that is a real slug and merely
+ * too long can be told apart from one that was never a category. Only the first has anything to say
+ * about the bound.
+ *
+ * A slug. `unknown` is excluded because that is the word the platform files an ABSENT class under, so a
+ * category spelled that way would be sent as a real class and then counted as a missing one — two
+ * spellings of one thing, disagreeing about which they are.
+ */
+const CATEGORY_PATTERN = /^[a-z][a-z0-9-]*$/;
+const RESERVED_CATEGORY = 'unknown';
+
+/**
+ * A rule's declared class, as it can be reported.
+ *
+ * Four outcomes, and the difference between the last two is the point:
+ *
+ * - absent → `null`, unmarked. The rule declared nothing, which is a true report.
+ * - unrecognisable → `null`, unmarked. Not a class this platform has a meaning for, so reporting it
+ *   would put arbitrary text where a class belongs — and nothing was lost, which is what the mark is
+ *   about.
+ * - recognisable but too long → `null`, MARKED. There was a class here and it could not be carried: it
+ *   cannot be shortened without becoming a different class, and one sent as a class would be a category
+ *   nobody authored, counted beside real ones.
+ * - recognisable and short enough → carried as it is.
+ *
+ * Recognition is tested BEFORE the length, and the order is the whole of what the mark means. Reversed,
+ * any long enough run of nonsense is reported as "there was a class here that would not fit" — which is
+ * a claim about a class that never existed, and the reader has no way to see it is false. Only a value
+ * that would have been carried at a shorter length has anything to say about the bound.
+ *
+ * Recognition happens here rather than only at the far end. Both sides work from the same contract, and
+ * a value the receiver will refuse costs an event's budget to be discarded — while travelling as though
+ * it were known, which is the part that misleads: `Uppercase` or `has spaces` would arrive looking like
+ * a class and be filed as a missing one.
+ *
+ * @param {unknown} declared
+ * @param {(value: string) => boolean} recognised
+ * @returns {{ value: string | null, dropped: boolean }}
+ */
+function declaredClass(declared, recognised) {
+  if (typeof declared !== 'string' || declared === '') return { value: null, dropped: false };
+  if (!recognised(declared)) return { value: null, dropped: false };
+  if (declared.length > MAX_CLASS_CHARS) return { value: null, dropped: true };
+
+  return { value: declared, dropped: false };
+}
+
+/** @param {string} value */
+const recognisedCategory = (value) => value !== RESERVED_CATEGORY && CATEGORY_PATTERN.test(value);
+
+/**
+ * The actions a rule may declare, from the rule contract this package already enforces.
+ *
+ * Imported rather than restated: a list written out here would be a second copy of the vocabulary, and
+ * the copy that fell behind would file a real action as unrecognisable.
+ *
+ * @param {string} value
+ */
+const recognisedAction = (value) => ACTIONS.includes(value);
+
+/**
  * Size bounds, applied per event and per batch.
  *
  * Every field is an identifier rather than traffic, but an identifier can still be long: a route is
@@ -118,6 +187,37 @@ const MAX_PARAMETER_CHARS = 64;
  * reader must not use it as a key believing it does.
  */
 const MAX_IDENTIFIER_CHARS = 256;
+/**
+ * The bound on a rule's declared class, set by what the platform accepts rather than by what fits.
+ *
+ * A longer identifier can be shortened and still be useful: a route that was cut is still the route
+ * prefix. A class cannot. `secret-exposure` shortened is a different class, and a shortened one sent as
+ * a class would be a category nobody authored, counted alongside real ones.
+ *
+ * So a class beyond the bound is reported as ABSENT and marked, not shortened. The platform would refuse
+ * it anyway — sending a value known to be unacceptable only spends the event's budget to have it
+ * discarded, and sending a truncated one spends it to have the wrong thing recorded.
+ */
+const MAX_CLASS_CHARS = 64;
+
+/**
+ * The shape an event identity has to have to be reported: 32 lowercase hexadecimal characters.
+ *
+ * What this establishes is that the value is the SHAPE this guard mints, and no more than that. It is
+ * not evidence the value means nothing — a hash of an address or an account name has the same shape, and
+ * no check on the value could tell one from a token drawn from randomness. What keeps it meaningless is
+ * where it comes from, one function away, and that is not something a consumer can read off the value.
+ *
+ * It is still worth refusing everything else. A value that is plainly something else — a path, an
+ * address, a name — is dropped rather than sent, whatever set it, and the field keeps to one
+ * representation: another needs a version or a tag saying so, and a decision about what it may contain.
+ */
+const EVENT_PATTERN = /^[0-9a-f]{32}$/;
+
+/** An identity as it can be reported, or null when there is nothing reportable. */
+function eventIdentity(value) {
+  return typeof value === 'string' && EVENT_PATTERN.test(value) ? value : null;
+}
 /**
  * Bounds re-applied to captured evidence at the wire.
  *
@@ -878,12 +978,29 @@ export function createDetectionReporter(opts) {
       const id = capText(String(ruleId), MAX_IDENTIFIER_CHARS);
       const revision = capText(revisionOf(detection.rule) ?? '', MAX_IDENTIFIER_CHARS);
       const etag = capText(rulesEtag ?? '', MAX_IDENTIFIER_CHARS);
+      // Both declared fields come from the RULE, which is the only thing that declares them.
+      //
+      // A detection also carries a top-level `category` copied from the rule at each site that raises
+      // one. Reading that copy would make this report depend on every one of those copies staying
+      // right: a site that forgot one, or set it from something else, would report a class the rule
+      // does not have — and it would look exactly like a correct report. The rule is the source, so
+      // there is nothing to keep in step.
+      const classCategory = declaredClass(detection.rule?.category, recognisedCategory);
+      const classAction = declaredClass(detection.rule?.action, recognisedAction);
       for (const [name, field] of [
         ['rule_id', id],
         ['rule_revision', revision],
         ['rules_etag', etag],
       ]) {
         if (field.truncated) truncated.push(name);
+      }
+      // Marked when a class was there and could not be carried, so its absence is never read as a rule
+      // that declared nothing.
+      for (const [name, field] of [
+        ['category', classCategory],
+        ['action', classAction],
+      ]) {
+        if (field.dropped) truncated.push(name);
       }
 
       queue.push({
@@ -908,7 +1025,32 @@ export function createDetectionReporter(opts) {
         ...(query.total > queryKeys.length ? { query_keys_total: query.total } : {}),
         // Who asked. Capped, since it is client-supplied text and this is an event with a size bound.
         user_agent: userAgent === null ? null : userAgent.value,
+        // What KIND of match this was: which phase it happened in, what class of thing the rule is for,
+        // and what the rule DECLARES it does about it.
+        //
+        // Three separate facts, and none of them is `enforced` below. A rule declaring `block` while
+        // observing reports exactly that — `action: 'block'`, `enforced: false` — which is what a
+        // dry-run window consists of. Reading either off the other would describe such a window as
+        // protection that never happened, or as rules that do nothing.
+        //
+        // `null` where the rule says nothing, never a guess. A consumer can tell "this rule is for
+        // secret exposure" from "we cannot say what this rule is for", and a filled-in value would take
+        // that distinction away for the sake of a tidier field.
         phase: detection.phase ?? null,
+        // `null` where the rule declared nothing, and also where what it declared could not be carried:
+        // both are "we cannot say what this rule is for", which is a different fact from a class we do
+        // know, and `truncated` distinguishes the second from the first.
+        category: classCategory.value,
+        action: classAction.value,
+        // Which call this detection belongs to, so a consumer can tell one call two rules saw from two
+        // separate calls. Two rules matching one call is the ordinary case — a rule that enforces and a
+        // rule that only observes are meant to match the same thing — so without this, adding these up
+        // reports one call more than once.
+        //
+        // Nothing about the request goes into it: it is only ever compared with other identities, so
+        // deriving it from the address or the path would carry something about whoever made the request
+        // into a place nothing needs it. That is a property of how it is minted, not of its shape.
+        event: eventIdentity(detection.event),
         // The state this detection was handled under, which is the whole point: `false` is a rule that
         // saw traffic it would have stopped.
         enforced: detection.mode === 'block',

@@ -44,10 +44,48 @@ async function buildProtection() {
   );
 }
 
+
+// A protection that could not be built must not become an app that cannot answer. Each seam below asks
+// for one, steps aside when it cannot have one, and leaves the app to carry on unscreened.
+// `getProtection` clears its slot on a failed build, so the next request builds again — one bad start
+// does not switch protection off for the life of the process.
+//
+// Only the FIRST failure is reported: enough to know the guard is not screening, without a line per
+// request. A later failure is not reported, including one with a different cause.
+let psUnavailable = false;
+function psStepAside(err: unknown) {
+  if (!psUnavailable) {
+    psUnavailable = true;
+    console.warn(
+      "[patchstack] protection is unavailable; traffic may pass through unscreened until a later attempt succeeds. Reported once per process. Cause: " +
+        (err instanceof Error ? err.message : String(err)),
+    );
+  }
+
+  return null;
+}
 export function patchstackMiddleware(req: unknown, res: unknown, next: (err?: unknown) => void) {
-  getProtection()
-    .then((protection) =>
-      (protection.express() as (a: unknown, b: unknown, c: (e?: unknown) => void) => void)(req, res, next),
-    )
-    .catch(() => next());
+  // `next` is wrapped so it can run at most once, whatever happens. That is what makes the two
+  // handlers below safe: a rejection handler passed to `then` sees only a failed build, the trailing
+  // one sees whatever the guard or the app's own chain threw and reports it — and neither can pass a
+  // request on that was already passed on, nor leave one that never was.
+  let passedOn = false;
+  const carryOn = (err?: unknown) => {
+    if (passedOn) return;
+    passedOn = true;
+    next(err);
+  };
+  getProtection().then(
+    (protection) => (protection.express() as (a: unknown, b: unknown, c: (e?: unknown) => void) => void)(req, res, carryOn),
+    (err) => {
+      psStepAside(err);
+      carryOn();
+    },
+  ).catch((err) => {
+    // Not a failed build: the guard, or the app's own chain, threw after this point. Reported, and the
+    // request is carried on only if it never was — an error here must not take the process down and
+    // must not answer twice.
+    psStepAside(err);
+    carryOn();
+  });
 }

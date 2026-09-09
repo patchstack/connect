@@ -7,6 +7,9 @@
 #
 # Root only: this package has no runtime dependencies, so everything Dependabot can usefully maintain is a
 # devDependency at the root.
+#
+# Nothing here approves or merges an update. Dependency pull requests carry the repository's normal review
+# and required checks, like any other change.
 version: 2
 
 updates:
@@ -15,6 +18,15 @@ updates:
     schedule:
       interval: weekly
     open-pull-requests-limit: 5
+    # Let releases age before adopting them so compromised/yanked versions are caught upstream first.
+    # Security updates bypass cooldown, so CVE fixes are never delayed.
+    cooldown:
+      default-days: 7
+      semver-major-days: 30
+      semver-minor-days: 7
+      semver-patch-days: 3
+    labels:
+      - dependencies
     # Grouped: a week of separate devDependency bumps is a week of separate CI runs and separate reviews
     # for changes that are only meaningful together.
     groups:
@@ -32,3 +44,14 @@ updates:
     schedule:
       interval: weekly
     open-pull-requests-limit: 3
+    cooldown:
+      default-days: 7
+    labels:
+      - dependencies
+      - ci
+    groups:
+      # Batch routine action updates; majors remain individually reviewable.
+      actions:
+        update-types:
+          - minor
+          - patch

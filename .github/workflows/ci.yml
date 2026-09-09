@@ -20,13 +20,13 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           # The version check compares the manifest against the base branch, so it needs history.
           fetch-depth: 0
 
       - name: Setup Node
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v7
         with:
           node-version: 22.x
           cache: npm
@@ -76,9 +76,9 @@ jobs:
           - { label: Yarn Berry 4.18.0 (node-modules), manager: yarn, setup: '@yarnpkg/cli-dist@4.18.0' }
           - { label: Bun 1.2.21, manager: bun, setup: '' }
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v7
         with:
           node-version: 22.x
           cache: npm
@@ -114,9 +114,9 @@ jobs:
     timeout-minutes: 15
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v7
         with:
           node-version: 22.x
           cache: npm
@@ -157,9 +157,9 @@ jobs:
     runs-on: windows-latest
     timeout-minutes: 15
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v7
         with:
           node-version: 22.x
           cache: npm
@@ -178,17 +178,23 @@ jobs:
       fail-fast: false
       matrix:
         node-version:
+          # The floor `engines` claims, through to the current release line. 18 and 20 are past their
+          # upstream support, and are kept deliberately: this package exists to protect apps on whatever
+          # runtime a builder platform happens to give them, so the oldest runtime it claims to support is
+          # the one where a regression matters most. That is not theoretical — the Node 18 job is what
+          # caught a detection field arriving empty there because the runtime exposes no global `crypto`.
           - 18.x
           - 20.x
           - 22.x
           - 24.x
+          - 26.x
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - name: Setup Node
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v7
         with:
           node-version: ${{ matrix.node-version }}
           cache: npm
@@ -237,10 +243,10 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - name: Setup Node
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v7
         with:
           node-version: 20.x
           cache: npm
