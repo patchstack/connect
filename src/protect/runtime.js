@@ -9,8 +9,10 @@
 //     installed guard ENFORCES by default even though this constructor's default doesn't. Precedence:
 //     PATCHSTACK_MODE env > API `enforcement` > options.mode > dry-run.
 //   - fail-open everywhere: a rule/engine error never blocks (or crashes) a request. Where the guard
-//     fails open *without* inspecting (body caps, live streams, binary bodies, resolver failures) it
-//     is counted and reported — see `protection.coverage()` / the `onSkip` option.
+//     fails open *without* inspecting AND KNOWS IT (body caps, live streams, binary bodies, a resolver
+//     the fetch pre-screen could not use) it is counted and reported — see `protection.coverage()` /
+//     the `onSkip` option. It is not a measure of everything unscreened: an outbound call can miss the
+//     address check without this guard being able to tell, so zero is not a claim that nothing was.
 //
 // Runtime guards: .express(), .node(), .fetch(handler) / .fetchGuard() — same policy,
 // every runtime an AI builder deploys to.
@@ -382,11 +384,18 @@ export async function createProtection(options = {}) {
 
   applyBundle(bundle);
 
-  // Fail-open COVERAGE. The guard deliberately passes traffic through rather than risk breaking the
-  // app: an oversized request body, a response past the screening cap, a live stream, a binary body, a
-  // parse failure, a DNS resolver failure. Each of those is a real hole in enforcement, and until now
-  // it was SILENT — "always-on" read as "always inspected". Every such bypass is now counted and
-  // reported to `onSkip`, so a host can alert on it and `protection.coverage()` can be surfaced.
+  // Fail-open COVERAGE, for the bypasses the guard can OBSERVE. It deliberately passes traffic through
+  // rather than risk breaking the app: an oversized request body, a response past the screening cap, a
+  // live stream, a binary body, a parse failure, or an outbound call the FETCH pre-screen could not
+  // resolve. Each is a real hole in enforcement, and each is counted and reported to `onSkip`, so a
+  // host can alert on it and `protection.coverage()` can be surfaced — "always-on" is not "always
+  // inspected".
+  //
+  // Two things are outside it. A resolver failure on the node path is not a bypass at all: that
+  // resolver is the connection's, so the call fails rather than going out unscreened. And connection
+  // provenance is not observable — whether an outbound call resolved through the screening resolver is
+  // decided by the agent and the socket pool, so such a call can miss the address check without
+  // appearing in these counts.
   // `onSkip` is a TRUSTED SERVER callback: `detail` carries operational context (sizes, statuses,
   // outbound hostnames) for logging/alerting. Do not forward it to a client response.
   const skipCounts = Object.create(null);
@@ -1116,10 +1125,17 @@ export async function createProtection(options = {}) {
     },
 
     /**
-     * Enforcement coverage: how often the guard FAILED OPEN rather than inspecting, keyed
-     * `<phase>:<reason>` (e.g. `response:body-cap`, `request:body-cap`, `response:live-stream`,
-     * `egress:resolver-failed`). "Always-on" is not "always inspected" — surface this (or pass
-     * `onSkip`) so an unscreened path is visible and alertable rather than silent.
+     * Enforcement coverage: how often the guard failed open rather than inspecting, in the cases it can
+     * observe itself — keyed `<phase>:<reason>` (e.g. `response:body-cap`, `request:body-cap`,
+     * `response:live-stream`, `egress:resolver-failed` for a fetch call whose address could not be
+     * resolved). "Always-on" is not "always inspected", so surface this (or pass `onSkip`) rather than
+     * assuming coverage.
+     *
+     * Not a total, in two ways. An outbound call can miss the address check without being counted:
+     * whether it resolved through the screening resolver depends on the agent and the socket pool,
+     * which this guard cannot observe. And a resolver failure on the node path appears nowhere here
+     * because it is not a bypass — that resolver is the connection's, so the call fails instead.
+     * Zero skips means nothing the guard can see was bypassed, not that nothing was.
      */
     coverage() {
       return { skipped: { ...skipCounts } };

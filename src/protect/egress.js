@@ -29,9 +29,18 @@ export async function installEgressGuard({ shouldBlock, onBlock, onSkip, dnsScre
   };
 
   // DNS resolution, shared by the fetch wrapper and the node http path. Instead of trusting the
-  // hostname, resolve it and check the resolved address(es). On the node path we also PIN the socket
-  // to the vetted IP (no time-of-check/use gap); on fetch we can't pin without a custom undici
-  // dispatcher, so we screen the resolution but a re-resolve at connect is a residual window.
+  // hostname, resolve it and check the resolved address(es).
+  //
+  // What the node path establishes is about the resolutions it PERFORMS: when the injected resolver is
+  // the one a connection resolves through, the socket gets the addresses that were screened and there
+  // is no time-of-check/use gap. It is not a property of the module path as a whole, and this code
+  // cannot tell which calls it holds for: an agent can hold its own resolver, a transport can connect
+  // without consulting ours, and a keep-alive agent — which the stock global agent is — can reuse a
+  // socket that was connected before any of this ran. So the guarantee is stated for what it covers
+  // and claimed for nothing else.
+  //
+  // On fetch we can't pin at all without a custom undici dispatcher, so we screen the resolution and a
+  // re-resolve at connect is a residual window.
   // Needs node:dns + node:net; absent on edge runtimes, where the hostname rules still apply.
   let screen = null;
   if (dnsScreen) {
@@ -46,12 +55,17 @@ export async function installEgressGuard({ shouldBlock, onBlock, onSkip, dnsScre
     }
   }
 
-  // A resolver failure means the destination was NOT screened by IP — the hostname check alone let it
-  // through. That's a real (if rare) coverage hole, so report it via onSkip instead of failing open
-  // silently. Still fail-open: a broken resolver must not take the app's outbound traffic down.
+  // Coverage for the FETCH pre-screen below, its only caller. A resolver that is unavailable or fails
+  // there means the call goes out screened by hostname and not by address — a real (if rare) hole, so it
+  // is reported through onSkip rather than passed over. Still fail-open: a broken resolver must not take
+  // the app's outbound traffic down.
+  //
+  // The node path does not come through here. Its resolver IS the connection's, so a failure there is
+  // forwarded and nothing connects — no bypass, and nothing owed to this accounting.
   const skip = (reason, detail) => notify(onSkip, { phase: 'egress', reason, detail }, 'onSkip');
 
-  // True when a hostname resolves to a disallowed address. Fail-open: any resolver error → false.
+  // The fetch pre-screen: true when a hostname resolves to a disallowed address. Fail-open, so any
+  // resolver error is false — and reported, since the call then goes out unscreened by address.
   const resolvesToDisallowed = (url, host, method) =>
     new Promise((resolve) => {
       if (!screen) {
@@ -154,7 +168,7 @@ export async function installEgressGuard({ shouldBlock, onBlock, onSkip, dnsScre
   for (const moduleName of ['node:http', 'node:https']) {
     try {
       const mod = await import(moduleName);
-      const restore = patchHttpModule(mod.default ?? mod, block, screen);
+      const restore = patchHttpModule(mod.default ?? mod, block, screen, skip);
       if (restore) restores.push(restore);
     } catch {
       /* module not available on this runtime — skip */
@@ -180,7 +194,7 @@ export async function installEgressGuard({ shouldBlock, onBlock, onSkip, dnsScre
 }
 
 // Wrap http(s).request/get so a blocked destination throws before the socket opens.
-function patchHttpModule(http, block, screen) {
+function patchHttpModule(http, block, screen, skip) {
   if (!http || typeof http.request !== 'function' || http.__patchstackGuarded) return null;
   const originalRequest = http.request;
   const originalGet = http.get;
@@ -195,9 +209,12 @@ function patchHttpModule(http, block, screen) {
       // and skip an explicitly allowlisted host (the operator trusts it — don't second-guess its DNS).
       if (target && screen && target.host && screen.isIP(target.host) === 0 && !screen.isExempt(target.host)) {
         try {
-          args = withScreeningLookup(args, target, block, screen.lookup);
+          args = withScreeningLookup(args, target, block, screen.lookup, skip);
         } catch {
-          /* injection failed — proceed unscreened (fail-open) */
+          // The call goes on with the arguments it came with. Nothing is counted as a fail-open bypass:
+          // the only thing here that can throw is reading the caller's options, and Node copies that
+          // object itself before doing anything — so options this cannot read are options Node refuses
+          // too, and no traffic was served unscreened to report.
         }
       }
       return original.apply(this, args);
@@ -267,9 +284,26 @@ export function screenResolved(addresses, target, block) {
 }
 
 // Build a DNS `lookup` that screens every resolved address before the socket connects, then hands
-// back the vetted addresses (pinning the connection to what we checked). A blocked address errors
-// the connection; a resolver error or our own failure falls through to normal resolution (fail-open).
-function withScreeningLookup(args, target, block, lookup) {
+// back the vetted addresses (pinning the connection to what we checked). A blocked address errors the
+// connection.
+//
+// Screening COMPOSES with a resolver on the caller's OPTIONS: a `lookup` there is the one this resolves
+// through, so an app that brought its own keeps it and what gets screened is what that resolver
+// answered. Replacing it would screen a resolution the app never asked for, and connect to an address
+// its own resolver never returned.
+//
+// An AGENT is not reached from here, and cannot be: it can own resolution, or the whole connection, in
+// ways a `lookup` on the request does not reach. Whether a given call resolved through this resolver is
+// therefore not something this function knows, and nothing above claims it does.
+//
+// An error from that resolution is handed on as it arrived, so nothing connects and no coverage skip is
+// owed — a skip is for a destination that WAS reached without its address being checked. A failure of
+// OURS hands over the addresses that resolution already produced, so screening cannot be the thing that
+// breaks a request that would otherwise have worked, and cannot be the thing that resolves a second
+// time either.
+export function withScreeningLookup(args, target, block, lookup, skip) {
+  const own = callerLookup(args);
+  const resolve = typeof own === 'function' ? own : lookup;
   const screeningLookup = (hostname, options, callback) => {
     let opts = options;
     let cb = callback;
@@ -278,29 +312,61 @@ function withScreeningLookup(args, target, block, lookup) {
       opts = {};
     }
     if (!opts || typeof opts !== 'object') opts = {};
+
+    // What the resolver answered, in the shape the caller asked for.
+    const handOver = (list) => {
+      if (opts.all) return cb(null, list);
+      const first = list[0];
+      if (!first) return cb(new Error(`Patchstack: could not resolve ${hostname}`));
+
+      return cb(null, first.address, first.family);
+    };
+
+    // Whether the resolver has answered yet. A throw after it answered belongs to whatever ran next —
+    // including the caller's own callback — and translating that into a resolver error would call the
+    // caller back a second time.
+    let answered = false;
     try {
-      lookup(hostname, { ...opts, all: true }, (err, addresses) => {
+      resolve(hostname, { ...opts, all: true }, (err, addresses) => {
+        answered = true;
         if (err) return cb(err);
         const list = Array.isArray(addresses) ? addresses : [];
-        const blocked = screenResolved(list, target, block);
+        let blocked;
+        try {
+          blocked = screenResolved(list, target, block);
+        } catch {
+          // OURS is the only failure this falls open for, and it falls open onto the addresses already
+          // in hand — never onto a second resolution, which is how an address the screen would have
+          // refused could end up being the one that connects.
+          skip('screen-failed', { host: hostname });
+
+          return handOver(list);
+        }
         if (blocked) {
           return cb(new Error(`Patchstack blocked an outbound request to a disallowed address: ${target.host} resolved to ${blocked}`));
         }
-        if (opts.all) return cb(null, list);
-        const first = list[0];
-        if (!first) return cb(new Error(`Patchstack: could not resolve ${hostname}`));
-        return cb(null, first.address, first.family);
+
+        return handOver(list);
       });
-    } catch {
-      // Our screening threw — fall back to a plain resolution so we never break a request ourselves.
-      try {
-        lookup(hostname, opts, cb);
-      } catch {
-        cb(new Error(`Patchstack: lookup failed for ${hostname}`));
-      }
+    } catch (err) {
+      // The resolver threw instead of answering: its failure either way, so it is forwarded exactly as
+      // a callback error is. Retrying it unscreened would ask a resolver that just refused to list
+      // addresses for a single one, and connect to whatever it then said.
+      if (answered) throw err;
+
+      return cb(err);
     }
   };
   return injectLookupOption(args, screeningLookup);
+}
+
+/** The resolver this call already carried on its options, if it carried one. */
+function callerLookup(args) {
+  for (const arg of args) {
+    if (arg && typeof arg === 'object' && !(arg instanceof URL) && typeof arg.lookup === 'function') return arg.lookup;
+  }
+
+  return undefined;
 }
 
 // Return a new args array for http(s).request with our `lookup` set on the options object (cloned,
