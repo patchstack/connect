@@ -455,6 +455,19 @@ export function renderGuideChecklist(state: GuideState, useColor: boolean): stri
     return lines.join('\n');
   }
 
+  // The person watching this run usually did not write the project. The install
+  // is the longest silence in their first hour with Patchstack, so the guide
+  // asks the agent to fill it — a request, never something the setup relies on.
+  if (countRemainingSteps(state) > 0) {
+    lines.push(` ${paint(ANSI.cyan, '➜')} ${paint(ANSI.bold, 'Tell the user what you are doing as you go.')}`);
+    lines.push('   Installs here take minutes and they are watching output they cannot read.');
+    lines.push('   Say it in plain words: their site is built out of hundreds of ready-made');
+    lines.push('   pieces of code, Patchstack keeps track of which ones it uses and warns them');
+    lines.push('   when one turns out to be unsafe, and nothing their visitors see changes.');
+    lines.push('   Avoid lockfile / dependency / manifest / npm / UUID when speaking to them.');
+    lines.push('');
+  }
+
   // 1. Install
   if (state.installed?.section === 'dependencies') {
     lines.push(done(`@patchstack/connect installed (${state.installed.version}, ${state.installed.section})`));

@@ -49,6 +49,20 @@ Only `map` reads your source, and only `map --upload` sends anything derived fro
 - If `@patchstack/connect` is already in `dependencies`, skip the install command. If it is only in `devDependencies`, move it with the matching package manager so production runtimes that prune dev dependencies can load the generated guard.
 - If the widget script tag (`cdn.patchstack.com/patchstack-widget.js`) is already in the layout, don't add a second one — `scan` also respects an existing tag: it updates its own managed tag in place and leaves a manual one untouched.
 
+## Talk to the person while you work
+
+The person who asked for this usually did not write the project and has never installed a package. Installs and builds here can run for several minutes, and a silent wall of build output is the worst part of their first experience of Patchstack. Narrate it.
+
+- **Say what you are about to do, before the slow command.** One sentence, no command names: "I'm adding Patchstack to your site — this takes a few minutes because it has to reinstall everything the site is built from."
+- **Say what the wait is.** "It's downloading the pieces your site is built out of. Nothing is broken; this is just slow."
+- **Explain the product once, in plain words.** Your site is built out of hundreds of ready-made pieces of code. New security problems are found in them all the time. Patchstack keeps a list of the pieces this site uses and warns the owner when one of them turns out to be unsafe.
+- **Say what changes and what does not.** Nothing visitors see changes. A couple of small config files are added, and a line that lets Patchstack recognise the site.
+- **Hand over the link like a next step, not a log line.** When `setup` prints the dashboard link, say what it is for: "Open this link and sign in — that's what connects the site to your Patchstack account so you can see the reports."
+- **Avoid these words with the user**: lockfile, dependency, manifest, npm, registry, UUID, environment variable, build artifact, package manager. Use them in commands, not in sentences addressed to the person.
+- **Report a failure in terms of what they can do**, not what errored. If a step is genuinely unavailable on this platform, say which one and what it means for them, rather than reporting success.
+
+This is a request, not a mechanism: nothing in the install depends on it. Do it anyway — the wait is the only moment where the person is paying full attention.
+
 ## Automated setup
 
 1. **Install** (skip if already present), matching the project's package manager:
