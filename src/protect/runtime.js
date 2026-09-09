@@ -1988,8 +1988,9 @@ const eventIdentities = new WeakMap();
 /**
  * 32 hexadecimal characters naming one call.
  *
- * Web crypto where the runtime has it. Where it does not — Node 18 exposes no global `crypto` — the
- * clock and `Math.random` stand in, which is what this package already does for its reporter's own
+ * Web crypto where the runtime has it. Where it does not — this package runs on edge runtimes too, and
+ * what they expose varies — the clock and `Math.random` stand in, as this package already does for its
+ * reporter's own
  * instance id and is enough here for the same reason: this identity is never a secret and never a
  * boundary. Nothing is authorised by holding it and nothing is denied by guessing it. What it has to do
  * is not collide between two calls, and a millisecond plus eighty-odd bits does that.

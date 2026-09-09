@@ -26,3 +26,6 @@ test-build/.work/
 # dependency graph, where its advisories cannot be told apart from advisories about the shipped package.
 examples/protect/package-lock.json
 .public-types-check/
+
+# Where CI packs the artifact for the consumer jobs to install.
+packed/

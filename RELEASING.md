@@ -45,6 +45,21 @@ gh workflow run Release -f bump=patch
 No version math, no `npm view` lookup, no chance of colliding with an existing
 version — the workflow does all of that.
 
+**`patch` is the default, and it is the wrong choice for some changes.** Raising
+the `engines.node` floor, removing or renaming an export, and changing what a
+shipped default does are all compatibility breaks, and which bump they need
+depends on where the version is:
+
+- **while this package is `0.x`** — at least a `minor`. A caret range on a `0.x`
+  version does not cross the minor, so `0.5.0` is what keeps the break away from
+  an installer resolving `^0.4.x`.
+- **from `1.0` onward** — a `major`. A caret range then spans every minor, so a
+  minor would deliver the break to exactly the installers it has to be kept from.
+
+The release that carries the floor move to `>=20` is therefore **`0.5.0`**:
+`gh workflow run Release -f bump=minor`. The workflow cannot infer any of this,
+so it is the caller's to pass.
+
 `Release` triggers `Publish` explicitly via `workflow_dispatch` rather than
 relying on the release event. This is deliberate: GitHub does **not** fire
 `release`-triggered workflows for releases created by the built-in

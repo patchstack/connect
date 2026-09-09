@@ -87,7 +87,8 @@ describe('the reported identity', () => {
   });
 
   it('mints one on a runtime with no web crypto', async () => {
-    // Node 18 exposes no global `crypto`, and a guard there must still be able to group its detections.
+    // Not every runtime this package supports exposes web crypto, and a guard on one of those must still
+    // be able to group its detections.
     // The clock and `Math.random` stand in: this identity is never a secret and never a boundary, so
     // what it has to do is not collide between two calls.
     const original = globalThis.crypto;

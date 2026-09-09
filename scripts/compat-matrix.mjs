@@ -9,15 +9,50 @@
 // Such failures are invisible from inside the repository and total for the consumer: the source suite is
 // green while nothing can import the package. Each shape below states the consumption path it holds open.
 //
-// Run: node scripts/compat-matrix.mjs [--manager npm|pnpm|yarn|bun]
+// Run: node scripts/compat-matrix.mjs [--manager npm|pnpm|yarn|bun] [--tarball FILE] [--self-contained]
 import { execFileSync } from 'node:child_process';
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync, existsSync, readdirSync } from 'node:fs';
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  readdirSync,
+  realpathSync,
+  rmSync,
+  statSync,
+  writeFileSync,
+} from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 
 const manager = (() => {
   const i = process.argv.indexOf('--manager');
   return i === -1 ? 'npm' : process.argv[i + 1];
+})();
+
+/**
+ * Only the six runtime/package shapes that form the declared-floor contract.
+ *
+ * For a job pinned to a runtime — the declared consumer floor — the compiler probes are a liability
+ * rather than coverage: they install `typescript` and `@types/node` at floating versions, so a floor
+ * either of those raises later would turn that job red over something that is not this package. The
+ * ordinary consumer matrix still runs all nine shapes on Node 22; only the declared-floor job narrows
+ * the set to probes that install nothing but the tarball.
+ */
+const selfContainedOnly = process.argv.includes('--self-contained');
+
+/**
+ * A tarball built elsewhere, or nothing to build one here.
+ *
+ * Packing runs `prepare`, which needs the repository's development dependencies — and the runtime a
+ * consumer is on is not necessarily one those can be installed on. Given a tarball, this script installs
+ * and exercises it and touches nothing else, which is what lets a consumer runtime be tested as a
+ * consumer runtime.
+ */
+const prebuilt = (() => {
+  const i = process.argv.indexOf('--tarball');
+  return i === -1 ? null : path.resolve(process.argv[i + 1]);
 })();
 
 const ROOT = process.cwd();
@@ -99,11 +134,6 @@ const PREPARE = {
   },
 };
 
-if (!INSTALL[manager]) {
-  console.error(`Unknown manager: ${manager}. Known: ${Object.keys(INSTALL).join(', ')}`);
-  process.exit(2);
-}
-
 const PROBE_TS = `
 import { buildWirePayload, collectHostingEnvKeys } from '@patchstack/connect';
 import { createProtection } from '@patchstack/connect/protect';
@@ -120,12 +150,43 @@ const TSCONFIG = (module_, resolution, types) => JSON.stringify({
 }, null, 2);
 
 /**
+ * A rule, a request that matches it, and one that does not.
+ *
+ * Importing the package proves the artifact resolves. It does not prove the guard runs: a build that
+ * throws on construction, or screens nothing, imports exactly as well. So this constructs a protection,
+ * puts a request through it both ways, and stops it — the smallest thing that fails when the guard is
+ * broken rather than merely absent.
+ */
+const SCREENING_BODY = `
+const rules = {
+  firewall: [{
+    id: 'consumer-probe',
+    title: 'a rule the probe supplies itself',
+    rule_v2: [{ parameter: 'get.q', match: { type: 'contains', value: 'boom' } }],
+  }],
+  whitelists: [],
+};
+
+const protection = await createProtection({ rules, mode: 'block' });
+try {
+  const guard = protection.fetchGuard();
+  const blocked = await guard(new Request('https://app.test/search?q=boom'));
+  if (!blocked || blocked.status !== 403) throw new Error('a matching rule did not block: ' + (blocked && blocked.status));
+
+  const allowed = await guard(new Request('https://app.test/search?q=hello'));
+  if (allowed) throw new Error('a request matching nothing was blocked with ' + allowed.status);
+} finally {
+  await protection.stop();
+}
+`;
+
+/**
  * Each consumer shape, and what it is here to prove.
  *
  * `cjs-ts-no-node-types` is not redundant with `cjs-ts`: every other TypeScript fixture installs
  * `@types/node`, so it is the only one that holds the public declarations free of it.
  */
-const SHAPES = [
+export const SHAPES = [
   {
     name: 'esm-js', why: 'ESM JavaScript import',
     pkg: { type: 'module' }, deps: [],
@@ -137,6 +198,23 @@ const SHAPES = [
     pkg: {}, deps: [],
     files: { 'probe.cjs': "const r = require('@patchstack/connect');\nconst p = require('@patchstack/connect/protect');\nif (typeof r.buildWirePayload !== 'function') throw new Error('root export missing');\nif (typeof p.createProtection !== 'function') throw new Error('protect export missing');\n" },
     check: (dir) => run('node', ['probe.cjs'], dir),
+  },
+  {
+    name: 'esm-js-screens', why: 'the ESM build constructs a guard that blocks and allows',
+    pkg: { type: 'module' }, deps: [],
+    files: {
+      'screen.mjs': `import { createProtection } from '@patchstack/connect/protect';\n${SCREENING_BODY}`,
+    },
+    check: (dir) => run('node', ['screen.mjs'], dir),
+  },
+  {
+    name: 'cjs-js-screens', why: 'the CommonJS build constructs a guard that blocks and allows',
+    pkg: {}, deps: [],
+    files: {
+      // A separate build from the ESM one above, so it is a separate question.
+      'screen.cjs': `const { createProtection } = require('@patchstack/connect/protect');\n(async () => {${SCREENING_BODY}})().catch((err) => {\n  console.error(err);\n  process.exit(1);\n});\n`,
+    },
+    check: (dir) => run('node', ['screen.cjs'], dir),
   },
   {
     name: 'esm-ts', why: 'ESM TypeScript compilation',
@@ -208,6 +286,48 @@ const SHAPES = [
   },
 ];
 
+/**
+ * The exact package/runtime probes that must run at the Node version declared in `engines.node`.
+ *
+ * Explicit names make this a coverage contract rather than a side effect of a fixture's current
+ * dependencies. In particular, both published module formats must construct and exercise a guard at
+ * the floor; import-only probes cannot stand in for those two behaviours.
+ */
+export const FLOOR_SHAPE_NAMES = Object.freeze([
+  'esm-js',
+  'cjs-js',
+  'esm-js-screens',
+  'cjs-js-screens',
+  'cli',
+  'encapsulation',
+]);
+
+/** Resolve and validate the declared-floor suite before any fixture is installed. */
+export function floorShapesOf(shapes) {
+  const byName = new Map();
+
+  for (const shape of shapes) {
+    if (byName.has(shape.name)) throw new Error(`consumer shape is named more than once: ${shape.name}`);
+    byName.set(shape.name, shape);
+  }
+
+  const selected = FLOOR_SHAPE_NAMES.map((name) => {
+    const shape = byName.get(name);
+    if (!shape) throw new Error(`declared-floor consumer shape is missing: ${name}`);
+    return shape;
+  });
+
+  for (const shape of selected) {
+    if (shape.deps.length !== 0) {
+      throw new Error(
+        `declared-floor consumer shape ${shape.name} must install only the tarball; found: ${shape.deps.join(', ')}`,
+      );
+    }
+  }
+
+  return selected;
+}
+
 // A local binary is addressed by path, so on Windows it needs the shim's extension spelled out.
 const localBin = (dir, name) => path.join(dir, 'node_modules', '.bin', WINDOWS ? `${name}.cmd` : name);
 const tsc = (dir) => localBin(dir, 'tsc');
@@ -223,46 +343,71 @@ function packTarball(into) {
   return path.join(into, found[0]);
 }
 
-const work = mkdtempSync(path.join(tmpdir(), 'ps-compat-'));
-let failures = 0;
-
-try {
-  const tarball = packTarball(work);
-
-  // Which manager, at which version. The label alone says "Yarn", and Classic and Berry resolve
-  // differently enough that a pass under one is not a pass under the other.
-  let managerVersion = 'unknown';
-  try {
-    managerVersion = run(manager, ['--version'], ROOT).trim().split('\n').pop();
-  } catch { /* the install below fails loudly if the manager is missing */ }
-
-  console.log(`packed ${path.basename(tarball)}`);
-  console.log(`node ${process.version} · ${manager} ${managerVersion} · ${process.platform}\n`);
-
-  for (const shape of SHAPES) {
-    const dir = path.join(work, shape.name);
-    mkdirSync(dir, { recursive: true });
-    writeFileSync(path.join(dir, 'package.json'), JSON.stringify({ name: `consumer-${shape.name}`, private: true, ...shape.pkg }, null, 2));
-    for (const [file, body] of Object.entries(shape.files ?? {})) writeFileSync(path.join(dir, file), body);
-
-    try {
-      PREPARE[manager]?.(dir);
-      const [cmd, args] = INSTALL[manager](tarball, shape.deps);
-      run(cmd, args, dir);
-      shape.check(dir);
-      console.log(`  ok    ${shape.name.padEnd(22)} ${shape.why}`);
-    } catch (error) {
-      failures++;
-      const detail = `${error.stdout ?? ''}${error.stderr ?? ''}`.trim() || error.message;
-      console.log(`  FAIL  ${shape.name.padEnd(22)} ${shape.why}`);
-      console.log(detail.split('\n').slice(0, 8).map((l) => `          ${l}`).join('\n'));
-    }
+function main() {
+  if (!INSTALL[manager]) {
+    console.error(`Unknown manager: ${manager}. Known: ${Object.keys(INSTALL).join(', ')}`);
+    return 2;
   }
-} finally {
-  rmSync(work, { recursive: true, force: true });
+
+  const shapes = selfContainedOnly ? floorShapesOf(SHAPES) : SHAPES;
+  const work = mkdtempSync(path.join(tmpdir(), 'ps-compat-'));
+  let failures = 0;
+
+  try {
+    // A file, not merely something that exists: an unexpanded glob resolves to a directory, and npm
+    // would install that directory as the package — a pass that proves nothing about the artifact.
+    if (prebuilt && !(existsSync(prebuilt) && statSync(prebuilt).isFile())) {
+      throw new Error(`--tarball needs a packed file; ${prebuilt} is not one`);
+    }
+    const tarball = prebuilt ?? packTarball(work);
+
+    // Which manager, at which version. The label alone says "Yarn", and Classic and Berry resolve
+    // differently enough that a pass under one is not a pass under the other.
+    let managerVersion = 'unknown';
+    try {
+      managerVersion = run(manager, ['--version'], ROOT).trim().split('\n').pop();
+    } catch { /* the install below fails loudly if the manager is missing */ }
+
+    console.log(`${prebuilt ? 'given' : 'packed'} ${path.basename(tarball)}`);
+    console.log(`node ${process.version} · ${manager} ${managerVersion} · ${process.platform}\n`);
+
+    for (const shape of shapes) {
+      const dir = path.join(work, shape.name);
+      mkdirSync(dir, { recursive: true });
+      writeFileSync(path.join(dir, 'package.json'), JSON.stringify({ name: `consumer-${shape.name}`, private: true, ...shape.pkg }, null, 2));
+      for (const [file, body] of Object.entries(shape.files ?? {})) writeFileSync(path.join(dir, file), body);
+
+      try {
+        PREPARE[manager]?.(dir);
+        const [cmd, args] = INSTALL[manager](tarball, shape.deps);
+        run(cmd, args, dir);
+        shape.check(dir);
+        console.log(`  ok    ${shape.name.padEnd(22)} ${shape.why}`);
+      } catch (error) {
+        failures++;
+        const detail = `${error.stdout ?? ''}${error.stderr ?? ''}`.trim() || error.message;
+        console.log(`  FAIL  ${shape.name.padEnd(22)} ${shape.why}`);
+        console.log(detail.split('\n').slice(0, 8).map((l) => `          ${l}`).join('\n'));
+      }
+    }
+  } finally {
+    rmSync(work, { recursive: true, force: true });
+  }
+
+  console.log(failures === 0
+    ? `\nall ${shapes.length} ${selfContainedOnly ? 'declared-floor ' : ''}consumer shapes work with ${manager}`
+    : `\n${failures} of ${shapes.length} ${selfContainedOnly ? 'declared-floor ' : ''}consumer shapes FAILED with ${manager}`);
+  return failures === 0 ? 0 : 1;
 }
 
-console.log(failures === 0
-  ? `\nall ${SHAPES.length} consumer shapes work with ${manager}`
-  : `\n${failures} of ${SHAPES.length} consumer shapes FAILED with ${manager}`);
-process.exit(failures === 0 ? 0 : 1);
+function invokedDirectly() {
+  const self = realpathSync(fileURLToPath(import.meta.url));
+
+  try {
+    return realpathSync(process.argv[1] ?? '') === self;
+  } catch {
+    return false;
+  }
+}
+
+if (invokedDirectly()) process.exitCode = main();
