@@ -7,6 +7,9 @@
 #
 # Root only: this package has no runtime dependencies, so everything Dependabot can usefully maintain is a
 # devDependency at the root.
+#
+# Nothing here approves or merges an update. Dependency pull requests carry the repository's normal review
+# and required checks, like any other change.
 version: 2
 
 updates:
