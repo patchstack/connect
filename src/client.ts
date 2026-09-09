@@ -266,6 +266,29 @@ export async function fetchSiteStatus(config: Config): Promise<SiteStatus> {
   }
 }
 
+/**
+ * The whole body of a manifest push.
+ *
+ * Built here rather than inline at the `fetch` so that `--dry-run` prints the object that would be sent
+ * instead of a subset of it: a preview that omits fields is a preview of a different request.
+ *
+ * `url` and `name` ride along on every push, not only the one that provisions the site. A site created
+ * by a scan from a developer machine carries a placeholder address until some later push reports a real
+ * one, and that push is a re-scan. Patchstack applies either field only to a site that still lacks it,
+ * so a repeated push does not re-point an address or replace a name. Both are omitted when they are not
+ * strings, which is what a caller that built its own `Config` without them sends.
+ */
+export function buildManifestBody(config: Config, payload: WirePayload): Record<string, unknown> {
+  return {
+    ...payload,
+    environment: config.environment,
+    ...(typeof config.siteUrl === 'string' && config.siteUrl !== '' ? { url: config.siteUrl } : {}),
+    ...(typeof config.siteName === 'string' && config.siteName !== ''
+      ? { name: config.siteName }
+      : {}),
+  };
+}
+
 export async function postManifest(
   config: Config,
   payload: WirePayload,
@@ -284,7 +307,7 @@ export async function postManifest(
         Accept: 'application/json',
         'User-Agent': '@patchstack/connect',
       },
-      body: JSON.stringify({ ...payload, environment: config.environment }),
+      body: JSON.stringify(buildManifestBody(config, payload)),
       signal: AbortSignal.timeout(timeoutMs),
     });
   } catch (cause) {

@@ -56,7 +56,9 @@ export async function scanAndReport(
   options: ScanAndReportOptions = {},
 ): Promise<ScanAndReportResult> {
   const cwd = options.cwd ?? process.cwd();
-  const config = options.config ?? (await resolveConfig({ cwd }));
+  // Reports the manifest, so it resolves what the manifest reports. A caller passing its own `config`
+  // decides for itself: `siteUrl`/`siteName` are optional, and omitting them omits them from the push.
+  const config = options.config ?? (await resolveConfig({ cwd, detectSiteIdentity: true }));
   const manifest = await scanLockfile(cwd);
   // Opt-in, matching the CLI: a library caller does not get a widened payload by upgrading either.
   const { payload, stats } = buildWirePayload(manifest, { installPaths: options.installPaths === true });

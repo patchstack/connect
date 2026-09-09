@@ -45,6 +45,22 @@ export interface Config {
    * Falls back to `apiKey` when unset. Prefer `PATCHSTACK_PULSE_AUTH`.
    */
   pulseAuth: string | null;
+  /**
+   * Where this app is published, reported alongside the manifest so a site provisioned without an
+   * address can learn one. `null` when nothing reliable is known — a laptop build, or a platform that
+   * publishes no production URL.
+   *
+   * Optional, and absent unless the config was resolved with `detectSiteIdentity`. Only the manifest
+   * push reads it, and it is omitted from that push when it is not a string — so a caller holding a
+   * `Config` it built itself keeps working without knowing this field exists.
+   */
+  siteUrl?: string | null;
+  /**
+   * What this app is called, reported alongside the manifest so a site provisioned nameless can learn a
+   * name. `null` when the project states none — a name Patchstack would only be guessing at is not
+   * reported. Optional on the same terms as `siteUrl`.
+   */
+  siteName?: string | null;
   endpoint: string;
   timeoutMs: number;
   /** Environment to report the manifest under. Defaults to 'production'. */

@@ -2,6 +2,8 @@ import { readFile, writeFile, chmod } from 'node:fs/promises';
 import path from 'node:path';
 import { PatchstackError, type Config, type Environment } from './types.js';
 import { DEFAULT_ENDPOINT, DEFAULT_TIMEOUT_MS } from './client.js';
+import { detectSiteUrl, normaliseSiteUrl } from './site-url.js';
+import { detectSiteName, normaliseSiteName } from './site-name.js';
 
 const CONFIG_FILENAME = '.patchstackrc.json';
 
@@ -35,6 +37,17 @@ interface ConfigFile {
   timeoutMs?: number;
   environment?: string;
   widget?: boolean;
+  /**
+   * Where this app is published. Committed with the UUID rather than kept secret — it is the address
+   * the site already serves to everyone. Set it for platforms whose build environment does not say
+   * which deployment is the production one.
+   */
+  url?: string;
+  /**
+   * What this app is called in the dashboard. Set it when the project's own files do not say — a
+   * `package.json` still named after its template, an HTML shell whose title is filled in by script.
+   */
+  name?: string;
 }
 
 export interface ResolveConfigOptions {
@@ -48,6 +61,69 @@ export interface ResolveConfigOptions {
    * server response.
    */
   requireSiteUuid?: boolean;
+  /**
+   * Resolve the site's public address and name into `siteUrl` and `siteName`.
+   *
+   * Off by default, and left off by every command that does not push a manifest. Resolving them reads
+   * the project's `index.html` and `package.json` and the host's production-URL variables, and the
+   * manifest push is the only thing that reports the result — so `status`, `guide`, `login`,
+   * `uninstall`, `mark-build` and the map upload have no reason to look, and do not. Both fields come
+   * back `null` when it is off.
+   */
+  detectSiteIdentity?: boolean;
+}
+
+interface SiteIdentity {
+  url: string | null;
+  name: string | null;
+}
+
+/**
+ * The address and name to report: what the configuration states, or what the project and its build
+ * environment say when it states nothing.
+ *
+ * A configured value that cannot be used is an error rather than a reason to look elsewhere. The setting
+ * exists so that the person naming their own site outranks any inference, and falling through to an
+ * inferred address would report a different site than the one they wrote — quietly, and permanently,
+ * since the address is adopted once and then belongs to the site.
+ */
+async function resolveSiteIdentity(
+  cwd: string,
+  fromEnv: ConfigFile,
+  fromFile: ConfigFile,
+): Promise<SiteIdentity> {
+  const configuredUrl = stated(fromEnv.url) ?? stated(fromFile.url);
+  const configuredName = stated(fromEnv.name) ?? stated(fromFile.name);
+
+  let url: string | null;
+  if (configuredUrl === null) {
+    url = detectSiteUrl(process.env)?.url ?? null;
+  } else {
+    url = normaliseSiteUrl(configuredUrl);
+    if (url === null) {
+      throw new PatchstackError(
+        `Site URL "${configuredUrl}" is not an address the public can reach this site at. ` +
+          'Set "url" in .patchstackrc.json (or PATCHSTACK_SITE_URL) to the http(s) address visitors ' +
+          'use — a hostname, not an IP address — or remove it to let the build environment answer.',
+        'CONFIG_INVALID',
+      );
+    }
+  }
+
+  // `normaliseSiteName` only rejects a blank string, which `stated` has already ruled out, so a
+  // configured name always wins outright and there is no invalid case to refuse here.
+  const name =
+    configuredName === null
+      ? ((await detectSiteName(cwd))?.name ?? null)
+      : normaliseSiteName(configuredName);
+
+  return { url, name };
+}
+
+/** A setting someone actually wrote. Blank counts as unset, which is how a CI variable is cleared. */
+function stated(value: string | undefined): string | null {
+  const trimmed = (value ?? '').trim();
+  return trimmed === '' ? null : trimmed;
 }
 
 export async function resolveConfig(options: ResolveConfigOptions): Promise<Config> {
@@ -100,10 +176,17 @@ export async function resolveConfig(options: ResolveConfigOptions): Promise<Conf
   // without re-provisioning: today both hold the same credential.
   const pulseAuthRaw = fromEnv.pulseAuth ?? fromSecretFile.pulseAuth ?? fromFile.pulseAuth ?? apiKeyRaw;
 
+  const identity =
+    options.detectSiteIdentity === true
+      ? await resolveSiteIdentity(options.cwd, fromEnv, fromFile)
+      : { url: null, name: null };
+
   return {
     siteUuid: siteUuid === null || siteUuid.length === 0 ? null : siteUuid,
     apiKey: apiKeyRaw === null || apiKeyRaw.length === 0 ? null : apiKeyRaw,
     pulseAuth: pulseAuthRaw === null || pulseAuthRaw.length === 0 ? null : pulseAuthRaw,
+    siteUrl: identity.url,
+    siteName: identity.name,
     endpoint,
     timeoutMs,
     environment,
@@ -373,6 +456,8 @@ function readEnv(): ConfigFile {
   const environmentRaw = process.env.PATCHSTACK_ENVIRONMENT;
   return {
     siteUuid: process.env.PATCHSTACK_SITE_UUID ?? undefined,
+    url: process.env.PATCHSTACK_SITE_URL ?? undefined,
+    name: process.env.PATCHSTACK_SITE_NAME ?? undefined,
     apiKey: process.env.PATCHSTACK_API_KEY ?? undefined,
     pulseAuth: process.env.PATCHSTACK_PULSE_AUTH ?? undefined,
     endpoint: process.env.PATCHSTACK_ENDPOINT ?? undefined,
