@@ -594,6 +594,8 @@ export function renderGuideChecklist(state: GuideState, useColor: boolean): stri
     lines.push(` ${paint(ANSI.cyan, '➜')} ${paint(ANSI.bold, 'Dashboard link (open to view reports):')}`);
     lines.push(`   ${paint(ANSI.cyan, state.claimUrl)}`);
     lines.push(detail('Open this link in a browser. The CLI never opens it.'));
+    lines.push(detail('Or from this terminal → npx @patchstack/connect claim'));
+    lines.push(detail('  (prints a link to sign in with, then attaches the site to that account)'));
     if (state.endpointOverride !== null) {
       lines.push(detail('(this URL inherits the endpoint override above)'));
     }

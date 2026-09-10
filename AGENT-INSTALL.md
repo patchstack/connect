@@ -18,6 +18,7 @@ Every command at a glance — what it does, whether it reads your source, what i
 | `status` | Re-print the site UUID + dashboard URL and check whether the site still exists (active / removed / could not verify). | No | Nothing | Site-existence check |
 | `init <site-uuid>` | Optional: pre-seed `.patchstackrc.json` with an existing UUID. | No | `.patchstackrc.json` only | Nothing |
 | `mark-build` | Stamp built HTML with a production flag + build fingerprint and ensure the widget tag in built pages. Run as a `postbuild` step. | No | Build output only (`dist/ build/ out/ .output/public`) — never source | Nothing |
+| `claim` | Attach the site to a Patchstack account from the terminal: print a link the user opens to sign in (or sign up) and poll (10 min). Whoever approves becomes the owner. Does **not** rotate the credential. Same result as opening the dashboard link `scan` prints. Not usable in CI. | No | Nothing, unless the server issues a credential for a checkout that had none — then `.patchstackrc.local.json` | Device-code request + approval poll |
 | `login` | Recover a lost credential for an existing site: print an owner-approval link and poll (10 min). Approving **rotates** the credential. Not usable in CI. | No | New credential into `.patchstackrc.local.json` on approval | Device-code request + approval poll |
 | `uninstall` | Signal Patchstack that the package is being removed: an unclaimed record is deleted, a claimed one is flagged. Does **not** touch local files. | No | Nothing local | Removal signal |
 
@@ -403,6 +404,54 @@ These are **two independent states** — never conflate them:
 2. **The local integration** (this repo): the widget `<script>` tag, `.patchstackrc.json`, the `@patchstack/connect` dependency, the runtime guard files, and the build hooks.
 
 Local files alone cannot tell you whether the site was removed from Patchstack. Run `npx @patchstack/connect status` and read the `Site status` line, then answer with both states. For example, when the site was removed but the local files remain, say: *"The site itself was removed from Patchstack — reporting has stopped and the widget no longer renders. The local integration code (widget tag, `.patchstackrc.json`, `.patchstackrc.local.json`, the dependency) is still in the project; want me to remove it?"* — not "Patchstack is still installed."
+
+## Attaching the site to an account — `claim`
+
+A scan provisions the site without an owner. It is monitored from that moment, but its reports are
+only visible once someone attaches it to a Patchstack account. Opening the dashboard link that `scan`
+and `status` print does that. `claim` does the same thing from the terminal, for when the link is
+output nobody is looking at.
+
+```
+npx @patchstack/connect claim
+```
+
+```
+  Your code:  BQDX-7ZKM
+  Claim at:   https://api.patchstack.com/monitor/pulse/device?code=BQDX-7ZKM
+
+  Open that link and sign in to Patchstack — or create an account — to attach
+  this site to it. Whoever approves becomes the site's owner.
+```
+
+**If you are an assistant running this, the sequence is three steps:**
+
+```
+1.  npx @patchstack/connect claim     → prints the link, exits straight away
+2.  Give the user the link. Wait for them to say they have done it.
+3.  npx @patchstack/connect claim     → the SAME command again, after they confirm.
+```
+
+- **Step 1 exits immediately** when the output is piped or captured, rather than blocking for ten
+  minutes on a link you cannot see yet.
+- **Step 3 is the same command.** While a request is still valid it resumes rather than restarting, so
+  running `claim` again never invalidates the link the user is looking at. If they have not finished
+  yet it says so, with the time remaining, and exits 0.
+- **An already-claimed site exits 0, not 1.** It is the goal state. Re-running after the user claimed
+  in the browser reports that and stops; it is not a setup failure.
+
+`claim --wait` is the blocking variant. Prefer the plain re-run — it keeps each command short, which
+is what fits a conversation.
+
+### What it does not do
+
+- **It does not rotate the credential.** The project already holds one from provisioning, and CI,
+  deploys and other checkouts keep working. (`login` is the command that rotates; use it only to
+  recover a lost credential.) A credential is written only when the server issues one for a checkout
+  that had none.
+- **It does not open a browser**, and it cannot claim on the user's behalf: the approval is a person
+  signing in to Patchstack.
+- **It does not work in CI** — there is no browser and no one to sign in. It refuses and exits 1.
 
 ## Recovering a lost credential — `login`
 
