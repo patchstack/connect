@@ -2,7 +2,7 @@
 // Register it once (`app.register(patchstackFastify)`); it adds a preHandler hook that runs the
 // request-phase WAF (+ egress SSRF) on every request. Fastify's request/reply aren't Web-Fetch
 // shaped, so we reconstruct a Request from the parsed fastify request and run the fetch guard.
-import { createProtection } from "@patchstack/connect/protect";
+import { createProtection, sentinelAnswer, VERIFY_HEADER } from "@patchstack/connect/protect";
 import fallbackRules from "./rules.json";
 
 const PS_SITE_UUID = "__PATCHSTACK_SITE_UUID__";
@@ -72,6 +72,19 @@ export async function patchstackFastify(fastify: any) {
   await getProtection().catch(psStepAside);
 
   fastify.addHook("preHandler", async (request: any, reply: any) => {
+    // `protect --check --runtime` asks whether a request actually reaches this seam. Answered before
+    // the route and before this request's screening — not before the protection was ever asked for,
+    // which registration above already did, deliberately, so startup egress is screened. The answer is
+    // derived from a challenge the verifying process mints per run, which rules out an app matching it
+    // by accident; without a challenge in the environment this is a header read.
+    const answered = await sentinelAnswer(request.headers?.[VERIFY_HEADER]);
+    if (answered) {
+      reply.code(200);
+      reply.header("content-type", "text/plain");
+      reply.send(answered);
+
+      return reply;
+    }
     const protection = await getProtection().catch(psStepAside);
     if (!protection) return; // the route answers this request, unscreened
     const guard = protection.fetchGuard();

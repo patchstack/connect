@@ -18,6 +18,7 @@ Every command at a glance — what it does, whether it reads your source, what i
 | `status` | Re-print the site UUID + dashboard URL and check whether the site still exists (active / removed / could not verify). | No | Nothing | Site-existence check |
 | `init <site-uuid>` | Optional: pre-seed `.patchstackrc.json` with an existing UUID. | No | `.patchstackrc.json` only | Nothing |
 | `mark-build` | Stamp built HTML with a production flag + build fingerprint and ensure the widget tag in built pages. Run as a `postbuild` step. | No | Build output only (`dist/ build/ out/ .output/public`) — never source | Nothing |
+| `claim` | Attach the site to a Patchstack account from the terminal: print a link the user opens to sign in (or sign up) and poll (10 min). Whoever approves becomes the owner. Does **not** rotate the credential. Same result as opening the dashboard link `scan` prints. Not usable in CI. | No | Nothing, unless the server issues a credential for a checkout that had none — then `.patchstackrc.local.json` | Device-code request + approval poll |
 | `login` | Recover a lost credential for an existing site: print an owner-approval link and poll (10 min). Approving **rotates** the credential. Not usable in CI. | No | New credential into `.patchstackrc.local.json` on approval | Device-code request + approval poll |
 | `uninstall` | Signal Patchstack that the package is being removed: an unclaimed record is deleted, a claimed one is flagged. Does **not** touch local files. | No | Nothing local | Removal signal |
 
@@ -141,6 +142,46 @@ It is server-only. Never put it in the widget tag, client bundles, or public env
    ```
 
    `setup` performs both steps automatically. The explicit commands are for manual setup or repair. If verification reports a generic or existing framework seam, complete the printed source edit and re-run `--check`; do not report protection as active until it exits successfully.
+
+   `--check` reads the app's source. It can establish that the guard is imported and called on a request
+   path; it cannot establish that a request ever reaches it — an app can wire the guard onto one server
+   and serve traffic from another, and that passes. To settle the difference there is an opt-in check
+   that **starts the application**:
+
+   ```
+   npx @patchstack/connect protect --check --runtime
+   ```
+
+   It launches the project's entry with `node`, moves the HTTP listeners **that process** opens to an
+   ephemeral loopback port, sends one request per listener carrying a per-run challenge, and reports
+   whether the scaffolded guard seam answered it. Exit `0` runtime traversal reached the seam, `1` a
+   listener answered and the seam did not, `2` it could not be established — neither a pass nor a
+   failure, with the structural checks still standing on their own.
+
+   Exit `2` is the answer for everything this cannot speak for, and the reason is always printed. The
+   common one is an entry that needs the project's own toolchain (a TypeScript entry, a framework
+   launcher, a watcher, another runtime, anything reached through a package manager), which this never
+   installs, builds or invents. The others are about scope: **the run answers for one process, one
+   thread, and one discovery window.** If the app attempts to start another process, the launch is
+   refused and the answer is `2`. A child can daemonize after it starts without declaring that in its
+   launch options, so allowing it would make the end-of-run process-group cleanup a claim the verifier
+   cannot establish. The app sees `EPERM`. A worker thread is also `2`: it inherits the listener
+   handling, but it cannot report back, so its listeners can be neither counted nor asked. So is a
+   listener that bound an address other than loopback, one that cannot be probed, and anything the app
+   opens after the discovery window has closed — the app is asked to stop and its acknowledgement is
+   what closes that window, so a run that never gets one is `2` as well. An inherited `NODE_OPTIONS`
+   that would run code before the listener handling is in place — a `--require` or `--import` in your
+   environment — is `2` too, and is refused before the app is launched rather than after.
+
+   A worker handed a replacement environment that does not preserve the propagated `NODE_OPTIONS` is
+   refused outright, because it would not load the listener handling. The app sees `EPERM`, and the run
+   reports `2`.
+
+   What a pass says is exactly: **runtime traversal reached the scaffolded guard seam.** It does not say
+   rules were delivered, that the deployed app is wired, or that ordinary traffic is blocked.
+
+   Nothing else runs the application. `protect`, `protect --check`, `setup`, `guide`, `scan`, `status`
+   and `mark-build` only read and write files.
 
 5. **Commit** `.patchstackrc.json`, the updated `package.json`, the guard/framework source changes, and the layout/HTML file carrying the widget tag (and the production marker, when `scan` wrote one into a JSX root), so every developer and CI run reports to the same site.
 
@@ -391,7 +432,8 @@ Two more endpoints the package can call, for completeness:
 ## Verifying the install
 
 - `npx @patchstack/connect status` re-prints the site UUID and dashboard URL, and checks whether the site still exists on Patchstack (`Site status: active / removed / could not be verified`).
-- `npx @patchstack/connect protect --check` verifies the runtime guard is connected to the request path.
+- `npx @patchstack/connect protect --check` verifies from the source that the runtime guard is connected to the request path. It does not run the app.
+- `npx @patchstack/connect protect --check --runtime` additionally **starts the app** on a loopback port and sends it one request, to establish that a request reaches the guard seam. Opt-in, and the only command that runs the application; exit `0`/`1`/`2` as described in step 4.
 - Load the site in a browser — the "Report a vulnerability" button should appear. Refresh a page that was already open before the tag was added: the button only loads with the page.
 - On the deployed site, the button appears only after a deploy that includes these source changes.
 
@@ -403,6 +445,54 @@ These are **two independent states** — never conflate them:
 2. **The local integration** (this repo): the widget `<script>` tag, `.patchstackrc.json`, the `@patchstack/connect` dependency, the runtime guard files, and the build hooks.
 
 Local files alone cannot tell you whether the site was removed from Patchstack. Run `npx @patchstack/connect status` and read the `Site status` line, then answer with both states. For example, when the site was removed but the local files remain, say: *"The site itself was removed from Patchstack — reporting has stopped and the widget no longer renders. The local integration code (widget tag, `.patchstackrc.json`, `.patchstackrc.local.json`, the dependency) is still in the project; want me to remove it?"* — not "Patchstack is still installed."
+
+## Attaching the site to an account — `claim`
+
+A scan provisions the site without an owner. It is monitored from that moment, but its reports are
+only visible once someone attaches it to a Patchstack account. Opening the dashboard link that `scan`
+and `status` print does that. `claim` does the same thing from the terminal, for when the link is
+output nobody is looking at.
+
+```
+npx @patchstack/connect claim
+```
+
+```
+  Your code:  BQDX-7ZKM
+  Claim at:   https://api.patchstack.com/monitor/pulse/device?code=BQDX-7ZKM
+
+  Open that link and sign in to Patchstack — or create an account — to attach
+  this site to it. Whoever approves becomes the site's owner.
+```
+
+**If you are an assistant running this, the sequence is three steps:**
+
+```
+1.  npx @patchstack/connect claim     → prints the link, exits straight away
+2.  Give the user the link. Wait for them to say they have done it.
+3.  npx @patchstack/connect claim     → the SAME command again, after they confirm.
+```
+
+- **Step 1 exits immediately** when the output is piped or captured, rather than blocking for ten
+  minutes on a link you cannot see yet.
+- **Step 3 is the same command.** While a request is still valid it resumes rather than restarting, so
+  running `claim` again never invalidates the link the user is looking at. If they have not finished
+  yet it says so, with the time remaining, and exits 0.
+- **An already-claimed site exits 0, not 1.** It is the goal state. Re-running after the user claimed
+  in the browser reports that and stops; it is not a setup failure.
+
+`claim --wait` is the blocking variant. Prefer the plain re-run — it keeps each command short, which
+is what fits a conversation.
+
+### What it does not do
+
+- **It does not rotate the credential.** The project already holds one from provisioning, and CI,
+  deploys and other checkouts keep working. (`login` is the command that rotates; use it only to
+  recover a lost credential.) A credential is written only when the server issues one for a checkout
+  that had none.
+- **It does not open a browser**, and it cannot claim on the user's behalf: the approval is a person
+  signing in to Patchstack.
+- **It does not work in CI** — there is no browser and no one to sign in. It refuses and exits 1.
 
 ## Recovering a lost credential — `login`
 

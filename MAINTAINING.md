@@ -22,9 +22,9 @@ The deep "why" — the AI-agent refusal modes each clause guards against — liv
 
 The prompt deliberately contains no model-authored verification step. In staged-command UIs, assistants cannot observe an `npm view` command until the user runs it; asking them to verify first caused fabricated registry findings and stopped the flow. Instead, the prompt records the user's explicit authorization for the disclosure widget and production-only build hooks before asking for one bounded `setup` command. Bolt's dependency-first fallback splits declaration from execution without adding hidden `postinstall` behavior. Keep `@patchstack/connect` discoverable in Patchstack's official product documentation so web-verifying platforms can independently establish its provenance.
 
-## Before shipping a 🔴 or 🟠 change
+## Verification timing for a 🔴 or 🟠 change
 
-Run the gate:
+For a prompt change, run the gate before shipping:
 
 ```bash
 node field-test/run.mjs --persona hostile --rounds 3
@@ -32,9 +32,17 @@ node field-test/run.mjs --persona hostile --rounds 3
 
 It runs a real AI agent through the full install in a throwaway fixture against a mocked API and scores the outcome. Read each round's `report.md` (the HESITATIONS / DECISION ANALYSIS sections) — anything an agent pauses on is a future refusal. See [`field-test/README.md`](field-test/README.md) for the improve-and-retest loop, the safety model, and what to do when the gate is red for environmental reasons (stale published docs, release freshness).
 
+For an `AGENT-INSTALL.md` or `src/guide.ts` change, the fixture installs the published tarball and
+therefore cannot exercise unpublished text. Run the deterministic disclosure and capability checks
+before merge, ship with the hostile field test recorded as outstanding, and run it immediately after the
+release carries the change. That remains a prompt-survival gate. Add `standard` or `lovable` when the
+question is document accuracy; those personas install more reliably than `hostile`.
+
 What it establishes is **structural regression coverage**: the prompt still survives pressures that once broke it. The personas are synthetic — written from our own analysis, not from any platform's policy text — so a green run is not evidence that a live platform accepts the prompt, and should not be reported as though it were.
 
-Caveat: the fixture installs the **published** package, so an unpublished `guide`/CLI change can't be exercised end-to-end — publish first, or accept that the run validates only the prompt shape.
+This split is a limitation of the current harness. A local-registry mode would let every artifact be
+tested before publication; until one exists, do not describe a run against the previous tarball as a
+gate on unpublished docs.
 
 ## Don'ts (these are refusal triggers, not style nits)
 

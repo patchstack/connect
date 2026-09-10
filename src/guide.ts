@@ -586,6 +586,8 @@ export function renderGuideChecklist(state: GuideState, useColor: boolean): stri
       lines.push(detail(`${check.label}${check.hint ? ` — ${check.hint}` : ''}`));
     }
     lines.push(detail('Verify → npx @patchstack/connect protect --check'));
+    // Named here rather than run: `guide` is read-only and must never start the application.
+    lines.push(detail('Prove a request reaches the guard (starts your app) → npx @patchstack/connect protect --check --runtime'));
   }
 
   // 7. Dashboard access — always keep the URL prominent.
@@ -594,6 +596,8 @@ export function renderGuideChecklist(state: GuideState, useColor: boolean): stri
     lines.push(` ${paint(ANSI.cyan, '➜')} ${paint(ANSI.bold, 'Dashboard link (open to view reports):')}`);
     lines.push(`   ${paint(ANSI.cyan, state.claimUrl)}`);
     lines.push(detail('Open this link in a browser. The CLI never opens it.'));
+    lines.push(detail('Or from this terminal → npx @patchstack/connect claim'));
+    lines.push(detail('  (prints a link to sign in with, then attaches the site to that account)'));
     if (state.endpointOverride !== null) {
       lines.push(detail('(this URL inherits the endpoint override above)'));
     }

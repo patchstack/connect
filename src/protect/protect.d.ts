@@ -117,6 +117,20 @@ export interface Protection {
   };
 }
 
+/**
+ * The header a runtime wiring check sends, and the value a scaffolded guard answers it with.
+ *
+ * `protect --check --runtime` starts the app with a fresh challenge carried for that verification run,
+ * then asks for a response derived from it. The whole app process can read the challenge; the response
+ * rules out an accidental match, but does not prove which module answered.
+ *
+ * The seam reads the header itself and passes the value here; this decides whether it is the challenge
+ * and, if so, what to answer with. In a process not launched for runtime verification there is no
+ * challenge to match, so the answer is null and the request is screened exactly as it would have been.
+ */
+export declare const VERIFY_HEADER: "x-patchstack-verify";
+export declare function sentinelAnswer(offered: unknown): Promise<string | null>;
+
 export interface CreateProtectionOptions {
   /**
    * Fallback when the Pulse rules API does not send `enforcement`.

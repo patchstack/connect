@@ -149,8 +149,8 @@ async function seamWith(name: string, factory = REJECTS): Promise<Record<string,
   writeFileSync(
     join(dir, commonjs ? 'stub.cjs' : 'stub.mjs'),
     commonjs
-      ? `module.exports = { createProtection: ${factory}, createSupabaseGuard: () => {}, createServerFnGuard: () => {}, GUARD_PATH: "/x" };\n`
-      : `export const createProtection = ${factory};\nexport const createSupabaseGuard = () => {};\nexport const createServerFnGuard = () => {};\nexport const GUARD_PATH = "/x";\n`,
+      ? `module.exports = { createProtection: ${factory}, createSupabaseGuard: () => {}, createServerFnGuard: () => {}, GUARD_PATH: "/x", sentinelAnswer: async () => null, VERIFY_HEADER: "x-patchstack-verify" };\n`
+      : `export const createProtection = ${factory};\nexport const createSupabaseGuard = () => {};\nexport const createServerFnGuard = () => {};\nexport const GUARD_PATH = "/x";\nexport const sentinelAnswer = async () => null;\nexport const VERIFY_HEADER = "x-patchstack-verify";\n`,
   );
   // The runtime templates READ the file beside them; the TypeScript ones IMPORT it, and a JSON import
   // needs an attribute Node would demand of the compiled output. So both are provided.

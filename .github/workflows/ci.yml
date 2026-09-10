@@ -247,6 +247,17 @@ jobs:
         env:
           PS_REQUIRE_CANARY: '1'
 
+      # After the build, because it drives the built CLI against a project that links the built package:
+      # the listener reporter is COPIED into `dist/` rather than bundled, so a rename or a missed copy
+      # step is invisible to every source test and shows up only here.
+      #
+      # `PS_REQUIRE_RUNTIME_CHECK` turns a skipped run into a failure, for the same reason as the canary:
+      # a verification check that skips reads exactly like one that passed.
+      - name: The runtime traversal check works through the built CLI
+        run: npx vitest run tests/protect/runtime-check-built.test.ts
+        env:
+          PS_REQUIRE_RUNTIME_CHECK: '1'
+
       - name: Verify package contents
         run: npm pack --dry-run
 
