@@ -103,6 +103,34 @@ describe('PulseRuleClient', () => {
     expect(fetchMock).toHaveBeenCalledTimes(2);
   });
 
+  it('keeps the fetched bundle while refreshing response metadata on a 304', async () => {
+    const nowSpy = vi.spyOn(Date, 'now').mockReturnValue(0);
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(new Response(JSON.stringify(RULES), {
+        status: 200,
+        headers: { etag: 'v1', 'X-Patchstack-Build-Match': 'missing' },
+      }))
+      .mockResolvedValueOnce(new Response(null, {
+        status: 304,
+        headers: {
+          etag: 'v1',
+          'X-Patchstack-Build-Match': 'match',
+          'X-Patchstack-Build-ID': 'a'.repeat(64),
+        },
+      }));
+    vi.stubGlobal('fetch', fetchMock);
+    const client = new PulseRuleClient({ siteUuid: 'x', cacheTtl: 10_000, buildId: 'a'.repeat(64) });
+
+    await client.getRules();
+    nowSpy.mockReturnValue(10_001);
+    const revalidated = await client.getRules();
+
+    expect(revalidated.notModified).toBe(true);
+    expect(revalidated.firewall).toEqual(RULES.firewall);
+    expect(revalidated.build).toEqual({ verdict: 'match', matchedBuildId: 'a'.repeat(64) });
+  });
+
   it('clearCache() forces the next call to refetch', async () => {
     const fetchMock = vi.fn(async () => new Response(JSON.stringify(RULES), { status: 200 }));
     vi.stubGlobal('fetch', fetchMock);

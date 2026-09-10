@@ -1,8 +1,10 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, readFileSync, writeFileSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { runMap } from '../../src/map-command.js';
+import { readBuildStamp } from '../../src/build-id.js';
+import { inputMapBuildId } from '../../src/input-map-id.js';
 
 /**
  * Whether a map is worth uploading is decided in the CLI, so it is asserted there.
@@ -50,6 +52,7 @@ const upload = (dir: string) =>
 
 afterEach(() => {
   vi.unstubAllGlobals();
+  vi.unstubAllEnvs();
   for (const dir of projects.splice(0)) rmSync(dir, { recursive: true, force: true });
 });
 
@@ -101,5 +104,52 @@ describe('a map with entry points', () => {
 
     expect(sent).toHaveLength(1);
     expect(sent[0].body.endpoints.length).toBeGreaterThan(0);
+  });
+
+  it('binds the uploaded map and bundled guard to the same document-derived identity', async () => {
+    const dir = project({
+      'package.json': JSON.stringify({ name: 'x', dependencies: { express: '4.18.0' } }),
+      'src/server.ts':
+        "import express from 'express';\nconst app = express();\napp.post('/report', (req, res) => res.end(String(req.body.sql)));\n",
+      'src/patchstack/rules.json': JSON.stringify({ firewall: [], whitelists: [], whitelist_keys: {} }),
+      'src/patchstack/guard.ts':
+        'import { createProtection } from "@patchstack/connect/protect";\nimport rules from "./rules.json";\nvoid createProtection({ rules });\n',
+    });
+    vi.stubEnv('npm_lifecycle_event', 'prebuild');
+    const sent = captureUploads();
+
+    await upload(dir);
+
+    const { build_id: sentId, ...sentMap } = sent[0].body;
+    const bundled = JSON.parse(readFileSync(join(dir, 'src/patchstack/rules.json'), 'utf8'));
+    expect(sentId).toBe(inputMapBuildId(sentMap));
+    expect(readBuildStamp(bundled)).toBe(sentId);
+  });
+
+  it('does not claim a runtime binding outside a pre-bundle hook', async () => {
+    const dir = project({
+      'package.json': JSON.stringify({ name: 'x', dependencies: { express: '4.18.0' } }),
+      'src/server.ts':
+        "import express from 'express';\nconst app = express();\napp.post('/report', (req, res) => res.end(String(req.body.sql)));\n",
+    });
+    const sent = captureUploads();
+
+    await upload(dir);
+
+    expect(sent[0].body).not.toHaveProperty('build_id');
+  });
+
+  it('does not send an identity when no guard bundle retained it', async () => {
+    const dir = project({
+      'package.json': JSON.stringify({ name: 'x', dependencies: { express: '4.18.0' } }),
+      'src/server.ts':
+        "import express from 'express';\nconst app = express();\napp.post('/report', (req, res) => res.end(String(req.body.sql)));\n",
+    });
+    vi.stubEnv('npm_lifecycle_event', 'prebuild');
+    const sent = captureUploads();
+
+    await upload(dir);
+
+    expect(sent[0].body).not.toHaveProperty('build_id');
   });
 });

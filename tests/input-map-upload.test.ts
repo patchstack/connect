@@ -14,6 +14,7 @@ const config = (overrides: Partial<Config> = {}): Config =>
   }) as Config;
 
 const map = { version: 3, endpoints: [{ file: 'src/server.ts' }] };
+const BUILD = 'a'.repeat(64);
 
 afterEach(() => vi.unstubAllGlobals());
 
@@ -55,6 +56,20 @@ describe('postInputMap', () => {
     expect(url).toBe('https://api.patchstack.com/monitor/pulse/input-map/aaaa-bbbb');
     expect(init.method).toBe('POST');
     expect(JSON.parse(init.body)).toEqual(map);
+  });
+
+  it('sends a canonical build identity and omits anything unusable', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(
+      new Response(JSON.stringify({ result: 'stored', revision: 4 }), { status: 200 }),
+    );
+    vi.stubGlobal('fetch', fetchMock);
+
+    await postInputMap(config(), map, BUILD.toUpperCase());
+    expect(JSON.parse(fetchMock.mock.calls[0][1].body)).toEqual({ ...map, build_id: BUILD });
+
+    fetchMock.mockClear();
+    await postInputMap(config(), map, 'deadbee');
+    expect(JSON.parse(fetchMock.mock.calls[0][1].body)).toEqual(map);
   });
 
   it('treats "unchanged" as a result, not a failure', async () => {

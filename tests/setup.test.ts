@@ -38,9 +38,36 @@ describe('wireBuildScripts', () => {
     expect(readPackage().scripts).toMatchObject({
       build: 'vite build',
       postinstall: 'patchstack-connect scan',
-      prebuild: 'npm run lint && patchstack-connect scan',
+      prebuild: 'patchstack-connect scan && npm run lint',
       postbuild: 'echo complete && patchstack-connect mark-build',
     });
+  });
+
+  it('clears a previous map stamp before an existing prebuild can write the next one', () => {
+    writePackage({
+      scripts: { build: 'vite build', prebuild: 'patchstack-connect map --upload' },
+    });
+
+    wireBuildScripts(cwd, 'npm');
+
+    expect(readPackage().scripts.prebuild).toBe(
+      'patchstack-connect scan && patchstack-connect map --upload',
+    );
+  });
+
+  it('moves an existing trailing scan ahead of the prebuild command', () => {
+    writePackage({
+      scripts: {
+        build: 'vite build',
+        prebuild: 'patchstack-connect map --upload && patchstack-connect scan',
+      },
+    });
+
+    wireBuildScripts(cwd, 'npm');
+
+    expect(readPackage().scripts.prebuild).toBe(
+      'patchstack-connect scan && patchstack-connect map --upload',
+    );
   });
 
   it('chains directly around a Bun build', () => {
@@ -55,6 +82,21 @@ describe('wireBuildScripts', () => {
     expect(readPackage().scripts.postinstall).toBe('patchstack-connect scan');
   });
 
+  it('moves an existing Bun scan ahead of map upload without duplicating it', () => {
+    writePackage({
+      scripts: {
+        build:
+          'patchstack-connect map --upload && patchstack-connect scan && vite build && patchstack-connect mark-build',
+      },
+    });
+
+    wireBuildScripts(cwd, 'bun');
+
+    expect(readPackage().scripts.build).toBe(
+      'patchstack-connect scan && patchstack-connect map --upload && vite build && patchstack-connect mark-build',
+    );
+  });
+
   it('is idempotent', () => {
     writePackage({ scripts: { build: 'vite build' } });
 
@@ -65,6 +107,22 @@ describe('wireBuildScripts', () => {
     expect(readPackage().scripts.postinstall).toBe('patchstack-connect scan');
     expect(readPackage().scripts.prebuild).toBe('patchstack-connect scan');
     expect(readPackage().scripts.postbuild).toBe('patchstack-connect mark-build');
+  });
+
+  it('does not duplicate a scan already first in a semicolon hook', () => {
+    writePackage({
+      scripts: {
+        build: 'vite build',
+        prebuild: 'patchstack-connect scan; patchstack-connect map --upload',
+      },
+    });
+
+    const result = wireBuildScripts(cwd, 'npm');
+
+    expect(result.changed).toBe(true); // the other hooks are still added
+    expect(readPackage().scripts.prebuild).toBe(
+      'patchstack-connect scan; patchstack-connect map --upload',
+    );
   });
 
   it('adds a dependency-install scan when no build script exists', () => {

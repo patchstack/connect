@@ -34,6 +34,30 @@ export function isInstallOrBuildHook(env: NodeJS.ProcessEnv = process.env): bool
 }
 
 /**
+ * Lifecycle names that run BEFORE the bundler, and only those.
+ *
+ * A narrower question than `isInstallOrBuildHook`, and it has to be: the only thing that may write into
+ * the project's committed guard rules file is a real build, ahead of bundling. `scan` also runs from
+ * `postinstall` and straight off the command line, and neither of those should dirty a tracked file —
+ * an install is not a build, and a developer running `scan` to see what it reports has not asked for a
+ * file to change.
+ *
+ * `postbuild` is excluded for the opposite reason: it is a build, but the bundler has already run, so a
+ * value written there could never reach the artifact.
+ */
+export function isPreBundleBuildHook(env: NodeJS.ProcessEnv = process.env): boolean {
+  const event = env.npm_lifecycle_event;
+  if (event === 'prebuild') return true;
+  if (event !== 'build') return false;
+
+  // Bun does not run npm's `prebuild` hook, so setup places scan at the start of `build` itself. The
+  // lifecycle name alone is not enough: a manually appended scan would run after the bundler and stamp
+  // source too late to reach the artifact. npm exposes the complete running script here; accept only the
+  // exact command at its beginning.
+  return /^\s*patchstack-connect\s+scan(?:\s*(?:&&|;)|\s*$)/.test(env.npm_lifecycle_script ?? '');
+}
+
+/**
  * What a hooked `scan` prints when it could not deliver its report.
  *
  * The error's own message names the remedy for a developer machine. A build environment needs a different

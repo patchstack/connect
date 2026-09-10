@@ -74,7 +74,8 @@ import { runMap } from './map-command.js';
 import { getStringFlag } from './flags.js';
 import { setupProtection, wireBuildScripts } from './setup.js';
 import type { SetupProtectionResult, WireBuildScriptsResult } from './setup.js';
-import { isInstallOrBuildHook, undeliveredReportLines } from './build-hook.js';
+import { isInstallOrBuildHook, isPreBundleBuildHook, undeliveredReportLines } from './build-hook.js';
+import { applyBuildStamp } from './build-stamp.js';
 import { detectStack, type StackDescriptor } from './stack.js';
 import { PatchstackError, type StoreManifestResponse } from './types.js';
 import { buildWidgetTag, ensureSourceWidget, ensureWidgetInHtml } from './widget.js';
@@ -105,7 +106,8 @@ Usage:
                                                      with how the link was established). Best-effort static
                                                      analysis — reports the DETECTED surface, with
                                                      coverage counters. Prints JSON (--out writes a
-                                                     file; --follow-symlinks leaves the project dir).
+                                                     file; a pre-bundle --upload also stamps the existing
+                                                     guard rules file; --follow-symlinks leaves the project dir).
                                                      Uses the app's own TypeScript
   patchstack-connect init   <site-uuid>              Optional: pre-seed .patchstackrc.json
                                                      with an existing site UUID
@@ -672,6 +674,14 @@ async function runScan(
       console.log(`  ... (${preview.length - 30} more lines)`);
     }
     return 0;
+  }
+
+  // A prebuild starts with no inherited binding. `map --upload` may write one later in the same build,
+  // derived from the document it uploads. Clearing first prevents a build that does not upload a map
+  // from carrying a previous build's assertion into its artifact.
+  if (isPreBundleBuildHook()) {
+    const cleared = applyBuildStamp(process.cwd(), null);
+    if (cleared.kind === 'cleared') console.log(`Removed the previous map binding from ${cleared.file}.`);
   }
 
   // Ahead of the post deliberately. The marker carries no site UUID and needs no
