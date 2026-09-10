@@ -1,4 +1,4 @@
-import { existsSync, readFileSync, readdirSync, statSync, writeFileSync } from 'node:fs';
+import { existsSync, readFileSync, readdirSync, realpathSync, statSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 
 import { isEmptyStack, type StackDescriptor } from './stack.js';
@@ -70,9 +70,29 @@ export function resolveBuildDir(
     return existsSync(abs) && statSync(abs).isDirectory() ? abs : null;
   }
 
+  // An inferred directory must resolve inside the project. A build script can name
+  // `--output=../elsewhere`, and a candidate can be a symlink out of the tree; either
+  // would have this command rewriting HTML it was never asked to touch. Containment is
+  // judged on real paths, so a link is judged by where it goes. `--dir` above is the one
+  // deliberate way out, because a person typed it.
+  let boundary: string;
+  try {
+    boundary = realpathSync(cwd);
+  } catch {
+    return null;
+  }
+
   for (const candidate of buildDirCandidates(options)) {
     const abs = path.resolve(cwd, candidate);
-    if (existsSync(abs) && statSync(abs).isDirectory()) {
+    if (!existsSync(abs) || !statSync(abs).isDirectory()) continue;
+
+    let real: string;
+    try {
+      real = realpathSync(abs);
+    } catch {
+      continue;
+    }
+    if (real === boundary || real.startsWith(boundary + path.sep)) {
       return abs;
     }
   }

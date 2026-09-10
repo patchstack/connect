@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import {
   buildManifestBody,
+  canRetryManifestPost,
   environmentRejected,
   postManifestWithEnvironmentFallback,
 } from '../src/client.js';
@@ -34,10 +35,33 @@ describe('buildManifestBody hosting', () => {
   });
 });
 
+/**
+ * A validation refusal in the shape the API uses: a sentence for people, and an `errors` object keyed by
+ * the refused field. Synthetic — the wording is invented here, because the code must not depend on it.
+ */
+const refusal = (field: string) =>
+  new Response(JSON.stringify({ message: 'Refused.', errors: { [field]: ['Refused.'] } }), { status: 422 });
+
+const validationError = (fields: string[], message = 'Refused.'): PatchstackError => {
+  const err = new PatchstackError(message, 'VALIDATION_ERROR');
+  err.fields = fields;
+  return err;
+};
+
 describe('environmentRejected', () => {
-  it('recognises a validation refusal of the environment field, and nothing else', () => {
-    expect(environmentRejected(new PatchstackError('The selected environment is invalid.', 'VALIDATION_ERROR'))).toBe(true);
-    expect(environmentRejected(new PatchstackError('The packages field is required.', 'VALIDATION_ERROR'))).toBe(false);
+  it('recognises a refusal that names the environment field', () => {
+    expect(environmentRejected(validationError(['environment']))).toBe(true);
+    expect(environmentRejected(validationError(['packages', 'environment']))).toBe(true);
+  });
+
+  it('decides on the field named, never on the wording', () => {
+    // A sentence that mentions the environment while refusing a different field is not this case.
+    expect(environmentRejected(validationError(['packages'], 'The environment looks fine; packages do not.'))).toBe(false);
+    // A refusal that names no field at all is a real refusal.
+    expect(environmentRejected(validationError([], 'The selected environment is invalid.'))).toBe(false);
+  });
+
+  it('ignores anything that is not a validation refusal', () => {
     expect(environmentRejected(new PatchstackError('environment', 'NETWORK_TIMEOUT'))).toBe(false);
     expect(environmentRejected(new Error('environment'))).toBe(false);
   });
@@ -53,13 +77,8 @@ describe('postManifestWithEnvironmentFallback', () => {
       status: 200,
     });
 
-  it('reports as sandbox to a server that does not know local, and says which label was used', async () => {
-    const fetchMock = vi
-      .fn()
-      .mockResolvedValueOnce(
-        new Response(JSON.stringify({ message: 'The selected environment is invalid.' }), { status: 422 }),
-      )
-      .mockResolvedValueOnce(accepted());
+  it('reports as sandbox to a server that refuses local, and says which label was used', async () => {
+    const fetchMock = vi.fn().mockResolvedValueOnce(refusal('environment')).mockResolvedValueOnce(accepted());
     vi.stubGlobal('fetch', fetchMock);
 
     const result = await postManifestWithEnvironmentFallback({ ...config, environment: 'local' } as Config, payload);
@@ -81,20 +100,15 @@ describe('postManifestWithEnvironmentFallback', () => {
     expect(fetchMock).toHaveBeenCalledTimes(1);
   });
 
-  it('does not fall back for any other refusal', async () => {
-    vi.stubGlobal(
-      'fetch',
-      vi.fn().mockResolvedValueOnce(
-        new Response(JSON.stringify({ message: 'The packages field is required.' }), { status: 422 }),
-      ),
-    );
+  it('does not fall back for a refusal of any other field', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValueOnce(refusal('packages')));
 
     await expect(
       postManifestWithEnvironmentFallback({ ...config, environment: 'local' } as Config, payload),
-    ).rejects.toMatchObject({ code: 'VALIDATION_ERROR' });
+    ).rejects.toMatchObject({ code: 'VALIDATION_ERROR', fields: ['packages'] });
   });
 
-  it('never rewrites a production or sandbox label', async () => {
+  it('does not fall back for a refusal that names no field, whatever it says', async () => {
     vi.stubGlobal(
       'fetch',
       vi.fn().mockResolvedValueOnce(
@@ -102,8 +116,24 @@ describe('postManifestWithEnvironmentFallback', () => {
       ),
     );
 
+    await expect(
+      postManifestWithEnvironmentFallback({ ...config, environment: 'local' } as Config, payload),
+    ).rejects.toMatchObject({ code: 'VALIDATION_ERROR', fields: [] });
+  });
+
+  it('never rewrites a production or sandbox label', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValueOnce(refusal('environment')));
+
     await expect(postManifestWithEnvironmentFallback(config, payload)).rejects.toMatchObject({
       code: 'VALIDATION_ERROR',
     });
+  });
+});
+
+describe('canRetryManifestPost', () => {
+  it('allows a retry only for a site that already exists', () => {
+    expect(canRetryManifestPost(config)).toBe(true);
+    // The first post provisions the site and has no idempotency key; a retry could provision twice.
+    expect(canRetryManifestPost({ ...config, siteUuid: null } as Config)).toBe(false);
   });
 });

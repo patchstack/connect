@@ -1,4 +1,4 @@
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import ts from 'typescript';
@@ -513,5 +513,40 @@ describe('resolveBuildDir (framework output directories)', () => {
     mkdirSync(path.join(cwd, 'public'));
     expect(resolveBuildDir(cwd)).toBeNull();
     expect(resolveBuildDir(cwd, undefined, { framework: 'gatsby' })).toBe(path.join(cwd, 'public'));
+  });
+});
+
+describe('resolveBuildDir stays inside the project', () => {
+  let cwd: string;
+  let outside: string;
+
+  beforeEach(() => {
+    cwd = mkdtempSync(path.join(tmpdir(), 'patchstack-build-contain-'));
+    outside = mkdtempSync(path.join(tmpdir(), 'patchstack-build-outside-'));
+  });
+
+  afterEach(() => {
+    rmSync(cwd, { recursive: true, force: true });
+    rmSync(outside, { recursive: true, force: true });
+  });
+
+  it('refuses an --output the build script points outside the project', () => {
+    const escape = path.relative(cwd, outside);
+    expect(resolveBuildDir(cwd, undefined, { buildScript: `eleventy --output=${escape}` })).toBeNull();
+  });
+
+  it('refuses a candidate that is a symlink out of the project', () => {
+    symlinkSync(outside, path.join(cwd, 'dist'));
+    expect(resolveBuildDir(cwd)).toBeNull();
+  });
+
+  it('accepts a symlink that stays inside the project', () => {
+    mkdirSync(path.join(cwd, 'real-out'));
+    symlinkSync(path.join(cwd, 'real-out'), path.join(cwd, 'dist'));
+    expect(resolveBuildDir(cwd)).toBe(path.join(cwd, 'dist'));
+  });
+
+  it('keeps an explicit --dir as the deliberate way out', () => {
+    expect(resolveBuildDir(cwd, path.relative(cwd, outside))).toBe(outside);
   });
 });

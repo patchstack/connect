@@ -38,15 +38,10 @@ const ADAPTERS: Adapter[] = [
 export function runProtect(cwd: string, opts: WireOptions = {}): ProtectResult {
   let adapter;
   try {
-    adapter = ADAPTERS.find((a) => a.detect(cwd));
-    if (adapter) {
-      const result = adapter.wire(cwd, opts);
-      return { status: 'wired', adapter: adapter.name, changed: result.changed };
-    }
-
-    // Asked only once no adapter matched. An adapter that recognises the app has found the seam already,
-    // and a static-looking project that ships one (a SvelteKit site with `adapter-static` swapped out
-    // later, say) should keep the wiring its own framework knows about rather than this verdict.
+    // Asked before any adapter, because an adapter recognises a framework, not a request path. SvelteKit
+    // with `adapter-static` is still SvelteKit to its adapter, which would write a server hook that a
+    // static build only ever runs at prerender time — a guard on nothing. A `none` verdict is decisive;
+    // the adapters only get to wire an app that could receive a request.
     const architecture = classifyArchitecture(cwd);
     if (architecture.requestPath === 'none') {
       log(architecture.note);
@@ -56,6 +51,12 @@ export function runProtect(cwd: string, opts: WireOptions = {}): ProtectResult {
         evidence: architecture.evidence,
         leftovers: genericScaffoldFiles(cwd),
       };
+    }
+
+    adapter = ADAPTERS.find((a) => a.detect(cwd));
+    if (adapter) {
+      const result = adapter.wire(cwd, opts);
+      return { status: 'wired', adapter: adapter.name, changed: result.changed };
     }
   } catch (err) {
     // A wire/detect failure (read-only FS, EACCES, a bad source file) must not crash the CLI —
@@ -121,19 +122,8 @@ function credentialNote(cwd: string, adapterName: string): VerifyCheck[] {
  */
 export function runVerify(cwd: string): VerifyReport {
   try {
-    const adapter = ADAPTERS.find((a) => a.detect(cwd));
-    if (adapter) {
-      const result = adapter.verify(cwd);
-      return {
-        stack: adapter.label,
-        applicable: true,
-        ...result,
-        checks: [...result.checks, ...credentialNote(cwd, adapter.name), ...reportingChecks(cwd)],
-      };
-    }
-
-    // Same order as `runProtect`: an adapter's answer wins, and this only decides for an app none of them
-    // recognised. Reporting is still checked — a static site posts manifests like any other.
+    // Same order as `runProtect`: the static verdict is decisive, and reporting is still checked — a
+    // static site posts manifests like any other.
     const architecture = classifyArchitecture(cwd);
     if (architecture.requestPath === 'none') {
       return {
@@ -148,6 +138,17 @@ export function runVerify(cwd: string): VerifyReport {
           },
           ...reportingChecks(cwd),
         ],
+      };
+    }
+
+    const adapter = ADAPTERS.find((a) => a.detect(cwd));
+    if (adapter) {
+      const result = adapter.verify(cwd);
+      return {
+        stack: adapter.label,
+        applicable: true,
+        ...result,
+        checks: [...result.checks, ...credentialNote(cwd, adapter.name), ...reportingChecks(cwd)],
       };
     }
 

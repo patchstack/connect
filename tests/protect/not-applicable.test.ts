@@ -65,3 +65,50 @@ describe('protect on a project with no request path', () => {
     expect(runVerify(cwd).applicable).toBe(true);
   });
 });
+
+describe('a decisive static verdict precedes framework wiring', () => {
+  let cwd: string;
+
+  beforeEach(async () => {
+    cwd = await mkdtemp(path.join(tmpdir(), 'patchstack-protect-sveltekit-static-'));
+    // SvelteKit's adapter would recognise this project by `@sveltejs/kit` alone and write a server
+    // hook — which, with the static adapter, only ever runs at prerender time.
+    writeFileSync(
+      path.join(cwd, 'package.json'),
+      JSON.stringify({
+        name: 'site',
+        devDependencies: { '@sveltejs/kit': '^2.0.0', '@sveltejs/adapter-static': '^3.0.0', svelte: '^5.0.0' },
+      }),
+    );
+    mkdirSync(path.join(cwd, 'src'));
+  });
+
+  afterEach(async () => {
+    await rm(cwd, { recursive: true, force: true });
+  });
+
+  it('installs nothing into a SvelteKit site built with the static adapter', () => {
+    const result = runProtect(cwd);
+
+    expect(result.status).toBe('not-applicable');
+    expect(existsSync(path.join(cwd, 'src', 'hooks.server.ts'))).toBe(false);
+    expect(existsSync(path.join(cwd, 'src', 'patchstack'))).toBe(false);
+  });
+
+  it('verifies as not applicable rather than as a SvelteKit app missing its hook', () => {
+    const report = runVerify(cwd);
+
+    expect(report.applicable).toBe(false);
+    expect(report.stack).toBe('static build');
+  });
+
+  it('still wires SvelteKit once the static adapter is gone', () => {
+    writeFileSync(
+      path.join(cwd, 'package.json'),
+      JSON.stringify({ name: 'site', devDependencies: { '@sveltejs/kit': '^2.0.0', svelte: '^5.0.0' } }),
+    );
+
+    expect(runProtect(cwd).status).not.toBe('not-applicable');
+    expect(runVerify(cwd).applicable).toBe(true);
+  });
+});

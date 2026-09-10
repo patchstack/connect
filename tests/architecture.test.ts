@@ -92,3 +92,62 @@ describe('classifyArchitecture', () => {
     expect(classifyArchitecture(cwd).requestPath).toBe('unknown');
   });
 });
+
+describe('classifyArchitecture: none needs positive static-only evidence', () => {
+  let cwd: string;
+
+  beforeEach(async () => {
+    cwd = await mkdtemp(path.join(tmpdir(), 'patchstack-architecture-static-'));
+  });
+
+  afterEach(async () => {
+    await rm(cwd, { recursive: true, force: true });
+  });
+
+  const manifest = (deps: Record<string, string>, extra: Record<string, unknown> = {}): void => {
+    writeFileSync(path.join(cwd, 'package.json'), JSON.stringify({ name: 'app', devDependencies: deps, ...extra }));
+  };
+
+  it('does not call a project static on a bundler alone — vite builds servers too', () => {
+    manifest({ vite: '^5.0.0' });
+    expect(classifyArchitecture(cwd).requestPath).toBe('unknown');
+  });
+
+  it('does not call a project static when a hand-written server sits beside the bundler', () => {
+    manifest({ vite: '^5.0.0' });
+    writeFileSync(
+      path.join(cwd, 'server.mjs'),
+      "import { createServer } from 'node:http';\ncreateServer((req, res) => res.end('ok')).listen(3000);\n",
+    );
+
+    const verdict = classifyArchitecture(cwd);
+
+    expect(verdict.requestPath).toBe('unknown');
+    expect(verdict.evidence).toContain('ambiguous: server entry: server.mjs');
+  });
+
+  it('does not call a project static when a generator sits beside a server entry', () => {
+    manifest({ '@11ty/eleventy': '^3.0.0' });
+    writeFileSync(path.join(cwd, 'src'), '', { flag: 'wx' }); // a file, so src/* candidates are simply absent
+    writeFileSync(path.join(cwd, 'index.js'), "const app = require('express')();\napp.listen(8080);\n");
+
+    expect(classifyArchitecture(cwd).requestPath).toBe('unknown');
+  });
+
+  it("reads the file package.json#main points at, inside the project only", () => {
+    manifest({ '@11ty/eleventy': '^3.0.0' }, { main: 'lib/serve.js' });
+    mkdirSync(path.join(cwd, 'lib'));
+    writeFileSync(path.join(cwd, 'lib', 'serve.js'), "Bun.serve({ fetch: () => new Response('hi') });\n");
+    expect(classifyArchitecture(cwd).requestPath).toBe('unknown');
+
+    // A main outside the project is not followed.
+    manifest({ '@11ty/eleventy': '^3.0.0' }, { main: '../elsewhere/serve.js' });
+    expect(classifyArchitecture(cwd).requestPath).toBe('none');
+  });
+
+  it('still calls a generator with no server anywhere static', () => {
+    manifest({ '@11ty/eleventy': '^3.0.0' });
+    writeFileSync(path.join(cwd, 'index.js'), "console.log('build helper, serves nothing');\n");
+    expect(classifyArchitecture(cwd).requestPath).toBe('none');
+  });
+});

@@ -208,7 +208,7 @@ Environment variables:
 - `PATCHSTACK_SITE_UUID` — the site UUID from your Patchstack dashboard
 - `PATCHSTACK_ENDPOINT` — override the API endpoint (default `https://api.patchstack.com/monitor/pulse/manifest`)
 - `PATCHSTACK_TIMEOUT_MS` — request timeout in milliseconds (default `30000`)
-- `PATCHSTACK_ENVIRONMENT` — manifest label: `production`, `sandbox` or `local`. Unset, a deployment or CI build reports `production` and a developer machine reports `local`
+- `PATCHSTACK_ENVIRONMENT` — manifest label: `production`, `sandbox` or `local`. Unset, the label comes from the hosting platform's own production/preview signal (Vercel, Netlify, Render, Railway); a preview reports `sandbox`, and anything without such a signal — a developer machine, a generic CI runner, a platform this does not know — reports `local`
 - `PATCHSTACK_CLAIM_TOKEN` — connect the site straight to your account (see *Connecting straight to your account*)
 
 Two files, because one value is public and the other is not.
@@ -257,7 +257,7 @@ The token names your account, not the project: it is never written to `.patchsta
 
 ### Sandbox and production manifests
 
-Every `scan` sends an environment label with its dependency manifest. When nothing sets one, the label comes from where the scan runs: a build on a hosting platform or in CI (Netlify, Vercel, Cloudflare, GitHub Actions and the like) reports `production`; a developer's machine reports `local`. A local manifest is inventory — it tells Patchstack what the app is built from — and never counts as contact with a live site, so an app that has only been set up on a laptop shows in the dashboard as **Configured locally**, not as connected or deployed. Sandboxed builders should set `PATCHSTACK_ENVIRONMENT=sandbox` in the sandbox process only. Patchstack stores and deduplicates manifests per environment, so an iterative workspace scan does not replace the last production manifest.
+Every `scan` sends an environment label with its dependency manifest. When nothing sets one, the label comes from the hosting platform's own answer to "is this the production deployment?": Vercel's `VERCEL_ENV`, Netlify's `CONTEXT`, Render's pull-request flag, Railway's environment name. Production reports `production`; a preview those platforms name as such reports `sandbox`. Everything else reports `local` — a developer's machine, a generic CI runner (`CI=true` proves automation, not deployment), and a platform whose build environment carries no such signal, Cloudflare Pages among them. A local manifest is inventory — it tells Patchstack what the app is built from — and never counts as contact with a live site, so an app that has only been set up on a laptop shows in the dashboard as **Configured locally**, not as connected or deployed; once its build is seen on the live site it reads as deployed regardless of the label. Set `PATCHSTACK_ENVIRONMENT=production` where builds run on a platform this list does not know. Sandboxed builders should set `PATCHSTACK_ENVIRONMENT=sandbox` in the sandbox process only. Patchstack stores and deduplicates manifests per environment, so an iterative workspace scan does not replace the last production manifest.
 
 Do not commit `"environment": "sandbox"` to `.patchstackrc.json` when the same files are deployed to production. Scope the variable to the sandbox command/process instead:
 
@@ -265,7 +265,7 @@ Do not commit `"environment": "sandbox"` to `.patchstackrc.json` when the same f
 PATCHSTACK_ENVIRONMENT=sandbox npx @patchstack/connect setup
 ```
 
-The generated `prebuild` scan deliberately carries no hard-coded environment. A production build with no override reports `production` because the platform's own variables say it is one; a preview/sandbox builder must receive `PATCHSTACK_ENVIRONMENT=sandbox` from its host. Runtime protection itself is not environment-specific: `PATCHSTACK_ENVIRONMENT` labels manifests only. Use `PATCHSTACK_MODE=dry-run` when protection should observe rather than block.
+The generated `prebuild` scan deliberately carries no hard-coded environment. A production build with no override reports `production` only because the platform's own production signal says it is one; a preview on those platforms reports `sandbox` by itself, and a hosted builder's workspace must receive `PATCHSTACK_ENVIRONMENT=sandbox` from its host. Runtime protection itself is not environment-specific: `PATCHSTACK_ENVIRONMENT` labels manifests only. Use `PATCHSTACK_MODE=dry-run` when protection should observe rather than block.
 
 During a build, the `prebuild` scan removes any previous map stamp. A later `map --upload` in the same pre-bundle lifecycle hashes the map's policy content (excluding analyser timing and memory observations) and records that identity in the guard's existing rules file. The guard presents it on the rules request it already makes; only an explicit Patchstack confirmation naming the same map lets a rule scoped to one of your app's parameter names block. A build with no confirmed identity still enforces every ordinary rule — only scoped rules drop to detect-only, with the reason reported. Outside a pre-bundle hook, `map --upload` changes no file and sends no identity. See "Which build a rule belongs to" in `AGENT-INSTALL.md`.
 

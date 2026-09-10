@@ -16,6 +16,7 @@ import {
   fetchSiteStatus,
   postManifest,
   postManifestWithEnvironmentFallback,
+  canRetryManifestPost,
   postPackageRemoved,
 } from './client.js';
 import {
@@ -122,7 +123,11 @@ Usage:
                                                      "Uninstalling" steps in AGENT-INSTALL.md
   patchstack-connect mark-build [options]            Stamp built HTML with a production flag +
                                                      build fingerprint, and ensure the widget
-                                                     tag in built pages (run as a postbuild step)
+                                                     tag in built pages (run as a postbuild step).
+                                                     Looks in the framework's own output dir, an
+                                                     --output the build script names, then dist/,
+                                                     build/, out/, .output/public/, _site/ — inside
+                                                     the project only. --dir <path> overrides.
   patchstack-connect protect [--demo|--check]        Install always-on runtime protection (the
                                                      guard). Auto-wires supported server stacks;
                                                      for others it scaffolds a
@@ -561,6 +566,15 @@ async function postManifestWithPatience(
   config: Config,
   payload: Parameters<typeof postManifest>[1],
 ): Promise<StoreManifestResponse> {
+  // The first report is the one that provisions the site and issues its credential, and it carries no
+  // idempotency key: a timeout says nothing about whether the server committed, so sending it twice can
+  // provision two sites. It is never retried. It is also the slow one — the server registers the site and
+  // checks every package — so it gets the room a retry would have given it, up front and once.
+  if (!canRetryManifestPost(config)) {
+    const timeoutMs = Math.max(config.timeoutMs, Math.min(config.timeoutMs * RETRY_TIMEOUT_FACTOR, MAX_RETRY_TIMEOUT_MS));
+    return postManifestAccepted({ ...config, timeoutMs }, payload);
+  }
+
   try {
     return await postManifestAccepted(config, payload);
   } catch (err) {
@@ -1199,7 +1213,7 @@ function setupOutcome(
   if (protection.install.status === 'not-applicable') {
     lines.push(['Runtime protection', 'not applicable — this project has no request path (static build)']);
   } else if (protection.verification.wired) {
-    lines.push(['Runtime protection', `wired (${protection.verification.stack}); verified against the live site after deploy`]);
+    lines.push(['Runtime protection', `wired (${protection.verification.stack}) — local wiring verified; verify against the live site after deploy with \`protect --check --runtime\``]);
   } else {
     lines.push(['Runtime protection', `not wired yet (${protection.verification.stack}) — finish the checks above, then \`npx @patchstack/connect protect --check\``]);
   }

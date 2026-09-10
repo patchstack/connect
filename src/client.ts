@@ -362,18 +362,43 @@ export function buildManifestBody(
 }
 
 /**
- * Whether a manifest was refused because the server does not know the environment label it carried.
+ * The request fields a validation response names as refused.
  *
- * A Patchstack API that predates the `local` label answers a local scan with a validation error on that
- * field. The scan is still worth reporting; it just has to say `sandbox` to that server, which is the
- * label it does have for "not the live site". Anything else a 422 says is a real refusal.
+ * A validation refusal carries an `errors` object keyed by field name, alongside the human sentence. The
+ * keys are the contract; the sentence is for people. Anything not shaped like that names no field.
+ */
+function validationFields(body: unknown): string[] {
+  if (typeof body !== 'object' || body === null) return [];
+  const errors = (body as { errors?: unknown }).errors;
+  if (typeof errors !== 'object' || errors === null || Array.isArray(errors)) return [];
+  return Object.keys(errors);
+}
+
+/**
+ * Whether a manifest was refused because the server does not accept the environment label it carried.
+ *
+ * A Patchstack API that predates the `local` label refuses a local scan on the `environment` field. The
+ * scan is still worth reporting; it just has to say `sandbox` to that server, which is the label it does
+ * have for "not the live site". Decided on the field the refusal names, never on its wording: a refusal
+ * of any other field, or one that names no field, is a real refusal.
  */
 export function environmentRejected(err: unknown): boolean {
   return (
     err instanceof PatchstackError &&
     err.code === 'VALIDATION_ERROR' &&
-    /environment/i.test(err.message)
+    err.fields.includes('environment')
   );
+}
+
+/**
+ * Whether a manifest post may be sent again after a timeout.
+ *
+ * Only a report for a site that already exists. The first post — no site UUID yet — is the one that
+ * provisions the site and issues its credential, and it has no idempotency key: the server may have
+ * committed before the client gave up, and a second post would provision a second site.
+ */
+export function canRetryManifestPost(config: Config): boolean {
+  return config.siteUuid !== null;
 }
 
 export interface ManifestPostResult {
@@ -454,10 +479,12 @@ export async function postManifest(
   }
 
   if (response.status === 422) {
-    throw new PatchstackError(
+    const refused = new PatchstackError(
       body?.message ?? 'Patchstack rejected the manifest payload (validation failed).',
       'VALIDATION_ERROR',
     );
+    refused.fields = validationFields(body);
+    throw refused;
   }
 
   const refused = authFailureMessage(response.status, config);

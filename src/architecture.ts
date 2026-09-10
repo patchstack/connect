@@ -1,4 +1,4 @@
-import { readFileSync } from 'node:fs';
+import { existsSync, readFileSync, statSync } from 'node:fs';
 import path from 'node:path';
 
 import { detectDeploymentShapes } from './map/sources.js';
@@ -19,22 +19,24 @@ import {
  * it puts security-shaped files in a repository that no request will ever reach, and leaves a permanently
  * red check that teaches the reader to ignore the command.
  *
+ * `none` is the dangerous answer, because it withholds protection, so it is only given on positive
+ * static-only evidence: a static site GENERATOR is named, and nothing else in the project could serve. A
+ * bundler is not a generator — `vite` and its kin build client apps and server apps alike — so a bundler
+ * alone never supports `none`. And a generator beside a `server.mjs` that calls `createServer` is not a
+ * static site, so the usual server entry files are read for the calls that serve. Any of these turns the
+ * answer to `unknown`, which scaffolds the generic guard and leaves its wiring to be finished, exactly as
+ * an unrecognised project always has.
+ *
  * This asks a NARROWER question than `map`'s `serverSurface`, and the two differ deliberately on one
  * signal. `serverSurface` describes the app, so a platform config (`netlify.toml`, `vercel.json`) blocks it
  * from calling anything static — the project deploys somewhere, and that is not a thing the analysis can
  * claim to have looked behind. A guard does not need to know where the app deploys; it needs somewhere to
- * be invoked from. A config file is not that, so it does not block the verdict here, and the same static
- * site keeps an honest answer instead of an `unknown` that would scaffold a dead guard.
- *
- * Everything else stays conservative in the same direction `serverSurface` is: `none` requires a static
- * generator to have been NAMED. Absence of server evidence is not evidence of absence — an unparsed
- * framework produces exactly the same silence — so an unrecognised project is `unknown` and still gets the
- * generic scaffold and its wiring plan.
+ * be invoked from. A config file is not that, so it does not block the verdict here.
  */
 export type RequestPath =
   /** Something in this project receives requests, so a guard has a seam. */
   | 'server'
-  /** A static build was identified and nothing here receives a request. */
+  /** A static site generator was named and nothing here receives a request. */
   | 'none'
   /** Neither could be established. Never to be read as "no server side". */
   | 'unknown';
@@ -48,14 +50,50 @@ export interface ArchitectureVerdict {
 }
 
 interface Manifest {
+  main?: unknown;
   dependencies?: Record<string, string>;
   devDependencies?: Record<string, string>;
 }
 
-function declaredDependencies(cwd: string): Record<string, string> {
+/**
+ * Bundlers that appear in the static-generator registry because a plain client app is built with them,
+ * but which say nothing about whether a server sits beside that app. Never enough on their own.
+ */
+const BUNDLERS_NOT_GENERATORS = new Set(['vite', 'parcel']);
+
+/**
+ * Tooling that builds for an edge runtime, which serves requests without any of the server frameworks
+ * appearing in the manifest. The same toolchain also publishes purely static Pages projects, so this rules
+ * out `none` without establishing `server`.
+ */
+const EDGE_RUNTIME_TOOLING = ['wrangler', '@cloudflare/workers-types', 'miniflare'];
+
+/** Deployment shapes that could be hiding a runtime, so a `none` verdict may not be claimed over them. */
+const RUNTIME_AMBIGUOUS_SHAPES = new Set(['cloudflare-workers']);
+
+/**
+ * Where a hand-written server usually lives. The same list the generic installer's wiring plan reads, so
+ * the file this rules on is the file that plan would have told the reader to wire.
+ */
+const SERVER_ENTRY_CANDIDATES = [
+  'server.ts', 'server.js', 'server.mjs', 'server.cjs',
+  'src/server.ts', 'src/server.js', 'src/server.mjs',
+  'index.ts', 'index.js', 'index.mjs', 'index.cjs',
+  'src/index.ts', 'src/index.js', 'src/index.mjs',
+  'app.ts', 'app.js', 'app.mjs',
+  'src/app.ts', 'src/app.js', 'src/app.mjs',
+  'src/main.ts', 'src/main.js',
+];
+
+/** Calls that mean a request is received. Textual, and deliberately broad: a miss here withholds protection. */
+const SERVING_CALL = /\b(?:createServer|createSecureServer|Bun\.serve|Deno\.serve|serve\s*\(|\.listen\s*\(|express\s*\(|fastify\s*\(|new\s+(?:Hono|Koa|Elysia)\b)/;
+
+const MAX_ENTRY_BYTES = 256 * 1024;
+
+function readManifest(cwd: string): Manifest {
   try {
-    const parsed = JSON.parse(readFileSync(path.join(cwd, 'package.json'), 'utf8')) as Manifest;
-    return { ...parsed.dependencies, ...parsed.devDependencies };
+    const parsed = JSON.parse(readFileSync(path.join(cwd, 'package.json'), 'utf8'));
+    return typeof parsed === 'object' && parsed !== null ? (parsed as Manifest) : {};
   } catch {
     return {};
   }
@@ -87,31 +125,45 @@ function serverDependencies(deps: Record<string, string>): string[] {
   return [...new Set(found)];
 }
 
-/** Static generators this project positively identifies, each with the dependency that named it. */
+/** Static site generators this project positively names. Bundlers are excluded — see the header. */
 function staticGenerators(deps: Record<string, string>): string[] {
-  return STATIC_GENERATORS.filter((generator) => deps[generator.dep] !== undefined).map(
-    (generator) => generator.label,
-  );
+  return STATIC_GENERATORS.filter(
+    (generator) => deps[generator.dep] !== undefined && !BUNDLERS_NOT_GENERATORS.has(generator.dep),
+  ).map((generator) => generator.label);
 }
 
 /**
- * Tooling that builds for an edge runtime, which serves requests without any of the server frameworks
- * above appearing in the manifest.
- *
- * A Worker is a request path — but the same toolchain also publishes purely static Pages projects, and
- * from the manifest the two are identical. So this does not establish a server; it rules out claiming
- * there is none, which leaves the app `unknown` and keeps its guard scaffolded.
+ * Hand-written server entries: the usual file names, plus whatever `package.json#main` points at, each
+ * read for a call that serves. Project-relative names only, so a `main` pointing outside the project is
+ * not followed.
  */
-const EDGE_RUNTIME_TOOLING = ['wrangler', '@cloudflare/workers-types', 'miniflare'];
+function serverEntries(cwd: string, manifest: Manifest): string[] {
+  const candidates = new Set(SERVER_ENTRY_CANDIDATES);
+  if (typeof manifest.main === 'string' && manifest.main !== '' && !path.isAbsolute(manifest.main)) {
+    const main = path.normalize(manifest.main);
+    if (!main.startsWith('..')) candidates.add(main);
+  }
 
-/** Deployment shapes that could be hiding a runtime, so a `none` verdict may not be claimed over them. */
-const RUNTIME_AMBIGUOUS_SHAPES = new Set(['cloudflare-workers']);
+  const found: string[] = [];
+  for (const relative of candidates) {
+    const file = path.join(cwd, relative);
+    try {
+      if (!existsSync(file) || !statSync(file).isFile()) continue;
+      const text = readFileSync(file, 'utf8').slice(0, MAX_ENTRY_BYTES);
+      if (SERVING_CALL.test(text)) found.push(relative);
+    } catch {
+      // Unreadable is not evidence either way; the other candidates still decide.
+    }
+  }
+
+  return found;
+}
 
 export function classifyArchitecture(cwd: string): ArchitectureVerdict {
-  let deps: Record<string, string>;
+  let manifest: Manifest;
   let shapes: ReturnType<typeof detectDeploymentShapes>;
   try {
-    deps = declaredDependencies(cwd);
+    manifest = readManifest(cwd);
     shapes = detectDeploymentShapes(cwd);
   } catch {
     // A project this cannot read says nothing about itself, and silence is not a static build.
@@ -122,20 +174,20 @@ export function classifyArchitecture(cwd: string): ArchitectureVerdict {
     };
   }
 
+  const deps = { ...manifest.dependencies, ...manifest.devDependencies };
   const servers = serverDependencies(deps);
   const statics = staticGenerators(deps);
 
-  // Only a shape that SERVES counts: a worker entry, or a provider function directory with source in it.
-  // A platform config is not one (see the header), and a bare root `api/` folder is ambiguous enough that
-  // it blocks a `none` verdict below without supporting a `server` one.
+  // Only a shape that SERVES counts towards `server`: a worker entry, or a provider function directory
+  // with source in it. A platform config is not one (see the header); a bare root `api/` folder and a
+  // wrangler config are ambiguous enough to block `none` without supporting `server`.
   const serving = shapes.filter((shape) => shape.evidence === 'runtime-entry');
   const ambiguous = [
-    ...shapes.filter(
-      (shape) => shape.evidence === 'layout' || RUNTIME_AMBIGUOUS_SHAPES.has(shape.shape),
-    ).map((shape) => `${shape.shape} (${shape.source})`),
-    ...EDGE_RUNTIME_TOOLING.filter((dep) => deps[dep] !== undefined).map(
-      (dep) => `edge runtime tooling: ${dep}`,
-    ),
+    ...shapes
+      .filter((shape) => shape.evidence === 'layout' || RUNTIME_AMBIGUOUS_SHAPES.has(shape.shape))
+      .map((shape) => `${shape.shape} (${shape.source})`),
+    ...EDGE_RUNTIME_TOOLING.filter((dep) => deps[dep] !== undefined).map((dep) => `edge runtime tooling: ${dep}`),
+    ...serverEntries(cwd, manifest).map((file) => `server entry: ${file}`),
   ];
 
   if (servers.length > 0 || serving.length > 0) {
@@ -162,10 +214,7 @@ export function classifyArchitecture(cwd: string): ArchitectureVerdict {
 
   return {
     requestPath: 'unknown',
-    evidence: [
-      ...statics.map((label) => `static build: ${label}`),
-      ...ambiguous.map((source) => `ambiguous: ${source}`),
-    ],
+    evidence: [...statics.map((label) => `static build: ${label}`), ...ambiguous.map((source) => `ambiguous: ${source}`)],
     note:
       'Neither a request path nor a purely static build could be identified here. An unparsed framework ' +
       'looks exactly like this, so protection is scaffolded and its wiring left to be finished rather ' +

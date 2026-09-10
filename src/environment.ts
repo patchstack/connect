@@ -1,5 +1,4 @@
-import { detectSiteUrl } from './site-url.js';
-import { collectHostingEnvKeys, type EnvLike } from './stack.js';
+import type { EnvLike } from './stack.js';
 import type { Environment } from './types.js';
 
 /**
@@ -11,39 +10,73 @@ import type { Environment } from './types.js';
  * a claim that the site was deployed and in contact, before anything had been committed, let alone
  * published. The label has to come from evidence.
  *
- * `production` is claimed only on positive evidence that this process is a deployment or CI build: a
- * hosting platform's variables, a CI marker, or a production URL the platform exposes. A developer's
- * machine has none of these, and reports as `local`. A hosted builder's sandbox says `sandbox` explicitly,
- * as it always has.
+ * `production` is claimed only when a hosting platform's OWN discriminator says this build is the
+ * production one — Vercel's `VERCEL_ENV`, Netlify's `CONTEXT`, and so on. The same discriminator saying
+ * preview makes the build `sandbox`: not the live site, and known not to be. Everything else is `local`.
+ *
+ * Three things deliberately do not count as production evidence. A generic CI marker (`CI`,
+ * `GITHUB_ACTIONS`) proves automation, not deployment: the same runner builds pull requests and runs
+ * tests. A hosting platform's variable with no production/preview discriminator names where the build
+ * runs, not which deployment it is. And a variable that is set but empty is not set. Any of these read as
+ * production recreates the false-live-site state this inference exists to end.
  *
  * The cost of a wrong answer is asymmetric, which is why the default is `local` and not the other way
  * round. A deployment mislabelled `local` still stamps its fingerprint into the page, and the live sighting
  * corrects the record on its own; a laptop mislabelled `production` is a deployed, connected site that does
- * not exist.
+ * not exist. `PATCHSTACK_ENVIRONMENT` remains the override for a platform this does not know.
  */
 
-/** Variables that mark a CI or platform build, beyond the hosting patterns the stack descriptor reads. */
-const CI_MARKERS = [
-  'CI',
-  'GITHUB_ACTIONS',
-  'GITLAB_CI',
-  'CIRCLECI',
-  'TRAVIS',
-  'BUILDKITE',
-  'TF_BUILD',
-  'CODEBUILD_BUILD_ID',
-  'BITBUCKET_BUILD_NUMBER',
-  'JENKINS_URL',
-  'TEAMCITY_VERSION',
-  'DRONE',
-  'SEMAPHORE',
-  'APPVEYOR',
-  'REPL_ID',
-  'REPLIT_DEPLOYMENT',
-];
+const set = (value: string | undefined): value is string => value !== undefined && value !== '';
 
-const truthy = (value: string | undefined): boolean =>
-  value !== undefined && value !== '' && value !== '0' && value.toLowerCase() !== 'false';
+interface Discriminator {
+  platform: string;
+  /** `production`, `sandbox` (a preview the platform names as such), or null when the platform is absent. */
+  read: (env: EnvLike) => { environment: Environment; evidence: string } | null;
+}
+
+/**
+ * Each platform's own answer to "is this the production deployment?". Only platforms that answer are
+ * listed: Cloudflare Pages exposes a branch name but no way to know which branch is production, so a
+ * Pages build stays `local` unless `PATCHSTACK_ENVIRONMENT` says otherwise.
+ */
+const DISCRIMINATORS: readonly Discriminator[] = [
+  {
+    platform: 'vercel',
+    read: (env) => {
+      if (!set(env.VERCEL) || !set(env.VERCEL_ENV)) return null;
+      return env.VERCEL_ENV === 'production'
+        ? { environment: 'production', evidence: 'VERCEL_ENV=production' }
+        : { environment: 'sandbox', evidence: `VERCEL_ENV=${env.VERCEL_ENV}` };
+    },
+  },
+  {
+    platform: 'netlify',
+    read: (env) => {
+      if (env.NETLIFY !== 'true' || !set(env.CONTEXT)) return null;
+      return env.CONTEXT === 'production'
+        ? { environment: 'production', evidence: 'CONTEXT=production' }
+        : { environment: 'sandbox', evidence: `CONTEXT=${env.CONTEXT}` };
+    },
+  },
+  {
+    platform: 'render',
+    read: (env) => {
+      if (env.RENDER !== 'true') return null;
+      return env.IS_PULL_REQUEST === 'true'
+        ? { environment: 'sandbox', evidence: 'IS_PULL_REQUEST=true' }
+        : { environment: 'production', evidence: 'RENDER=true, not a pull request' };
+    },
+  },
+  {
+    platform: 'railway',
+    read: (env) => {
+      if (!set(env.RAILWAY_ENVIRONMENT_NAME)) return null;
+      return env.RAILWAY_ENVIRONMENT_NAME === 'production'
+        ? { environment: 'production', evidence: 'RAILWAY_ENVIRONMENT_NAME=production' }
+        : { environment: 'sandbox', evidence: `RAILWAY_ENVIRONMENT_NAME=${env.RAILWAY_ENVIRONMENT_NAME}` };
+    },
+  },
+];
 
 export interface InferredEnvironment {
   environment: Environment;
@@ -52,18 +85,12 @@ export interface InferredEnvironment {
 }
 
 export function inferEnvironment(env: EnvLike = process.env): InferredEnvironment {
-  const evidence: string[] = [];
+  for (const discriminator of DISCRIMINATORS) {
+    const verdict = discriminator.read(env);
+    if (verdict !== null) {
+      return { environment: verdict.environment, evidence: [`${discriminator.platform}: ${verdict.evidence}`] };
+    }
+  }
 
-  const url = detectSiteUrl(env as NodeJS.ProcessEnv);
-  if (url !== null) evidence.push(`${url.platform} build (${url.url})`);
-
-  const hosting = collectHostingEnvKeys(env);
-  if (hosting.length > 0) evidence.push(`hosting variables: ${hosting.slice(0, 3).join(', ')}`);
-
-  const ci = CI_MARKERS.filter((marker) => truthy(env[marker]));
-  if (ci.length > 0) evidence.push(`CI: ${ci.slice(0, 2).join(', ')}`);
-
-  return evidence.length > 0
-    ? { environment: 'production', evidence }
-    : { environment: 'local', evidence: [] };
+  return { environment: 'local', evidence: [] };
 }
