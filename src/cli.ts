@@ -53,6 +53,14 @@ import {
   widgetTagInPlace,
 } from './guide.js';
 import { login, readPendingLogin, redeemIfApproved, startLogin, waitForApproval } from './login.js';
+import {
+  claim,
+  readPendingClaim,
+  redeemClaimIfApproved,
+  startClaim,
+  waitForClaim,
+  type ClaimResult,
+} from './claim.js';
 import { runProtect, runVerify } from './protect/install/index.js';
 import { runMap } from './map-command.js';
 import { getStringFlag } from './flags.js';
@@ -124,6 +132,20 @@ Usage:
                                                      what's missing, with tailored commands), then
                                                      print the full setup guide. --full prints the
                                                      guide even when setup is complete
+  patchstack-connect claim  [--wait]                 Attach this site to a Patchstack account from
+                                                     the terminal, so its reports become visible.
+                                                     Prints a link for the user to open and sign in
+                                                     (or sign up) — whoever approves becomes the
+                                                     site's owner. In a terminal it then waits. When
+                                                     the output is piped or captured — an assistant
+                                                     running it — it prints the link and EXITS, so
+                                                     the link is visible immediately. Run it AGAIN
+                                                     once the user confirms: it resumes the same
+                                                     request rather than starting a new one. --wait
+                                                     blocks instead of returning. Does not rotate
+                                                     the site's credential. The same claim can be
+                                                     done by opening the dashboard link that scan
+                                                     and status print. Not usable in CI
   patchstack-connect login  [--wait]                 Recover this site's credential when
                                                      .patchstackrc.local.json has been lost. Needs the
                                                      site UUID, which lives in the committed
@@ -250,6 +272,124 @@ async function runInit(args: ParsedArgs): Promise<number> {
   console.log('');
   console.log('Next: run `npx @patchstack/connect scan` to send your first manifest.');
   return 0;
+}
+
+async function runClaim(args: ParsedArgs): Promise<number> {
+  // No browser and no human to sign in. A deploy inherits an already-claimed site; it never claims.
+  if (process.env.CI !== undefined && process.env.CI !== '' && process.env.CI !== 'false') {
+    console.error('`claim` is interactive and cannot run in CI. Claim the site from a developer machine.');
+    return 1;
+  }
+
+  const config = await resolveConfig({
+    cwd: process.cwd(),
+    cliSiteUuid: getStringFlag(args.flags, 'site-uuid'),
+    cliEndpoint: getStringFlag(args.flags, 'endpoint'),
+  });
+
+  const siteUuid = config.siteUuid;
+  if (siteUuid === null) {
+    console.error('\n  No site to claim yet — run `npx @patchstack/connect scan` first.\n');
+    return 1;
+  }
+
+  const settled = async (result: ClaimResult): Promise<number> => {
+    console.log(
+      `\n  ✓ Site claimed${result.account !== undefined ? ` by ${result.account}` : ''}.`,
+    );
+    console.log(`    ${result.dashboardUrl ?? buildClaimUrl(config.endpoint, siteUuid)}`);
+    if (result.credentialSaved === true) {
+      const ignore = await secretFileIgnored(process.cwd());
+      // The value itself is never printed — only that it landed, and only that it is ignored when it is.
+      console.log(`    A credential for this site was issued and saved to ${SECRET_CONFIG_FILENAME}.`);
+      console.log(
+        ignore.ignored
+          ? '    Added to .gitignore.'
+          : `    NOT ignored by git — ${ignore.reason ?? 'unknown reason'}. Add it to .gitignore yourself before committing.`,
+      );
+    }
+    console.log('');
+    return 0;
+  };
+
+  const prompt = (userCode: string, verificationUri: string) => {
+    console.log(`\n  Your code:  ${userCode}`);
+    console.log(`  Claim at:   ${verificationUri}\n`);
+    console.log('  Open that link and sign in to Patchstack — or create an account — to attach');
+    console.log("  this site to it. Whoever approves becomes the site's owner.\n");
+  };
+
+  if (args.flags.has('wait')) {
+    const pending = readPendingClaim(siteUuid);
+
+    if (pending === null) {
+      console.error('\n  No claim is waiting for approval. Run `patchstack-connect claim` first.\n');
+      return 1;
+    }
+
+    const resumed = await waitForClaim(config, pending);
+    if (resumed.status === 'claimed') return await settled(resumed);
+
+    console.error(`\n  ${resumed.message ?? 'Claim failed.'}\n`);
+    return 1;
+  }
+
+  // Nobody is watching this stream. Blocking here would hide the link until the command exits — by
+  // which time the code has expired — so hand it over and let the caller decide when to wait.
+  if (process.stdout.isTTY !== true) {
+    // Running it again resumes rather than restarts, so re-running never invalidates a link the user
+    // is still looking at.
+    const existing = readPendingClaim(siteUuid);
+
+    if (existing !== null && Date.now() < existing.expiresAt) {
+      const outcome = await redeemClaimIfApproved(config, existing);
+
+      if (outcome !== 'pending' && outcome.status === 'claimed') return await settled(outcome);
+
+      if (outcome === 'pending') {
+        const secondsLeft = Math.round((existing.expiresAt - Date.now()) / 1000);
+        console.log(`\n  Still waiting for the site to be claimed with code ${existing.userCode}.`);
+        console.log(`  Claim at: ${existing.verificationUri}`);
+        console.log(`  (valid for another ${secondsLeft}s — run this again once the user confirms)\n`);
+        return 0;
+      }
+      // 'expired' falls through and starts a fresh request below.
+    }
+
+    const started = await startClaim(config);
+
+    if (started.status !== 'started' || started.pending === undefined) {
+      // An already-claimed site is the goal state, not a failure: an assistant re-running this after
+      // the user claimed in the browser must not report the setup as broken.
+      if (started.status === 'already-claimed') {
+        console.log(`\n  ${started.message ?? 'This site is already claimed.'}\n`);
+        return 0;
+      }
+      console.error(`\n  ${started.message ?? 'Claim failed.'}\n`);
+      return 1;
+    }
+
+    prompt(started.pending.userCode, started.pending.verificationUri);
+    console.log('  Give that link to the user. When they confirm they have claimed the site, run');
+    console.log('  this same command again (or `claim --wait` to block until they do).\n');
+
+    return 0;
+  }
+
+  const result = await claim(config, (userCode, verificationUri) => {
+    prompt(userCode, verificationUri);
+    console.log('  Waiting (the code expires in 10 minutes)…');
+  });
+
+  if (result.status === 'claimed') return await settled(result);
+  if (result.status === 'already-claimed') {
+    console.log(`\n  ${result.message ?? 'This site is already claimed.'}\n`);
+    return 0;
+  }
+
+  console.error(`\n  ${result.message ?? 'Claim failed.'}\n`);
+
+  return 1;
 }
 
 async function runLogin(args: ParsedArgs): Promise<number> {
@@ -515,6 +655,11 @@ async function runScan(
     if (config.endpoint !== DEFAULT_ENDPOINT) {
       console.log('  (this URL inherits the endpoint override above)');
     }
+    // A site provisioned by this scan has no owner yet. In a terminal the link above is output
+    // nobody is looking at, so name the command that does the same thing from here.
+    console.log('');
+    console.log('Or attach it to your account from this terminal:');
+    console.log('  npx @patchstack/connect claim');
   }
 
   // A scan can't wire the build hooks itself — an agent that runs `scan` but not
@@ -880,6 +1025,7 @@ async function runStatus(args: ParsedArgs): Promise<number> {
   console.log(`Environment: ${config.environment}`);
   if (config.siteUuid !== null) {
     console.log(`Dashboard URL: ${buildClaimUrl(config.endpoint, config.siteUuid)}`);
+    console.log('  Not attached to an account yet? Run `npx @patchstack/connect claim`.');
 
     switch (await fetchSiteStatus(config)) {
       case 'active':
@@ -1110,6 +1256,8 @@ async function main(): Promise<number> {
       return runSetup(args);
     case 'map':
       return runMap(args.flags);
+    case 'claim':
+      return runClaim(args);
     case 'login':
       return runLogin(args);
     default:

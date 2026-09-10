@@ -49,8 +49,9 @@ const DISCLOSED_AS: Record<string, { doc: RegExp; files?: string[] }> = {
   'oauth/token': { doc: /oauth\/token/i },
   'api/logs/log': { doc: /logs\/log/i },
   'api/get-rules/3': { doc: /get-rules/i },
-  // The RFC 8628 login flow, documented by showing the approval URL the command prints.
-  device: { doc: /monitor\/pulse\/device/i, files: ['src/login.ts'] },
+  // The RFC 8628 device flow shared by `login` and `claim`, documented by showing the approval URL
+  // each command prints.
+  device: { doc: /monitor\/pulse\/device/i, files: ['src/device-flow.ts', 'src/login.ts'] },
 
   // The same endpoints again, reached through an interpolated base rather than a literal path. Listing
   // them as bare segments is not duplication: it is the second identity each one has in the source, and
@@ -86,7 +87,7 @@ const DISCLOSED_AS: Record<string, { doc: RegExp; files?: string[] }> = {
 const NOT_AN_ENDPOINT: Record<string, { why: string; files: string[] }> = {
   'monitor/pulse': {
     why: 'the base path the per-site endpoints are built on, not an endpoint itself',
-    files: ['src/login.ts', 'src/protect/detections.js', 'src/protect/engine/pulse-client.js'],
+    files: ['src/device-flow.ts', 'src/protect/detections.js', 'src/protect/engine/pulse-client.js'],
   },
   'api/tasks': {
     why: "a route in the demo's own throwaway app on localhost, used as the default exploit target",

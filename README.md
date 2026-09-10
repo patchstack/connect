@@ -90,6 +90,24 @@ patchstack-connect demo node-serialize             Production-backed walkthrough
 patchstack-connect demo-guide node-serialize       Read-only, state-aware instructions for the
                                                    local demo, including the next exact command,
                                                    expected proof, and cleanup.
+patchstack-connect claim  [--wait]                 Attach this site to a Patchstack account from
+                                                   the terminal. Prints a link for the user to open
+                                                   and sign in (or sign up); whoever approves becomes
+                                                   the site's owner. Piped or captured, it prints the
+                                                   link and exits — run it again once the user
+                                                   confirms. Does not rotate the credential. Same
+                                                   result as opening the dashboard link scan prints.
+                                                   Not usable in CI
+patchstack-connect login  [--wait]                 Recover this site's credential when
+                                                   .patchstackrc.local.json has been lost. Prints a
+                                                   link for the site's OWNER to approve. Approving
+                                                   ROTATES the credential, so CI, deploys and other
+                                                   machines using the old one must be updated.
+                                                   Not usable in CI
+patchstack-connect uninstall [options]             Signal Patchstack that this package is being
+                                                   removed. An unclaimed site record is deleted; a
+                                                   claimed one is flagged for its owner. Does NOT
+                                                   touch local files
 patchstack-connect help                            Print help
 patchstack-connect --version                       Print the installed version
 
