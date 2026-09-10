@@ -1,9 +1,60 @@
-import { PatchstackError, type Config, type StoreManifestResponse } from './types.js';
+import {
+  PatchstackError,
+  type Config,
+  type ManifestClaimOutcome,
+  type StoreManifestResponse,
+} from './types.js';
 import type { WirePayload } from './normalize.js';
 import { pulseFetch } from './pulse-token.js';
 
 export const DEFAULT_ENDPOINT = 'https://api.patchstack.com/monitor/pulse/manifest';
 export const DEFAULT_TIMEOUT_MS = 30_000;
+
+/** The request header a claim token travels in. A header rather than a body field: the body is what `--dry-run` prints. */
+export const CLAIM_TOKEN_HEADER = 'X-Patchstack-Claim-Token';
+
+/** The claim-token header for a manifest push, or `{}` when none is configured. */
+export function claimTokenHeader(config: Config): Record<string, string> {
+  return typeof config.claimToken === 'string' && config.claimToken !== ''
+    ? { [CLAIM_TOKEN_HEADER]: config.claimToken }
+    : {};
+}
+
+/**
+ * What to tell the person about the claim token they passed, once Patchstack has answered.
+ *
+ * Empty when no token was configured: nothing was asked, so there is nothing to report. Every other
+ * case says something — including a server that did not answer the question at all — so a token that
+ * did not connect the site is never mistaken for one that did.
+ */
+export function claimOutcomeLines(claim: ManifestClaimOutcome | undefined, config: Config): string[] {
+  if (typeof config.claimToken !== 'string' || config.claimToken === '') return [];
+
+  if (claim?.state === 'claimed' || claim?.state === 'owned-by-you') {
+    const dashboard =
+      typeof claim.dashboard_url === 'string' && claim.dashboard_url !== '' ? [`Dashboard: ${claim.dashboard_url}`] : [];
+    return [
+      claim.state === 'claimed'
+        ? 'Connected to your Patchstack account.'
+        : 'This site is already connected to your Patchstack account.',
+      ...dashboard,
+    ];
+  }
+
+  const why =
+    claim === undefined
+      ? 'Patchstack did not act on the claim token'
+      : claim.state === 'owned-by-other'
+        ? 'this site belongs to a different Patchstack account'
+        : claim.reason === 'expired'
+          ? 'the claim token has expired'
+          : 'Patchstack did not recognise the claim token';
+
+  return [
+    `Not connected to your account: ${why}.`,
+    'Open the dashboard link below to connect it, or copy a fresh prompt from the dashboard.',
+  ];
+}
 
 export function buildEndpointUrl(base: string, siteUuid?: string | null): string {
   const trimmed = base.replace(/\/$/, '');
@@ -306,6 +357,7 @@ export async function postManifest(
         'Content-Type': 'application/json',
         Accept: 'application/json',
         'User-Agent': '@patchstack/connect',
+        ...claimTokenHeader(config),
       },
       body: JSON.stringify(buildManifestBody(config, payload)),
       signal: AbortSignal.timeout(timeoutMs),
