@@ -1,6 +1,6 @@
 // Patchstack runtime guard for Express. Managed by `patchstack-connect protect`.
 // Register after body parsing and before routes: app.use(patchstackMiddleware).
-import { createProtection } from "@patchstack/connect/protect";
+import { createProtection, sentinelAnswer, VERIFY_HEADER } from "@patchstack/connect/protect";
 import fallbackRules from "./rules.json";
 
 const PS_SITE_UUID = "__PATCHSTACK_SITE_UUID__";
@@ -75,17 +75,40 @@ export function patchstackMiddleware(req: unknown, res: unknown, next: (err?: un
     passedOn = true;
     next(err);
   };
-  getProtection().then(
-    (protection) => (protection.express() as (a: unknown, b: unknown, c: (e?: unknown) => void) => void)(req, res, carryOn),
-    (err) => {
+  // `protect --check --runtime` asks whether a request actually reaches this seam. Answered here,
+  // before the protection is asked for and before the request is passed on, so no handler of the app's
+  // ever sees a verification request. The answer is derived from a challenge the verifying process mints
+  // per run, which rules out an app matching it by accident; without a challenge in the environment
+  // there is nothing to answer and the request is screened as normal.
+  const screen = () => {
+    getProtection().then(
+      (protection) => (protection.express() as (a: unknown, b: unknown, c: (e?: unknown) => void) => void)(req, res, carryOn),
+      (err) => {
+        psStepAside(err);
+        carryOn();
+      },
+    ).catch((err) => {
+      // Not a failed build: the guard, or the app's own chain, threw after this point. Reported, and the
+      // request is carried on only if it never was — an error here must not take the process down and
+      // must not answer twice.
       psStepAside(err);
       carryOn();
-    },
-  ).catch((err) => {
-    // Not a failed build: the guard, or the app's own chain, threw after this point. Reported, and the
-    // request is carried on only if it never was — an error here must not take the process down and
-    // must not answer twice.
-    psStepAside(err);
-    carryOn();
-  });
+    });
+  };
+
+  // The two shapes this seam touches, named rather than asserted wholesale: a request whose headers it
+  // reads, and a response it answers on.
+  const inbound = req as { headers?: Record<string, unknown> };
+  const outbound = res as { statusCode: number; setHeader(name: string, value: string): void; end(body?: string): void };
+
+  sentinelAnswer(inbound.headers?.[VERIFY_HEADER]).then((answered) => {
+    if (answered) {
+      outbound.statusCode = 200;
+      outbound.setHeader("content-type", "text/plain");
+      outbound.end(answered);
+
+      return;
+    }
+    screen();
+  }, screen);
 }

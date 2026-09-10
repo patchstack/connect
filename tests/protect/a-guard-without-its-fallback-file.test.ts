@@ -17,6 +17,8 @@ import { pathToFileURL } from 'node:url';
  * console that the file was not read.
  */
 const TEMPLATE_DIR = new URL('../../src/protect/templates/', import.meta.url);
+/** The seam imports the verification sentinel from the package, so a stubbed package has to carry it. */
+const INERT = "sentinelAnswer: async () => null, VERIFY_HEADER: 'x-patchstack-verify'";
 const RUNTIME_TEMPLATES = readdirSync(new URL(TEMPLATE_DIR)).filter((name) => /\.(?:js|cjs)$/.test(name));
 const WHOLE_FILE = readFileSync(new URL('rules.json', TEMPLATE_DIR), 'utf8');
 
@@ -56,7 +58,9 @@ async function loadGuard(name: string, rules: string | null): Promise<Record<str
   const stub = commonjs ? 'stub.cjs' : 'stub.mjs';
   writeFileSync(
     join(dir, stub),
-    commonjs ? `module.exports = { createProtection: ${record} };\n` : `export const createProtection = ${record};\n`,
+    commonjs
+      ? `module.exports = { createProtection: ${record}, ${INERT} };\n`
+      : `export const createProtection = ${record};\nexport const sentinelAnswer = async () => null;\nexport const VERIFY_HEADER = 'x-patchstack-verify';\n`,
   );
 
   const source = readFileSync(new URL(name, TEMPLATE_DIR), 'utf8').replace(

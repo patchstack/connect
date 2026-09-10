@@ -41,6 +41,9 @@ import { createFirewallLogReporter, resolveApiBase, telemetryEnabled } from './f
 
 // Supabase-tunnel guard for AI-builder apps (Lovable / TanStack Start + Supabase).
 export { createSupabaseGuard, GUARD_PATH } from './supabase-guard.js';
+// The seam side of `protect --check --runtime`. Exported because a scaffolded guard is a file in the
+// app, and it has to be able to answer a verification request without carrying the logic itself.
+export { sentinelAnswer, VERIFY_HEADER } from './verify-sentinel.js';
 
 // Per-site live rule client (Pulse). Re-exported for callers/tests that want to use it directly.
 export { PulseRuleClient };

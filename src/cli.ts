@@ -54,6 +54,7 @@ import {
 } from './guide.js';
 import { login, readPendingLogin, redeemIfApproved, startLogin, waitForApproval } from './login.js';
 import { runProtect, runVerify } from './protect/install/index.js';
+import { formatRuntimeCheck, runRuntimeCheck, runtimeExitCode } from './protect/install/runtime/check.js';
 import { runMap } from './map-command.js';
 import { getStringFlag } from './flags.js';
 import { setupProtection, wireBuildScripts } from './setup.js';
@@ -112,6 +113,15 @@ Usage:
                                                      demonstrations, not production).
                                                      --check verifies the guard is wired (exit 1
                                                      if not) — for the wire-then-verify loop.
+                                                     It reads the app's source and never runs it.
+                                                     --check --runtime additionally STARTS THE APP
+                                                     on a loopback port and sends it one request,
+                                                     to establish that a request reaches the
+                                                     guard. Opt-in, and the only mode that runs
+                                                     the app. Exit 0 traversed, 1 a listener
+                                                     answered instead of the guard, 2 could not
+                                                     be established (e.g. a TypeScript or
+                                                     framework entry this must not start).
   patchstack-connect demo node-serialize [--url URL] Run the production-backed node-serialize
                                                      walkthrough: verify the vulnerable package,
                                                      scan it, wait for live rule 18843, install +
@@ -627,6 +637,14 @@ function reportSourceMarker(framework: string | null): void {
 }
 
 async function runProtectCommand(args: ParsedArgs): Promise<number> {
+  const runtime = args.flags.get('runtime') === true;
+  // A stray `--runtime` would otherwise scaffold quietly while the caller believed their app had been
+  // started and probed — a false green about the one check that exists to prevent false greens.
+  if (runtime && args.flags.get('check') !== true) {
+    console.error('patchstack protect: --runtime only applies to --check. Run `protect --check --runtime`.');
+    return 1;
+  }
+
   // `--check`: verify the guard is wired (for the agent/CI loop). Non-zero exit if not.
   if (args.flags.get('check') === true) {
     const report = runVerify(process.cwd());
@@ -653,7 +671,16 @@ async function runProtectCommand(args: ParsedArgs): Promise<number> {
     if (report.checks.some((c) => c.unverifiable)) {
       console.log('One or more checks could not be answered from here — see the `?` lines above.');
     }
-    return report.wired ? 0 : 1;
+    // The structural verdict comes first either way: an app whose guard is not wired has nothing to
+    // gain from being started, and its runtime result would only be a second way of saying the same no.
+    if (!report.wired) return 1;
+    if (!runtime) return 0;
+
+    console.log('');
+    const runtimeReport = await runRuntimeCheck(process.cwd());
+    for (const line of formatRuntimeCheck(runtimeReport)) console.log(line);
+
+    return runtimeExitCode(runtimeReport);
   }
   // Best-effort: like mark-build, this runs during builds and must never fail one.
   const demo = args.flags.get('demo') === true;

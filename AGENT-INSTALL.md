@@ -140,6 +140,46 @@ It is server-only. Never put it in the widget tag, client bundles, or public env
 
    `setup` performs both steps automatically. The explicit commands are for manual setup or repair. If verification reports a generic or existing framework seam, complete the printed source edit and re-run `--check`; do not report protection as active until it exits successfully.
 
+   `--check` reads the app's source. It can establish that the guard is imported and called on a request
+   path; it cannot establish that a request ever reaches it — an app can wire the guard onto one server
+   and serve traffic from another, and that passes. To settle the difference there is an opt-in check
+   that **starts the application**:
+
+   ```
+   npx @patchstack/connect protect --check --runtime
+   ```
+
+   It launches the project's entry with `node`, moves the HTTP listeners **that process** opens to an
+   ephemeral loopback port, sends one request per listener carrying a per-run challenge, and reports
+   whether the scaffolded guard seam answered it. Exit `0` runtime traversal reached the seam, `1` a
+   listener answered and the seam did not, `2` it could not be established — neither a pass nor a
+   failure, with the structural checks still standing on their own.
+
+   Exit `2` is the answer for everything this cannot speak for, and the reason is always printed. The
+   common one is an entry that needs the project's own toolchain (a TypeScript entry, a framework
+   launcher, a watcher, another runtime, anything reached through a package manager), which this never
+   installs, builds or invents. The others are about scope: **the run answers for one process, one
+   thread, and one discovery window.** If the app attempts to start another process, the launch is
+   refused and the answer is `2`. A child can daemonize after it starts without declaring that in its
+   launch options, so allowing it would make the end-of-run process-group cleanup a claim the verifier
+   cannot establish. The app sees `EPERM`. A worker thread is also `2`: it inherits the listener
+   handling, but it cannot report back, so its listeners can be neither counted nor asked. So is a
+   listener that bound an address other than loopback, one that cannot be probed, and anything the app
+   opens after the discovery window has closed — the app is asked to stop and its acknowledgement is
+   what closes that window, so a run that never gets one is `2` as well. An inherited `NODE_OPTIONS`
+   that would run code before the listener handling is in place — a `--require` or `--import` in your
+   environment — is `2` too, and is refused before the app is launched rather than after.
+
+   A worker handed a replacement environment that does not preserve the propagated `NODE_OPTIONS` is
+   refused outright, because it would not load the listener handling. The app sees `EPERM`, and the run
+   reports `2`.
+
+   What a pass says is exactly: **runtime traversal reached the scaffolded guard seam.** It does not say
+   rules were delivered, that the deployed app is wired, or that ordinary traffic is blocked.
+
+   Nothing else runs the application. `protect`, `protect --check`, `setup`, `guide`, `scan`, `status`
+   and `mark-build` only read and write files.
+
 5. **Commit** `.patchstackrc.json`, the updated `package.json`, the guard/framework source changes, and the layout/HTML file carrying the widget tag (and the production marker, when `scan` wrote one into a JSX root), so every developer and CI run reports to the same site.
 
    **Do not commit `.patchstackrc.local.json`.** That file holds the API key issued at provision; the scan writes it and adds it to `.gitignore`, and tells you if it could not. `.patchstackrc.json` holds only the site UUID and settings, and the UUID is public by design — it ships in the widget tag in served HTML.
@@ -388,7 +428,8 @@ Two more endpoints the package can call, for completeness:
 ## Verifying the install
 
 - `npx @patchstack/connect status` re-prints the site UUID and dashboard URL, and checks whether the site still exists on Patchstack (`Site status: active / removed / could not be verified`).
-- `npx @patchstack/connect protect --check` verifies the runtime guard is connected to the request path.
+- `npx @patchstack/connect protect --check` verifies from the source that the runtime guard is connected to the request path. It does not run the app.
+- `npx @patchstack/connect protect --check --runtime` additionally **starts the app** on a loopback port and sends it one request, to establish that a request reaches the guard seam. Opt-in, and the only command that runs the application; exit `0`/`1`/`2` as described in step 4.
 - Load the site in a browser — the "Report a vulnerability" button should appear. Refresh a page that was already open before the tag was added: the button only loads with the page.
 - On the deployed site, the button appears only after a deploy that includes these source changes.
 

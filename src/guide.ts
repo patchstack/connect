@@ -586,6 +586,8 @@ export function renderGuideChecklist(state: GuideState, useColor: boolean): stri
       lines.push(detail(`${check.label}${check.hint ? ` — ${check.hint}` : ''}`));
     }
     lines.push(detail('Verify → npx @patchstack/connect protect --check'));
+    // Named here rather than run: `guide` is read-only and must never start the application.
+    lines.push(detail('Prove a request reaches the guard (starts your app) → npx @patchstack/connect protect --check --runtime'));
   }
 
   // 7. Dashboard access — always keep the URL prominent.

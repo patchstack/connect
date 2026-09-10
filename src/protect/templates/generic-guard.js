@@ -1,7 +1,7 @@
 // Patchstack runtime protection — GENERIC guard (ESM). Managed by `patchstack-connect protect`.
 // Wire whichever helper fits your server into your request path, then run `protect --check`.
 import { readFileSync } from "node:fs";
-import { createProtection } from "@patchstack/connect/protect";
+import { createProtection, sentinelAnswer, VERIFY_HEADER } from "@patchstack/connect/protect";
 
 // The fallback bundle is optional at RUNTIME. This file is imported on the app's own module path, so a
 // throw here is the app failing to boot rather than protection failing open — and a rules file can be
@@ -68,6 +68,12 @@ function psStepAside(err) {
 // Web-Fetch: export default { fetch: protectFetch(originalFetch) }
 export function protectFetch(handler) {
   return async (request, ...rest) => {
+    // `protect --check --runtime` asks whether a request actually reaches this seam. The answer is
+    // derived from a challenge the verifying process mints per run, which rules out an app matching it
+    // by accident, and there is nothing to answer unless that process started this one. Without a
+    // challenge in the environment this is a header read.
+    const answered = await sentinelAnswer(request.headers.get(VERIFY_HEADER));
+    if (answered) return new Response(answered, { status: 200, headers: { "content-type": "text/plain" } });
     const active = await getProtection().catch(psStepAside);
     // The handler, and nothing around it: an exception the app throws is the app's, not a protection
     // failure, and must not be read as one or answered twice.
@@ -94,17 +100,35 @@ export function patchstackMiddleware(req, res, next) {
     passedOn = true;
     next(err);
   };
-  getProtection().then(
-    (active) => active.node()(req, res, carryOn),
-    (err) => {
+  // `protect --check --runtime` asks whether a request actually reaches this seam. Answered here,
+  // before the protection is asked for and before the request is passed on, so no handler of the app's
+  // ever sees a verification request. The answer is derived from a challenge the verifying process mints
+  // per run, which rules out an app matching it by accident; without a challenge in the environment
+  // there is nothing to answer and the request is screened as normal.
+  const screen = () => {
+    getProtection().then(
+      (active) => active.node()(req, res, carryOn),
+      (err) => {
+        psStepAside(err);
+        carryOn();
+      },
+    ).catch((err) => {
+      // Not a failed build: the guard, or the app's own chain, threw after this point. Reported, and the
+      // request is carried on only if it never was — an error here must not take the process down and
+      // must not answer twice.
       psStepAside(err);
       carryOn();
-    },
-  ).catch((err) => {
-    // Not a failed build: the guard, or the app's own chain, threw after this point. Reported, and the
-    // request is carried on only if it never was — an error here must not take the process down and
-    // must not answer twice.
-    psStepAside(err);
-    carryOn();
-  });
+    });
+  };
+
+  sentinelAnswer(req.headers?.[VERIFY_HEADER]).then((answered) => {
+    if (answered) {
+      res.statusCode = 200;
+      res.setHeader("content-type", "text/plain");
+      res.end(answered);
+
+      return;
+    }
+    screen();
+  }, screen);
 }

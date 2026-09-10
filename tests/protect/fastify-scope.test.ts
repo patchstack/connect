@@ -65,6 +65,10 @@ async function loadPlugin(): Promise<(fastify: unknown) => Promise<void>> {
       'async function getProtection() { return globalThis.__psTestProtection; }',
     );
 
+  // The imports this strips include the verification sentinel, so it is supplied inert: none of these
+  // requests is a verification, and the seam has to behave as it does for ordinary traffic.
+  const preamble = 'const sentinelAnswer = async () => null;\nconst VERIFY_HEADER = "x-patchstack-verify";\n';
+
   const protection = await createProtection({ mode: 'block', rules: RULES as never });
   protections.push(protection);
   (globalThis as Record<string, unknown>).__psTestProtection = protection;
@@ -72,7 +76,7 @@ async function loadPlugin(): Promise<(fastify: unknown) => Promise<void>> {
   const dir = mkdtempSync(join(tmpdir(), 'ps-fastify-'));
   dirs.push(dir);
   const file = join(dir, 'plugin.mjs');
-  writeFileSync(file, source);
+  writeFileSync(file, preamble + source);
 
   const mod = (await import(pathToFileURL(file).href)) as { patchstackFastify: (fastify: unknown) => Promise<void> };
 
