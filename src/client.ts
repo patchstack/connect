@@ -3,9 +3,12 @@ import {
   type Config,
   type ManifestClaimOutcome,
   type StoreManifestResponse,
+  type Environment,
 } from './types.js';
 import type { WirePayload } from './normalize.js';
+import { detectHostingPlatform } from './hosting.js';
 import { pulseFetch } from './pulse-token.js';
+import type { EnvLike } from './stack.js';
 
 export const DEFAULT_ENDPOINT = 'https://api.patchstack.com/monitor/pulse/manifest';
 export const DEFAULT_TIMEOUT_MS = 30_000;
@@ -329,7 +332,16 @@ export async function fetchSiteStatus(config: Config): Promise<SiteStatus> {
  * so a repeated push does not re-point an address or replace a name. Both are omitted when they are not
  * strings, which is what a caller that built its own `Config` without them sends.
  */
-export function buildManifestBody(config: Config, payload: WirePayload): Record<string, unknown> {
+export function buildManifestBody(
+  config: Config,
+  payload: WirePayload,
+  env: EnvLike = process.env,
+): Record<string, unknown> {
+  // Where this build is running, when it is a deployment. A local machine has no hosting to
+  // report, and even if its shell carried a platform's variable that would describe the shell,
+  // not the site. Servers that predate the field ignore it.
+  const hosting = config.environment === 'local' ? null : detectHostingPlatform(env);
+
   return {
     ...payload,
     environment: config.environment,
@@ -337,7 +349,48 @@ export function buildManifestBody(config: Config, payload: WirePayload): Record<
     ...(typeof config.siteName === 'string' && config.siteName !== ''
       ? { name: config.siteName }
       : {}),
+    ...(hosting !== null && hosting.platform !== null ? { hosting } : {}),
   };
+}
+
+/**
+ * Whether a manifest was refused because the server does not know the environment label it carried.
+ *
+ * A Patchstack API that predates the `local` label answers a local scan with a validation error on that
+ * field. The scan is still worth reporting; it just has to say `sandbox` to that server, which is the
+ * label it does have for "not the live site". Anything else a 422 says is a real refusal.
+ */
+export function environmentRejected(err: unknown): boolean {
+  return (
+    err instanceof PatchstackError &&
+    err.code === 'VALIDATION_ERROR' &&
+    /environment/i.test(err.message)
+  );
+}
+
+export interface ManifestPostResult {
+  response: StoreManifestResponse;
+  /** The label the report was accepted under — `sandbox` when the server refused `local`. */
+  environmentUsed: Environment;
+}
+
+/**
+ * Post the manifest, falling back from `local` to `sandbox` for a server that does not know `local`.
+ *
+ * Keeps the connector publishable ahead of the server change: the honest label is tried first, and the
+ * older server's nearest label is used only when it refuses, never silently on a server that accepts.
+ */
+export async function postManifestWithEnvironmentFallback(
+  config: Config,
+  payload: WirePayload,
+): Promise<ManifestPostResult> {
+  try {
+    return { response: await postManifest(config, payload), environmentUsed: config.environment };
+  } catch (err) {
+    if (config.environment !== 'local' || !environmentRejected(err)) throw err;
+    const fallback: Config = { ...config, environment: 'sandbox' };
+    return { response: await postManifest(fallback, payload), environmentUsed: 'sandbox' };
+  }
 }
 
 export async function postManifest(

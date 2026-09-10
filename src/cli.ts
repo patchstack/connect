@@ -15,6 +15,7 @@ import {
   buildClaimUrl,
   fetchSiteStatus,
   postManifest,
+  postManifestWithEnvironmentFallback,
   postPackageRemoved,
 } from './client.js';
 import {
@@ -534,12 +535,32 @@ const MAX_RETRY_TIMEOUT_MS = 180_000;
  * the build that runs in CI reads it too. A limit nobody needed is not written: the file stays as the
  * person left it.
  */
+/**
+ * Post the manifest under the label the server accepts, and say so when that was not the label asked for.
+ *
+ * A server that predates the `local` label refuses it; the report then goes as `sandbox`, the nearest
+ * label that server has for "not the live site". Said out loud, because the dashboard will show the
+ * scan under that name.
+ */
+async function postManifestAccepted(
+  config: Config,
+  payload: Parameters<typeof postManifest>[1],
+): Promise<StoreManifestResponse> {
+  const { response, environmentUsed } = await postManifestWithEnvironmentFallback(config, payload);
+  if (environmentUsed !== config.environment) {
+    console.warn(
+      `patchstack: this Patchstack API does not know the ${config.environment} label yet; the report was accepted as ${environmentUsed}, which also keeps it apart from production.`,
+    );
+  }
+  return response;
+}
+
 async function postManifestWithPatience(
   config: Config,
   payload: Parameters<typeof postManifest>[1],
 ): Promise<StoreManifestResponse> {
   try {
-    return await postManifest(config, payload);
+    return await postManifestAccepted(config, payload);
   } catch (err) {
     if (!(err instanceof PatchstackError) || err.code !== 'NETWORK_TIMEOUT') throw err;
 
@@ -549,7 +570,7 @@ async function postManifestWithPatience(
     console.warn(
       `patchstack: the report timed out after ${config.timeoutMs}ms; trying once more with ${timeoutMs}ms.`,
     );
-    const response = await postManifest({ ...config, timeoutMs }, payload);
+    const response = await postManifestAccepted({ ...config, timeoutMs }, payload);
 
     try {
       const target = await persistTimeout(process.cwd(), timeoutMs);
