@@ -73,6 +73,13 @@ patchstack-connect protect                         Install/reconcile the always-
                                                    guard. Auto-wires supported server stacks;
                                                    use --check to verify or --demo for local rules.
                                                    Also run by setup; never run by scan/guide/mark-build.
+                                                   --check reads your source and never runs the app.
+                                                   --check --runtime STARTS THE APP on a loopback
+                                                   port and sends it one request, to establish that
+                                                   a request reaches the guard seam. Opt-in, and the
+                                                   only mode that runs the app. Exit 0 traversed,
+                                                   1 a listener answered instead of the guard,
+                                                   2 could not be established (see below).
 patchstack-connect map    [--dir p] [--out f] [--upload]
                                                    Print a JSON map of this project's attack
                                                    surface: server entry points, the inputs each
@@ -122,6 +129,69 @@ Options (for demo and demo-guide):
   --url <url>             Test endpoint printed at the end
                           (default: http://localhost:3000/api/tasks)
 ```
+
+### Verifying the guard at runtime (opt-in)
+
+`protect --check` reads the app's source. That establishes the guard is imported and called on a
+request path — not that a request ever reaches it. An app can wire the guard onto one server and serve
+its traffic from another, and the structural check passes.
+
+`protect --check --runtime` settles that one question by **starting the application**:
+
+```
+npx @patchstack/connect protect --check --runtime
+```
+
+It runs the project's entry with `node`, moves the HTTP listeners **that process** opens to an ephemeral
+loopback port (so a port already in use is not a failure), sends one request per listener carrying a
+challenge generated for that run, and reports whether the scaffolded guard seam answered it. The child
+is started in its own process group and killed with it — including if you interrupt the command. A
+listener it cannot probe — a Unix socket, a file descriptor, a handed-over handle, an HTTP/2 server — is
+reported and prevented from binding at all, rather than opened on the verifier's behalf.
+
+**One process is the scope — one thread of it, and one discovery window.** If the app attempts to start
+another process, the launch is refused and the answer is `2`, whatever that process is. A child can
+daemonize after it starts without declaring that in its launch options, so allowing it would make the
+end-of-run process-group cleanup a claim the verifier cannot establish. The app sees the launch fail
+with `EPERM`. A **worker thread** is also `2`: it inherits the listener handling, but a worker has no
+channel back, so its listeners can be neither counted nor asked. A worker handed a replacement
+environment that does not preserve the propagated `NODE_OPTIONS` is refused, because it would not load
+that handling at all.
+
+Everything else the run finds also ends it this way: a listener that bound an address other than
+loopback, a listener it cannot probe, and anything the app opens **after the discovery window closes** —
+a second listener appearing while the first is still being asked cannot join a set that is already being
+answered from. Closing that window is a handshake: the app is asked to stop opening listeners and its
+acknowledgement is what proves nothing is still in flight, so a run that never gets one reports `2`
+rather than passing. An inherited `NODE_OPTIONS` is checked before anything is launched, too: Node reads
+that variable ahead of the command line, so a `--require` or `--import` sitting in your environment would
+run before the listener handling was in place, and the run reports `2` rather than starting the app with
+less containment than it claims. Recognised flags are passed through, with the reporter first.
+
+A pass says exactly this: **runtime traversal reached the scaffolded guard seam.** It does not say
+rules were delivered, that the deployed app is wired, or that ordinary traffic is blocked. The
+challenge is generated per run, so a fixed response or a reflected header cannot answer it — but the
+challenge does reach the whole app process, so this establishes traversal in a cooperating app rather
+than against an app written to answer for itself.
+
+| Exit | Meaning |
+|---|---|
+| `0` | A request reached the scaffolded guard seam. |
+| `1` | A listener answered and the seam did not — or the structural checks failed, in which case the app is not started at all. |
+| `2` | It could not be established. Neither a pass nor a failure; the structural checks still stand. |
+
+Exit `2` is the common answer for entries this deliberately will not start. It runs `node <file>` on a
+file the project already has, and nothing else — no package-manager scripts, no `node_modules/.bin`, no
+build, no install. So a TypeScript entry, a framework launcher (`next start`), a watcher (`nodemon`),
+another runtime (`bun`), or a script wrapped in an environment shim all report unavailable with the
+reason printed. To make such a project verifiable, point a `start` script at a built, directly loadable
+file — the check reports which entry it used and where it came from.
+
+Windows reports exit `2` without starting anything: the cleanup this relies on is a POSIX process
+group, and a verification that can leave a server running is worse than an unanswered question.
+
+No other command runs your application. `protect`, `protect --check`, `setup`, `guide`, `scan`,
+`status` and `mark-build` only read and write files.
 
 ## Configuration
 

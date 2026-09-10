@@ -10,6 +10,8 @@ import { execFileSync } from 'node:child_process';
 import { existsSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 
+import { withoutCodeLoading } from './node-flags.js';
+
 /** An import statement, or a `const x = require(...)` binding. Matched only at the start of a line. */
 const IMPORT_LINE = /^\s*(?:import\b|export\s+(?:\*|\{)|(?:const|let|var)\s+[^=]+=\s*require\()/;
 
@@ -149,13 +151,21 @@ function advanceDepth(line: string, inBlockComment: boolean, add: (delta: number
  * is not the same as passing: TypeScript needs a compiler this package must not require of a consumer
  * project, so a `.ts` entry is edited on the strength of the scope check alone and says so.
  *
+ * `--check` parses and exits without evaluating the file, but it does honour `NODE_OPTIONS`, so a
+ * code-loading flag in the environment would run in this child. The environment passed below retains
+ * only flags on the shared safe allowlist; that is what keeps the claim above true for compact and
+ * future flag forms too — this process evaluates nobody's code, the target's or anyone else's.
+ *
  * @returns true when it parses, false when it does not, null when nothing could be checked
  */
 export function parses(filePath: string): boolean | null {
   if (!/\.(?:js|cjs|mjs)$/.test(filePath)) return null;
 
   try {
-    execFileSync(process.execPath, ['--check', filePath], { stdio: 'pipe' });
+    execFileSync(process.execPath, ['--check', filePath], {
+      stdio: 'pipe',
+      env: { ...process.env, NODE_OPTIONS: withoutCodeLoading(process.env.NODE_OPTIONS) },
+    });
 
     return true;
   } catch (error) {

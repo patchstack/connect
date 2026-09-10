@@ -18,3 +18,10 @@ copyFileSync('src/protect/protect.d.ts', 'dist/protect.d.ts');
 // so there is nothing per-format to express.
 copyFileSync('src/protect/protect.d.ts', 'dist/protect.d.cts');
 console.log('copied protect types -> dist/protect.d.ts, dist/protect.d.cts');
+
+// The listener reporter `protect --check --runtime` preloads into the app it starts. Copied rather than
+// bundled: it is loaded by path into ANOTHER process, as CommonJS, so it has to exist as a file that
+// `node --require` can take. The built-CLI runtime test asserts the CLI can find it after a build.
+mkdirSync('dist/protect/runtime', { recursive: true });
+copyFileSync('src/protect/install/runtime/report-listeners.cjs', 'dist/protect/runtime/report-listeners.cjs');
+console.log('copied listener reporter -> dist/protect/runtime/report-listeners.cjs');

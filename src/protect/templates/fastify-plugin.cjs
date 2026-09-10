@@ -1,6 +1,6 @@
 // Patchstack runtime guard for CommonJS Fastify apps. Managed by `patchstack-connect protect`.
 // Register once: app.register(patchstackFastify)
-const { createProtection } = require("@patchstack/connect/protect");
+const { createProtection, sentinelAnswer, VERIFY_HEADER } = require("@patchstack/connect/protect");
 // The fallback bundle is optional at RUNTIME. This file is imported on the app's own module path, so a
 // throw here is the app failing to boot rather than protection failing open — and a rules file can be
 // absent for ordinary reasons: a bundler that copied no JSON, a partial deploy, a half-written edit.
@@ -73,6 +73,19 @@ async function patchstackFastify(fastify) {
   await getProtection().catch(psStepAside);
 
   fastify.addHook("preHandler", async (request, reply) => {
+    // `protect --check --runtime` asks whether a request actually reaches this seam. Answered before
+    // the route and before this request's screening — not before the protection was ever asked for,
+    // which registration above already did, deliberately, so startup egress is screened. The answer is
+    // derived from a challenge the verifying process mints per run, which rules out an app matching it
+    // by accident; without a challenge in the environment this is a header read.
+    const answered = await sentinelAnswer(request.headers?.[VERIFY_HEADER]);
+    if (answered) {
+      reply.code(200);
+      reply.header("content-type", "text/plain");
+      reply.send(answered);
+
+      return reply;
+    }
     const protection = await getProtection().catch(psStepAside);
     if (!protection) return; // the route answers this request, unscreened
     const guard = protection.fetchGuard();

@@ -1,5 +1,5 @@
 import { describe, it, expect, afterEach } from 'vitest';
-import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync } from 'node:fs';
+import { existsSync, mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
@@ -128,6 +128,58 @@ describe('checking the file after editing it', () => {
     const dir = project({ 'entry.ts': 'const a: number = 1;\n' });
 
     expect(parses(join(dir, 'entry.ts'))).toBeNull();
+  });
+
+  it('does not run a preload the environment carries', async () => {
+    // `node --check` parses and exits without evaluating the file, but it honours `NODE_OPTIONS` like
+    // any other Node process. A `--require` in the environment would run here, in a process this
+    // package classifies as one that never evaluates anyone's code — so the code-loading flags are
+    // stripped out of the environment this child gets.
+    const dir = project({ 'ok.js': 'const a = 1;\n' });
+    const marker = join(dir, 'preload-ran');
+    writeFileSync(join(dir, 'boot.cjs'), `require('node:fs').writeFileSync(${JSON.stringify(marker)}, 'yes');\n`);
+
+    const before = process.env.NODE_OPTIONS;
+    process.env.NODE_OPTIONS = `--require "${join(dir, 'boot.cjs')}"`;
+    try {
+      expect(parses(join(dir, 'ok.js'))).toBe(true);
+      expect(existsSync(marker), 'the structural parse ran a preload').toBe(false);
+    } finally {
+      if (before === undefined) delete process.env.NODE_OPTIONS;
+      else process.env.NODE_OPTIONS = before;
+    }
+  });
+
+  it('does not run a compact preload flag it does not recognise by exact name', () => {
+    // Short Node flags may carry their operand in the same token. Keeping unknown tokens while removing
+    // only an exact `-r` would let `-r/path/to/file` execute during a check described as parse-only.
+    const dir = project({ 'ok.js': 'const a = 1;\n' });
+    const marker = join(dir, 'compact-preload-ran');
+    writeFileSync(join(dir, 'compact.cjs'), `require('node:fs').writeFileSync(${JSON.stringify(marker)}, 'yes');\n`);
+
+    const before = process.env.NODE_OPTIONS;
+    process.env.NODE_OPTIONS = `-r${join(dir, 'compact.cjs')}`;
+    try {
+      expect(parses(join(dir, 'ok.js'))).toBe(true);
+      expect(existsSync(marker), 'the structural parse ran a compact preload').toBe(false);
+    } finally {
+      if (before === undefined) delete process.env.NODE_OPTIONS;
+      else process.env.NODE_OPTIONS = before;
+    }
+  });
+
+  it('keeps a recognised flag the environment carries', () => {
+    // Known-safe options may affect parsing or diagnostics without running code. Unknown options are
+    // dropped because this package cannot make the same statement about them.
+    const dir = project({ 'ok.js': 'const a = 1;\n' });
+    const before = process.env.NODE_OPTIONS;
+    process.env.NODE_OPTIONS = '--no-warnings --max-old-space-size=512';
+    try {
+      expect(parses(join(dir, 'ok.js'))).toBe(true);
+    } finally {
+      if (before === undefined) delete process.env.NODE_OPTIONS;
+      else process.env.NODE_OPTIONS = before;
+    }
   });
 });
 
