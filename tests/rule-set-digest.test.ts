@@ -66,6 +66,9 @@ const CHANGED_VALUE: Record<string, unknown> = {
   cookie_flags: { secure: true },
   ensure: true,
   capture: { version: 1, raw_chars: 64 },
+  // Which map a coordinate belongs to. Compared rather than excluded: two rule sets holding the
+  // same coordinates under different scopes differ in what may enforce, which is a policy difference.
+  build_scope: 'c'.repeat(64),
 };
 
 /**

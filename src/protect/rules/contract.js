@@ -12,7 +12,7 @@
 // `rule-contract.json` is the published form. `tests/protect/rule-contract.test.ts` reads the engine's own
 // source and asserts these descriptions match what it implements.
 
-export const CONTRACT_VERSION = '2.8';
+export const CONTRACT_VERSION = '2.9';
 
 /**
  * Every parameter source, and what it accepts after the dot.
@@ -348,13 +348,49 @@ export const ENFORCEMENT_VALUES = Object.freeze(['dry-run']);
 
 export const WHEN_KEYS = Object.freeze(['path', 'method']);
 
+/**
+ * Which mapped coordinate document a rule's coordinates belong to.
+ *
+ * Present only on a rule whose `rule_v2` addresses this app's OWN route and field names, derived from
+ * an uploaded attack-surface map. Rename the field and the map identity changes; the old rule then
+ * detects only instead of reporting protection for a coordinate that no longer exists.
+ *
+ * NOT `source_revision`, which is the revision of any served rule document — numeric for a generated
+ * rule, a hash for a curated one — and is present on ordinary versioned rules that have no coordinate
+ * at all. Reading that as a scoping marker would hold curated rules in dry-run.
+ *
+ * Deliberately absent from `RULE_PROPERTY_SHAPES`: a malformed value must not reject the rule, because
+ * dropping a mitigation is worse than running it detect-only. The runtime treats an unusable value as
+ * "scoped, and cannot be matched", which is the safe reading.
+ */
+export const BUILD_SCOPE_PROPERTY = 'build_scope';
+
+/**
+ * The published form of a usable build scope, and the safe result when it is unusable.
+ *
+ * Kept apart from `RULE_PROPERTY_SHAPES`: those shapes reject a rule, while an unusable build scope
+ * retains the mitigation and narrows it to detect-only. It applies only to firewall rules; a whitelist
+ * suppresses protection and has no detect-only state.
+ */
+export const BUILD_SCOPE = Object.freeze({
+  applies_to: Object.freeze(['firewall']),
+  usable: Object.freeze({
+    type: 'string',
+    trim: true,
+    pattern: '^[0-9a-fA-F]{64}$',
+    canonical: 'lowercase',
+  }),
+  unreadable: 'the rule remains accepted and detects only by default',
+  local_override: 'trustLocalRuleScope may explicitly enforce a caller-supplied rule',
+});
+
 /** Properties the engine or runtime reads on a rule. */
 export const RULE_PROPERTIES = Object.freeze([
   'id', 'rule_id', 'title', 'category', 'phase', 'action', 'rule_v2', 'when',
   'message', 'enforcement', 'source_revision', 'prefilter',
   'max_bytes', 'bypass_limit',
   'set_headers', 'remove_headers', 'cookie_flags', 'ensure',
-  'capture',
+  'capture', BUILD_SCOPE_PROPERTY,
 ]);
 
 /**
@@ -378,11 +414,11 @@ export const CAPTURE_RAW_CHARS_MAX = 512;
  * Properties whose null does NOT refuse the rule.
  *
  * A null is normally a value that was meant to be something and is not, and refusing it stops a rule
- * running on a default nobody chose. These are the exception because they authorise collection rather
- * than protection: `capture: null` says "collect nothing", which is already the default and costs no
- * shielding.
+ * running on a default nobody chose. `capture` is exempt because it authorises collection rather than
+ * protection: null grants no capture and costs no shielding. `build_scope` is exempt for the opposite
+ * safety reason: a present but unusable scope keeps the mitigation and narrows it to detect-only.
  */
-export const NULL_EXEMPT_PROPERTIES = Object.freeze(['capture']);
+export const NULL_EXEMPT_PROPERTIES = Object.freeze(['capture', BUILD_SCOPE_PROPERTY]);
 
 /**
  * @returns {string|null} why a `capture` opt-in cannot be honoured as written, or null
@@ -767,6 +803,12 @@ export function ruleContract() {
     rule_property_shapes: { ...RULE_PROPERTY_SHAPES },
     enforcement_values: [...ENFORCEMENT_VALUES],
     rule_properties: [...RULE_PROPERTIES],
+    build_scope: {
+      applies_to: [...BUILD_SCOPE.applies_to],
+      usable: { ...BUILD_SCOPE.usable },
+      unreadable: BUILD_SCOPE.unreadable,
+      local_override: BUILD_SCOPE.local_override,
+    },
     capture: {
       version: CAPTURE_VERSION,
       required: ['version', 'raw_chars'],

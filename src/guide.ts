@@ -359,11 +359,11 @@ export async function collectGuideState(cwd: string): Promise<GuideState> {
     endpointOverride,
     hasBuildScript: Boolean(pkg?.scripts?.build?.trim()),
     installScanWired: (pkg?.scripts?.postinstall ?? '').includes('patchstack-connect scan'),
-    // bun run doesn't execute npm-style pre/post scripts, so chaining inside
-    // the build script itself also counts as wired (and is what we suggest on bun).
+    // The scan has to run first: a later prebuild command may upload and stamp the map that the bundle
+    // must retain. Bun skips npm-style pre/post scripts, so its build chain follows the same order.
     prebuildWired:
-      (pkg?.scripts?.prebuild ?? '').includes('patchstack-connect scan') ||
-      (pkg?.scripts?.build ?? '').includes('patchstack-connect scan'),
+      /^\s*patchstack-connect\s+scan(?:\s*(?:&&|;)|\s*$)/.test(pkg?.scripts?.prebuild ?? '') ||
+      /^\s*patchstack-connect\s+scan(?:\s*(?:&&|;)|\s*$)/.test(pkg?.scripts?.build ?? ''),
     postbuildWired:
       (pkg?.scripts?.postbuild ?? '').includes('patchstack-connect mark-build') ||
       (pkg?.scripts?.build ?? '').includes('patchstack-connect mark-build'),

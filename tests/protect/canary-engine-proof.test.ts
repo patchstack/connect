@@ -3,6 +3,7 @@ import { createHash } from 'node:crypto';
 import { existsSync, readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import path from 'node:path';
+import { CANARY_BUILD_ID } from '../map/canary-case.js';
 
 /**
  * Link 3 of the cross-repo canary: the engine's half of the claim.
@@ -59,6 +60,7 @@ const bundleOf = (rule: Record<string, unknown>) => ({
   firewall: [rule],
   whitelists: [],
   whitelist_keys: {},
+  _patchstack: { build_id: CANARY_BUILD_ID },
 });
 
 const URL_BASE = 'https://app.test';
@@ -104,6 +106,7 @@ describe('the vendored canary rule is the one the platform generated', () => {
     // engine needs and not a copy of the platform's output. An unscoped generated rule applies everywhere.
     expect(artifact.rule.when).toEqual({ method: 'POST', path: '/api/restore' });
     expect(artifact.rule.rule_v2.map((c: any) => c.parameter)).toEqual(['post.state']);
+    expect(artifact.rule.build_scope).toBe(CANARY_BUILD_ID);
   });
 });
 

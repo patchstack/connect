@@ -104,7 +104,7 @@ describe('guide', () => {
         dependencies: { '@patchstack/connect': '^0.2.11' },
         scripts: {
           postinstall: 'patchstack-connect scan',
-          prebuild: 'lint && patchstack-connect scan',
+          prebuild: 'patchstack-connect scan && lint',
           postbuild: 'patchstack-connect mark-build',
         },
       });
@@ -127,6 +127,23 @@ describe('guide', () => {
       expect(state.widgetInstalled).toBe(true);
       expect(state.widgetTokenMatches).toBe(true);
       expect(state.protectionWired).toBe(true);
+    });
+
+    it('does not call a scan after another prebuild command wired', async () => {
+      writeJson('package.json', {
+        scripts: {
+          build: 'vite build',
+          prebuild: 'patchstack-connect map --upload && patchstack-connect scan',
+          postbuild: 'patchstack-connect mark-build',
+        },
+      });
+
+      const state = await collectGuideState(cwd);
+
+      expect(state.prebuildWired).toBe(false);
+      expect(renderGuideChecklist(state, false)).toContain(
+        'Edit package.json → "prebuild": "patchstack-connect scan"',
+      );
     });
 
     it('survives a project with no package.json', async () => {

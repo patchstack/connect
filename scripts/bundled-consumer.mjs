@@ -36,6 +36,11 @@ const EXPLOIT = JSON.stringify({
 });
 const BENIGN = JSON.stringify({ state: '{"cart":[{"sku":"AB-1","qty":2}],"currency":"EUR"}' });
 
+// The canary rule is bound to the map that produced it. A scaffolded rules file carries that same
+// identity as bundle metadata; include it here so this packaging check exercises the scoped rule in
+// the context it requires. The engine canary independently pins the identity to the emitted map.
+const CANARY_BUNDLE_METADATA = JSON.stringify({ build_id: artifact.rule.build_scope });
+
 const run = (cmd, args, cwd) =>
   execFileSync(cmd, args, { cwd, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] });
 
@@ -64,7 +69,15 @@ const GUARD = `
 import { createProtection } from '@patchstack/connect/protect';
 import RULE from './rule.json' with { type: 'json' };
 
-const ready = createProtection({ rules: { firewall: [RULE], whitelists: [], whitelist_keys: {} }, mode: 'block' });
+const ready = createProtection({
+  rules: {
+    firewall: [RULE],
+    whitelists: [],
+    whitelist_keys: {},
+    _patchstack: ${CANARY_BUNDLE_METADATA},
+  },
+  mode: 'block',
+});
 
 export async function screen(request) {
   const protection = await ready;

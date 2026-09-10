@@ -6,6 +6,7 @@ import {
 } from './types.js';
 import type { WirePayload } from './normalize.js';
 import { pulseFetch } from './pulse-token.js';
+import { canonicalBuildId } from './build-id.js';
 
 export const DEFAULT_ENDPOINT = 'https://api.patchstack.com/monitor/pulse/manifest';
 export const DEFAULT_TIMEOUT_MS = 30_000;
@@ -171,6 +172,7 @@ export type InputMapUploadOutcome =
 export async function postInputMap(
   config: Config,
   map: { version: number; endpoints: unknown[] },
+  buildId?: string | null,
 ): Promise<InputMapUploadOutcome> {
   if (config.siteUuid === null) {
     return { result: 'skipped', message: 'No site UUID configured — run `patchstack-connect scan` first.' };
@@ -178,6 +180,7 @@ export async function postInputMap(
 
   const url = buildInputMapUrl(config.endpoint, config.siteUuid);
   try {
+    const canonical = canonicalBuildId(buildId);
     const response = await pulseFetch(config, url, {
       method: 'POST',
       headers: {
@@ -185,7 +188,12 @@ export async function postInputMap(
         'Content-Type': 'application/json',
         'User-Agent': '@patchstack/connect',
       },
-      body: JSON.stringify(map),
+      // `build_id` is additive to the v3 document: a reader that ignores it behaves exactly as before.
+      // It is the digest of the policy map carrying these coordinates, so the server can serve a rule pinned
+      // to one of them as enforceable only to a guard carrying that same map. Omitted entirely when this
+      // run could not bind the map into a pre-bundle guard — an absent field is a question the server
+      // answers by withholding enforceability, which is the safe direction.
+      body: JSON.stringify(canonical === null ? map : { ...map, build_id: canonical }),
       signal: AbortSignal.timeout(config.timeoutMs),
     });
     if (response.status === 404) {

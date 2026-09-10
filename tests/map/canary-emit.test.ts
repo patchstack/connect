@@ -4,7 +4,8 @@ import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { execFileSync } from 'node:child_process';
 import { buildInputMap } from '../../src/map/index.js';
-import { CANARY_CASE } from './canary-case.js';
+import { inputMapBuildId } from '../../src/input-map-id.js';
+import { CANARY_BUILD_ID, CANARY_CASE } from './canary-case.js';
 
 /**
  * Regeneration entry point for the canary map, plus the assertions that make it trustworthy to vendor.
@@ -110,6 +111,12 @@ describe('the canary map says what the chain downstream depends on', () => {
     expect(flow.candidateFamily).toBe(CANARY_CASE.expect.candidateFamily);
     expect(flow.confidence).toBe(CANARY_CASE.expect.confidence);
     expect(flow.ruleGeneratable).toBe(CANARY_CASE.expect.ruleGeneratable);
+  });
+
+  it('has the build identity carried by the generated rule artifact', async () => {
+    // This is the producer side of the handoff: the platform records this value on the map revision and
+    // serves it as `build_scope` on the rule derived from that revision.
+    expect(inputMapBuildId(await canaryMap())).toBe(CANARY_BUILD_ID);
   });
 
   it('declares that a dataflow question about the package can be answered', async () => {

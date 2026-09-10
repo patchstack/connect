@@ -1,3 +1,6 @@
+/** Known-answer identity of the policy map this case emits. */
+export const CANARY_BUILD_ID = '6b2e21fe180e31c0477ce701a2e33f54802e2cbe0d5da0a31c983a26beb87731';
+
 /**
  * The one app the cross-repo canary runs on.
  *

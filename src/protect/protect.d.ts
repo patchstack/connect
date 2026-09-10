@@ -290,6 +290,32 @@ export interface CreateProtectionOptions {
   responseRules?: unknown[];
   /** Override the default egress-phase (SSRF) rule set. */
   egressRules?: unknown[];
+  /**
+   * The mapped coordinate identity this guard carries, as a complete 64-hex SHA-256 value. It is
+   * trimmed and compared in lowercase.
+   *
+   * Only needed when wiring `createProtection` by hand. A scaffolded guard carries this in the rules
+   * file its build stamped, and passing it here overrides that.
+   *
+   * What it authorises is narrow: a rule carrying `build_scope` may block only when the platform
+   * confirms the coordinates it served belong to THIS mapped document. Presenting an id is not that
+   * confirmation — the server answers it through response metadata, including on a `304` — so a wrong
+   * or invented value withholds enforcement rather than granting it. Any other format is ignored, with
+   * the same effect as passing nothing.
+   */
+  buildId?: string;
+  /**
+   * Take responsibility for `rules` you supply yourself, including any `build_scope` they carry.
+   *
+   * Off by default, and the default is the safe one. A rule scoped to a build addresses a route and a
+   * field name read from one particular source; supplying it locally establishes that you intend it,
+   * not that it still describes the code now running. Left alone, such a rule detects without blocking
+   * unless it names the map identity this guard reports.
+   *
+   * Set this only where the caller genuinely knows the rules match the running source — a test that
+   * vendors a rule against a fixed fixture, or a build that generates both together.
+   */
+  trustLocalRuleScope?: boolean;
   /** Opt in to wrapping global fetch to screen the app's outbound calls (SSRF). */
   egress?: boolean;
   /** Hosts exempt from egress screening. */

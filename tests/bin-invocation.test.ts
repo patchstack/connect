@@ -1,12 +1,13 @@
 import { describe, expect, it } from 'vitest';
 import { execFile, execFileSync } from 'node:child_process';
 import { promisify } from 'node:util';
-import { copyFileSync, existsSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { createServer } from 'node:http';
 import type { AddressInfo } from 'node:net';
 import { fileURLToPath } from 'node:url';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
+import { readBuildStamp } from '../src/build-id.js';
 
 /**
  * The published `bin` has to actually run, invoked the way npm invokes it.
@@ -202,6 +203,36 @@ describe.skipIf(!built)('the packaged bin, invoked as npm invokes it', () => {
         expect(result.status).toBe(0);
         expect(result.stderr).toContain('manifest not reported');
         expect(result.stderr).toContain('PATCHSTACK_API_KEY');
+      } finally {
+        await server.close();
+        rmSync(dir, { recursive: true, force: true });
+      }
+    });
+
+    it('clears a previous map identity before a prebuild continues', async () => {
+      const server = await refusingServer();
+      const dir = projectWithSite();
+      const guardDir = path.join(dir, 'src', 'patchstack');
+      mkdirSync(guardDir, { recursive: true });
+      writeFileSync(
+        path.join(guardDir, 'guard.ts'),
+        'import { createProtection } from "@patchstack/connect/protect";\nimport rules from "./rules.json";\nvoid createProtection({ rules });\n',
+      );
+      writeFileSync(
+        path.join(guardDir, 'rules.json'),
+        JSON.stringify({
+          _patchstack: { build_id: 'a'.repeat(64) },
+          firewall: [],
+          whitelists: [],
+          whitelist_keys: {},
+        }),
+      );
+      try {
+        const result = await runScan(dir, server.endpoint, 'prebuild');
+        const rules = JSON.parse(readFileSync(path.join(guardDir, 'rules.json'), 'utf8'));
+
+        expect(result.status).toBe(0);
+        expect(readBuildStamp(rules)).toBeNull();
       } finally {
         await server.close();
         rmSync(dir, { recursive: true, force: true });

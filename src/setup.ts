@@ -47,6 +47,20 @@ function appendHook(existing: string | undefined, command: string): string {
   return `${existing} && ${command}`;
 }
 
+/** Put a cleanup command first in an `&&` lifecycle chain without duplicating it. */
+function prependHook(existing: string | undefined, command: string): string {
+  if (existing === undefined || existing.trim().length === 0) return command;
+  const escaped = command.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  if (new RegExp(`^\\s*${escaped}\\s*(?:;|\\|\\|)`).test(existing)) return existing;
+
+  // A second scan after a map upload would clear the identity the upload just stamped.
+  const remaining = existing
+    .split(/\s*&&\s*/)
+    .filter((part) => part.trim() !== command && part.trim().length > 0);
+
+  return [command, ...remaining].join(' && ');
+}
+
 /**
  * Wire a scan after dependency installs and around the project's build without
  * invoking a shell. Bun skips npm-style pre/post build hooks, so Bun projects get
@@ -74,10 +88,7 @@ export function wireBuildScripts(
     }
     scripts.postinstall = postinstall;
   } else if (packageManager === 'bun') {
-    let nextBuild = build;
-    if (!nextBuild.includes(SCAN_COMMAND)) {
-      nextBuild = `${SCAN_COMMAND} && ${nextBuild}`;
-    }
+    let nextBuild = prependHook(build, SCAN_COMMAND);
     if (!nextBuild.includes(MARK_BUILD_COMMAND)) {
       nextBuild = `${nextBuild} && ${MARK_BUILD_COMMAND}`;
     }
@@ -91,7 +102,9 @@ export function wireBuildScripts(
     scripts.postinstall = postinstall;
     scripts.build = nextBuild;
   } else {
-    const prebuild = appendHook(scripts.prebuild, SCAN_COMMAND);
+    // The scan clears a previous map identity. It has to precede any existing prebuild command because
+    // that command may create and upload the new map which the bundled guard should retain.
+    const prebuild = prependHook(scripts.prebuild, SCAN_COMMAND);
     const postbuild = appendHook(scripts.postbuild, MARK_BUILD_COMMAND);
     if (
       prebuild === scripts.prebuild &&

@@ -1,4 +1,4 @@
-// Rule cache as a TIERED store of a `{ bundle, etag }` envelope:
+// Rule cache as a TIERED store of a `{ bundle, etag, buildId, matchedBuildId }` envelope:
 //   1. memory     — always present; last-known-good within the process. Survives refreshes and is
 //                   the fallback when the disk isn't writable (read-only FS, sandbox).
 //   2. durable    — filesystem (default, via `cacheDir`) OR a pluggable adapter (`ruleCache`, e.g.
@@ -11,6 +11,8 @@
 // where a static `node:fs` import fails to resolve at build/load time and would take the whole guard
 // down. On those runtimes the disk tier simply reports "no cache" and the memory tier (or a pluggable
 // `ruleCache` adapter) carries last-known-good.
+
+import { canonicalBuildId } from '../../build-id.js';
 
 let fsMod; // memoized { readFileSync, writeFileSync, mkdirSync, join } | null (unavailable)
 async function loadFs() {
@@ -98,14 +100,36 @@ async function cacheRead(dir) {
   }
 }
 
-// Accept the current { bundle, etag } envelope and a legacy bare bundle (pre-envelope cache files).
+// Accept the current { bundle, etag, buildId, matchedBuildId } envelope, the older { bundle, etag }
+// one, and a legacy bare bundle (pre-envelope cache files).
+//
+// Two identity fields, and the difference between them is the whole point.
+//
+// `buildId` is which map identity was PRESENTED when this bundle was fetched. It scopes the conditional
+// request: revalidating against another map's ETag would return 304 and hand that map's
+// bundle back as current.
+//
+// `matchedBuildId` is the map the PLATFORM confirmed these coordinates belong to. Only that
+// licenses a build-scoped rule to enforce. It is null unless a server said so explicitly, so an older
+// platform, an unrecognised verdict and a cache written before any of this existed all read the same:
+// no confirmation, and scoped rules detect only.
 export function toEnvelope(value) {
   if (!value || typeof value !== 'object') return null;
   if (value.bundle && typeof value.bundle === 'object') {
-    return { bundle: value.bundle, etag: value.etag ?? null };
+    const buildId = canonicalBuildId(value.buildId);
+    const matched = canonicalBuildId(value.matchedBuildId);
+
+    return {
+      bundle: value.bundle,
+      etag: value.etag ?? null,
+      buildId,
+      // A confirmation belongs to the presentation stored beside it. A crossed or partially written
+      // envelope confirms nothing, even when one of its fields happens to name the current map.
+      matchedBuildId: buildId !== null && matched === buildId ? matched : null,
+    };
   }
   if (Array.isArray(value.firewall) || Array.isArray(value.whitelists)) {
-    return { bundle: value, etag: null }; // legacy bare-bundle cache file
+    return { bundle: value, etag: null, buildId: null, matchedBuildId: null }; // legacy cache file
   }
   return null;
 }
