@@ -4,6 +4,9 @@ import { resolveConfig } from './config.js';
 import { postInputMap } from './client.js';
 import { isProvenFlow } from './map/coordinates.js';
 import { type Flags, getStringFlag } from './flags.js';
+import { applyBuildStamp } from './build-stamp.js';
+import { isPreBundleBuildHook } from './build-hook.js';
+import { inputMapBuildId } from './input-map-id.js';
 
 /**
  * `patchstack-connect map` — build the attack-surface map and, with `--upload`, send it.
@@ -100,7 +103,30 @@ export async function runMap(flags: Flags): Promise<number> {
       cliSiteUuid: getStringFlag(flags, 'site-uuid'),
       cliEndpoint: getStringFlag(flags, 'endpoint'),
     });
-    const outcome = await postInputMap(config, map);
+    // Bind the upload to the bundle only when this command is running before the bundler. The identifier
+    // is derived from THIS map's policy content, written into the file the guard imports, and sent in the same request.
+    // A manual map remains useful evidence but cannot claim that its stamp will reach a runtime artifact.
+    let buildId: string | null = null;
+    if (isPreBundleBuildHook()) {
+      const candidate = inputMapBuildId(map);
+      const stamp = applyBuildStamp(cwd, candidate);
+      if (stamp.kind === 'stamped' || stamp.kind === 'unchanged') {
+        buildId = candidate;
+        console.error(`patchstack: bound this map to ${stamp.file} (${candidate.slice(0, 12)}).`);
+      } else {
+        const reason = stamp.kind === 'skipped' ? stamp.reason : 'the rules file did not retain the map identity';
+        console.error(
+          `patchstack: could not bind this map to the runtime guard — ${reason}. ` +
+            'Rules generated from these coordinates will detect only, not block.',
+        );
+      }
+    } else {
+      console.error(
+        'patchstack: no runtime binding recorded — run `map --upload` in a prebuild hook before the bundler, ' +
+          'so rules generated from these coordinates can be tied to the runtime guard. Until then they detect only, not block.',
+      );
+    }
+    const outcome = await postInputMap(config, map, buildId);
     if (outcome.result === 'stored') {
       console.error(`patchstack: uploaded the attack surface (revision ${outcome.revision}).`);
     } else if (outcome.result === 'unchanged') {

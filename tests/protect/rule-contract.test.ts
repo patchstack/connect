@@ -2,8 +2,11 @@ import { describe, it, expect } from 'vitest';
 import { readFileSync } from 'node:fs';
 import { validateBundle } from '../../src/protect/rules/validate.js';
 import {
+  BUILD_SCOPE,
+  CONTRACT_VERSION,
   MATCH_TYPES,
   MUTATIONS,
+  NULL_EXEMPT_PROPERTIES,
   SOURCES,
   PARAMETERLESS_MATCH_TYPES,
   OPERANDLESS_MATCH_TYPES,
@@ -108,6 +111,32 @@ describe('the scope keys the contract publishes', () => {
     expect(ENGINE).toContain('when.method');
     expect(ENGINE).toContain('when.path');
     expect(ruleContract().when_keys).toEqual(['path', 'method']);
+  });
+});
+
+describe('the build scope the contract publishes', () => {
+  it('states the firewall-only, detect-only-on-unusable contract', () => {
+    const contract = ruleContract();
+
+    expect(CONTRACT_VERSION).toBe('2.9');
+    expect(contract.build_scope).toEqual({
+      applies_to: ['firewall'],
+      usable: {
+        type: 'string',
+        trim: true,
+        pattern: '^[0-9a-fA-F]{64}$',
+        canonical: 'lowercase',
+      },
+      unreadable: 'the rule remains accepted and detects only by default',
+      local_override: 'trustLocalRuleScope may explicitly enforce a caller-supplied rule',
+    });
+    expect(contract.build_scope).toEqual({
+      applies_to: [...BUILD_SCOPE.applies_to],
+      usable: { ...BUILD_SCOPE.usable },
+      unreadable: BUILD_SCOPE.unreadable,
+      local_override: BUILD_SCOPE.local_override,
+    });
+    expect(NULL_EXEMPT_PROPERTIES).toContain('build_scope');
   });
 });
 

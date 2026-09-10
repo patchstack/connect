@@ -1,8 +1,11 @@
 import { safeBaseUrl } from '../safe-origin.js';
 import { pulseAuthHeader } from '../../pulse-token.js';
+import { canonicalBuildId } from '../../build-id.js';
 
 const DEFAULT_BASE_URL = 'https://api.patchstack.com/monitor/pulse';
 const DEFAULT_CACHE_TTL = 300_000;
+const BUILD_VERDICT_HEADER = 'X-Patchstack-Build-Match';
+const BUILD_IDENTITY_HEADER = 'X-Patchstack-Build-ID';
 // Randomly shorten the effective TTL by up to this fraction so many long-lived clients don't all
 // revalidate on the same tick (spreads load / avoids a thundering herd against the rules API).
 const JITTER_FRACTION = 0.1;
@@ -29,8 +32,9 @@ export class PulseRuleClient {
   #pulseAuth;
 
   #detectionState;
+  #buildId;
 
-  constructor({ siteUuid, baseUrl, cacheTtl, etag, timeoutMs, pulseAuth, detectionState } = {}) {
+  constructor({ siteUuid, baseUrl, cacheTtl, etag, timeoutMs, pulseAuth, detectionState, buildId } = {}) {
     // Bounded so app STARTUP can't hang on a slow API: hosted platforms fail a deploy whose health
     // check is slow, and we always have a cache/bundled fallback to boot from.
     this.#timeoutMs = Number(timeoutMs) > 0 ? Number(timeoutMs) : 30_000;
@@ -50,6 +54,14 @@ export class PulseRuleClient {
     // A capability, not a timestamp: the server records when IT saw this, because a client clock is a
     // value from outside and "alive as of" is exactly the claim a stale or wrong clock would fake.
     this.#detectionState = typeof detectionState === 'string' ? detectionState : null;
+    // Which mapped coordinate document this guard carries. Declared on a request that already exists,
+    // already carries this site's identity and is already authenticated — the same reasoning as the
+    // detection capability above.
+    //
+    // Presenting it establishes nothing on its own. The server answers with a verdict (see
+    // `buildVerdictOf`), and only an explicit confirmation lets a build-scoped rule enforce. A guard
+    // that read its own claim as an answer would enforce a coordinate from a build it is not.
+    this.#buildId = canonicalBuildId(buildId);
     if (!this.#siteUuid) {
       throw new Error('Patchstack site UUID is required. Pass { siteUuid } or set PATCHSTACK_SITE_UUID.');
     }
@@ -85,12 +97,28 @@ export class PulseRuleClient {
       if (this.#detectionState !== null && typeof auth.Authorization === 'string') {
         headers['X-Patchstack-Detections'] = this.#detectionState;
       }
+      // Gated on the credential for the same reason: a build identity is only worth acting on when the
+      // request that carried it proved which site it belongs to.
+      if (this.#buildId !== null && typeof auth.Authorization === 'string') {
+        headers['X-Patchstack-Build'] = this.#buildId;
+      }
       if (this.#etag) headers['If-None-Match'] = this.#etag;
       const response = await fetch(url, { method: 'GET', headers, signal: AbortSignal.timeout(this.#timeoutMs) });
 
       if (response.status === 304) {
         this.#touch(now); // revalidated — reset the clock (fresh jitter)
-        return this.#cache ?? { success: true, notModified: true, etag: this.#etag, firewall: [], whitelists: [], whitelist_keys: {} };
+        // The bundle body is unchanged, while the request-specific build verdict remains fresh response
+        // metadata. Reading it on a 304 prevents an earlier match surviving after the recorded map moves.
+        const result = {
+          ...(this.#cache ?? { firewall: [], whitelists: [], whitelist_keys: {} }),
+          success: true,
+          notModified: true,
+          etag: response.headers?.get?.('etag') ?? this.#etag,
+          build: buildVerdictOf(response.headers),
+        };
+        this.#cache = result;
+        this.#etag = result.etag;
+        return result;
       }
       if (!response.ok) {
         return { success: false, error: `API returned ${response.status}`, firewall: [], whitelists: [], whitelist_keys: {} };
@@ -110,6 +138,9 @@ export class PulseRuleClient {
         whitelists: Array.isArray(data.whitelists) ? data.whitelists : [],
         whitelist_keys: data.whitelist_keys ?? {},
         ...enforcementField(data),
+        // Carried through so the caller can decide what a build-scoped rule may do. Response metadata,
+        // rather than bundle content, because it varies with the build asking and is also present on 304.
+        build: buildVerdictOf(response.headers),
       };
       this.#cache = result;
       this.#etag = result.etag;
@@ -134,6 +165,35 @@ export class PulseRuleClient {
     this.#cacheTime = null;
     this.#etag = null;
   }
+}
+
+/**
+ * The server's verdict on the map identity this request presented.
+ *
+ * Three answers, and only one of them is permission: `match` means the platform confirms the coordinates
+ * it is serving belong to the map named in `buildId`. `missing` and `mismatch` are refusals it
+ * states rather than implies.
+ *
+ * Anything else — an absent field, an unknown word, a server that has never heard of this header — is
+ * read as `unknown`, which is treated exactly like a refusal. That is what makes deploying the client
+ * ahead of the server safe: an older platform corroborates nothing instead of appearing to corroborate
+ * everything.
+ *
+ * `matchedBuildId` is what the server says it matched, and the caller requires it to equal what was
+ * presented. Accepting a bare `match` would be trusting the shape of the answer rather than its content.
+ *
+ * @param {unknown} headers
+ * @returns {{ verdict: 'match'|'missing'|'mismatch'|'unknown', matchedBuildId: string|null }}
+ */
+export function buildVerdictOf(headers) {
+  const get = headers !== null && typeof headers === 'object' && typeof headers.get === 'function'
+    ? (name) => headers.get(name)
+    : () => null;
+  const stated = get(BUILD_VERDICT_HEADER);
+  const verdict = stated === 'match' || stated === 'missing' || stated === 'mismatch' ? stated : 'unknown';
+  const matched = get(BUILD_IDENTITY_HEADER);
+
+  return { verdict, matchedBuildId: typeof matched === 'string' ? matched : null };
 }
 
 /** @param {unknown} data @returns {{ enforcement?: 'block'|'dry-run' }} */

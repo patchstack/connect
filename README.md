@@ -87,8 +87,9 @@ patchstack-connect map    [--dir p] [--out f] [--upload]
                                                    system, process, outbound HTTP) and the npm
                                                    package behind each sink. READS YOUR SOURCE
                                                    FILES locally and parses them with the
-                                                   project's own TypeScript; writes nothing except
-                                                   --out, and posts nothing. Never run by
+                                                   project's own TypeScript; writes only --out unless
+                                                   a pre-bundle --upload stamps the existing guard
+                                                   rules file, and posts nothing without --upload. Never run by
                                                    scan/setup/guide/protect — run it yourself.
 patchstack-connect demo node-serialize             Production-backed walkthrough: require
                                                    node-serialize@0.0.4, scan it, wait for live
@@ -266,6 +267,8 @@ PATCHSTACK_ENVIRONMENT=sandbox npx @patchstack/connect setup
 
 The generated `prebuild` scan deliberately carries no hard-coded environment. A production builder with no override reports `production`; a preview/sandbox builder must receive `PATCHSTACK_ENVIRONMENT=sandbox` from its host. Runtime protection itself is not environment-specific: `PATCHSTACK_ENVIRONMENT` labels manifests only. Use `PATCHSTACK_MODE=dry-run` when protection should observe rather than block.
 
+During a build, the `prebuild` scan removes any previous map stamp. A later `map --upload` in the same pre-bundle lifecycle hashes the map's policy content (excluding analyser timing and memory observations) and records that identity in the guard's existing rules file. The guard presents it on the rules request it already makes; only an explicit Patchstack confirmation naming the same map lets a rule scoped to one of your app's parameter names block. A build with no confirmed identity still enforces every ordinary rule — only scoped rules drop to detect-only, with the reason reported. Outside a pre-bundle hook, `map --upload` changes no file and sends no identity. See "Which build a rule belongs to" in `AGENT-INSTALL.md`.
+
 ### `scan` as a build hook
 
 `setup` wires `scan` into `postinstall`, `prebuild`, or the Bun `build` chain. Run from one of those, a report Patchstack cannot accept — no credential in the build environment, a rejected credential, a site that no longer exists, an outage — is printed on stderr and `scan` exits 0, so the install or build it is attached to carries on. Patchstack keeps the last manifest it accepted for the site until a scan that can report. Run directly (`npx @patchstack/connect scan`), the same failure exits 1.
@@ -360,7 +363,7 @@ Why you might want it: the two `lodash` entries above are not a contrived exampl
 
 These are repo-relative locations built from `node_modules` segments, plus a workspace directory name when a workspace pins its own copy. They come from the lockfile's own keys or from the `node_modules` walk — **never from your source tree**. No path to a file you wrote is sent by either form of `scan`.
 
-`installPathsComplete` says whether the set is total. It is `false` without the flag, and `false` with it whenever the source cannot supply locations — a `yarn.lock` is flat because hoisting is decided at install time, and a v1 `package-lock.json` records the dependency graph rather than the installed tree. Whenever it is `false`, a missing `paths` means **"not recorded"**, never "not installed there". (The `map` command reads source files locally to report your attack surface; it transmits nothing unless you pass `--upload`, which sends that structural description — route paths, parameter names, the dependency behind each sink, and file/line locations, never file contents — to your own site's endpoint so rules can be pinned to your real parameter names.) Duplicate names with different versions are preserved so transitive vulnerabilities aren't missed. (`mark-build` separately stamps built HTML with a stack descriptor that may include hosting-related env variable *names* — e.g. `VERCEL` — never their values.)
+`installPathsComplete` says whether the set is total. It is `false` without the flag, and `false` with it whenever the source cannot supply locations — a `yarn.lock` is flat because hoisting is decided at install time, and a v1 `package-lock.json` records the dependency graph rather than the installed tree. Whenever it is `false`, a missing `paths` means **"not recorded"**, never "not installed there". (The `map` command reads source files locally to report your attack surface; it transmits nothing unless you pass `--upload`, which sends that structural description — route paths, parameter names, the dependency behind each sink, and file/line locations, never file contents — to your own site's endpoint so rules can be pinned to your real parameter names. During a pre-bundle hook it also sends a digest of that exact map and records the same value in the guard's rules file; see "Which build a rule belongs to" in `AGENT-INSTALL.md`.) Duplicate names with different versions are preserved so transitive vulnerabilities aren't missed. (`mark-build` separately stamps built HTML with a stack descriptor that may include hosting-related env variable *names* — e.g. `VERCEL` — never their values.)
 
 ## Supported lockfiles
 

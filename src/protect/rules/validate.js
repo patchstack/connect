@@ -16,6 +16,7 @@
 // it are checking one description of what the engine runs.
 import {
   ACTIONS as CONTRACT_ACTIONS,
+  BUILD_SCOPE_PROPERTY,
   LIMITS as CONTRACT_LIMITS,
   PHASES as CONTRACT_PHASES,
   actionProblem,
@@ -67,6 +68,13 @@ export function validateBundle(bundle, opts = {}) {
     // firewall for that request — so it must be opted into explicitly.
     if (!opts.allowGlobalWhitelists && wl && Array.isArray(wl.rule_v2) && !wl.rule_id) {
       rejected.push({ id: idOf(wl), reason: 'whitelist has no rule_id (would suppress every rule); set allowGlobalWhitelists to permit' });
+      continue;
+    }
+    // A scoped firewall rule can be narrowed to detect-only. A whitelist has no such state: when it
+    // matches it suppresses protection. Refuse the property here rather than letting an uncorroborated
+    // coordinate disable a rule for another build.
+    if (wl && typeof wl === 'object' && BUILD_SCOPE_PROPERTY in wl) {
+      rejected.push({ id: idOf(wl), reason: `whitelist may not carry ${BUILD_SCOPE_PROPERTY}` });
       continue;
     }
     const reason = conditionsProblem(wl?.rule_v2);
