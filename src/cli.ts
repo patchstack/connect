@@ -7,6 +7,7 @@ import { computeManifestChecksum } from './checksum.js';
 import {
   postInputMap,
   buildManifestBody,
+  claimOutcomeLines,
   DEFAULT_ENDPOINT,
   buildClaimUrl,
   fetchSiteStatus,
@@ -156,6 +157,10 @@ Options (for scan, setup, status, and uninstall):
                           same under a workspace that pins its own copy), so an
                           advisory can be matched to the copy your code actually
                           loads. Off by default; never source file paths
+  --claim-token <token>   (scan, setup) Connect the site to the Patchstack account
+                          that issued the token — it comes from the dashboard's
+                          "Connect website" prompt. PATCHSTACK_CLAIM_TOKEN works
+                          too. Never written to a file, never printed back
 
 Options (for mark-build):
   --dir <path>            Build output directory (default: auto-detect
@@ -190,7 +195,7 @@ Examples:
   npx @patchstack/connect demo-guide node-serialize
 `;
 
-const VALUE_FLAGS = new Set(['site-uuid', 'endpoint', 'dir', 'url', 'out']);
+const VALUE_FLAGS = new Set(['site-uuid', 'endpoint', 'dir', 'url', 'out', 'claim-token']);
 
 interface ParsedArgs {
   command: string | null;
@@ -368,6 +373,7 @@ async function runScan(
     cwd: process.cwd(),
     cliSiteUuid: getStringFlag(args.flags, 'site-uuid'),
     cliEndpoint: getStringFlag(args.flags, 'endpoint'),
+    cliClaimToken: getStringFlag(args.flags, 'claim-token'),
     // The one command that reports them, so the one command that resolves them.
     detectSiteIdentity: true,
   });
@@ -416,6 +422,11 @@ async function runScan(
   }
   if (typeof body.name === 'string') {
     console.log(`Reporting this app's name as "${body.name}".`);
+  }
+  // Named but never printed: the token is a credential for the person's account, and it travels as a
+  // header rather than in the body so that the payload preview below stays the whole body.
+  if (typeof config.claimToken === 'string' && config.claimToken !== '') {
+    console.log('A claim token is set: the site will be connected to the Patchstack account that issued it.');
   }
 
   if (dryRun) {
@@ -495,6 +506,16 @@ async function runScan(
     console.log(`Server response: ${response.message ?? JSON.stringify(response)}`);
   }
 
+  // What became of the claim token, in the person's terms. Printed whenever one was passed — including
+  // when the server said nothing about it — so a token that did not connect the site is never mistaken
+  // for one that did.
+  const claimLines = claimOutcomeLines(response.claim, config);
+  if (claimLines.length > 0) {
+    console.log('');
+    for (const line of claimLines) console.log(line);
+  }
+  const connected = response.claim?.state === 'claimed' || response.claim?.state === 'owned-by-you';
+
   // With a UUID in hand (existing or freshly provisioned), ensure the
   // disclosure widget's managed tag in the source HTML shell so the very next
   // preview reload shows the "Report a vulnerability" button. Best-effort and
@@ -507,11 +528,14 @@ async function runScan(
 
   // On the first scan (provisioning), surface the dashboard URL so the user can
   // attach this site to their Patchstack account. `npx @patchstack/connect status`
-  // re-displays it any time.
-  if (provisioning && response.uuid !== undefined && response.uuid.length > 0) {
+  // re-displays it any time. A site the claim token just connected needs no such
+  // step, and its dashboard was named above; a token that did not connect it makes
+  // this link the way in even on a re-scan.
+  const linkUuid = response.uuid ?? config.siteUuid;
+  if (!connected && (provisioning || claimLines.length > 0) && linkUuid !== null && linkUuid !== undefined && linkUuid.length > 0) {
     console.log('');
     console.log('Open this dashboard link to view vulnerability reports:');
-    console.log(`  ${buildClaimUrl(config.endpoint, response.uuid)}`);
+    console.log(`  ${buildClaimUrl(config.endpoint, linkUuid)}`);
     if (config.endpoint !== DEFAULT_ENDPOINT) {
       console.log('  (this URL inherits the endpoint override above)');
     }

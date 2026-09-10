@@ -55,6 +55,11 @@ export interface ResolveConfigOptions {
   cliSiteUuid?: string;
   cliEndpoint?: string;
   /**
+   * The claim token from the dashboard's install prompt (`--claim-token`). Outranks
+   * PATCHSTACK_CLAIM_TOKEN, and neither is ever written to a file.
+   */
+  cliClaimToken?: string;
+  /**
    * When true, resolveConfig throws CONFIG_MISSING if no site UUID is configured.
    * Defaults to false: callers that can run without a UUID (the first `scan` after
    * `npm install`) just get `siteUuid: null` back and learn the UUID from the
@@ -181,6 +186,10 @@ export async function resolveConfig(options: ResolveConfigOptions): Promise<Conf
       ? await resolveSiteIdentity(options.cwd, fromEnv, fromFile)
       : { url: null, name: null };
 
+  // The token names an account, not this project, so the files that describe the project are never a
+  // source for it — only the command line and the environment of the process that runs it.
+  const claimToken = stated(options.cliClaimToken) ?? stated(process.env.PATCHSTACK_CLAIM_TOKEN);
+
   return {
     siteUuid: siteUuid === null || siteUuid.length === 0 ? null : siteUuid,
     apiKey: apiKeyRaw === null || apiKeyRaw.length === 0 ? null : apiKeyRaw,
@@ -191,6 +200,7 @@ export async function resolveConfig(options: ResolveConfigOptions): Promise<Conf
     timeoutMs,
     environment,
     widget: fromFile.widget !== false,
+    claimToken,
   };
 }
 

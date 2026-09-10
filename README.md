@@ -96,6 +96,8 @@ patchstack-connect --version                       Print the installed version
 Options (for scan, setup, and status):
   --site-uuid <uuid>      Override the configured site UUID
   --endpoint <url>        Override the API endpoint
+  --claim-token <token>   (scan, setup) Connect the site to the account that issued
+                          the token (from the dashboard's "Connect website" prompt)
   --dry-run               (scan only) Print the payload without posting
 
 Options (for demo and demo-guide):
@@ -107,7 +109,7 @@ Options (for demo and demo-guide):
 
 Precedence (highest wins):
 
-1. CLI flag (`--site-uuid`, `--endpoint`)
+1. CLI flag (`--site-uuid`, `--endpoint`, `--claim-token`)
 2. Environment variable
 3. `.patchstackrc.local.json` in the current directory (the credential)
 4. `.patchstackrc.json` in the current directory
@@ -118,6 +120,7 @@ Environment variables:
 - `PATCHSTACK_ENDPOINT` — override the API endpoint (default `https://api.patchstack.com/monitor/pulse/manifest`)
 - `PATCHSTACK_TIMEOUT_MS` — request timeout in milliseconds (default `30000`)
 - `PATCHSTACK_ENVIRONMENT` — manifest label: `production` (default) or `sandbox`
+- `PATCHSTACK_CLAIM_TOKEN` — connect the site straight to your account (see *Connecting straight to your account*)
 
 Two files, because one value is public and the other is not.
 
@@ -151,6 +154,17 @@ If it is ever lost, `npx @patchstack/connect login` recovers it — approval hap
 The credential's file is never committed, so CI needs `PATCHSTACK_API_KEY` in the environment (and `PATCHSTACK_SITE_UUID` too where `.patchstackrc.json` is also absent). Precedence is CLI flag → env var → `.patchstackrc.local.json` → `.patchstackrc.json`.
 
 A `pulseAuth` field is still read if present, and `PATCHSTACK_PULSE_AUTH` still overrides, for deployments that authenticate Pulse ingest with a different credential from block-logs. Neither is written by default, and neither is needed when the two share one.
+
+### Connecting straight to your account
+
+The dashboard's "Connect website" prompt carries a **claim token**. Pass it to the first `setup` (or `scan`) and the site it provisions is created in your account, so there is no dashboard link to open afterwards:
+
+```bash
+npx @patchstack/connect setup --claim-token <token>
+# or: PATCHSTACK_CLAIM_TOKEN=<token> npx @patchstack/connect setup
+```
+
+The token names your account, not the project: it is never written to `.patchstackrc.json` or the credential file, it is sent to Patchstack as a request header rather than in the manifest body, and it stops working within a day. A token that has expired (or one Patchstack does not recognise) leaves the site exactly as a scan without one would — unconnected, with the dashboard link printed — and `scan` says so. Re-running `setup` with the same token against a site already in your account is a no-op that says the site is already connected; a site that belongs to a different account is left alone.
 
 ### Sandbox and production manifests
 
@@ -243,6 +257,8 @@ The address is included so the site in your dashboard shows where it lives inste
 The name is what the dashboard calls the site. It is taken from `name` in `.patchstackrc.json` (or `PATCHSTACK_SITE_NAME`) if you set one; otherwise from the `<title>` of the project's root `index.html`; otherwise from the `name` in `package.json`, unless that is a template placeholder such as `vite_react_shadcn_ts`. It is left out when nothing qualifies. Those two files are read only by `scan` — the commands that never post a manifest do not open them.
 
 You can see exactly what would be sent, without sending it, by running `npx @patchstack/connect scan --dry-run`: the preview it prints is the request body itself. Patchstack only applies either field to a site that does not have one yet: it never re-points a site whose address is real, and never replaces a name set in the dashboard.
+
+One thing travels outside that body: a claim token, when you pass one (`--claim-token` / `PATCHSTACK_CLAIM_TOKEN`), is sent as the `X-Patchstack-Claim-Token` request header so that the site is created in your account. Without one, no such header is sent.
 
 ### `scan --install-paths` (opt-in)
 

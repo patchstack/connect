@@ -71,6 +71,28 @@ export interface Config {
    * `"widget": false` in .patchstackrc.json for dependency-scanning only.
    */
   widget: boolean;
+  /**
+   * The claim token the Patchstack dashboard puts in its install prompt, so the site the first scan
+   * provisions is born in that account instead of waiting for a dashboard link. Read from
+   * `--claim-token` or `PATCHSTACK_CLAIM_TOKEN` and never written to any file: it names an account,
+   * not this project, and it stops working within a day. Optional on the same terms as `siteUrl`.
+   */
+  claimToken?: string | null;
+}
+
+/**
+ * What Patchstack did with a claim token that rode along with a manifest push.
+ *
+ * `claimed` — this push gave the site its owner; `owned-by-you` — it already was (a re-run of the
+ * prompt); `owned-by-other` — the site belongs to a different account and was left alone;
+ * `rejected` — the token had expired or was not one Patchstack issued, and the site stays as it was.
+ */
+export interface ManifestClaimOutcome {
+  state: 'claimed' | 'owned-by-you' | 'owned-by-other' | 'rejected';
+  site_id?: number | null;
+  /** Where the connected site lives in the dashboard; present for `claimed` and `owned-by-you`. */
+  dashboard_url?: string | null;
+  reason?: 'expired' | 'invalid' | null;
 }
 
 export interface StoreManifestResponse {
@@ -87,6 +109,8 @@ export interface StoreManifestResponse {
   reason?: string;
   message?: string;
   error?: string;
+  /** Present only when the push carried a claim token. */
+  claim?: ManifestClaimOutcome;
 }
 
 export class PatchstackError extends Error {
