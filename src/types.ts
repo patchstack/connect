@@ -6,7 +6,11 @@ export type Ecosystem = 'npm' | 'composer';
  * with PATCHSTACK_ENVIRONMENT=sandbox (or "environment" in .patchstackrc.json)
  * for test manifests.
  */
-export type Environment = 'production' | 'sandbox';
+/**
+ * Where a manifest was built. `local` is a developer's machine: inventory, never evidence of a live site.
+ * Inferred when nothing sets it — see `environment.ts`.
+ */
+export type Environment = 'production' | 'sandbox' | 'local';
 
 export interface PackageEntry {
   name: string;
@@ -65,6 +69,12 @@ export interface Config {
   timeoutMs: number;
   /** Environment to report the manifest under. Defaults to 'production'. */
   environment: Environment;
+  /**
+   * What decided `environment` when nothing set it: the platform, hosting or CI variables that mark this
+   * process as a deployment build. Empty when it was stated, and empty for `local`, which is decided by
+   * the absence of any such evidence.
+   */
+  environmentEvidence?: string[];
   /**
    * Whether the connector manages the disclosure-widget tag (source shell on
    * `scan`, built HTML on `mark-build`). Defaults to true; persist

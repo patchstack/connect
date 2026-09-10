@@ -63,6 +63,11 @@ export interface GuideState {
   protectionWired: boolean;
   protectionStack: string;
   protectionChecks: VerifyCheck[];
+  /**
+   * Whether a runtime guard is a thing this project can have at all. False for a static build, where
+   * `protectionWired: false` is not a step anyone owes — see `VerifyReport.applicable`.
+   */
+  protectionApplicable: boolean;
 }
 
 const INSTALL_COMMANDS: Record<PackageManager, string> = {
@@ -376,6 +381,7 @@ export async function collectGuideState(cwd: string): Promise<GuideState> {
     protectionWired: protection.wired,
     protectionStack: protection.stack,
     protectionChecks: protection.checks,
+    protectionApplicable: protection.applicable,
   };
 }
 
@@ -423,7 +429,7 @@ export function countRemainingSteps(state: GuideState): number {
     !state.hasBuildScript || (state.prebuildWired && state.postbuildWired),
     state.widgetOptOut || (state.widgetInstalled && state.widgetTokenMatches !== false),
     !needsSourceProductionMarker(state) || state.productionMarkerWired,
-    state.protectionWired,
+    !state.protectionApplicable || state.protectionWired,
   ].filter((step) => !step).length;
 }
 
@@ -578,7 +584,16 @@ export function renderGuideChecklist(state: GuideState, useColor: boolean): stri
   }
 
   // 6. Runtime protection
-  if (state.protectionWired) {
+  if (!state.protectionApplicable) {
+    // Not a green tick for a step that was done, and not a red one for a step still owed. A guard screens
+    // requests, and a project that only emits files never receives one, so the honest line says the
+    // capability does not apply here — and says what does, since "no runtime protection" read alone
+    // sounds like a gap rather than a shape.
+    lines.push(done('Runtime protection: not applicable — this project has no request path'));
+    for (const check of state.protectionChecks.filter((item) => item.hint !== undefined && item.group !== 'reporting')) {
+      lines.push(detail(check.hint ?? ''));
+    }
+  } else if (state.protectionWired) {
     lines.push(done(`Runtime protection wired (${state.protectionStack})`));
   } else {
     lines.push(todo(`Finish runtime protection (${state.protectionStack})`));
@@ -631,12 +646,12 @@ export function renderGuideChecklist(state: GuideState, useColor: boolean): stri
       done(
         paint(
           ANSI.bold,
-          'All setup steps complete. Commit .patchstackrc.json, package.json, the runtime guard changes, and the file carrying the widget snippet. Never commit .patchstackrc.local.json — it holds the API key, and setup has already added it to .gitignore.',
+          'Ready to deploy. Everything above is in the working tree only: commit .patchstackrc.json, package.json, the runtime guard changes, and the file carrying the widget snippet; add PATCHSTACK_API_KEY to the hosting platform; then deploy. Never commit .patchstackrc.local.json — it holds the API key, and setup has already added it to .gitignore.',
         ),
       ),
     );
     if (state.claimUrl !== null) {
-      lines.push(detail('The only manual action left is opening the dashboard link above (if not already connected).'));
+      lines.push(detail('Until the site is attached to an account (dashboard link above, or `claim`), nobody can see its reports.'));
     }
   } else {
     lines.push(

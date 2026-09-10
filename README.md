@@ -207,7 +207,7 @@ Environment variables:
 - `PATCHSTACK_SITE_UUID` — the site UUID from your Patchstack dashboard
 - `PATCHSTACK_ENDPOINT` — override the API endpoint (default `https://api.patchstack.com/monitor/pulse/manifest`)
 - `PATCHSTACK_TIMEOUT_MS` — request timeout in milliseconds (default `30000`)
-- `PATCHSTACK_ENVIRONMENT` — manifest label: `production` (default) or `sandbox`
+- `PATCHSTACK_ENVIRONMENT` — manifest label: `production`, `sandbox` or `local`. Unset, a deployment or CI build reports `production` and a developer machine reports `local`
 - `PATCHSTACK_CLAIM_TOKEN` — connect the site straight to your account (see *Connecting straight to your account*)
 
 Two files, because one value is public and the other is not.
@@ -256,7 +256,7 @@ The token names your account, not the project: it is never written to `.patchsta
 
 ### Sandbox and production manifests
 
-Every `scan` sends an environment label with its dependency manifest. The default is `production`; sandboxed builders should set `PATCHSTACK_ENVIRONMENT=sandbox` in the sandbox process only. Patchstack stores and deduplicates manifests per environment, so an iterative workspace scan does not replace the last production manifest.
+Every `scan` sends an environment label with its dependency manifest. When nothing sets one, the label comes from where the scan runs: a build on a hosting platform or in CI (Netlify, Vercel, Cloudflare, GitHub Actions and the like) reports `production`; a developer's machine reports `local`. A local manifest is inventory — it tells Patchstack what the app is built from — and never counts as contact with a live site, so an app that has only been set up on a laptop shows in the dashboard as **Configured locally**, not as connected or deployed. Sandboxed builders should set `PATCHSTACK_ENVIRONMENT=sandbox` in the sandbox process only. Patchstack stores and deduplicates manifests per environment, so an iterative workspace scan does not replace the last production manifest.
 
 Do not commit `"environment": "sandbox"` to `.patchstackrc.json` when the same files are deployed to production. Scope the variable to the sandbox command/process instead:
 
@@ -264,7 +264,7 @@ Do not commit `"environment": "sandbox"` to `.patchstackrc.json` when the same f
 PATCHSTACK_ENVIRONMENT=sandbox npx @patchstack/connect setup
 ```
 
-The generated `prebuild` scan deliberately carries no hard-coded environment. A production builder with no override reports `production`; a preview/sandbox builder must receive `PATCHSTACK_ENVIRONMENT=sandbox` from its host. Runtime protection itself is not environment-specific: `PATCHSTACK_ENVIRONMENT` labels manifests only. Use `PATCHSTACK_MODE=dry-run` when protection should observe rather than block.
+The generated `prebuild` scan deliberately carries no hard-coded environment. A production build with no override reports `production` because the platform's own variables say it is one; a preview/sandbox builder must receive `PATCHSTACK_ENVIRONMENT=sandbox` from its host. Runtime protection itself is not environment-specific: `PATCHSTACK_ENVIRONMENT` labels manifests only. Use `PATCHSTACK_MODE=dry-run` when protection should observe rather than block.
 
 ### `scan` as a build hook
 

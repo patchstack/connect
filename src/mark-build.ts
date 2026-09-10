@@ -6,21 +6,71 @@ import { isEmptyStack, type StackDescriptor } from './stack.js';
 /** Attribute that tags our injected <script> so re-runs replace it instead of stacking. */
 export const MARKER_ATTR = 'data-patchstack-build';
 
-/** Build output directories we look for, in priority order (Vite, CRA, Next export, Nuxt). */
-export const BUILD_DIR_CANDIDATES = ['dist', 'build', 'out', '.output/public'];
+/** Build output directories we look for, in priority order (Vite, CRA, Next export, Nuxt, Eleventy). */
+export const BUILD_DIR_CANDIDATES = ['dist', 'build', 'out', '.output/public', '_site'];
+
+/**
+ * Where each framework writes its build when its configuration says nothing. Tried ahead of the generic
+ * list, so a framework whose default is unusual is found before a stale `dist/` from some other tool is.
+ * `public/` is deliberately absent everywhere: for most stacks it is a SOURCE directory of static assets,
+ * and stamping it would edit files the next build copies out again.
+ */
+const FRAMEWORK_BUILD_DIRS: Record<string, string[]> = {
+  eleventy: ['_site'],
+  docusaurus: ['build'],
+  vitepress: ['.vitepress/dist', 'docs/.vitepress/dist'],
+  gatsby: ['public'],
+};
+
+/**
+ * The output directory a build script names on its command line, if any.
+ *
+ * Read from the script text rather than from a framework config file: scripts are JSON strings, so there
+ * are no comments or dead branches to be fooled by, and `--output` is the one spelling the generators
+ * that take it (Eleventy, Hugo-style wrappers) all share. A config file that sets the same thing is not
+ * read here — a wrong guess from parsing one costs more than an accurate "not found" below.
+ */
+export function outputDirFromBuildScript(buildScript: string | undefined): string | null {
+  if (buildScript === undefined) return null;
+  const match = /(?:^|\s)--output(?:=|\s+)(?:"([^"]+)"|'([^']+)'|(\S+))/.exec(buildScript);
+  const dir = match?.[1] ?? match?.[2] ?? match?.[3];
+  return dir !== undefined && dir !== '' ? dir : null;
+}
+
+export interface ResolveBuildDirOptions {
+  /** Detected framework label, so its known output directory is tried first. */
+  framework?: string | null;
+  /** The project's `build` script, so an `--output` it names is honoured. */
+  buildScript?: string;
+}
+
+/**
+ * Every directory `resolveBuildDir` would look in for this project, in order, project-relative. Exposed so
+ * the message printed when none exists can name what was actually tried rather than a hard-coded list
+ * that drifts from the code.
+ */
+export function buildDirCandidates(options: ResolveBuildDirOptions = {}): string[] {
+  const named = outputDirFromBuildScript(options.buildScript);
+  const byFramework = options.framework != null ? FRAMEWORK_BUILD_DIRS[options.framework] ?? [] : [];
+  return [...new Set([...(named !== null ? [named] : []), ...byFramework, ...BUILD_DIR_CANDIDATES])];
+}
 
 /**
  * Resolve the directory holding the built HTML. Honours an explicit `--dir`
  * override, otherwise picks the first known build directory that exists.
  * Returns null when nothing is found (mark-build then no-ops without failing).
  */
-export function resolveBuildDir(cwd: string, override?: string): string | null {
+export function resolveBuildDir(
+  cwd: string,
+  override?: string,
+  options: ResolveBuildDirOptions = {},
+): string | null {
   if (override !== undefined && override !== '') {
     const abs = path.resolve(cwd, override);
     return existsSync(abs) && statSync(abs).isDirectory() ? abs : null;
   }
 
-  for (const candidate of BUILD_DIR_CANDIDATES) {
+  for (const candidate of buildDirCandidates(options)) {
     const abs = path.resolve(cwd, candidate);
     if (existsSync(abs) && statSync(abs).isDirectory()) {
       return abs;

@@ -277,7 +277,8 @@ describe('guide', () => {
 
       const output = renderGuideChecklist(await collectGuideState(cwd), false);
 
-      expect(output).toContain('All setup steps complete');
+      expect(output).toContain('Ready to deploy');
+      expect(output).not.toMatch(/\bconnected\b/i);
       expect(output).toContain('/monitor/claim?site=');
       expect(output).not.toContain('✖');
     });
@@ -485,5 +486,51 @@ describe('guide', () => {
       expect(needsSourceProductionMarker(state)).toBe(false);
       expect(renderGuideChecklist(state, false)).not.toContain('Add the production marker');
     });
+  });
+});
+
+describe('guide on a project with no request path', () => {
+  let cwd: string;
+  const originalEnv = { ...process.env };
+
+  beforeEach(async () => {
+    cwd = await mkdtemp(path.join(tmpdir(), 'patchstack-guide-static-'));
+    delete process.env.PATCHSTACK_SITE_UUID;
+    delete process.env.PATCHSTACK_ENVIRONMENT;
+  });
+
+  afterEach(async () => {
+    process.env = { ...originalEnv };
+    await rm(cwd, { recursive: true, force: true });
+  });
+
+  it('does not count runtime protection as a step still owed, and says why', async () => {
+    writeFileSync(
+      path.join(cwd, 'package.json'),
+      JSON.stringify({
+        name: 'eleventy-site',
+        scripts: {
+          build: 'eleventy',
+          postinstall: 'patchstack-connect scan',
+          prebuild: 'patchstack-connect scan',
+          postbuild: 'patchstack-connect mark-build',
+        },
+        dependencies: { '@patchstack/connect': '^0.5.0' },
+        devDependencies: { '@11ty/eleventy': '^3.0.0' },
+      }),
+    );
+    writeFileSync(path.join(cwd, '.patchstackrc.json'), JSON.stringify({ siteUuid: VALID_UUID, widget: false }));
+
+    const state = await collectGuideState(cwd);
+    const rendered = renderGuideChecklist(state, false);
+
+    expect(state.protectionApplicable).toBe(false);
+    expect(state.protectionWired).toBe(false);
+    expect(countRemainingSteps(state)).toBe(0);
+    expect(rendered).toContain('Runtime protection: not applicable');
+    expect(rendered).toContain('no request path');
+    expect(rendered).not.toContain('Finish runtime protection');
+    expect(rendered).toContain('Ready to deploy');
+    expect(rendered).not.toMatch(/\bconnected\b/i);
   });
 });

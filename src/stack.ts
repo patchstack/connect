@@ -54,6 +54,9 @@ const STACK_RULES: readonly StackRule[] = [
   { category: 'framework', pkg: '@sveltejs/kit', label: 'sveltekit' },
   { category: 'framework', pkg: '@builder.io/qwik-city', label: 'qwik-city' },
   { category: 'framework', pkg: 'gatsby', label: 'gatsby' },
+  { category: 'framework', pkg: '@11ty/eleventy', label: 'eleventy' },
+  { category: 'framework', pkg: '@docusaurus/core', label: 'docusaurus' },
+  { category: 'framework', pkg: 'vitepress', label: 'vitepress' },
   { category: 'framework', pkg: 'express', label: 'express' },
   { category: 'framework', pkg: 'fastify', label: 'fastify' },
 
