@@ -12,7 +12,7 @@
 // `rule-contract.json` is the published form. `tests/protect/rule-contract.test.ts` reads the engine's own
 // source and asserts these descriptions match what it implements.
 
-export const CONTRACT_VERSION = '2.9';
+export const CONTRACT_VERSION = '2.10';
 
 /**
  * Every parameter source, and what it accepts after the dot.
@@ -482,6 +482,8 @@ export const LIMITS = Object.freeze({
   maxRules: 5000,
   maxWhitelists: 2000,
   maxConditionsPerRule: 250,
+  maxConditionNodesPerRule: 1000,
+  maxConditionNodesPerBundle: 25_000,
   maxNestingDepth: 12,
   maxRegexLength: 1000,
   maxValueLength: 8192,

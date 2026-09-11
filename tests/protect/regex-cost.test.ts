@@ -14,9 +14,9 @@ import {
  * Regression coverage for the rules this package compiles in, and nothing wider. It does not screen a
  * rule delivered from the rules service, and does not stand between an authored rule and being served.
  *
- * `safeRegExp()` refuses exponential shapes and accepts the polynomial one — two sibling quantified
- * atoms separated by a literal both admit. The shape cannot be refused by reading a pattern, since a
- * check strict enough to catch it refuses linear patterns too, so it is measured here instead.
+ * `safeRegExp()` refuses exponential shapes and adjacent unbounded atoms. The measurement remains a
+ * corpus gate for more subtle polynomial interactions that a structural check cannot classify without
+ * rejecting useful linear patterns too.
  *
  * Rejection, not matching: a match returns at its first success and pays none of the backtracking.
  * Every candidate is therefore built so the pattern cannot match it, and a candidate that does match
@@ -27,7 +27,7 @@ import {
 const OVERLAPPING = "/\\bpostgres:\\/\\/[A-Za-z0-9:._-]+:[A-Za-z0-9:._-]+@/i";
 const DISJOINT = "/\\bpostgres:\\/\\/[A-Za-z0-9._-]+:[A-Za-z0-9:._-]+@/i";
 
-/** Two sibling quantifiers and no group: accepted by `safeRegExp`, and does not finish at this size. */
+/** Two sibling quantifiers and no group: a reference shape that does not finish at this size. */
 const UNBOUNDED = '/a+b+c/';
 
 /** The default response screening cap. `max_bytes` raises it and `bypass_limit` removes it. */

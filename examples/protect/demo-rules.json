@@ -119,7 +119,7 @@
       "category": "pii-exposure",
       "action": "redact",
       "rule_v2": [
-        { "parameter": "response.body", "match": { "type": "regex", "value": "/[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\\.[A-Za-z]{2,}/" } }
+        { "parameter": "response.body", "match": { "type": "regex", "value": "/[A-Za-z0-9._%+-]+@[A-Za-z0-9-]+(?:\\.[A-Za-z0-9-]+){0,8}\\.[A-Za-z]{2,}/" } }
       ],
       "_demo": {
         "desc": "An endpoint returns a user's email; the address is masked",
