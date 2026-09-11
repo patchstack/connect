@@ -1,8 +1,9 @@
 // Shared helpers for the `patchstack-connect protect` scaffolder (adapters + orchestrator).
 
-import { readFileSync, existsSync, writeFileSync } from 'node:fs';
+import { readFileSync, existsSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { writeProjectFileSync } from '../../safe-file.js';
 
 export const read = (p: string): string => readFileSync(p, 'utf8');
 export const log = (msg: string): void => console.log(`patchstack protect: ${msg}`);
@@ -96,7 +97,7 @@ export function bakeSiteUuid(cwd: string, guardRelPath: string): boolean {
     return false;
   }
 
-  writeFileSync(guardPath, source.replace(SITE_UUID_PLACEHOLDER, uuid));
+  writeProjectFileSync(cwd, guardPath, source.replace(SITE_UUID_PLACEHOLDER, uuid), { encoding: 'utf8' });
   log(`baked site UUID into ${guardRelPath} — live rules from the Patchstack API`);
   return true;
 }

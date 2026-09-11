@@ -5,10 +5,11 @@
 // scaffolds src/integrations/patchstack/{guard.ts,rules.json}, and bakes the site UUID.
 // Idempotent + upgrades in place via the managed `#region` blocks.
 
-import { writeFileSync, existsSync, mkdirSync, copyFileSync } from 'node:fs';
+import { existsSync } from 'node:fs';
 import { join } from 'node:path';
 import { bakeSiteUuid, read, log, templatesDir } from '../util.js';
 import type { Adapter, WireOptions, WireResult, VerifyResult } from '../types.js';
+import { copyProjectFileSync, ensureProjectDirectorySync, writeProjectFileSync } from '../../../safe-file.js';
 
 const CLIENT_TUNNEL = [
   '',
@@ -114,18 +115,18 @@ const GUARD_FILE = 'src/integrations/patchstack/guard.ts';
 function scaffold(cwd: string, opts: WireOptions): string[] {
   const templates = templatesDir();
   const dst = join(cwd, 'src/integrations/patchstack');
-  mkdirSync(dst, { recursive: true });
-  copyFileSync(join(templates, 'guard.ts'), join(dst, 'guard.ts')); // guard.ts is managed — always refreshed
+  ensureProjectDirectorySync(cwd, dst);
+  copyProjectFileSync(cwd, join(templates, 'guard.ts'), join(dst, 'guard.ts')); // guard.ts is managed — always refreshed
   const changed = [GUARD_FILE];
   const rulesDst = join(dst, 'rules.json');
   // Default: the high-precision starter, written only if absent (don't clobber the user's rules on
   // re-run). --demo: (re)seed the broad multi-class sample bundle for a self-contained demonstration.
   if (opts.demo) {
-    copyFileSync(join(templates, 'demo-rules.json'), rulesDst);
+    copyProjectFileSync(cwd, join(templates, 'demo-rules.json'), rulesDst);
     changed.push('src/integrations/patchstack/rules.json');
     log('scaffolded guard.ts + rules.json (demo sample rule set)');
   } else if (!existsSync(rulesDst)) {
-    copyFileSync(join(templates, 'rules.json'), rulesDst);
+    copyProjectFileSync(cwd, join(templates, 'rules.json'), rulesDst);
     changed.push('src/integrations/patchstack/rules.json');
     log('scaffolded guard.ts + rules.json (starter rules)');
   } else {
@@ -146,7 +147,7 @@ function patchClient(cwd: string): boolean {
     log('client.ts anchor not found — skipping (template changed?)');
     return false;
   }
-  writeFileSync(p, s.replace(anchor, anchor + '\n' + CLIENT_TUNNEL));
+  writeProjectFileSync(cwd, p, s.replace(anchor, anchor + '\n' + CLIENT_TUNNEL), { encoding: 'utf8' });
   log('patched client.ts (tunnel Supabase through the guard)');
   return true;
 }
@@ -196,7 +197,7 @@ function patchStart(cwd: string): boolean {
     log('start.ts already wired');
     return false;
   }
-  writeFileSync(p, s);
+  writeProjectFileSync(cwd, p, s, { encoding: 'utf8' });
   log('patched start.ts (guard registered as request + function middleware)');
   return true;
 }

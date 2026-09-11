@@ -8,8 +8,9 @@
 // A manual/legacy install (any other reference to the widget script) is always
 // left untouched — we never convert or duplicate someone's hand-rolled tag.
 
-import { existsSync, readFileSync, writeFileSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import path from 'node:path';
+import { writeProjectFileSync } from './safe-file.js';
 
 export const WIDGET_SCRIPT_URL = 'https://cdn.patchstack.com/patchstack-widget.js';
 
@@ -137,7 +138,7 @@ export function ensureSourceWidget(
   const before = readFileSync(file, 'utf8');
   const { html, action } = ensureWidgetInHtml(before, siteUuid);
   if (html !== before) {
-    writeFileSync(file, html);
+    writeProjectFileSync(cwd, file, html, { encoding: 'utf8' });
   }
   return { shell, action };
 }
