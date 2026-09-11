@@ -269,14 +269,32 @@ export function hasJsxShell(framework: string | null): boolean {
  * It stays an inline document script rather than a module-level assignment: the
  * widget tag is `defer`, and only a parser-executed inline script is ordered
  * ahead of it for certain.
+ *
+ * `checksum` carries the build fingerprint, and without it the marker can say a
+ * site is live but not WHICH build is live — which is the question the dashboard
+ * actually grades on. A server-rendered app whose page carried only the live flag
+ * reported as "deploy state unknown" no matter how healthy it was, because the one
+ * value that answers it is stamped into built HTML that this stack never produces.
+ *
+ * `scan` is a pre-build hook, so the value it has is the checksum of the manifest
+ * it is posting in the same run — which is exactly the build about to be compiled.
+ * Omitted when there is none to give, and when the snippet is printed for somebody
+ * to paste, where a pasted fingerprint would go stale the next time deps changed.
  */
-export function buildSourceMarkerSnippet(framework: string | null): string {
+export function buildSourceMarkerSnippet(
+  framework: string | null,
+  checksum: string | null = null,
+): string {
   const gate = productionGate(framework);
+  const statements = ['window.__PATCHSTACK_PROD__=true;'];
+  if (checksum !== null && checksum !== '') {
+    statements.push(`window.__PATCHSTACK_BUILD__=${JSON.stringify(checksum)};`);
+  }
   return (
     `{${gate} && (\n` +
     `  <script\n` +
     `    ${MARKER_ATTR}="true"\n` +
-    `    dangerouslySetInnerHTML={{ __html: 'window.__PATCHSTACK_PROD__=true;' }}\n` +
+    `    dangerouslySetInnerHTML={{ __html: '${statements.join('')}' }}\n` +
     `  />\n` +
     `)}`
   );
@@ -389,7 +407,11 @@ function findJsxShellAnchor(source: string, tagName: 'head' | 'body'): JsxShellA
  * in source. A marker the developer placed themselves is adopted rather than
  * duplicated.
  */
-export function ensureMarkerInJsxShell(source: string, framework: string | null): SourceMarkerResult {
+export function ensureMarkerInJsxShell(
+  source: string,
+  framework: string | null,
+  checksum: string | null = null,
+): SourceMarkerResult {
   if (!hasJsxShell(framework)) {
     return { source, action: 'unsupported' };
   }
@@ -400,7 +422,7 @@ export function ensureMarkerInJsxShell(source: string, framework: string | null)
   }
 
   const block = (indent: string): string =>
-    [REGION_OPEN, ...buildSourceMarkerSnippet(framework).split('\n'), REGION_CLOSE]
+    [REGION_OPEN, ...buildSourceMarkerSnippet(framework, checksum).split('\n'), REGION_CLOSE]
       .map((line) => `${indent}${line}`)
       .join('\n');
 
@@ -434,13 +456,14 @@ export function ensureSourceMarker(
   cwd: string,
   shell: string | null,
   framework: string | null,
+  checksum: string | null = null,
 ): EnsureSourceMarkerResult {
   if (shell === null) {
     return { shell: null, source: '', action: 'no-anchor' };
   }
   const file = path.resolve(cwd, shell);
   const before = readFileSync(file, 'utf8');
-  const result = ensureMarkerInJsxShell(before, framework);
+  const result = ensureMarkerInJsxShell(before, framework, checksum);
   if (result.source !== before) {
     writeFileSync(file, result.source);
   }

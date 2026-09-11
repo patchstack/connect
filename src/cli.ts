@@ -717,7 +717,10 @@ async function runScan(
   // gets its production flag. --dry-run has already returned by here.
   const shellFramework = detectStack(payload.packages).framework;
   if (config.widget) {
-    reportSourceMarker(shellFramework);
+    // The checksum of the manifest this run is posting — on a pre-build hook that is the build about
+    // to be compiled. Without it a server-rendered app's page says it is live but not which build is,
+    // which is the question the dashboard grades on.
+    reportSourceMarker(shellFramework, computeManifestChecksum(payload.packages));
   }
 
   const provisioning = config.siteUuid === null;
@@ -889,7 +892,7 @@ function reportSourceWidget(siteUuid: string, framework: string | null): void {
  * follows. On a server-rendered root that is the only way the marker reaches
  * production — `mark-build` runs after the build and has no HTML to stamp.
  */
-function reportSourceMarker(framework: string | null): void {
+function reportSourceMarker(framework: string | null, checksum: string | null = null): void {
   try {
     const shell = resolveWidgetFileHint(process.cwd(), framework);
     if (shell === null || shell.toLowerCase().endsWith('.html')) {
@@ -897,7 +900,7 @@ function reportSourceMarker(framework: string | null): void {
       return;
     }
 
-    const result = ensureSourceMarker(process.cwd(), shell, framework);
+    const result = ensureSourceMarker(process.cwd(), shell, framework, checksum);
     switch (result.action) {
       case 'added':
         console.log(`Production marker: added to ${shell} (guarded by ${productionGate(framework)}).`);

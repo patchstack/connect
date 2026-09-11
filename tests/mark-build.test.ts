@@ -219,6 +219,57 @@ describe('productionGate', () => {
   });
 });
 
+describe('buildSourceMarkerSnippet with a build fingerprint', () => {
+  it('carries the fingerprint, which is what names WHICH build is live', () => {
+    // Without it the marker says a site is live but not what it is running, and the dashboard grades
+    // on the second question. A server-rendered app has no built HTML for mark-build to stamp, so
+    // this snippet is the only path the fingerprint has to production on those stacks.
+    const snippet = buildSourceMarkerSnippet('tanstack-start', 'ac749db1ff30');
+    expect(snippet).toContain('window.__PATCHSTACK_PROD__=true;');
+    expect(snippet).toContain('window.__PATCHSTACK_BUILD__="ac749db1ff30";');
+  });
+
+  it('omits it when there is none to give', () => {
+    const snippet = buildSourceMarkerSnippet('tanstack-start');
+    expect(snippet).toContain('__PATCHSTACK_PROD__');
+    expect(snippet).not.toContain('__PATCHSTACK_BUILD__');
+  });
+
+  it('keeps the fingerprint behind the production gate too', () => {
+    const snippet = buildSourceMarkerSnippet('tanstack-start', 'ac749db1ff30');
+    expect(snippet.indexOf('import.meta.env.PROD')).toBeLessThan(snippet.indexOf('__PATCHSTACK_BUILD__'));
+  });
+
+  it('stays parseable TSX with a fingerprint in it', () => {
+    const source = `export const Root = () => (\n  <html>\n    <head>\n      ${buildSourceMarkerSnippet('tanstack-start', 'ac749db1ff30')}\n    </head>\n    <body />\n  </html>\n);`;
+    const parsed = ts.createSourceFile('root.tsx', source, ts.ScriptTarget.ESNext, true, ts.ScriptKind.TSX);
+    expect(parsed.parseDiagnostics ?? []).toHaveLength(0);
+  });
+});
+
+describe('ensureMarkerInJsxShell with a build fingerprint', () => {
+  const doc = (body: string): string =>
+    `export const Root = () => (\n  <html>\n    <head>\n${body}\n    </head>\n    <body />\n  </html>\n);`;
+
+  it('refreshes a stale fingerprint in place rather than stacking a second block', () => {
+    // scan runs on every build, so the value changes whenever the lockfile does. The managed region
+    // has to carry the current one — a stale fingerprint would report the wrong build as live.
+    const first = ensureMarkerInJsxShell(doc('      <title>t</title>'), 'tanstack-start', 'aaaaaaaaaaaa');
+    const second = ensureMarkerInJsxShell(first.source, 'tanstack-start', 'bbbbbbbbbbbb');
+
+    expect(second.action).toBe('added');
+    expect(second.source).toContain('__PATCHSTACK_BUILD__="bbbbbbbbbbbb"');
+    expect(second.source).not.toContain('aaaaaaaaaaaa');
+    expect((second.source.match(/#region patchstack/g) ?? []).length).toBe(1);
+  });
+
+  it('is byte-identical when the fingerprint has not moved', () => {
+    const first = ensureMarkerInJsxShell(doc('      <title>t</title>'), 'tanstack-start', 'aaaaaaaaaaaa');
+    const second = ensureMarkerInJsxShell(first.source, 'tanstack-start', 'aaaaaaaaaaaa');
+    expect(second.source).toBe(first.source);
+  });
+});
+
 describe('hasJsxShell', () => {
   it('is true for React-family roots and false otherwise', () => {
     expect(hasJsxShell('tanstack-start')).toBe(true);
