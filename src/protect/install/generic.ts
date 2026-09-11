@@ -3,11 +3,12 @@
 // provide a `--check` verifier — so the builder's own agent can finish the wiring and confirm it,
 // entirely through the CLI (no server, no hosted infra).
 
-import { readFileSync, existsSync, mkdirSync, copyFileSync, readdirSync, lstatSync } from 'node:fs';
+import { readFileSync, existsSync, readdirSync, lstatSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { bakeSiteUuid, read, templatesDir } from './util.js';
 import type { WireOptions, VerifyResult } from './types.js';
 import type { GuardModuleQuery } from './source-scope.js';
+import { copyProjectFileSync, ensureProjectDirectorySync } from '../../safe-file.js';
 import {
   stripComments,
   maskStringContents,
@@ -102,14 +103,14 @@ export function scaffoldGeneric(
   const templates = templatesDir();
   const dir = genericDir(cwd);
   const dst = join(cwd, dir);
-  mkdirSync(dst, { recursive: true });
-  copyFileSync(join(templates, guardTemplate), join(dst, guardFile));
+  ensureProjectDirectorySync(cwd, dst);
+  copyProjectFileSync(cwd, join(templates, guardTemplate), join(dst, guardFile));
   const guardRel = `${dir}/${guardFile}`;
   const changed = [guardRel];
   if (!opts.demo) bakeSiteUuid(cwd, guardRel);
   const rulesDst = join(dst, 'rules.json');
   if (opts.demo || !existsSync(rulesDst)) {
-    copyFileSync(join(templates, opts.demo ? 'demo-rules.json' : 'rules.json'), rulesDst);
+    copyProjectFileSync(cwd, join(templates, opts.demo ? 'demo-rules.json' : 'rules.json'), rulesDst);
     changed.push(`${dir}/rules.json`);
   }
   return { changed, dir };

@@ -1,8 +1,9 @@
-import { existsSync, readFileSync, readdirSync, realpathSync, statSync, writeFileSync } from 'node:fs';
+import { existsSync, readFileSync, readdirSync, realpathSync, statSync } from 'node:fs';
 import path from 'node:path';
 
 import { isEmptyStack, type StackDescriptor } from './stack.js';
 import type { Environment } from './types.js';
+import { writeProjectFileSync } from './safe-file.js';
 
 /** Attribute that tags our injected <script> so re-runs replace it instead of stacking. */
 export const MARKER_ATTR = 'data-patchstack-build';
@@ -465,7 +466,7 @@ export function ensureSourceMarker(
   const before = readFileSync(file, 'utf8');
   const result = ensureMarkerInJsxShell(before, framework, checksum);
   if (result.source !== before) {
-    writeFileSync(file, result.source);
+    writeProjectFileSync(cwd, file, result.source, { encoding: 'utf8' });
   }
   return { ...result, shell };
 }

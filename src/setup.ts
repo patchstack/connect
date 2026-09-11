@@ -1,9 +1,10 @@
-import { readFileSync, writeFileSync } from 'node:fs';
+import { readFileSync } from 'node:fs';
 import path from 'node:path';
 
 import type { PackageManager } from './guide.js';
 import { runProtect, runVerify } from './protect/install/index.js';
 import type { ProtectResult, VerifyReport } from './protect/install/types.js';
+import { writeProjectFileSync } from './safe-file.js';
 
 const SCAN_COMMAND = 'patchstack-connect scan';
 const MARK_BUILD_COMMAND = 'patchstack-connect mark-build';
@@ -126,7 +127,7 @@ export function wireBuildScripts(
   const indentMatch = raw.match(/^[\t ]+(?=")/m)?.[0];
   const indent = indentMatch?.includes('\t') ? '\t' : indentMatch?.length ?? 2;
   const trailingNewline = raw.endsWith('\n') ? '\n' : '';
-  writeFileSync(target, `${JSON.stringify(pkg, null, indent)}${trailingNewline}`, 'utf8');
+  writeProjectFileSync(cwd, target, `${JSON.stringify(pkg, null, indent)}${trailingNewline}`, { encoding: 'utf8' });
 
   if (build === undefined || build.trim().length === 0) {
     return {
