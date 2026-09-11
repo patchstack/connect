@@ -65,8 +65,8 @@ export interface Config {
   endpoint: string;
   /**
    * Whether the endpoint came from an operator-controlled source. `false` means a committed project
-   * file selected a custom endpoint, so credentials are withheld until the operator overrides it via
-   * the command line or environment. Optional for callers that construct Config directly.
+   * file selected a custom endpoint, so network use waits until the operator overrides it via the
+   * command line or environment. Optional for callers that construct Config directly.
    */
   endpointTrusted?: boolean;
   timeoutMs: number;

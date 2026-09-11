@@ -6,6 +6,7 @@ import { DEFAULT_ENDPOINT, DEFAULT_TIMEOUT_MS } from './client.js';
 import { detectHostedBuilder, inferEnvironment } from './environment.js';
 import { detectSiteUrl, normaliseSiteUrl } from './site-url.js';
 import { detectSiteName, normaliseSiteName } from './site-name.js';
+import { isCanonicalUuid, safeRemoteUrl } from './endpoint-policy.js';
 
 const CONFIG_FILENAME = '.patchstackrc.json';
 
@@ -143,14 +144,21 @@ export async function resolveConfig(options: ResolveConfigOptions): Promise<Conf
     fromFile.siteUuid ??
     null;
 
-  const endpoint =
+  const endpointRaw =
     options.cliEndpoint ??
     fromEnv.endpoint ??
     fromFile.endpoint ??
     DEFAULT_ENDPOINT;
   const endpointTrusted =
-    endpoint === DEFAULT_ENDPOINT || options.cliEndpoint !== undefined || fromEnv.endpoint !== undefined ||
+    endpointRaw === DEFAULT_ENDPOINT || options.cliEndpoint !== undefined || fromEnv.endpoint !== undefined ||
     fromFile.endpoint === undefined;
+  const endpoint = safeRemoteUrl(endpointRaw);
+  if (endpoint === null) {
+    throw new PatchstackError(
+      'Patchstack endpoints must be valid HTTPS URLs, except for localhost development endpoints.',
+      'CONFIG_INVALID',
+    );
+  }
 
   const timeoutMs = fromEnv.timeoutMs ?? fromFile.timeoutMs ?? DEFAULT_TIMEOUT_MS;
 
@@ -174,7 +182,7 @@ export async function resolveConfig(options: ResolveConfigOptions): Promise<Conf
   const environment: Environment = environmentRaw ?? inferred!.environment;
   const environmentEvidence: string[] = inferred?.evidence ?? [];
 
-  if (siteUuid !== null && siteUuid.length > 0 && !isUuid(siteUuid)) {
+  if (siteUuid !== null && siteUuid.length > 0 && !isCanonicalUuid(siteUuid)) {
     throw new PatchstackError(
       `Site UUID "${siteUuid}" does not look like a valid UUID.`,
       'CONFIG_INVALID',
@@ -549,10 +557,6 @@ function readEnv(): ConfigFile {
     environment:
       environmentRaw !== undefined && environmentRaw.length > 0 ? environmentRaw : undefined,
   };
-}
-
-function isUuid(value: string): boolean {
-  return /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(value);
 }
 
 function isEnvironment(value: string): value is Environment {

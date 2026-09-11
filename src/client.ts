@@ -10,6 +10,15 @@ import { detectHostingPlatform } from './hosting.js';
 import { pulseFetch } from './pulse-token.js';
 import { canonicalBuildId } from './build-id.js';
 import type { EnvLike } from './stack.js';
+import { readBoundedJson, readBoundedText } from './bounded-response.js';
+import {
+  assertConnectableEndpoint,
+  isCanonicalUuid,
+  isCredential,
+  isHeaderValue,
+  safeDisplayString,
+  safeRemoteUrl,
+} from './endpoint-policy.js';
 
 export const DEFAULT_ENDPOINT = 'https://api.patchstack.com/monitor/pulse/manifest';
 export const DEFAULT_TIMEOUT_MS = 30_000;
@@ -19,7 +28,7 @@ export const CLAIM_TOKEN_HEADER = 'X-Patchstack-Claim-Token';
 
 /** The claim-token header for a manifest push, or `{}` when none is configured. */
 export function claimTokenHeader(config: Config): Record<string, string> {
-  return typeof config.claimToken === 'string' && config.claimToken !== ''
+  return config.endpointTrusted !== false && isHeaderValue(config.claimToken)
     ? { [CLAIM_TOKEN_HEADER]: config.claimToken }
     : {};
 }
@@ -35,8 +44,8 @@ export function claimOutcomeLines(claim: ManifestClaimOutcome | undefined, confi
   if (typeof config.claimToken !== 'string' || config.claimToken === '') return [];
 
   if (claim?.state === 'claimed' || claim?.state === 'owned-by-you') {
-    const dashboard =
-      typeof claim.dashboard_url === 'string' && claim.dashboard_url !== '' ? [`Dashboard: ${claim.dashboard_url}`] : [];
+    const dashboardUrl = safeRemoteUrl(claim.dashboard_url);
+    const dashboard = dashboardUrl === null ? [] : [`Dashboard: ${dashboardUrl}`];
     return [
       claim.state === 'claimed'
         ? 'Connected to your Patchstack account.'
@@ -214,7 +223,7 @@ export async function postInputMap(
     if (!response.ok) {
       return { result: 'failed', message: `Patchstack returned ${response.status}.` };
     }
-    const body = (await response.json()) as { result?: string; revision?: number };
+    const body = (await readBoundedJson(response)) as { result?: string; revision?: number };
     // The revision is part of the contract, not decoration: "stored, revision 0" is not a state the server
     // can be in, so accepting it would report a successful upload that cannot be pointed at afterwards.
     const revision = Number(body.revision);
@@ -279,9 +288,9 @@ export async function postPackageRemoved(config: Config): Promise<PackageRemoved
     if (!response.ok) {
       return { result: 'failed', message: `Patchstack returned ${response.status}.` };
     }
-    const body = (await response.json()) as { status?: string; message?: string };
+    const body = (await readBoundedJson(response)) as { status?: string; message?: unknown };
     if (body.status === 'deleted' || body.status === 'flagged') {
-      return { result: body.status, message: body.message ?? null };
+      return { result: body.status, message: safeDisplayString(body.message) };
     }
     return { result: 'failed', message: 'Patchstack returned an unexpected response.' };
   } catch {
@@ -311,6 +320,7 @@ export async function fetchSiteStatus(config: Config): Promise<SiteStatus> {
   url.searchParams.set('t', Date.now().toString());
 
   try {
+    assertConnectableEndpoint(config, url.toString());
     const response = await fetch(url.toString(), {
       method: 'GET',
       headers: {
@@ -374,6 +384,53 @@ function validationFields(body: unknown): string[] {
   return Object.keys(errors);
 }
 
+function manifestResponse(body: unknown, provisioning: boolean): StoreManifestResponse | null {
+  if (typeof body !== 'object' || body === null || Array.isArray(body)) return null;
+  const value = body as Record<string, unknown>;
+  if (typeof value.stored !== 'boolean') return null;
+
+  const uuid = value.uuid === undefined ? undefined : isCanonicalUuid(value.uuid) ? value.uuid : null;
+  if (uuid === null || (provisioning && uuid === undefined)) return null;
+  if (value.api_key !== undefined && !isCredential(value.api_key)) return null;
+  if (
+    value.manifest_id !== undefined &&
+    (!Number.isInteger(value.manifest_id) || Number(value.manifest_id) <= 0)
+  ) return null;
+
+  const claimValue = value.claim;
+  let claim: ManifestClaimOutcome | undefined;
+  if (claimValue !== undefined) {
+    if (typeof claimValue !== 'object' || claimValue === null || Array.isArray(claimValue)) return null;
+    const raw = claimValue as Record<string, unknown>;
+    if (!['claimed', 'owned-by-you', 'owned-by-other', 'rejected'].includes(String(raw.state))) return null;
+    const dashboardUrl = raw.dashboard_url === undefined || raw.dashboard_url === null
+      ? null
+      : safeRemoteUrl(raw.dashboard_url);
+    if (raw.dashboard_url !== undefined && raw.dashboard_url !== null && dashboardUrl === null) return null;
+    claim = {
+      state: raw.state as ManifestClaimOutcome['state'],
+      ...(Number.isInteger(raw.site_id) ? { site_id: Number(raw.site_id) } : {}),
+      ...(dashboardUrl !== null ? { dashboard_url: dashboardUrl } : {}),
+      ...(raw.reason === 'expired' || raw.reason === 'invalid' ? { reason: raw.reason } : {}),
+    };
+  }
+
+  const result: StoreManifestResponse = {
+    stored: value.stored,
+    ...(uuid !== undefined ? { uuid } : {}),
+    ...(typeof value.api_key === 'string' ? { api_key: value.api_key } : {}),
+    ...(Number.isInteger(value.manifest_id) ? { manifest_id: Number(value.manifest_id) } : {}),
+    ...(safeDisplayString(value.checksum, 256) !== null
+      ? { checksum: safeDisplayString(value.checksum, 256)! }
+      : {}),
+    ...(safeDisplayString(value.reason) !== null ? { reason: safeDisplayString(value.reason)! } : {}),
+    ...(safeDisplayString(value.message) !== null ? { message: safeDisplayString(value.message)! } : {}),
+    ...(safeDisplayString(value.error) !== null ? { error: safeDisplayString(value.error)! } : {}),
+    ...(claim !== undefined ? { claim } : {}),
+  };
+  return result;
+}
+
 /**
  * Whether a manifest was refused because the server does not accept the environment label it carried.
  *
@@ -433,6 +490,8 @@ export async function postManifest(
   const url = buildEndpointUrl(config.endpoint, config.siteUuid);
   const timeoutMs = config.timeoutMs;
 
+  assertConnectableEndpoint(config, url);
+
   let response: Response;
   try {
     // Unauthenticated on the bootstrap POST: there is no credential until this
@@ -463,27 +522,30 @@ export async function postManifest(
     );
   }
 
-  const text = await response.text();
-  let body: StoreManifestResponse | null = null;
+  let text = '';
+  let parsed: unknown = null;
   try {
-    body = text.length > 0 ? (JSON.parse(text) as StoreManifestResponse) : null;
+    text = await readBoundedText(response);
+    parsed = text.length > 0 ? JSON.parse(text) : null;
   } catch {
-    body = null;
+    parsed = null;
   }
+
+  const body = manifestResponse(parsed, config.siteUuid === null);
 
   if (response.status === 404) {
     throw new PatchstackError(
-      body?.error ?? 'Site not found. Check that your site UUID is correct and that the app is registered as a Pulse app in your Patchstack dashboard.',
+      safeDisplayString((parsed as { error?: unknown } | null)?.error) ?? 'Site not found. Check that your site UUID is correct and that the app is registered as a Pulse app in your Patchstack dashboard.',
       'SITE_NOT_FOUND',
     );
   }
 
   if (response.status === 422) {
     const refused = new PatchstackError(
-      body?.message ?? 'Patchstack rejected the manifest payload (validation failed).',
+      safeDisplayString((parsed as { message?: unknown } | null)?.message) ?? 'Patchstack rejected the manifest payload (validation failed).',
       'VALIDATION_ERROR',
     );
-    refused.fields = validationFields(body);
+    refused.fields = validationFields(parsed);
     throw refused;
   }
 
@@ -494,13 +556,13 @@ export async function postManifest(
 
   if (response.status < 200 || response.status >= 300) {
     throw new PatchstackError(
-      `Patchstack returned ${response.status}: ${text.slice(0, 200)}`,
+      `Patchstack returned ${response.status}: ${safeDisplayString(text, 200) ?? 'no response details'}`,
       'SERVER_ERROR',
     );
   }
 
   if (body === null) {
-    throw new PatchstackError('Patchstack returned an empty response.', 'SERVER_ERROR');
+    throw new PatchstackError('Patchstack returned an unexpected response.', 'SERVER_ERROR');
   }
 
   return body;

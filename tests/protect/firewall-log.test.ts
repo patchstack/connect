@@ -22,6 +22,11 @@ describe('parseApiKey / resolveApiBase', () => {
     delete process.env.PATCHSTACK_API_BASE;
     expect(resolveApiBase('https://x.test/monitor/pulse')).toBe('https://x.test');
   });
+
+  it('falls back when an inherited endpoint does not use an accepted origin', () => {
+    delete process.env.PATCHSTACK_API_BASE;
+    expect(resolveApiBase('http://remote.example/monitor/pulse')).toBe('https://api.patchstack.com');
+  });
 });
 
 describe('createFirewallLogReporter (connector /api/logs/log)', () => {

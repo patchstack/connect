@@ -1,5 +1,7 @@
 import type { Config } from './types.js';
 import { isSafeOrigin } from './protect/safe-origin.js';
+import { assertConnectableEndpoint, isHeaderValue } from './endpoint-policy.js';
+import { readBoundedJson } from './bounded-response.js';
 
 /**
  * Bearer tokens for the authenticated Pulse endpoints (ADR-0018).
@@ -116,8 +118,8 @@ export async function getPulseToken(
 
       if (!response.ok) return null;
 
-      const body = (await response.json()) as { access_token?: unknown; expires_in?: unknown };
-      if (typeof body.access_token !== 'string' || body.access_token.length === 0) return null;
+      const body = (await readBoundedJson(response)) as { access_token?: unknown; expires_in?: unknown };
+      if (!isHeaderValue(body.access_token)) return null;
 
       const expiresIn = Number(body.expires_in);
       const ttlMs = Number.isFinite(expiresIn) && expiresIn > 0 ? expiresIn * 1000 : 3600_000;
@@ -165,6 +167,8 @@ export async function pulseFetch(
   init: RequestInit,
   fetchImpl: typeof fetch = fetch,
 ): Promise<Response> {
+  assertConnectableEndpoint(config, url);
+
   const send = async () => {
     const auth = await pulseAuthHeader(config, fetchImpl);
     const response = await fetchImpl(url, {
