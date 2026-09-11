@@ -52,6 +52,35 @@ describe('validateBundle', () => {
     expect(rejected[0].reason).toMatch(/maxRules/);
   });
 
+  it('caps total condition nodes even when every nested array is individually small', () => {
+    const leaves = Array.from(
+      { length: LIMITS.maxConditionsPerRule },
+      () => ({ parameter: 'raw', match: { type: 'contains', value: 'x' } }),
+    );
+    const groups = Array.from(
+      { length: Math.ceil((LIMITS.maxConditionNodesPerRule + 1) / (leaves.length + 1)) },
+      () => ({ parameter: 'rules', rules: leaves }),
+    );
+    const result = validateBundle({ firewall: [ok({ rule_v2: groups })], whitelists: [] });
+    expect(result.bundle.firewall).toHaveLength(0);
+    expect(result.rejected[0].reason).toMatch(/total condition nodes/);
+  });
+
+  it('caps condition nodes across the complete bundle', () => {
+    const leaves = Array.from(
+      { length: 249 },
+      () => ({ parameter: 'raw', match: { type: 'contains', value: 'x' } }),
+    );
+    const conditions = Array.from({ length: 4 }, () => ({ parameter: 'rules', rules: leaves }));
+    const count = Math.floor(LIMITS.maxConditionNodesPerBundle / 1000) + 1;
+    const result = validateBundle({
+      firewall: Array.from({ length: count }, (_, id) => ok({ id: `r${id}`, rule_v2: conditions })),
+      whitelists: [],
+    });
+    expect(result.bundle.firewall).toHaveLength(count - 1);
+    expect(result.rejected.at(-1)?.reason).toMatch(/bundle exceeds.*condition nodes/);
+  });
+
   it('validates whitelists too (a malformed one would suppress real rules)', () => {
     const { bundle, rejected } = validateBundle({ firewall: [], whitelists: [{ rule_id: 'r1', rule_v2: [] } as any] });
     expect(bundle.whitelists).toHaveLength(0);
@@ -76,6 +105,22 @@ describe('regex pattern length backstop', () => {
     const { safeRegExp } = _testExports as any;
     expect(safeRegExp('/' + 'a'.repeat(2000) + '/')).toBeNull();
     expect(safeRegExp('/AKIA[0-9A-Z]{16}/')).not.toBeNull();
+  });
+
+  it('refuses adjacent unbounded atoms before a delivered rule reaches evaluation', () => {
+    const { safeRegExp } = _testExports as any;
+    expect(safeRegExp('/a+b+c/')).toBeNull();
+    expect(safeRegExp('/prefix-a+b+c/')).toBeNull();
+    expect(safeRegExp('/[a:]+:[a]+/')).toBeNull();
+    expect(safeRegExp('/[a]+:[a]+/')).not.toBeNull();
+    expect(safeRegExp('/postgres:\\/\\/[A-Za-z0-9:._-]+:[A-Za-z0-9:._-]+@/i')).toBeNull();
+    expect(safeRegExp('/postgres:\\/\\/[A-Za-z0-9._-]+:[A-Za-z0-9:._-]+@/i')).not.toBeNull();
+    const result = validateBundle({
+      firewall: [ok({ rule_v2: [{ parameter: 'raw', match: { type: 'regex', value: '/a+b+c/' } }] })],
+      whitelists: [],
+    });
+    expect(result.bundle.firewall).toHaveLength(0);
+    expect(result.rejected[0].reason).toMatch(/unsafe repetition/);
   });
 });
 

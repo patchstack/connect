@@ -24,6 +24,13 @@ function restoreFetch() {
   }
 }
 
+function rulesResponse() {
+  return new Response(JSON.stringify(fixtureRules), {
+    status: 200,
+    headers: { 'content-type': 'application/json' },
+  });
+}
+
 function createReq(overrides = {}) {
   return {
     method: 'GET',
@@ -175,10 +182,7 @@ describe('Middleware', () => {
     });
 
     it('should fetch rules and create middleware', async () => {
-      mockFetch(async () => ({
-        ok: true,
-        json: async () => fixtureRules
-      }));
+      mockFetch(async () => rulesResponse());
 
       const mw = await protect({ token: 'test-token' });
 
@@ -188,10 +192,7 @@ describe('Middleware', () => {
     });
 
     it('should block requests with fetched rules', async () => {
-      mockFetch(async () => ({
-        ok: true,
-        json: async () => fixtureRules
-      }));
+      mockFetch(async () => rulesResponse());
 
       const mw = await protect({ token: 'test-token', logging: false });
       const req = createReq({ query: { search: '1 UNION SELECT *' } });
@@ -235,10 +236,7 @@ describe('Middleware', () => {
     });
 
     it('should call onScan callback', async () => {
-      mockFetch(async () => ({
-        ok: true,
-        json: async () => fixtureRules
-      }));
+      mockFetch(async () => rulesResponse());
 
       let scanData = null;
       await protect({
@@ -260,10 +258,7 @@ describe('Middleware', () => {
     });
 
     it('should lazy-initialize on first request', async () => {
-      mockFetch(async () => ({
-        ok: true,
-        json: async () => fixtureRules
-      }));
+      mockFetch(async () => rulesResponse());
 
       const mw = protectSync({ token: 'test-token' });
       const req = createReq();

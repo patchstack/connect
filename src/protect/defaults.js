@@ -170,7 +170,7 @@ export const DEFAULT_RESPONSE_RULES = [
     //
     // Accepts a real newline and a JSON-escaped one. Most traces reach a client inside a JSON error
     // body, where the newline is the two characters `\` and `n`.
-    rule_v2: [{ parameter: 'response.body', match: { type: 'regex', value: '/(?:\\n|\\\\n)\\s*at\\s+.+\\(.+:\\d+:\\d+\\)/' } }]
+    rule_v2: [{ parameter: 'response.body', match: { type: 'regex', value: '/(?:\\n|\\\\n)\\s*at\\s+\\S[^\\r\\n(]*\\((?:node:|[A-Za-z]:[\\\\/])?[^:\\r\\n]+:\\d+:\\d+\\)/' } }]
   },
   {
     id: 'resp-sql-error',

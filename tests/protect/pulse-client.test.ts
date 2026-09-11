@@ -83,6 +83,16 @@ describe('PulseRuleClient', () => {
     expect(res.firewall).toEqual([]);
   });
 
+  it('refuses a rule response whose declared size exceeds the buffer bound', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => new Response('{}', { status: 200, headers: { 'content-length': '6000000' } })),
+    );
+    const res = await new PulseRuleClient({ siteUuid: 'x' }).getRules();
+    expect(res.success).toBe(false);
+    expect(res.error).toMatch(/exceeds/);
+  });
+
   it('caches within the TTL (one fetch for two calls)', async () => {
     const fetchMock = vi.fn(async () => new Response(JSON.stringify(RULES), { status: 200 }));
     vi.stubGlobal('fetch', fetchMock);

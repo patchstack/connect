@@ -18,6 +18,92 @@ const REDOS_PATTERNS = [
   new RegExp('\\(' + GRP + '\\|' + GRP + '\\)\\s*[+*]')    // nested alternation under a quantifier
 ];
 
+// Adjacent unbounded atoms can still make rejection polynomial even without a nested group (`a+b+c`).
+// A literal delimiter resets the run only when the preceding atom cannot consume that delimiter. This
+// keeps structured patterns expressible without letting a harmless prefix conceal a risky suffix.
+function hasAdjacentUnbounded(body, flags) {
+  let previousUnboundedAtom = null;
+  for (let i = 0; i < body.length;) {
+    const start = i;
+    const ch = body[i];
+    let assertion = false;
+    let literal = null;
+    let atom = ch;
+
+    if (ch === '\\') {
+      const escaped = body[i + 1] ?? '';
+      assertion = /[bBAZz]/.test(escaped);
+      if (!/[bBAZzdswDSWnrtvf0-9pPkKxuc]/.test(escaped)) literal = escaped;
+      i += Math.min(2, body.length - i);
+      atom = body.slice(start, i);
+    } else if (ch === '[') {
+      i++;
+      while (i < body.length) {
+        if (body[i] === '\\') i += 2;
+        else if (body[i++] === ']') break;
+      }
+      atom = body.slice(start, i);
+    } else if (ch === ')') {
+      i++;
+      atom = '.'; // Conservatively treat a quantified group as capable of consuming a delimiter.
+    } else if ('(|'.includes(ch)) {
+      previousUnboundedAtom = null;
+      i++;
+      continue;
+    } else if ('^$'.includes(ch)) {
+      i++;
+      continue;
+    } else if ('?*+{}'.includes(ch)) {
+      previousUnboundedAtom = null;
+      i++;
+      continue;
+    } else {
+      if (ch !== '.') literal = ch;
+      i++;
+    }
+
+    if (assertion) continue;
+
+    let unbounded = false;
+    if (body[i] === '*' || body[i] === '+') {
+      unbounded = true;
+      i++;
+    } else if (body[i] === '{') {
+      const quantifier = /^\{\d*,\}/.exec(body.slice(i));
+      if (quantifier) {
+        unbounded = true;
+        i += quantifier[0].length;
+      }
+    }
+    if (unbounded && (body[i] === '?' || body[i] === '+')) i++;
+
+    if (unbounded && previousUnboundedAtom !== null) return true;
+    if (unbounded) {
+      previousUnboundedAtom = atom;
+    } else if (previousUnboundedAtom !== null) {
+      try {
+        const atomFlags = flags.replace(/[^iu]/g, '');
+        const complementaryClass =
+          (previousUnboundedAtom === '\\s' && atom === '\\S') ||
+          (previousUnboundedAtom === '\\S' && atom === '\\s') ||
+          (previousUnboundedAtom === '\\d' && atom === '\\D') ||
+          (previousUnboundedAtom === '\\D' && atom === '\\d') ||
+          (previousUnboundedAtom === '\\w' && atom === '\\W') ||
+          (previousUnboundedAtom === '\\W' && atom === '\\w');
+        const excludedLiteral =
+          literal !== null && !new RegExp(`^(?:${previousUnboundedAtom})$`, atomFlags).test(literal);
+        if (complementaryClass || excludedLiteral) {
+          previousUnboundedAtom = null;
+        }
+      } catch {
+        // If exclusion cannot be proved, retain the preceding atom as a conservative backstop.
+      }
+    }
+    if (i === start) i++;
+  }
+  return false;
+}
+
 // Report once when a rule's regex is rejected (ReDoS-shaped or unparseable). Unlike an unknown match
 // type, a rejected regex used to fail silently — so a delivered rule protected nothing and nobody knew.
 const warnedRejectedPatterns = new Set();
@@ -44,16 +130,15 @@ export function safeRegExp(pattern) {
     return null;
   }
 
-  for (const dangerous of REDOS_PATTERNS) {
-    if (dangerous.test(pattern)) {
-      return null;
-    }
-  }
-
   const match = pattern.match(/^\/(.+?)\/([gimsuy]*)$/s);
   if (!match) {
     return null;
   }
+
+  for (const dangerous of REDOS_PATTERNS) {
+    if (dangerous.test(match[1])) return null;
+  }
+  if (hasAdjacentUnbounded(match[1], match[2])) return null;
 
   try {
     return new RegExp(match[1], match[2]);

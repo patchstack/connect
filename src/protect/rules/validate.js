@@ -29,6 +29,7 @@ import {
   nullPropertyProblem,
   rulePropertyProblem,
 } from './contract.js';
+import { safeRegExp } from '../engine/engine.js';
 
 export const LIMITS = CONTRACT_LIMITS;
 
@@ -45,6 +46,7 @@ export function validateBundle(bundle, opts = {}) {
   const rejected = [];
   const inFirewall = Array.isArray(bundle?.firewall) ? bundle.firewall : [];
   const inWhitelists = Array.isArray(bundle?.whitelists) ? bundle.whitelists : [];
+  const bundleBudget = { count: 0 };
 
   const firewall = [];
   for (const rule of inFirewall) {
@@ -52,7 +54,7 @@ export function validateBundle(bundle, opts = {}) {
       rejected.push({ id: idOf(rule), reason: `bundle exceeds maxRules (${LIMITS.maxRules})` });
       continue;
     }
-    const reason = enforceableRuleProblem(rule);
+    const reason = enforceableRuleProblem(rule, bundleBudget);
     if (reason) rejected.push({ id: idOf(rule), reason });
     else firewall.push(rule);
   }
@@ -77,7 +79,7 @@ export function validateBundle(bundle, opts = {}) {
       rejected.push({ id: idOf(wl), reason: `whitelist may not carry ${BUILD_SCOPE_PROPERTY}` });
       continue;
     }
-    const reason = conditionsProblem(wl?.rule_v2);
+    const reason = conditionsProblem(wl?.rule_v2, 0, { count: 0 }, bundleBudget);
     if (reason) rejected.push({ id: idOf(wl), reason: `whitelist: ${reason}` });
     else whitelists.push(wl);
   }
@@ -102,7 +104,7 @@ function idOf(rule) {
  *
  * @returns {string|null} a reason the rule must be dropped, or null when it's acceptable.
  */
-export function enforceableRuleProblem(rule) {
+export function enforceableRuleProblem(rule, bundleBudget = null) {
   if (!rule || typeof rule !== 'object') return 'not an object';
 
   // Before anything reads a property: a property that is PRESENT and null is not an omission. Every layer
@@ -129,10 +131,10 @@ export function enforceableRuleProblem(rule) {
   const propertyReason = rulePropertyProblem(rule);
   if (propertyReason) return propertyReason;
 
-  return conditionsProblem(rule.rule_v2);
+  return conditionsProblem(rule.rule_v2, 0, { count: 0 }, bundleBudget);
 }
 
-function conditionsProblem(conditions, depth = 0) {
+function conditionsProblem(conditions, depth = 0, ruleBudget = { count: 0 }, bundleBudget = null) {
   if (!Array.isArray(conditions)) return 'rule_v2 must be an array of conditions';
   if (conditions.length === 0) return 'rule_v2 is empty (would never match)';
   if (depth > LIMITS.maxNestingDepth) return `nesting deeper than ${LIMITS.maxNestingDepth}`;
@@ -140,11 +142,21 @@ function conditionsProblem(conditions, depth = 0) {
     return `more than ${LIMITS.maxConditionsPerRule} conditions`;
   }
   for (const c of conditions) {
+    ruleBudget.count++;
+    if (ruleBudget.count > LIMITS.maxConditionNodesPerRule) {
+      return `more than ${LIMITS.maxConditionNodesPerRule} total condition nodes`;
+    }
+    if (bundleBudget) {
+      bundleBudget.count++;
+      if (bundleBudget.count > LIMITS.maxConditionNodesPerBundle) {
+        return `bundle exceeds ${LIMITS.maxConditionNodesPerBundle} total condition nodes`;
+      }
+    }
     const shapeReason = conditionShapeProblem(c);
     if (shapeReason) return shapeReason;
 
     if (isGroup(c)) {
-      const nested = conditionsProblem(c.rules, depth + 1);
+      const nested = conditionsProblem(c.rules, depth + 1, ruleBudget, bundleBudget);
       if (nested) return nested;
       continue; // a group carries no match of its own
     }
@@ -164,6 +176,7 @@ function conditionsProblem(conditions, depth = 0) {
     if (m.type === 'regex') {
       if (typeof m.value !== 'string') return 'regex match.value must be a string';
       if (m.value.length > LIMITS.maxRegexLength) return `regex longer than ${LIMITS.maxRegexLength} chars`;
+      if (safeRegExp(m.value) === null) return 'regex is invalid or has an unsafe repetition shape';
     } else if (typeof m.value === 'string' && m.value.length > LIMITS.maxValueLength) {
       return `match.value longer than ${LIMITS.maxValueLength} chars`;
     }
@@ -173,7 +186,12 @@ function conditionsProblem(conditions, depth = 0) {
       // The PARENT's parameter is carried down. The sub-match has none of its own — it applies to whatever
       // the key path navigated to — so validating it in isolation reported every one of them as a match
       // type missing a parameter, which would have rejected a shipped capability as malformed.
-      const nested = conditionsProblem([{ parameter: c.parameter, match: m.match }], depth + 1);
+      const nested = conditionsProblem(
+        [{ parameter: c.parameter, match: m.match }],
+        depth + 1,
+        ruleBudget,
+        bundleBudget,
+      );
       if (nested) return nested;
     }
   }

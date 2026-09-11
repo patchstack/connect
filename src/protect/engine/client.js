@@ -1,4 +1,5 @@
 import { safeBaseUrl } from '../safe-origin.js';
+import { readBoundedJson } from './response-json.js';
 
 const DEFAULT_BASE_URL = 'https://api.patchstack.com';
 const DEFAULT_CACHE_TTL = 300_000;
@@ -71,7 +72,7 @@ export class PatchstackRuleClient {
         };
       }
 
-      const data = await response.json();
+      const data = await readBoundedJson(response);
 
       // A 200 that isn't a genuine rule envelope must not be treated as "no rules". Report failure
       // so the caller falls back to the cache / bundled rules rather than caching an empty bundle.

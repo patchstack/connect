@@ -118,7 +118,7 @@ describe('the build scope the contract publishes', () => {
   it('states the firewall-only, detect-only-on-unusable contract', () => {
     const contract = ruleContract();
 
-    expect(CONTRACT_VERSION).toBe('2.9');
+    expect(CONTRACT_VERSION).toBe('2.10');
     expect(contract.build_scope).toEqual({
       applies_to: ['firewall'],
       usable: {
