@@ -1,12 +1,13 @@
 export type Ecosystem = 'npm' | 'composer';
 
 /**
- * Which environment a manifest was captured in. The connector reports from real
- * builds (prebuild scan / build hooks), so it defaults to 'production'. Override
- * with PATCHSTACK_ENVIRONMENT=sandbox (or "environment" in .patchstackrc.json)
- * for test manifests.
+ * Where a manifest was built. `production` only when the hosting platform's own discriminator says this
+ * build is the production one; `sandbox` for a preview it names as such, or a hosted builder's workspace;
+ * `local` for everything else, a developer's machine included — inventory, never evidence of a live site.
+ * Inferred when nothing sets it (see `environment.ts`); `PATCHSTACK_ENVIRONMENT` or `"environment"` in
+ * .patchstackrc.json overrides.
  */
-export type Environment = 'production' | 'sandbox';
+export type Environment = 'production' | 'sandbox' | 'local';
 
 export interface PackageEntry {
   name: string;
@@ -63,8 +64,14 @@ export interface Config {
   siteName?: string | null;
   endpoint: string;
   timeoutMs: number;
-  /** Environment to report the manifest under. Defaults to 'production'. */
+  /** Environment to report the manifest under. Inferred from the build environment when not stated. */
   environment: Environment;
+  /**
+   * What decided `environment` when nothing set it: the hosting platform's own production or preview
+   * discriminator. Empty when it was stated, and empty for `local`, which is decided by the absence of
+   * any such evidence.
+   */
+  environmentEvidence?: string[];
   /**
    * Whether the connector manages the disclosure-widget tag (source shell on
    * `scan`, built HTML on `mark-build`). Defaults to true; persist
@@ -114,6 +121,13 @@ export interface StoreManifestResponse {
 }
 
 export class PatchstackError extends Error {
+  /**
+   * For a `VALIDATION_ERROR`, the request fields the server refused, as it named them. Read from the
+   * structured `errors` object a validation response carries, so a caller deciding what to do about a
+   * refusal keys on the field rather than on the wording of a sentence.
+   */
+  public fields: readonly string[] = [];
+
   constructor(
     message: string,
     public readonly code:

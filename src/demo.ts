@@ -1,4 +1,5 @@
 import { readFile } from 'node:fs/promises';
+import type { Environment } from './types.js';
 import { join } from 'node:path';
 
 import { scanLockfile } from './parsers/index.js';
@@ -50,7 +51,7 @@ export interface DemoGuideState {
   packageManager: PackageManager;
   siteUuid: string | null;
   dependency: DemoDependencyState;
-  environment: 'production' | 'sandbox';
+  environment: Environment;
   url: string;
 }
 
@@ -162,7 +163,7 @@ export function renderDemoGuide(state: DemoGuideState): string {
       ? `npx @patchstack/connect demo ${scenario.name}`
       : `npx @patchstack/connect demo ${scenario.name} --url ${shellQuote(state.url)}`;
   const siteReady = state.siteUuid !== null;
-  const envReady = state.environment === 'production';
+  const envReady = state.environment !== 'sandbox';
   const dependencyDetail = state.dependency.ready
     ? `${scenario.packageName}@${scenario.packageVersion} is in the lockfile`
     : state.dependency.versions.length > 0
@@ -173,7 +174,7 @@ export function renderDemoGuide(state: DemoGuideState): string {
   if (!siteReady) {
     next = 'Click “Connect Patchstack” in Bolt, then run this guide again.';
   } else if (!envReady) {
-    next = 'Unset PATCHSTACK_ENVIRONMENT (or set it to production), then run this guide again.';
+    next = 'Unset PATCHSTACK_ENVIRONMENT (a local run reports as local on its own), then run this guide again.';
   } else if (!state.dependency.ready) {
     next = install;
   } else {

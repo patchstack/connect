@@ -3,6 +3,7 @@ import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { persistApiKey, persistSiteUuid, resolveConfig, writeConfigFile } from '../src/config.js';
+import { inferEnvironment } from '../src/environment.js';
 import { readFile } from 'node:fs/promises';
 import { DEFAULT_ENDPOINT, DEFAULT_TIMEOUT_MS } from '../src/client.js';
 import { PatchstackError } from '../src/types.js';
@@ -111,9 +112,18 @@ describe('resolveConfig', () => {
     });
   });
 
-  it('defaults the environment to production', async () => {
+  it('infers the environment from where it runs when nothing states it', async () => {
+    // Under CI this process is a build and infers production; on a laptop it is local. Either way
+    // the answer is the inference's, never a fixed default that calls a laptop a deployment.
     const config = await resolveConfig({ cwd, cliSiteUuid: VALID_UUID });
-    expect(config.environment).toBe('production');
+    expect(config.environment).toBe(inferEnvironment(process.env).environment);
+  });
+
+  it('reads a stated local environment', async () => {
+    process.env.PATCHSTACK_ENVIRONMENT = 'local';
+    const config = await resolveConfig({ cwd, cliSiteUuid: VALID_UUID });
+    expect(config.environment).toBe('local');
+    expect(config.environmentEvidence).toEqual([]);
   });
 
   it('reads PATCHSTACK_ENVIRONMENT from the environment', async () => {

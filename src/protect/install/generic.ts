@@ -71,6 +71,23 @@ export function genericGuardTarget(cwd: string): GenericGuardTarget {
   return { template: 'generic-guard.cjs', file: 'guard.cjs', specifier: 'guard.cjs' };
 }
 
+/**
+ * Generic-scaffold files present in a project, project-relative.
+ *
+ * Only ever asked of a project that turns out to have no request path, where these are the residue of an
+ * earlier run made before that was established. Naming them is the whole job — nothing here deletes: a
+ * file the user may since have edited, imported or committed is theirs, and a setup step that quietly
+ * removed one would be the same overreach as scaffolding it was.
+ */
+export function genericScaffoldFiles(cwd: string): string[] {
+  const dir = genericDir(cwd);
+  const candidates = ['guard.ts', 'guard.js', 'guard.cjs', 'rules.json'];
+
+  return candidates
+    .map((file) => `${dir}/${file}`)
+    .filter((relative) => existsSync(join(cwd, relative)));
+}
+
 export function scaffoldGeneric(
   cwd: string,
   opts: WireOptions,

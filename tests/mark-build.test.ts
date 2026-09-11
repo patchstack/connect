@@ -1,4 +1,4 @@
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import ts from 'typescript';
@@ -14,6 +14,8 @@ import {
   injectMarker,
   productionGate,
   resolveBuildDir,
+  buildDirCandidates,
+  outputDirFromBuildScript,
 } from '../src/mark-build.js';
 
 describe('buildInjectionSnippet', () => {
@@ -459,5 +461,92 @@ describe('ensureSourceMarker', () => {
 
     expect(ensureSourceMarker(root, shell, 'tanstack-start').action).toBe('no-anchor');
     expect(readFileSync(path.join(root, shell), 'utf8')).toBe(clean);
+  });
+});
+
+describe('resolveBuildDir (framework output directories)', () => {
+  let cwd: string;
+
+  beforeEach(() => {
+    cwd = mkdtempSync(path.join(tmpdir(), 'patchstack-build-dir-'));
+  });
+
+  afterEach(() => {
+    rmSync(cwd, { recursive: true, force: true });
+  });
+
+  it("finds Eleventy's _site by default", () => {
+    mkdirSync(path.join(cwd, '_site'));
+    expect(resolveBuildDir(cwd)).toBe(path.join(cwd, '_site'));
+  });
+
+  it("tries the framework's own output directory before the generic list", () => {
+    // A stale dist/ from another tool beside VitePress's real output.
+    mkdirSync(path.join(cwd, 'dist'));
+    mkdirSync(path.join(cwd, '.vitepress', 'dist'), { recursive: true });
+    expect(resolveBuildDir(cwd, undefined, { framework: 'vitepress' })).toBe(path.join(cwd, '.vitepress', 'dist'));
+  });
+
+  it('honours an --output the build script names', () => {
+    mkdirSync(path.join(cwd, 'public_html'));
+    expect(outputDirFromBuildScript('eleventy --output=public_html')).toBe('public_html');
+    expect(outputDirFromBuildScript('eleventy --output public_html')).toBe('public_html');
+    expect(outputDirFromBuildScript('eleventy --output "public html"')).toBe('public html');
+    expect(outputDirFromBuildScript('vite build')).toBeNull();
+    expect(resolveBuildDir(cwd, undefined, { buildScript: 'eleventy --output=public_html' })).toBe(
+      path.join(cwd, 'public_html'),
+    );
+  });
+
+  it('names every directory it would try, so the failure message can', () => {
+    expect(buildDirCandidates({ framework: 'eleventy', buildScript: 'eleventy --output=www' })).toEqual([
+      'www',
+      '_site',
+      'dist',
+      'build',
+      'out',
+      '.output/public',
+    ]);
+  });
+
+  it('never treats public/ as build output except where the framework writes there', () => {
+    mkdirSync(path.join(cwd, 'public'));
+    expect(resolveBuildDir(cwd)).toBeNull();
+    expect(resolveBuildDir(cwd, undefined, { framework: 'gatsby' })).toBe(path.join(cwd, 'public'));
+  });
+});
+
+describe('resolveBuildDir stays inside the project', () => {
+  let cwd: string;
+  let outside: string;
+
+  beforeEach(() => {
+    cwd = mkdtempSync(path.join(tmpdir(), 'patchstack-build-contain-'));
+    outside = mkdtempSync(path.join(tmpdir(), 'patchstack-build-outside-'));
+  });
+
+  afterEach(() => {
+    rmSync(cwd, { recursive: true, force: true });
+    rmSync(outside, { recursive: true, force: true });
+  });
+
+  it('refuses an --output the build script points outside the project', () => {
+    const escape = path.relative(cwd, outside);
+    expect(resolveBuildDir(cwd, undefined, { buildScript: `eleventy --output=${escape}` })).toBeNull();
+  });
+
+  it('refuses a candidate that is a symlink out of the project', () => {
+    symlinkSync(outside, path.join(cwd, 'dist'));
+    expect(resolveBuildDir(cwd)).toBeNull();
+  });
+
+  it('accepts a symlink that stays inside the project', () => {
+    mkdirSync(path.join(cwd, 'real-out'));
+    symlinkSync(path.join(cwd, 'real-out'), path.join(cwd, 'dist'));
+    expect(resolveBuildDir(cwd)).toBe(path.join(cwd, 'dist'));
+  });
+
+  it('keeps an explicit --dir as the deliberate way out', () => {
+    expect(resolveBuildDir(cwd, path.relative(cwd, outside))).toBe(outside);
   });
 });

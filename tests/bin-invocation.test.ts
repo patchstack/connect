@@ -122,7 +122,8 @@ describe.skipIf(!built)('the packaged bin, invoked as npm invokes it', () => {
       const preview = stdout.slice(stdout.indexOf('Payload preview:'));
       expect(preview).toContain('"url": "https://recipes.example.com"');
       expect(preview).toContain('"name": "Recipe Box"');
-      expect(preview).toContain('"environment": "production"');
+      expect(stdout).toContain('Reporting from this machine as the local environment');
+      expect(preview).toContain('"environment": "local"');
       expect(preview).toContain('"packages"');
     } finally {
       rmSync(project, { recursive: true, force: true });

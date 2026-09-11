@@ -2,6 +2,7 @@ import { readFile, writeFile, chmod } from 'node:fs/promises';
 import path from 'node:path';
 import { PatchstackError, type Config, type Environment } from './types.js';
 import { DEFAULT_ENDPOINT, DEFAULT_TIMEOUT_MS } from './client.js';
+import { inferEnvironment } from './environment.js';
 import { detectSiteUrl, normaliseSiteUrl } from './site-url.js';
 import { detectSiteName, normaliseSiteName } from './site-name.js';
 
@@ -21,7 +22,6 @@ const CONFIG_FILENAME = '.patchstackrc.json';
  */
 const SECRET_FILENAME = '.patchstackrc.local.json';
 
-export const DEFAULT_ENVIRONMENT: Environment = 'production';
 
 interface ConfigFile {
   siteUuid?: string;
@@ -153,11 +153,15 @@ export async function resolveConfig(options: ResolveConfigOptions): Promise<Conf
   const environmentRaw = fromEnv.environment ?? fromFile.environment;
   if (environmentRaw !== undefined && !isEnvironment(environmentRaw)) {
     throw new PatchstackError(
-      `Environment must be "production" or "sandbox"; got "${environmentRaw}".`,
+      `Environment must be "production", "sandbox" or "local"; got "${environmentRaw}".`,
       'CONFIG_INVALID',
     );
   }
-  const environment: Environment = environmentRaw ?? DEFAULT_ENVIRONMENT;
+  // Stated wins. Otherwise the process says where it is running: a deployment or CI build reports
+  // `production`, a developer's machine `local`. Nothing defaults to a deployed site any more.
+  const inferred = environmentRaw === undefined ? inferEnvironment(process.env) : null;
+  const environment: Environment = environmentRaw ?? inferred!.environment;
+  const environmentEvidence: string[] = inferred?.evidence ?? [];
 
   if (siteUuid !== null && siteUuid.length > 0 && !isUuid(siteUuid)) {
     throw new PatchstackError(
@@ -199,6 +203,7 @@ export async function resolveConfig(options: ResolveConfigOptions): Promise<Conf
     endpoint,
     timeoutMs,
     environment,
+    environmentEvidence,
     widget: fromFile.widget !== false,
     claimToken,
   };
@@ -356,6 +361,18 @@ export async function persistSiteUuid(cwd: string, siteUuid: string): Promise<st
 }
 
 /**
+ * Persist a request timeout that a report has been seen to need.
+ *
+ * Written to the committed config, deliberately: the build that runs in CI reads the same file, and a
+ * timeout proven on a developer's machine is the one thing that keeps a slow first report from failing
+ * open there — where a hooked scan continues the build and the site quietly stops reporting.
+ */
+export async function persistTimeout(cwd: string, timeoutMs: number): Promise<string> {
+  const existing = await readConfigFile(cwd);
+  return writeConfigFile(cwd, { ...existing, timeoutMs });
+}
+
+/**
  * Persist the WP-format api_key issued at provision. Authenticates both the Pulse endpoints and connector
  * log reporting. Never embed it in the public disclosure widget.
  *
@@ -482,5 +499,5 @@ function isUuid(value: string): boolean {
 }
 
 function isEnvironment(value: string): value is Environment {
-  return value === 'production' || value === 'sandbox';
+  return value === 'production' || value === 'sandbox' || value === 'local';
 }

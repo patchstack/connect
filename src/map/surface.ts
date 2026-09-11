@@ -39,12 +39,15 @@ import type { DeploymentShape, ServerSurface, SurfaceSignal, TsModule } from './
 // analysis never sees it.
 
 /** Dependencies that build a static bundle and, on their own, no server. */
-const STATIC_GENERATORS: Array<{ dep: string; label: string }> = [
+export const STATIC_GENERATORS: Array<{ dep: string; label: string }> = [
   { dep: 'vite', label: 'vite' },
   { dep: 'react-scripts', label: 'create-react-app' },
   { dep: 'gatsby', label: 'gatsby' },
   { dep: 'parcel', label: 'parcel' },
   { dep: '@sveltejs/adapter-static', label: 'sveltekit-static-adapter' },
+  { dep: '@11ty/eleventy', label: 'eleventy' },
+  { dep: '@docusaurus/core', label: 'docusaurus' },
+  { dep: 'vitepress', label: 'vitepress' },
 ];
 
 /**
@@ -55,7 +58,7 @@ const STATIC_GENERATORS: Array<{ dep: string; label: string }> = [
  * static reading and leaves the app `unknown`, which is the conservative direction for a state whose product
  * meaning is "no request-path protection needed".
  */
-const SSR_COMPANIONS = ['vike', 'vite-plugin-ssr', '@react-router/node', '@react-router/serve', 'vite-plugin-node'];
+export const SSR_COMPANIONS = ['vike', 'vite-plugin-ssr', '@react-router/node', '@react-router/serve', 'vite-plugin-node'];
 
 /**
  * Dependencies that mean a server, so a static claim is off the table.
@@ -63,7 +66,7 @@ const SSR_COMPANIONS = ['vike', 'vite-plugin-ssr', '@react-router/node', '@react
  * Deliberately wider than the framework detector: this list only has to answer "might this app serve
  * requests", and over-answering yes costs a claim we would rather not make anyway.
  */
-const SERVER_DEPENDENCIES = [
+export const SERVER_DEPENDENCIES = [
   'express', 'fastify', 'hono', 'koa', '@nestjs/core', '@hapi/hapi', 'h3', 'polka', 'restify',
   '@tanstack/react-start', '@tanstack/start', '@tanstack/solid-start', 'nuxt', 'remix',
   '@remix-run/node', '@remix-run/server-runtime',
@@ -77,12 +80,12 @@ const SERVER_DEPENDENCIES = [
  * SvelteKit project permanently `unknown` — and the test that "proved" the adapter worked installed the
  * adapter with no kit, which is not a package set anyone ships.
  */
-const CONDITIONAL_SERVER_DEPENDENCIES: Array<{ dep: string; staticWhen: string }> = [
+export const CONDITIONAL_SERVER_DEPENDENCIES: Array<{ dep: string; staticWhen: string }> = [
   { dep: '@sveltejs/kit', staticWhen: '@sveltejs/adapter-static' },
 ];
 
 /** Astro and Next ship both modes, so the adapter or the output setting decides. */
-const SSR_ADAPTERS = ['@astrojs/node', '@astrojs/vercel', '@astrojs/cloudflare', '@astrojs/netlify', '@astrojs/deno'];
+export const SSR_ADAPTERS = ['@astrojs/node', '@astrojs/vercel', '@astrojs/cloudflare', '@astrojs/netlify', '@astrojs/deno'];
 
 /** How each deployment-evidence level appears in the surface evidence list. */
 const SHAPE_SIGNAL: Record<DeploymentShape['evidence'], SurfaceSignal['signal']> = {

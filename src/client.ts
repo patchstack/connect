@@ -3,10 +3,13 @@ import {
   type Config,
   type ManifestClaimOutcome,
   type StoreManifestResponse,
+  type Environment,
 } from './types.js';
 import type { WirePayload } from './normalize.js';
+import { detectHostingPlatform } from './hosting.js';
 import { pulseFetch } from './pulse-token.js';
 import { canonicalBuildId } from './build-id.js';
+import type { EnvLike } from './stack.js';
 
 export const DEFAULT_ENDPOINT = 'https://api.patchstack.com/monitor/pulse/manifest';
 export const DEFAULT_TIMEOUT_MS = 30_000;
@@ -337,7 +340,16 @@ export async function fetchSiteStatus(config: Config): Promise<SiteStatus> {
  * so a repeated push does not re-point an address or replace a name. Both are omitted when they are not
  * strings, which is what a caller that built its own `Config` without them sends.
  */
-export function buildManifestBody(config: Config, payload: WirePayload): Record<string, unknown> {
+export function buildManifestBody(
+  config: Config,
+  payload: WirePayload,
+  env: EnvLike = process.env,
+): Record<string, unknown> {
+  // Where this build is running, when it is a deployment. A local machine has no hosting to
+  // report, and even if its shell carried a platform's variable that would describe the shell,
+  // not the site. Servers that predate the field ignore it.
+  const hosting = config.environment === 'local' ? null : detectHostingPlatform(env);
+
   return {
     ...payload,
     environment: config.environment,
@@ -345,7 +357,73 @@ export function buildManifestBody(config: Config, payload: WirePayload): Record<
     ...(typeof config.siteName === 'string' && config.siteName !== ''
       ? { name: config.siteName }
       : {}),
+    ...(hosting !== null && hosting.platform !== null ? { hosting } : {}),
   };
+}
+
+/**
+ * The request fields a validation response names as refused.
+ *
+ * A validation refusal carries an `errors` object keyed by field name, alongside the human sentence. The
+ * keys are the contract; the sentence is for people. Anything not shaped like that names no field.
+ */
+function validationFields(body: unknown): string[] {
+  if (typeof body !== 'object' || body === null) return [];
+  const errors = (body as { errors?: unknown }).errors;
+  if (typeof errors !== 'object' || errors === null || Array.isArray(errors)) return [];
+  return Object.keys(errors);
+}
+
+/**
+ * Whether a manifest was refused because the server does not accept the environment label it carried.
+ *
+ * A Patchstack API that predates the `local` label refuses a local scan on the `environment` field. The
+ * scan is still worth reporting; it just has to say `sandbox` to that server, which is the label it does
+ * have for "not the live site". Decided on the field the refusal names, never on its wording: a refusal
+ * of any other field, or one that names no field, is a real refusal.
+ */
+export function environmentRejected(err: unknown): boolean {
+  return (
+    err instanceof PatchstackError &&
+    err.code === 'VALIDATION_ERROR' &&
+    err.fields.includes('environment')
+  );
+}
+
+/**
+ * Whether a manifest post may be sent again after a timeout.
+ *
+ * Only a report for a site that already exists. The first post — no site UUID yet — is the one that
+ * provisions the site and issues its credential, and it has no idempotency key: the server may have
+ * committed before the client gave up, and a second post would provision a second site.
+ */
+export function canRetryManifestPost(config: Config): boolean {
+  return config.siteUuid !== null;
+}
+
+export interface ManifestPostResult {
+  response: StoreManifestResponse;
+  /** The label the report was accepted under — `sandbox` when the server refused `local`. */
+  environmentUsed: Environment;
+}
+
+/**
+ * Post the manifest, falling back from `local` to `sandbox` for a server that does not know `local`.
+ *
+ * Keeps the connector publishable ahead of the server change: the honest label is tried first, and the
+ * older server's nearest label is used only when it refuses, never silently on a server that accepts.
+ */
+export async function postManifestWithEnvironmentFallback(
+  config: Config,
+  payload: WirePayload,
+): Promise<ManifestPostResult> {
+  try {
+    return { response: await postManifest(config, payload), environmentUsed: config.environment };
+  } catch (err) {
+    if (config.environment !== 'local' || !environmentRejected(err)) throw err;
+    const fallback: Config = { ...config, environment: 'sandbox' };
+    return { response: await postManifest(fallback, payload), environmentUsed: 'sandbox' };
+  }
 }
 
 export async function postManifest(
@@ -401,10 +479,12 @@ export async function postManifest(
   }
 
   if (response.status === 422) {
-    throw new PatchstackError(
+    const refused = new PatchstackError(
       body?.message ?? 'Patchstack rejected the manifest payload (validation failed).',
       'VALIDATION_ERROR',
     );
+    refused.fields = validationFields(body);
+    throw refused;
   }
 
   const refused = authFailureMessage(response.status, config);

@@ -1,4 +1,7 @@
 import { readFileSync, writeFileSync } from 'node:fs';
+import path from 'node:path';
+import type { Config } from './types.js';
+import type { GuideState } from './guide.js';
 import { createRequire } from 'node:module';
 
 import { scanLockfile } from './parsers/index.js';
@@ -12,6 +15,8 @@ import {
   buildClaimUrl,
   fetchSiteStatus,
   postManifest,
+  postManifestWithEnvironmentFallback,
+  canRetryManifestPost,
   postPackageRemoved,
 } from './client.js';
 import {
@@ -33,6 +38,7 @@ import {
   persistSiteUuid,
   resolveConfig,
   writeConfigFile,
+  persistTimeout,
 } from './config.js';
 import {
   buildInjectionSnippet,
@@ -43,6 +49,7 @@ import {
   injectMarker,
   productionGate,
   resolveBuildDir,
+  buildDirCandidates,
 } from './mark-build.js';
 import {
   collectGuideState,
@@ -67,6 +74,7 @@ import { formatRuntimeCheck, runRuntimeCheck, runtimeExitCode } from './protect/
 import { runMap } from './map-command.js';
 import { getStringFlag } from './flags.js';
 import { setupProtection, wireBuildScripts } from './setup.js';
+import type { SetupProtectionResult, WireBuildScriptsResult } from './setup.js';
 import { isInstallOrBuildHook, isPreBundleBuildHook, undeliveredReportLines } from './build-hook.js';
 import { applyBuildStamp } from './build-stamp.js';
 import { detectStack, type StackDescriptor } from './stack.js';
@@ -115,7 +123,11 @@ Usage:
                                                      "Uninstalling" steps in AGENT-INSTALL.md
   patchstack-connect mark-build [options]            Stamp built HTML with a production flag +
                                                      build fingerprint, and ensure the widget
-                                                     tag in built pages (run as a postbuild step)
+                                                     tag in built pages (run as a postbuild step).
+                                                     Looks in the framework's own output dir, an
+                                                     --output the build script names, then dist/,
+                                                     build/, out/, .output/public/, _site/ — inside
+                                                     the project only. --dir <path> overrides.
   patchstack-connect protect [--demo|--check]        Install always-on runtime protection (the
                                                      guard). Auto-wires supported server stacks;
                                                      for others it scaffolds a
@@ -211,8 +223,8 @@ Environment:
   PATCHSTACK_TELEMETRY    Set to off to disable block-log reporting
   PATCHSTACK_API_BASE     API origin for /oauth/token and /api/logs/log (default: https://api.patchstack.com)
   PATCHSTACK_ENDPOINT     API endpoint (default: https://api.patchstack.com/monitor/pulse/manifest)
-  PATCHSTACK_TIMEOUT_MS   Request timeout in ms (default: 30000)
-  PATCHSTACK_ENVIRONMENT  Manifest environment: production | sandbox (default: production)
+  PATCHSTACK_TIMEOUT_MS   Request timeout in ms (default: 30000; a scan that needs longer saves what worked to .patchstackrc.json)
+  PATCHSTACK_ENVIRONMENT  Manifest label: production, sandbox or local. Unset, a deployment or CI build reports production and a developer machine reports local.
   PATCHSTACK_MODE         (protect) Runtime guard mode: block (default) | dry-run
   PATCHSTACK_ROUTE_WAF    (protect) Set to 1 to also screen every request at the route level (opt-in)
 
@@ -516,6 +528,78 @@ async function runLogin(args: ParsedArgs): Promise<number> {
   return 1;
 }
 
+/** How much longer a timed-out report is given, and the most it will ever be given. */
+const RETRY_TIMEOUT_FACTOR = 4;
+const MAX_RETRY_TIMEOUT_MS = 180_000;
+
+/**
+ * Post the manifest, and if the request times out, once more with room to finish.
+ *
+ * A first report is the slow one: the server registers the site and checks every package, and on a
+ * large manifest that outruns the default. Failing there is the worst place to fail — in a build hook the
+ * scan then fails open, the build succeeds, and the site quietly never reports. So a timeout is retried
+ * with the limit raised, and a limit that turned out to be needed is written to `.patchstackrc.json`, where
+ * the build that runs in CI reads it too. A limit nobody needed is not written: the file stays as the
+ * person left it.
+ */
+/**
+ * Post the manifest under the label the server accepts, and say so when that was not the label asked for.
+ *
+ * A server that predates the `local` label refuses it; the report then goes as `sandbox`, the nearest
+ * label that server has for "not the live site". Said out loud, because the dashboard will show the
+ * scan under that name.
+ */
+async function postManifestAccepted(
+  config: Config,
+  payload: Parameters<typeof postManifest>[1],
+): Promise<StoreManifestResponse> {
+  const { response, environmentUsed } = await postManifestWithEnvironmentFallback(config, payload);
+  if (environmentUsed !== config.environment) {
+    console.warn(
+      `patchstack: this Patchstack API does not know the ${config.environment} label yet; the report was accepted as ${environmentUsed}, which also keeps it apart from production.`,
+    );
+  }
+  return response;
+}
+
+async function postManifestWithPatience(
+  config: Config,
+  payload: Parameters<typeof postManifest>[1],
+): Promise<StoreManifestResponse> {
+  // The first report is the one that provisions the site and issues its credential, and it carries no
+  // idempotency key: a timeout says nothing about whether the server committed, so sending it twice can
+  // provision two sites. It is never retried. It is also the slow one — the server registers the site and
+  // checks every package — so it gets the room a retry would have given it, up front and once.
+  if (!canRetryManifestPost(config)) {
+    const timeoutMs = Math.max(config.timeoutMs, Math.min(config.timeoutMs * RETRY_TIMEOUT_FACTOR, MAX_RETRY_TIMEOUT_MS));
+    return postManifestAccepted({ ...config, timeoutMs }, payload);
+  }
+
+  try {
+    return await postManifestAccepted(config, payload);
+  } catch (err) {
+    if (!(err instanceof PatchstackError) || err.code !== 'NETWORK_TIMEOUT') throw err;
+
+    const timeoutMs = Math.min(config.timeoutMs * RETRY_TIMEOUT_FACTOR, MAX_RETRY_TIMEOUT_MS);
+    if (timeoutMs <= config.timeoutMs) throw err;
+
+    console.warn(
+      `patchstack: the report timed out after ${config.timeoutMs}ms; trying once more with ${timeoutMs}ms.`,
+    );
+    const response = await postManifestAccepted({ ...config, timeoutMs }, payload);
+
+    try {
+      const target = await persistTimeout(process.cwd(), timeoutMs);
+      console.log(`Saved a ${timeoutMs}ms request timeout to ${target}, so builds inherit it.`);
+    } catch {
+      console.warn(
+        `patchstack: could not save the timeout; set PATCHSTACK_TIMEOUT_MS=${timeoutMs} where builds run.`,
+      );
+    }
+    return response;
+  }
+}
+
 async function runScan(
   args: ParsedArgs,
   options: { showRemainingSetup?: boolean } = {},
@@ -549,9 +633,18 @@ async function runScan(
         : `Including install locations (--install-paths), for ${located} of ${payload.packages.length} — this lockfile format does not record them for the rest, which will be reported as "not recorded" rather than "not installed there".`,
     );
   }
-  console.log(
-    `Reporting under the ${config.environment} environment (override with PATCHSTACK_ENVIRONMENT).`,
-  );
+  // The label decides how the dashboard reads this report — a production build is contact with a live
+  // site, a local one is inventory — so the line says which, and what decided it, every time.
+  if (config.environment === 'local') {
+    console.log(
+      'Reporting from this machine as the local environment: the dashboard will show the app as configured, not deployed. Builds on your hosting platform report as production.',
+    );
+  } else {
+    const because = (config.environmentEvidence ?? []).length > 0
+      ? ` (${config.environmentEvidence!.join('; ')})`
+      : '';
+    console.log(`Reporting under the ${config.environment} environment${because}. Override with PATCHSTACK_ENVIRONMENT.`);
+  }
   if (config.endpoint !== DEFAULT_ENDPOINT) {
     console.log(
       `Using endpoint override: ${config.endpoint} (set via --endpoint, PATCHSTACK_ENDPOINT, or .patchstackrc.json).`,
@@ -622,7 +715,7 @@ async function runScan(
   // failure is said in full on stderr and the build goes on. A direct `scan` still exits non-zero for it.
   let response: StoreManifestResponse;
   try {
-    response = await postManifest(config, payload);
+    response = await postManifestWithPatience(config, payload);
   } catch (err) {
     if (!(err instanceof PatchstackError) || !isInstallOrBuildHook()) throw err;
     for (const line of undeliveredReportLines(err, config, process.cwd())) console.error(line);
@@ -838,7 +931,13 @@ async function runProtectCommand(args: ParsedArgs): Promise<number> {
     };
 
     for (const c of report.checks.filter((c) => c.group !== 'reporting')) line(c);
-    console.log(report.wired ? 'guard is wired ✓' : 'guard is NOT fully wired ✗');
+    console.log(
+      !report.applicable
+        ? 'no guard to wire — this project has no request path'
+        : report.wired
+          ? 'guard is wired ✓'
+          : 'guard is NOT fully wired ✗',
+    );
 
     // Printed apart, and after the verdict, because they answer a different question and none of them
     // decides it. A failing line here does not mean the app is unprotected.
@@ -850,6 +949,9 @@ async function runProtectCommand(args: ParsedArgs): Promise<number> {
     if (report.checks.some((c) => c.unverifiable)) {
       console.log('One or more checks could not be answered from here — see the `?` lines above.');
     }
+    // A project that cannot have a guard is not a failing one: exiting non-zero forever would make this
+    // command a permanent red light on a correctly configured project. There is nothing to start, either.
+    if (!report.applicable) return 0;
     // The structural verdict comes first either way: an app whose guard is not wired has nothing to
     // gain from being started, and its runtime result would only be a second way of saying the same no.
     if (!report.wired) return 1;
@@ -910,6 +1012,11 @@ async function runDemoCommand(args: ParsedArgs): Promise<number> {
       throw new DemoError(
         `Runtime protection is not supported for this stack. Supported: ${result.supported.join(', ')}.`,
       );
+    }
+    // The demo exists to show a request being screened, so a project with no request path cannot host
+    // one. Saying so is the useful answer; scaffolding a guard nothing would ever call is not.
+    if (result.status === 'not-applicable') {
+      throw new DemoError(`${result.reason} Run the demo from a project that serves requests.`);
     }
     console.log(`Guard installer: ${result.adapter} (${result.status})`);
     const report = runVerify(cwd);
@@ -1033,7 +1140,17 @@ async function runSetup(args: ParsedArgs): Promise<number> {
   console.log('');
   console.log('  2. Install and verify runtime protection');
   const protection = setupProtection(process.cwd());
-  if (protection.verification.wired) {
+  if (protection.install.status === 'not-applicable') {
+    // Nothing was written, and nothing is owed. Said before the checklist so the reader has the shape of
+    // their project before they read a list that no longer mentions protection.
+    console.log('Runtime protection: not applicable to this project — nothing installed.');
+    console.log(`  ${protection.install.reason}`);
+    if (protection.install.leftovers.length > 0) {
+      console.log('  An earlier run scaffolded a guard here before that was established. These files do');
+      console.log('  nothing on this project and can be deleted:');
+      for (const file of protection.install.leftovers) console.log(`    ${file}`);
+    }
+  } else if (protection.verification.wired) {
     console.log(`Runtime protection: wired (${protection.verification.stack}).`);
   } else {
     console.log(`Runtime protection: manual wiring remains (${protection.verification.stack}):`);
@@ -1063,13 +1180,59 @@ async function runSetup(args: ParsedArgs): Promise<number> {
   // Setup ends on a page the user is already looking at, which loaded before the widget
   // tag existed, and against a deployed site still serving its previous build. Nothing
   // here can reach either one, so the agent relaying these is the whole mechanism.
+  //
+  // The outcome is a short, fixed-shape block rather than prose: an agent relays it as
+  // it is, and the words it does NOT contain matter as much as the ones it does. Nothing
+  // here says "connected" or "protected" — the app exists in a working tree, and every
+  // line says only what is true of that.
+  const outcome = setupOutcome(after, protection, wired);
   console.log('');
-  console.log('Tell the user:');
-  if (widgetTagInPlace(after)) {
-    console.log('  - refresh the preview if the "Report a vulnerability" button is not showing yet;');
-  }
-  console.log('  - deploy (or hit Publish) when ready, so the live site serves these changes.');
+  console.log('Outcome — relay this to the user as it is:');
+  for (const [label, value] of outcome) console.log(`  ${label}: ${value}`);
   return 0;
+}
+
+/**
+ * What setup established, as label/value pairs.
+ *
+ * Every value is a fact about the working tree or a step the person still owns. "Ready to deploy" is
+ * the strongest claim setup can make: it has not seen the live site and cannot, so it does not say
+ * anything about it.
+ */
+function setupOutcome(
+  state: GuideState,
+  protection: SetupProtectionResult,
+  wired: WireBuildScriptsResult,
+): Array<[string, string]> {
+  const remaining = countRemainingSteps(state);
+  const lines: Array<[string, string]> = [];
+
+  lines.push(['Status', remaining === 0 ? 'Ready to deploy (configured locally; nothing is live yet)' : `Configured locally; ${remaining} step(s) still to finish (see the checklist above)`]);
+  lines.push(['Monitoring', 'starts with the first build that runs on your hosting platform']);
+
+  if (protection.install.status === 'not-applicable') {
+    lines.push(['Runtime protection', 'not applicable — this project has no request path (static build)']);
+  } else if (protection.verification.wired) {
+    lines.push(['Runtime protection', `wired (${protection.verification.stack}) — local wiring verified; verify against the live site after deploy with \`protect --check --runtime\``]);
+  } else {
+    lines.push(['Runtime protection', `not wired yet (${protection.verification.stack}) — finish the checks above, then \`npx @patchstack/connect protect --check\``]);
+  }
+
+  lines.push(['Next steps', [
+    'add PATCHSTACK_API_KEY (from .patchstackrc.local.json) to your hosting platform\'s environment variables',
+    'commit .patchstackrc.json, package.json and the widget change (never .patchstackrc.local.json)',
+    'deploy, then check the site in the Patchstack dashboard — it reads "Deployed" once the live site is seen',
+  ].join('; ')]);
+
+  const warnings: string[] = [];
+  if (!wired.changed && wired.strategy === 'postinstall-only') warnings.push('no build script, so only dependency installs are scanned');
+  if (protection.install.status === 'not-applicable' && protection.install.leftovers.length > 0) {
+    warnings.push(`earlier guard scaffold does nothing here and can be deleted: ${protection.install.leftovers.join(', ')}`);
+  }
+  if (state.claimUrl !== null) warnings.push('the site is not attached to an account until the dashboard link is opened or `npx @patchstack/connect claim` completes');
+  if (warnings.length > 0) lines.push(['Warnings', warnings.join('; ')]);
+
+  return lines;
 }
 
 async function runStatus(args: ParsedArgs): Promise<number> {
@@ -1163,6 +1326,18 @@ function describeStack(stack: StackDescriptor): string | null {
   return parts.length > 0 ? parts.join(' · ') : null;
 }
 
+/** The project's `build` script, so `mark-build` can honour an output directory it names. Best-effort. */
+function readBuildScript(cwd: string): string | undefined {
+  try {
+    const pkg = JSON.parse(readFileSync(path.join(cwd, 'package.json'), 'utf8')) as {
+      scripts?: Record<string, string>;
+    };
+    return pkg.scripts?.build;
+  } catch {
+    return undefined;
+  }
+}
+
 async function runMarkBuild(args: ParsedArgs): Promise<number> {
   const cwd = process.cwd();
 
@@ -1202,10 +1377,18 @@ async function runMarkBuild(args: ParsedArgs): Promise<number> {
     );
   }
 
-  const dir = resolveBuildDir(cwd, getStringFlag(args.flags, 'dir'));
+  const buildDirOptions = { framework: stack?.framework ?? null, buildScript: readBuildScript(cwd) };
+  const dir = resolveBuildDir(cwd, getStringFlag(args.flags, 'dir'), buildDirOptions);
   if (dir === null) {
+    // Loud, and specific: this runs as a postbuild hook whose output scrolls past, and a build that
+    // finished with nothing stamped is exactly what a published site with no production marker looks
+    // like. Naming the directories actually tried is what lets the reader fix it in one edit.
+    const tried = buildDirCandidates(buildDirOptions).map((candidate) => `${candidate}/`).join(', ');
     console.warn(
-      'mark-build: no build output directory found (looked for dist/, build/, out/, .output/public). Pass --dir <path> if it is elsewhere. Nothing to mark.',
+      `mark-build: no build output directory found (looked for ${tried}). Nothing to mark.`,
+    );
+    console.warn(
+      'mark-build: if the build writes elsewhere, set it once in package.json → "postbuild": "patchstack-connect mark-build --dir <path>".',
     );
     return 0;
   }

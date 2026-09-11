@@ -61,9 +61,23 @@ export interface Adapter {
 export type ProtectResult =
   | { status: 'wired'; adapter: string; changed: string[] }
   | { status: 'scaffolded'; adapter: string; changed: string[]; plan: string }
+  /**
+   * Nothing here receives a request, so no guard was installed and none is missing. `leftovers` names
+   * generic-scaffold files an earlier run left behind, for a caller to offer removing — never deleted
+   * here, since by then they may have been edited or committed.
+   */
+  | { status: 'not-applicable'; reason: string; evidence: string[]; leftovers: string[] }
   | { status: 'unsupported'; supported: string[] };
 
 export interface VerifyReport extends VerifyResult {
   /** Which adapter/stack the verification ran against (or "generic"). */
   stack: string;
+  /**
+   * Whether a runtime guard is a thing this project can have at all.
+   *
+   * False for a project with no request path, where `wired: false` is not a finding: there is nothing to
+   * wire. Kept apart from `wired` so a caller cannot render "not installed" and "cannot be installed" as
+   * the same red cross — one is a step the user still owes, the other is a step that does not exist.
+   */
+  applicable: boolean;
 }

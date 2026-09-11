@@ -6,6 +6,7 @@
 // app is a gap in auto-wiring coverage to be closed by a new adapter or an agent-assisted install,
 // not a reason to leave the app unprotected quietly.
 
+import { classifyArchitecture } from '../../architecture.js';
 import { log } from './util.js';
 import { tanstackSupabaseAdapter } from './adapters/tanstack-supabase.js';
 import { nextAdapter } from './adapters/next.js';
@@ -15,7 +16,7 @@ import { nuxtAdapter } from './adapters/nuxt.js';
 import { nestjsAdapter } from './adapters/nestjs.js';
 import { fastifyAdapter } from './adapters/fastify.js';
 import { expressAdapter } from './adapters/express.js';
-import { scaffoldGeneric, wiringPlan, genericVerify } from './generic.js';
+import { scaffoldGeneric, wiringPlan, genericVerify, genericScaffoldFiles } from './generic.js';
 import { reportingChecks } from './reporting.js';
 import { hasResolvableCredential } from './util.js';
 import type { Adapter, VerifyCheck, WireOptions, ProtectResult, VerifyReport } from './types.js';
@@ -37,6 +38,21 @@ const ADAPTERS: Adapter[] = [
 export function runProtect(cwd: string, opts: WireOptions = {}): ProtectResult {
   let adapter;
   try {
+    // Asked before any adapter, because an adapter recognises a framework, not a request path. SvelteKit
+    // with `adapter-static` is still SvelteKit to its adapter, which would write a server hook that a
+    // static build only ever runs at prerender time — a guard on nothing. A `none` verdict is decisive;
+    // the adapters only get to wire an app that could receive a request.
+    const architecture = classifyArchitecture(cwd);
+    if (architecture.requestPath === 'none') {
+      log(architecture.note);
+      return {
+        status: 'not-applicable',
+        reason: architecture.note,
+        evidence: architecture.evidence,
+        leftovers: genericScaffoldFiles(cwd),
+      };
+    }
+
     adapter = ADAPTERS.find((a) => a.detect(cwd));
     if (adapter) {
       const result = adapter.wire(cwd, opts);
@@ -106,23 +122,45 @@ function credentialNote(cwd: string, adapterName: string): VerifyCheck[] {
  */
 export function runVerify(cwd: string): VerifyReport {
   try {
+    // Same order as `runProtect`: the static verdict is decisive, and reporting is still checked — a
+    // static site posts manifests like any other.
+    const architecture = classifyArchitecture(cwd);
+    if (architecture.requestPath === 'none') {
+      return {
+        stack: 'static build',
+        applicable: false,
+        wired: false,
+        checks: [
+          {
+            label: 'runtime protection does not apply to this project',
+            ok: true,
+            hint: architecture.note,
+          },
+          ...reportingChecks(cwd),
+        ],
+      };
+    }
+
     const adapter = ADAPTERS.find((a) => a.detect(cwd));
     if (adapter) {
       const result = adapter.verify(cwd);
       return {
         stack: adapter.label,
+        applicable: true,
         ...result,
         checks: [...result.checks, ...credentialNote(cwd, adapter.name), ...reportingChecks(cwd)],
       };
     }
+
     const generic = genericVerify(cwd);
     return {
       stack: 'generic',
+      applicable: true,
       ...generic,
       checks: [...generic.checks, ...credentialNote(cwd, 'generic'), ...reportingChecks(cwd)],
     };
   } catch (err) {
-    return { stack: 'unknown', wired: false, checks: [{ label: 'verification failed', ok: false, hint: String((err as Error)?.message ?? err) }] };
+    return { stack: 'unknown', applicable: true, wired: false, checks: [{ label: 'verification failed', ok: false, hint: String((err as Error)?.message ?? err) }] };
   }
 }
 
