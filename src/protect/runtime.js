@@ -25,6 +25,7 @@ import { captureValues, createPlanCache, permitsAnything } from './capture-plan.
 import { PulseRuleClient } from './engine/pulse-client.js';
 import { fromFetchRequest } from './engine/fetch.js';
 import { fromNodeRequest } from './engine/node.js';
+import { appendOwn, setOwn } from './engine/own.js';
 import { installEgressGuard } from './egress.js';
 import { DEFAULT_RESPONSE_RULES, DEFAULT_EGRESS_RULES } from './defaults.js';
 import { renderBlockPage } from './block-page.js';
@@ -576,10 +577,14 @@ export async function createProtection(options = {}) {
       for (const name of Object.keys(headers)) {
         const value = headers[name];
         if (typeof value === 'string') {
-          headers[name] = applyRedactors(value, spanRedactors, mask);
+          setOwn(headers, name, applyRedactors(value, spanRedactors, mask));
         } else if (Array.isArray(value)) {
           // Multi-valued headers (Set-Cookie) — redact each entry.
-          headers[name] = value.map((item) => (typeof item === 'string' ? applyRedactors(item, spanRedactors, mask) : item));
+          setOwn(
+            headers,
+            name,
+            value.map((item) => (typeof item === 'string' ? applyRedactors(item, spanRedactors, mask) : item)),
+          );
         }
       }
     }
@@ -795,7 +800,7 @@ export async function createProtection(options = {}) {
     const out = {};
     for (const [name, value] of writeHeadEntries(headers)) {
       const key = name.toLowerCase();
-      out[key] = Object.hasOwn(out, key) ? [].concat(out[key], value) : value;
+      appendOwn(out, key, value);
     }
 
     return out;
@@ -1612,11 +1617,11 @@ function concatBytes(chunks, total) {
 
 function headerObject(headers) {
   const out = {};
-  headers?.forEach?.((v, k) => { out[k.toLowerCase()] = v; });
+  headers?.forEach?.((v, k) => { setOwn(out, k.toLowerCase(), v); });
   // Set-Cookie is multi-valued; forEach collapses it. Recover the individual cookies so each can
   // be screened (and re-emitted) separately.
   const setCookies = headers?.getSetCookie?.();
-  if (setCookies && setCookies.length) out['set-cookie'] = setCookies;
+  if (setCookies && setCookies.length) setOwn(out, 'set-cookie', setCookies);
   return out;
 }
 
@@ -1838,7 +1843,7 @@ function isHeaderMutation(action) {
 
 function applyHeaderMutation(headers, rule) {
   if (rule.action === 'remove-header') {
-    for (const name of rule.remove_headers ?? []) headers[String(name).toLowerCase()] = null;
+    for (const name of rule.remove_headers ?? []) setOwn(headers, String(name).toLowerCase(), null);
     return;
   }
   if (rule.action === 'set-header') {
@@ -1847,7 +1852,7 @@ function applyHeaderMutation(headers, rule) {
       const key = String(name).toLowerCase();
       const present = headers[key] != null && headers[key] !== '';
       if (ensure && present) continue;
-      headers[key] = String(value);
+      setOwn(headers, key, String(value));
     }
     return;
   }

@@ -96,6 +96,30 @@ describe('getPulseToken', () => {
 
     expect(await getPulseToken(config(), fetchImpl as never)).toBeNull();
   });
+
+  it('isolates cached tokens by endpoint and credential', async () => {
+    const fetchImpl = vi.fn(async (url: string, init?: RequestInit) => {
+      const credential = JSON.parse(String(init?.body)).client_secret;
+      return tokenResponse({ access_token: `${new URL(url).host}:${credential}`, expires_in: 3600 });
+    });
+
+    const a = config({ endpoint: 'https://one.example/monitor/pulse/manifest', pulseAuth: 'alpha-1' });
+    const b = config({ endpoint: 'https://two.example/monitor/pulse/manifest', pulseAuth: 'beta-2' });
+    expect(await getPulseToken(a, fetchImpl as never)).toBe('one.example:alpha');
+    expect(await getPulseToken(b, fetchImpl as never)).toBe('two.example:beta');
+    expect(await getPulseToken(a, fetchImpl as never)).toBe('one.example:alpha');
+    expect(fetchImpl).toHaveBeenCalledTimes(2);
+  });
+
+  it('withholds credentials from plaintext remote and untrusted project endpoints', async () => {
+    const fetchImpl = vi.fn();
+    expect(await getPulseToken(config({ endpoint: 'http://remote.example/manifest' }), fetchImpl as never)).toBeNull();
+    expect(await getPulseToken(config({
+      endpoint: 'https://custom.example/manifest',
+      endpointTrusted: false,
+    }), fetchImpl as never)).toBeNull();
+    expect(fetchImpl).not.toHaveBeenCalled();
+  });
 });
 
 describe('pulseFetch', () => {

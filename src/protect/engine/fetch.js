@@ -9,6 +9,7 @@
 import { resolveClientIp } from '../client-ip.js';
 import { RuleEngine } from './engine.js';
 import { notify } from '../notify.js';
+import { appendOwn, setOwn } from './own.js';
 
 // Cap how much request body we buffer for inspection. A larger body is left UNSCANNED
 // (fail-open) rather than buffered into memory — matches the node adapter's maxBodyBytes.
@@ -23,16 +24,12 @@ export async function fromFetchRequest(request, options = {}) {
 
   const headers = {};
   request.headers.forEach((value, key) => {
-    headers[key.toLowerCase()] = value;
+    setOwn(headers, key.toLowerCase(), value);
   });
 
   const query = {};
   for (const [key, value] of url.searchParams) {
-    if (key in query) {
-      query[key] = Array.isArray(query[key]) ? [...query[key], value] : [query[key], value];
-    } else {
-      query[key] = value;
-    }
+    appendOwn(query, key, value);
   }
 
   let rawBody = '';
@@ -163,7 +160,7 @@ export function parseBody(rawBody, contentType) {
   }
   if (isForm) {
     const body = {};
-    for (const [k, v] of new URLSearchParams(rawBody)) body[k] = k in body ? [].concat(body[k], v) : v;
+    for (const [k, v] of new URLSearchParams(rawBody)) appendOwn(body, k, v);
     return { body, files: undefined };
   }
   if (isJson || isAmbiguous) {
@@ -197,9 +194,9 @@ export function parseMultipart(rawBody, boundary) {
       // mismatch (files.<name>.mismatch). The content rides inside the already-capped rawBody.
       const partType = /content-type:\s*([^\r\n;]+)/i.exec(rawHeaders)?.[1]?.trim() || '';
       const file = { filename, type: partType, content };
-      files[name] = name in files ? [].concat(files[name], file) : file;
+      appendOwn(files, name, file);
     } else {
-      body[name] = name in body ? [].concat(body[name], content) : content;
+      appendOwn(body, name, content);
     }
   }
   return { body, files };
@@ -215,7 +212,7 @@ function parseCookies(header) {
     if (idx === -1) {
       continue;
     }
-    cookies[pair.slice(0, idx).trim()] = pair.slice(idx + 1).trim();
+    setOwn(cookies, pair.slice(0, idx).trim(), pair.slice(idx + 1).trim());
   }
   return cookies;
 }

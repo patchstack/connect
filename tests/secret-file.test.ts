@@ -1,8 +1,8 @@
 import { describe, it, expect, afterEach } from 'vitest';
-import { mkdtempSync, writeFileSync, readFileSync, statSync, chmodSync, rmSync, mkdirSync } from 'node:fs';
+import { mkdtempSync, writeFileSync, readFileSync, statSync, chmodSync, rmSync, mkdirSync, symlinkSync, lstatSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { persistApiKey, secretFileIgnored, SECRET_CONFIG_FILENAME } from '../src/config.js';
+import { persistApiKey, persistSiteUuid, secretFileIgnored, SECRET_CONFIG_FILENAME } from '../src/config.js';
 
 /**
  * Whether the credential file is really ignored, and whether we say so only when it is.
@@ -17,7 +17,8 @@ const dirs: string[] = [];
 afterEach(() => {
   for (const dir of dirs.splice(0)) {
     try {
-      chmodSync(join(dir, '.gitignore'), 0o644);
+      const ignore = join(dir, '.gitignore');
+      chmodSync(ignore, statSync(ignore).isDirectory() ? 0o755 : 0o644);
     } catch {
       /* no such file, or no POSIX modes here */
     }
@@ -48,8 +49,8 @@ describe('writing the credential file', () => {
 
   it('reports failure when the ignore file cannot be written', async () => {
     // The reported case: the write error was swallowed and the caller said "added to .gitignore" anyway.
-    const cwd = project({ '.gitignore': 'node_modules\n' });
-    chmodSync(join(cwd, '.gitignore'), 0o444);
+    const cwd = project();
+    mkdirSync(join(cwd, '.gitignore'));
 
     const result = await persistApiKey(cwd, KEY);
 
@@ -106,6 +107,38 @@ describe('writing the credential file', () => {
     const result = await persistApiKey(cwd, 'b1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6-992');
 
     expect(statSync(result.path).mode & 0o777).toBe(0o600);
+  });
+
+  it('does not follow a credential-file symlink', async () => {
+    if (process.platform === 'win32') return;
+    const cwd = project();
+    const outside = join(cwd, 'outside.json');
+    writeFileSync(outside, '{"untouched":true}\n');
+    symlinkSync(outside, join(cwd, SECRET_CONFIG_FILENAME));
+
+    await expect(persistApiKey(cwd, KEY)).rejects.toMatchObject({ code: 'CONFIG_INVALID' });
+    expect(readFileSync(outside, 'utf8')).toBe('{"untouched":true}\n');
+  });
+
+  it('does not follow project-config or ignore-file symlinks', async () => {
+    if (process.platform === 'win32') return;
+    const configProject = project();
+    const outsideConfig = join(configProject, 'outside-config.json');
+    writeFileSync(outsideConfig, '{}\n');
+    symlinkSync(outsideConfig, join(configProject, '.patchstackrc.json'));
+    await expect(persistSiteUuid(configProject, '550e8400-e29b-41d4-a716-446655440000')).rejects.toMatchObject({
+      code: 'CONFIG_INVALID',
+    });
+    expect(readFileSync(outsideConfig, 'utf8')).toBe('{}\n');
+
+    const ignoreProject = project();
+    const outsideIgnore = join(ignoreProject, 'outside-ignore');
+    writeFileSync(outsideIgnore, 'untouched\n');
+    symlinkSync(outsideIgnore, join(ignoreProject, '.gitignore'));
+    const result = await persistApiKey(ignoreProject, KEY);
+    expect(result.ignored).toBe(true);
+    expect(readFileSync(outsideIgnore, 'utf8')).toBe('untouched\n');
+    expect(lstatSync(join(ignoreProject, '.gitignore')).isSymbolicLink()).toBe(false);
   });
 });
 

@@ -1,7 +1,16 @@
-import { readFileSync, rmSync, writeFileSync } from 'node:fs';
+import {
+  closeSync,
+  constants,
+  fstatSync,
+  openSync,
+  readFileSync,
+  renameSync,
+  rmSync,
+  writeFileSync,
+} from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
-import { createHash } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { pulseFetch } from './pulse-token.js';
 import type { Config } from './types.js';
 
@@ -82,17 +91,65 @@ function pendingPath(siteUuid: string, intent: DeviceIntent): string {
 }
 
 export function savePending(siteUuid: string, intent: DeviceIntent, pending: PendingDeviceFlow): void {
-  writeFileSync(pendingPath(siteUuid, intent), JSON.stringify(pending), {
-    encoding: 'utf8',
-    mode: 0o600,
-  });
+  const target = pendingPath(siteUuid, intent);
+  const temporary = `${target}.${process.pid}.${randomUUID()}.tmp`;
+  let descriptor: number | null = null;
+  try {
+    descriptor = openSync(temporary, 'wx', 0o600);
+    writeFileSync(descriptor, JSON.stringify(pending), 'utf8');
+    closeSync(descriptor);
+    descriptor = null;
+    try {
+      renameSync(temporary, target);
+    } catch (error) {
+      const code = (error as NodeJS.ErrnoException).code;
+      if (process.platform !== 'win32' || (code !== 'EEXIST' && code !== 'EPERM')) throw error;
+      try {
+        rmSync(target);
+      } catch (removeError) {
+        if ((removeError as NodeJS.ErrnoException).code !== 'ENOENT') throw removeError;
+      }
+      renameSync(temporary, target);
+    }
+  } catch (error) {
+    if (descriptor !== null) {
+      try {
+        closeSync(descriptor);
+      } catch {
+        /* best-effort cleanup */
+      }
+    }
+    try {
+      rmSync(temporary);
+    } catch {
+      /* best-effort cleanup */
+    }
+    throw error;
+  }
 }
 
 export function readPending(siteUuid: string, intent: DeviceIntent): PendingDeviceFlow | null {
+  let descriptor: number | null = null;
   try {
-    return JSON.parse(readFileSync(pendingPath(siteUuid, intent), 'utf8')) as PendingDeviceFlow;
+    const noFollow = typeof constants.O_NOFOLLOW === 'number' ? constants.O_NOFOLLOW : 0;
+    descriptor = openSync(pendingPath(siteUuid, intent), constants.O_RDONLY | noFollow);
+    const stat = fstatSync(descriptor);
+    if (!stat.isFile()) return null;
+    if (typeof process.getuid === 'function' && typeof stat.uid === 'number' && stat.uid !== process.getuid()) {
+      return null;
+    }
+    if (process.platform !== 'win32' && (stat.mode & 0o077) !== 0) return null;
+    return JSON.parse(readFileSync(descriptor, 'utf8')) as PendingDeviceFlow;
   } catch {
     return null; // absent, unreadable, or corrupt — all mean "nothing pending"
+  } finally {
+    if (descriptor !== null) {
+      try {
+        closeSync(descriptor);
+      } catch {
+        /* already closed */
+      }
+    }
   }
 }
 
