@@ -468,6 +468,17 @@ describe('Normalizer Module', () => {
             assert.ok(result.includes('Circular'), `Expected Circular marker in: ${result}`);
         });
 
+        it('should keep shallow fields available beside a very deep branch', () => {
+            const { serializeForRawDetection } = _testExports;
+            let deep = { value: 'end' };
+            for (let i = 0; i < 10_000; i++) deep = { next: deep };
+
+            const result = serializeForRawDetection({ deep, marker: 'shallow-value' });
+
+            assert.ok(result.includes('shallow-value'));
+            assert.ok(result.length <= 1024 * 1024);
+        });
+
     });
 
 });

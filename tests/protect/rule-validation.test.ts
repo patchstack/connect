@@ -48,8 +48,38 @@ describe('validateBundle', () => {
     const many = Array.from({ length: LIMITS.maxRules + 3 }, (_, i) => ok({ id: `r${i}` }));
     const { bundle, rejected } = validateBundle({ firewall: many, whitelists: [] });
     expect(bundle.firewall).toHaveLength(LIMITS.maxRules);
-    expect(rejected).toHaveLength(3);
+    expect(rejected).toHaveLength(1);
     expect(rejected[0].reason).toMatch(/maxRules/);
+  });
+
+  it('bounds rejection details and common list-shaped operands', () => {
+    const invalid = Array.from({ length: 500 }, (_, i) => ok({ id: `bad-${i}`, phase: 'sideways' }));
+    const rejected = validateBundle({ firewall: invalid, whitelists: [] }).rejected;
+    expect(rejected.length).toBeLessThanOrEqual(101);
+    expect(rejected.at(-1)?.reason).toMatch(/additional rejected entries omitted/);
+
+    const parameters = Array.from({ length: LIMITS.maxParameterItems + 1 }, (_, i) => `post.field${i}`);
+    expect(validateBundle({ firewall: [ok({ rule_v2: [{ parameter: parameters, match: { type: 'contains', value: 'x' } }] })], whitelists: [] }).rejected[0].reason)
+      .toMatch(/parameter list/);
+
+    const values = Array.from({ length: LIMITS.maxOperandItems + 1 }, (_, i) => `value-${i}`);
+    expect(validateBundle({ firewall: [ok({ rule_v2: [{ parameter: 'post.field', match: { type: 'in_array', value: values } }] })], whitelists: [] }).rejected[0].reason)
+      .toMatch(/more than/);
+  });
+
+  it('bounds optional match operands and whitelist key maps', () => {
+    const longOptionalOperand = validateBundle({
+      firewall: [ok({ rule_v2: [{ parameter: 'post.file', match: { type: 'isset', value: 'x'.repeat(LIMITS.maxValueLength + 1) } }] })],
+      whitelists: [],
+    });
+    expect(longOptionalOperand.rejected[0].reason).toMatch(/operand "value" is longer/);
+
+    const whitelistKeys = Object.fromEntries(
+      Array.from({ length: LIMITS.maxMapEntries + 1 }, (_, index) => [`key-${index}`, ['value']]),
+    );
+    const oversizedMap = validateBundle({ firewall: [], whitelists: [], whitelist_keys: whitelistKeys });
+    expect(oversizedMap.rejected[0].reason).toMatch(/whitelist_keys has more/);
+    expect(oversizedMap.bundle.whitelist_keys).toEqual({});
   });
 
   it('caps total condition nodes even when every nested array is individually small', () => {
@@ -115,6 +145,8 @@ describe('regex pattern length backstop', () => {
     expect(safeRegExp('/[a]+:[a]+/')).not.toBeNull();
     expect(safeRegExp('/postgres:\\/\\/[A-Za-z0-9:._-]+:[A-Za-z0-9:._-]+@/i')).toBeNull();
     expect(safeRegExp('/postgres:\\/\\/[A-Za-z0-9._-]+:[A-Za-z0-9:._-]+@/i')).not.toBeNull();
+    expect(safeRegExp('/a+(?:a?)a+/')).toBeNull();
+    expect(safeRegExp('/a+(?=a)a+/')).toBeNull();
     const result = validateBundle({
       firewall: [ok({ rule_v2: [{ parameter: 'raw', match: { type: 'regex', value: '/a+b+c/' } }] })],
       whitelists: [],

@@ -169,38 +169,127 @@ export function normalizeWhitespace(value) {
     return result;
 }
 
-function serializeForRawDetection(body, visited = new Set(), isRoot = true) {
-    if (body === null || body === undefined) {
-        return isRoot ? '' : 'null';
+const MAX_RAW_CHARS = 1024 * 1024;
+const MAX_RAW_NODES = 25_000;
+const MAX_RAW_DEPTH = 200;
+const MAX_RAW_ENTRIES = 2_000;
+
+function serializeForRawDetection(body) {
+    if (body === null || body === undefined) return '';
+    if (typeof body === 'string') return body.slice(0, MAX_RAW_CHARS);
+
+    const visited = new Set();
+    const output = [];
+    const stack = [{ kind: 'value', value: body, depth: 0, root: true }];
+    let chars = 0;
+    let nodes = 0;
+
+    const append = (text) => {
+        if (chars >= MAX_RAW_CHARS) return;
+        const piece = String(text).slice(0, MAX_RAW_CHARS - chars);
+        output.push(piece);
+        chars += piece.length;
+    };
+
+    while (stack.length > 0 && chars < MAX_RAW_CHARS) {
+        const task = stack.pop();
+        if (task.kind === 'text') {
+            append(task.text);
+            continue;
+        }
+        if (task.kind === 'key') {
+            append(boundedJsonString(task.value));
+            append(':');
+            continue;
+        }
+
+        nodes++;
+        if (nodes > MAX_RAW_NODES) {
+            append('"[NodeLimit]"');
+            continue;
+        }
+
+        const value = task.value;
+        if (value === null || value === undefined) {
+            append(task.root ? '' : 'null');
+            continue;
+        }
+        if (typeof value === 'string') {
+            append(task.root ? value.slice(0, MAX_RAW_CHARS) : boundedJsonString(value));
+            continue;
+        }
+        if (typeof value !== 'object') {
+            append(String(value).slice(0, MAX_RAW_CHARS));
+            continue;
+        }
+        if (visited.has(value)) {
+            append('[Circular]');
+            continue;
+        }
+        if (task.depth >= MAX_RAW_DEPTH) {
+            append('"[DepthLimit]"');
+            continue;
+        }
+        visited.add(value);
+
+        if (Array.isArray(value)) {
+            const length = Math.min(value.length, MAX_RAW_ENTRIES);
+            const items = [];
+            for (let i = 0; i < length; i++) {
+                if (i > 0) items.push({ kind: 'text', text: ',' });
+                items.push({ kind: 'value', value: readOwnValue(value, String(i)), depth: task.depth + 1, root: false });
+            }
+            if (value.length > length) {
+                if (length > 0) items.push({ kind: 'text', text: ',' });
+                items.push({ kind: 'text', text: '"[EntryLimit]"' });
+            }
+            stack.push({ kind: 'text', text: ']' });
+            for (let i = items.length - 1; i >= 0; i--) stack.push(items[i]);
+            stack.push({ kind: 'text', text: '[' });
+            continue;
+        }
+
+        let keys;
+        try {
+            // Includes non-enumerable own properties, including an own `__proto__` key.
+            keys = Object.getOwnPropertyNames(value);
+        } catch {
+            append('"[Unreadable]"');
+            continue;
+        }
+        const length = Math.min(keys.length, MAX_RAW_ENTRIES);
+        const entries = [];
+        for (let i = 0; i < length; i++) {
+            const key = keys[i];
+            if (i > 0) entries.push({ kind: 'text', text: ',' });
+            // Defer stringifying the key until it reaches the output. A wide object with very long
+            // names should not allocate rendered copies for siblings that the output cap will omit.
+            entries.push({ kind: 'key', value: key });
+            entries.push({ kind: 'value', value: readOwnValue(value, key), depth: task.depth + 1, root: false });
+        }
+        if (keys.length > length) {
+            if (length > 0) entries.push({ kind: 'text', text: ',' });
+            entries.push({ kind: 'text', text: '"[EntryLimit]":null' });
+        }
+        stack.push({ kind: 'text', text: '}' });
+        for (let i = entries.length - 1; i >= 0; i--) stack.push(entries[i]);
+        stack.push({ kind: 'text', text: '{' });
     }
 
-    if (typeof body === 'string') {
-        return isRoot ? body : JSON.stringify(body);
+    return output.join('');
+}
+
+function boundedJsonString(value) {
+    return JSON.stringify(String(value).slice(0, MAX_RAW_CHARS));
+}
+
+function readOwnValue(value, key) {
+    try {
+        const descriptor = Object.getOwnPropertyDescriptor(value, key);
+        return descriptor && Object.hasOwn(descriptor, 'value') ? descriptor.value : '[Accessor]';
+    } catch {
+        return '[Unreadable]';
     }
-
-    if (typeof body !== 'object') {
-        return String(body);
-    }
-
-    if (visited.has(body)) {
-        return '[Circular]';
-    }
-    visited.add(body);
-
-    if (Array.isArray(body)) {
-        const items = body.map(item => serializeForRawDetection(item, visited, false));
-        return '[' + items.join(',') + ']';
-    }
-
-    // Object.getOwnPropertyNames includes non-enumerable own properties, so a __proto__ key
-    // set via Object.defineProperty (as modern JSON.parse may do) is included in the output.
-    const keys = Object.getOwnPropertyNames(body);
-    const parts = keys.map(key => {
-        const val = serializeForRawDetection(body[key], visited, false);
-        return JSON.stringify(key) + ':' + val;
-    });
-
-    return '{' + parts.join(',') + '}';
 }
 
 // The only fields a supported framework supplies through an inherited accessor: `headers` is a getter on

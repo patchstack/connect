@@ -656,7 +656,13 @@ export async function createProtection(options = {}) {
     let result;
     let shaped;
     try {
-      shaped = await fromFetchRequest(request, { trustedProxy: options.trustedProxy });
+      shaped = await fromFetchRequest(request, {
+        trustedProxy: options.trustedProxy,
+        maxBodyBytes: options.maxBodyBytes,
+      });
+      if (shaped?._bodyInspectionSkip) {
+        recordSkip('request', shaped._bodyInspectionSkip, { limit: options.maxBodyBytes ?? 1024 * 1024 });
+      }
       result = engine.evaluate(shaped);
     } catch (err) {
       notify(onError, err, 'onError');
@@ -729,7 +735,7 @@ export async function createProtection(options = {}) {
       if (read.skip === 'not-a-response') return response;
 
       // Header hardening still applies: it needs no body, and a header does not become expensive
-      // because the body beside it is large. `readTextResponse` reads a CLONE and drains it, so the
+      // because the body beside it is large. `readTextResponse` reads a CLONE, so the
       // original body is untouched and can be handed on as it is.
       return hardenHeadersOnly(response, reqCtx);
     }
@@ -1561,14 +1567,13 @@ async function readTextResponse(response, cap = DEFAULT_SCREEN_CAP) {
     return { skip: 'clone-failed' };
   }
 
-  // Stream the read so a body WITHOUT a Content-Length can't buffer past the cap. Over the cap the
-  // response is left UNSCREENED — but we keep draining the clone so the original stays intact.
+  // Read only through the cap. Cancelling the clone at that point keeps the unread original branch from
+  // making the stream tee retain the remainder before the response is handed back.
   const body = clone.body;
   if (body && typeof body.getReader === 'function') {
     const reader = body.getReader();
     const chunks = [];
     let size = 0;
-    let over = false;
     let sniffed = !sniff;
     try {
       for (;;) {
@@ -1577,17 +1582,24 @@ async function readTextResponse(response, cap = DEFAULT_SCREEN_CAP) {
         if (!value) continue;
         if (!sniffed) {
           sniffed = true;
-          if (looksBinary(value)) return { skip: 'binary-body' };
+          if (looksBinary(value)) {
+            void reader.cancel().catch(() => {});
+            return { skip: 'binary-body' };
+          }
         }
         size += value.byteLength;
-        if (over) continue; // keep draining, stop buffering
-        if (size > cap) { over = true; continue; }
+        if (size >= cap) {
+          void reader.cancel().catch(() => {});
+          return { skip: 'body-cap' };
+        }
         chunks.push(value);
       }
     } catch {
+      void reader.cancel().catch(() => {});
       return { skip: 'read-failed' };
+    } finally {
+      reader.releaseLock();
     }
-    if (over) return { skip: 'body-cap' };
     try {
       return { text: new TextDecoder().decode(concatBytes(chunks, size)) };
     } catch {

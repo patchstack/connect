@@ -8,6 +8,20 @@ import { createProtection } from '../../src/protect/runtime.js';
 const AWS = 'AKIA' + 'IOSFODNN7' + 'EXAMPLE';
 
 describe('response-phase skips are recorded', () => {
+  it('records a request prefix that reaches its inspection cap', async () => {
+    const skips: any[] = [];
+    const p: any = await createProtection({
+      mode: 'block',
+      maxBodyBytes: 32,
+      onSkip: (skip: any) => skips.push(skip),
+    });
+
+    await p.fetchGuard()(new Request('https://app.com/x', { method: 'POST', body: 'x'.repeat(64) }));
+
+    expect(p.coverage().skipped['request:body-cap']).toBe(1);
+    expect(skips).toEqual([expect.objectContaining({ phase: 'request', reason: 'body-cap' })]);
+  });
+
   it('records a body-cap bypass and reports it to onSkip', async () => {
     const skips: any[] = [];
     const p: any = await createProtection({ mode: 'block', onSkip: (s: any) => skips.push(s) });
@@ -21,6 +35,25 @@ describe('response-phase skips are recorded', () => {
     expect((await out.text()).includes(AWS)).toBe(true); // unscreened (documented fail-open)
     expect(p.coverage().skipped['response:body-cap']).toBe(1);
     expect(skips).toEqual([expect.objectContaining({ phase: 'response', reason: 'body-cap' })]);
+  });
+
+  it('returns an over-cap open response without waiting for EOF', async () => {
+    const p: any = await createProtection({ mode: 'block' });
+    const stream = new ReadableStream({
+      pull(controller) {
+        controller.enqueue(new Uint8Array(128 * 1024));
+      },
+    });
+    const response = new Response(stream, { headers: { 'content-type': 'text/plain' } });
+
+    const out = await Promise.race([
+      p.screenResponse(response, new Request('https://app.com/x')),
+      new Promise<never>((_, reject) => setTimeout(() => reject(new Error('screening waited for EOF')), 250)),
+    ]);
+
+    expect(out).toBe(response);
+    expect(p.coverage().skipped['response:body-cap']).toBe(1);
+    void response.body?.cancel().catch(() => {});
   });
 
   it('records a live-stream passthrough distinctly from a cap', async () => {

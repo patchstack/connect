@@ -56,6 +56,20 @@ describe('request: structured-value evasion', () => {
     const res = eng.evaluate({ method: 'POST', url: '/', originalUrl: '/', query: {}, headers: {}, body: { q: deep }, _rawBody: '{}' } as any);
     expect(res.blocked).toBe(true);
   });
+
+  it('still evaluates a shallow raw marker beside a deeply nested value', () => {
+    let deep: any = { value: 'end' };
+    for (let i = 0; i < 10_000; i++) deep = { next: deep };
+    const eng = new RuleEngine({
+      firewall: [{ rule_v2: [{ parameter: 'raw', match: { type: 'contains', value: 'shallow-marker' } }] }],
+    });
+
+    const res = eng.evaluate({
+      method: 'POST', url: '/', originalUrl: '/', query: {}, headers: {}, body: { deep, marker: 'shallow-marker' },
+    } as any);
+
+    expect(res.blocked).toBe(true);
+  });
 });
 
 describe('request: normalizer no longer deletes payload spans', () => {

@@ -118,7 +118,7 @@ describe('the build scope the contract publishes', () => {
   it('states the firewall-only, detect-only-on-unusable contract', () => {
     const contract = ruleContract();
 
-    expect(CONTRACT_VERSION).toBe('2.10');
+    expect(CONTRACT_VERSION).toBe('2.11');
     expect(contract.build_scope).toEqual({
       applies_to: ['firewall'],
       usable: {
@@ -207,6 +207,8 @@ describe('what the contract refuses', () => {
     expect(whenProblem({ method: [] })).toMatch(/empty list/);
     expect(whenProblem({ path: 42 })).toMatch(/non-empty string/);
     expect(whenProblem({ method: ['POST', ''] })).toMatch(/non-empty string/);
+    expect(parameterProblem('post.' + 'x'.repeat(600))).toMatch(/longer than/);
+    expect(whenProblem({ method: Array(65).fill('POST') })).toMatch(/more than/);
   });
 
   it('refuses a wildcard on a source that does not fan out', () => {

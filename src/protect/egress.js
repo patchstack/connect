@@ -150,6 +150,14 @@ export async function installEgressGuard({ shouldBlock, onBlock, onSkip, dnsScre
       };
     };
 
+    const discardResponseBody = async (response) => {
+      try {
+        await response?.body?.cancel?.();
+      } catch {
+        // A redirect body is not returned to the caller, so cleanup failure does not change the hop.
+      }
+    };
+
     // Screen one outbound URL: hostname/allowlist/literal-IP check, then a DNS-resolution check for
     // real hostnames. Throws if the destination is disallowed.
     const screenUrl = async (u, method) => {
@@ -205,6 +213,7 @@ export async function installEgressGuard({ shouldBlock, onBlock, onSkip, dnsScre
           replay.cancel();
           return resp;
         }
+        await discardResponseBody(resp);
         if (hop >= MAX_REDIRECTS) {
           replay.cancel();
           throw new Error('Patchstack blocked an outbound request: too many redirects');
