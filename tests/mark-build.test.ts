@@ -1,4 +1,4 @@
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, utimesSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import ts from 'typescript';
@@ -16,10 +16,84 @@ import {
   resolveBuildDir,
   buildDirCandidates,
   outputDirFromBuildScript,
+  marksPublishedBuild,
+  staleBuildAge,
+  STALE_BUILD_WARNING_MS,
 } from '../src/mark-build.js';
 
+describe('marksPublishedBuild', () => {
+  it('is true only for production', () => {
+    expect(marksPublishedBuild('production')).toBe(true);
+    expect(marksPublishedBuild('sandbox')).toBe(false);
+    expect(marksPublishedBuild('local')).toBe(false);
+  });
+
+  it('withholds the marker on a preview, which is where the site is still claimed', () => {
+    // ADR-0001 in the widget: claiming happens where the marker is absent. A sandbox build that
+    // stamped it would hide the connect prompt on the one surface built for it.
+    expect(marksPublishedBuild('sandbox')).toBe(false);
+  });
+});
+
+describe('staleBuildAge', () => {
+  let dir: string;
+
+  beforeEach(() => {
+    dir = mkdtempSync(path.join(tmpdir(), 'ps-stale-'));
+  });
+  afterEach(() => {
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  const page = (name: string, ageMs: number): string => {
+    const file = path.join(dir, name);
+    writeFileSync(file, '<html></html>');
+    const at = new Date(Date.now() - ageMs);
+    utimesSync(file, at, at);
+    return file;
+  };
+
+  it('says nothing about output the build just wrote', () => {
+    expect(staleBuildAge([page('fresh.html', 0)], Date.now())).toBeNull();
+  });
+
+  it('reports the age when every page predates the run', () => {
+    const age = staleBuildAge([page('old.html', 3 * 60 * 60 * 1000)], Date.now());
+    expect(age).not.toBeNull();
+    expect(age!).toBeGreaterThan(STALE_BUILD_WARNING_MS);
+  });
+
+  it('is quiet when an incremental build refreshed only some pages', () => {
+    // Only the newest page is asked about: a generator that leaves unchanged output alone has still
+    // run, and warning there would train the reader to ignore the line.
+    const files = [page('untouched.html', 5 * 60 * 60 * 1000), page('rebuilt.html', 0)];
+    expect(staleBuildAge(files, Date.now())).toBeNull();
+  });
+
+  it('skips a file it cannot stat rather than calling it old', () => {
+    expect(staleBuildAge([path.join(dir, 'missing.html')], Date.now())).toBeNull();
+  });
+});
+
+describe('the withheld marker', () => {
+  it('strips a marker an earlier production build left, and adds none', () => {
+    // The empty snippet is how a non-production build is expressed: a directory carrying yesterday's
+    // production marker is corrected, rather than left claiming the local preview is the live site.
+    const published = injectMarker(
+      '<html><head><title>t</title></head><body>x</body></html>',
+      buildInjectionSnippet('abc123', null),
+    );
+    expect(published).toContain('__PATCHSTACK_PROD__');
+
+    const withheld = injectMarker(published, '');
+    expect(withheld).not.toContain('__PATCHSTACK_PROD__');
+    expect(withheld).not.toContain('__PATCHSTACK_BUILD__');
+    expect(withheld).toContain('<title>t</title>');
+  });
+});
+
 describe('buildInjectionSnippet', () => {
-  it('always marks production and includes the fingerprint when present', () => {
+  it('marks production and includes the fingerprint when present', () => {
     const snippet = buildInjectionSnippet('abc123def456');
     expect(snippet).toContain('window.__PATCHSTACK_PROD__=true;');
     expect(snippet).toContain('window.__PATCHSTACK_BUILD__="abc123def456";');

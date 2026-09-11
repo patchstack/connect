@@ -63,7 +63,7 @@ patchstack-connect setup  [options]                Run scan, manage the widget, 
 patchstack-connect init   <site-uuid>              Optional: pre-seed .patchstackrc.json with
                                                    an existing site UUID
 patchstack-connect status [options]                Show current configuration
-patchstack-connect mark-build [options]            Stamp built HTML with a production flag +
+patchstack-connect mark-build [--production]       Stamp built HTML with a production flag +
                                                    build fingerprint and ensure the widget tag
                                                    in built pages (run as a postbuild step)
 patchstack-connect guide                           Show this project's setup status (what's done,
@@ -310,7 +310,7 @@ The widget is a floating "Report a vulnerability" button — a disclosure channe
 
   Re-runs update the tag in place (the `data-patchstack-connect-widget` attribute marks it as connector-managed); a pre-existing manual widget tag is left untouched. `--dry-run` never edits anything; a failed post still skips the widget tag (it needs the site UUID) but the production marker may already have been written, since it runs before the post. Projects whose root layout is code rather than HTML (Next.js, Nuxt, Astro, …) get the exact snippet and target file printed instead — `guide` shows framework-specific placement.
 
-- **`mark-build`** ensures the same tag in built HTML output, covering builds whose source shell the connector couldn't edit, and stamps `window.__PATCHSTACK_PROD__` so the widget hides the claim/login UI on the published site (owners reach it by appending `#patchstack` to the live URL).
+- **`mark-build`** ensures the same tag in built HTML output, covering builds whose source shell the connector couldn't edit, and stamps `window.__PATCHSTACK_PROD__` so the widget hides the claim/login UI on the published site (owners reach it by appending `#patchstack` to the live URL). The marker says the page is the live site, so **only a production build carries it**: the environment is read the same way `scan` reads it (the hosting platform's own production discriminator), and a local or preview build gets the widget tag, no marker, and any marker an earlier build left behind removed. Publishing a static build by hand from your machine is the case that needs `--production` (or `PATCHSTACK_ENVIRONMENT=production`), because nothing in that environment can say the build is a deployment.
 
 - **Opting out:** persist `"widget": false` in `.patchstackrc.json` to disable both the widget tag and the production marker (dependency scanning only). Without it, the next successful scan re-adds the managed tag, and the next scan re-adds the marker on a JSX root.
 
