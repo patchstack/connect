@@ -2,7 +2,7 @@ import { readFile, writeFile, chmod } from 'node:fs/promises';
 import path from 'node:path';
 import { PatchstackError, type Config, type Environment } from './types.js';
 import { DEFAULT_ENDPOINT, DEFAULT_TIMEOUT_MS } from './client.js';
-import { inferEnvironment } from './environment.js';
+import { detectHostedBuilder, inferEnvironment } from './environment.js';
 import { detectSiteUrl, normaliseSiteUrl } from './site-url.js';
 import { detectSiteName, normaliseSiteName } from './site-name.js';
 
@@ -159,7 +159,14 @@ export async function resolveConfig(options: ResolveConfigOptions): Promise<Conf
   }
   // Stated wins. Otherwise the process says where it is running: a deployment or CI build reports
   // `production`, a developer's machine `local`. Nothing defaults to a deployed site any more.
-  const inferred = environmentRaw === undefined ? inferEnvironment(process.env) : null;
+  //
+  // The project itself gets the last word, after every platform has declined. A hosted builder sets
+  // no variable we can read, and on those platforms a build only ever happens when the owner
+  // publishes — so a Lovable app would otherwise report its live site as a working tree.
+  const inferred =
+    environmentRaw === undefined
+      ? inferEnvironment(process.env, detectHostedBuilder(options.cwd))
+      : null;
   const environment: Environment = environmentRaw ?? inferred!.environment;
   const environmentEvidence: string[] = inferred?.evidence ?? [];
 
