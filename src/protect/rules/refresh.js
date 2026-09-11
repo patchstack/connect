@@ -52,21 +52,30 @@ export function startRefresh(tick, { refreshMs, onError } = {}) {
 }
 
 export function makeRefreshHandler(tick, secret) {
+  let inflight = null;
+
+  const runOnce = () => {
+    if (inflight) return inflight;
+    let current;
+    current = Promise.resolve()
+      .then(() => tick())
+      .finally(() => {
+        if (inflight === current) inflight = null;
+      });
+    inflight = current;
+    return current;
+  };
+
   return async (request) => {
     // No secret configured → the endpoint doesn't exist (never an open refresh-DoS surface).
     if (!secret) return new Response('not found', { status: 404 });
-    let provided = null;
-    try {
-      provided = request?.headers?.get?.('x-patchstack-refresh') ?? new URL(request.url).searchParams.get('token');
-    } catch {
-      provided = null;
-    }
+    const provided = request?.headers?.get?.('x-patchstack-refresh') ?? null;
     if (provided !== secret) return new Response('forbidden', { status: 403 });
     let refreshed = true;
     try {
       // `{ ok: false }` means the tick ran but the rules did not come from the source, which is not a
       // refresh — the caller pushed because it had something to deliver, and it did not arrive.
-      const status = await tick();
+      const status = await runOnce();
       if (status && status.ok === false) refreshed = false;
     } catch {
       refreshed = false; // fail-open: report the outcome, never throw

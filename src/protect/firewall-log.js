@@ -7,8 +7,10 @@ import { isSafeOrigin } from './safe-origin.js';
 const DEFAULT_API_BASE = 'https://api.patchstack.com';
 /** The shutdown budget, matching the detection reporter's. */
 const STOP_BUDGET_MS = 5_000;
+const ATTEMPT_TIMEOUT_MS = 10_000;
 const DEFAULT_FLUSH_MS = 1000;
 const MAX_BATCH = 50;
+const MAX_QUEUE = 500;
 const TOKEN_SKEW_MS = 60_000;
 
 /**
@@ -87,27 +89,13 @@ export function createFirewallLogReporter(opts) {
   /** @type {ReturnType<typeof setTimeout> | null} */
   let timer = null;
   let stopped = false;
-  /**
-   * Every send that has been started and not finished.
-   *
-   * A flush that has already taken its batch leaves an empty queue behind it, so a shutdown looking only
-   * at the queue would see nothing to wait for while a token exchange or a post was still open. What is
-   * outstanding is the set of sends, not the contents of the queue.
-   *
-   * @type {Set<Promise<void>>}
-   */
-  const outstanding = new Set();
+  /** At most one delivery may be active; additional records remain in the bounded queue. */
+  /** @type {Promise<void> | null} */
+  let inFlight = null;
   /** @type {Promise<void> | null} */
   let drainPromise = null;
-  /**
-   * One controller for every request this reporter makes, for its whole life.
-   *
-   * Not created at shutdown: by then the sends worth ending have already started, and a signal handed
-   * out afterwards reaches none of them. Not one per send either, because the token exchange is SHARED —
-   * a second send awaits the first send's exchange, so a signal belonging to the second would not reach
-   * the request it is waiting on.
-   */
-  const lifetime = typeof AbortController === 'function' ? new AbortController() : null;
+  /** @type {AbortController | null} */
+  let activeController = null;
   /** Set when a shutdown gives up waiting: nothing may start, continue, or be retained after it. */
   let ended = false;
 
@@ -161,9 +149,15 @@ export function createFirewallLogReporter(opts) {
       clearTimeout(timer);
       timer = null;
     }
-    if (ended || queue.length === 0 || typeof fetchImpl !== 'function') return Promise.resolve();
+    if (ended || typeof fetchImpl !== 'function') return Promise.resolve();
+    if (inFlight) return inFlight;
+    if (queue.length === 0) return Promise.resolve();
 
     const batch = queue.splice(0, MAX_BATCH);
+    const controller = typeof AbortController === 'function' ? new AbortController() : null;
+    activeController = controller;
+    const attemptTimer = setTimeout(() => controller?.abort(), ATTEMPT_TIMEOUT_MS);
+    attemptTimer?.unref?.();
 
     // Returned so a shutdown can wait for it, and tracked so a shutdown can find it even when the queue
     // it came from is already empty. It never rejects: a caller that ignores it must not produce an
@@ -171,9 +165,9 @@ export function createFirewallLogReporter(opts) {
     // whether it succeeded.
     /** @type {Promise<void>} */
     let entry;
-    const send = (async () => {
+    entry = (async () => {
       try {
-        const token = await fetchAccessToken(lifetime?.signal);
+        const token = await fetchAccessToken(controller?.signal);
         // Not after a shutdown gave up: it has already reported itself finished.
         if (!token || ended) return;
 
@@ -191,23 +185,26 @@ export function createFirewallLogReporter(opts) {
             ...(sourceHost ? { 'Source-Host': sourceHost } : {}),
           },
           body,
-          // Both phases carry it, so a shutdown that runs out of time can end either one.
-          ...(lifetime ? { signal: lifetime.signal } : {}),
+          // Both phases carry the attempt controller, so slow transports cannot accumulate work.
+          ...(controller ? { signal: controller.signal } : {}),
         });
         if (p && typeof p.then === 'function') await p.catch(() => {});
       } catch {
         /* A delivery problem is never worth disturbing the app over. */
       } finally {
-        // Here rather than in a `.then`: this runs before the promise settles, so a waiter that looks at
-        // the set the moment its wait resolves cannot see a send that has already finished.
-        outstanding.delete(entry);
+        clearTimeout(attemptTimer);
+        if (activeController === controller) activeController = null;
+        if (inFlight === entry) inFlight = null;
+        if (!stopped && !ended && queue.length > 0 && !timer) {
+          timer = setTimeout(flush, queue.length >= MAX_BATCH ? 0 : flushMs);
+          timer?.unref?.();
+        }
       }
     })();
 
-    entry = send;
-    outstanding.add(send);
+    inFlight = entry;
 
-    return send;
+    return entry;
   };
 
   return {
@@ -225,6 +222,7 @@ export function createFirewallLogReporter(opts) {
       const fid = event?.rule?.id;
       if (fid === undefined || fid === null || fid === '') return;
 
+      if (queue.length >= MAX_QUEUE) return;
       queue.push({
         fid,
         method: event.method ?? null,
@@ -272,9 +270,10 @@ export function createFirewallLogReporter(opts) {
        */
       const terminate = () => {
         ended = true;
-        lifetime?.abort();
+        activeController?.abort();
+        activeController = null;
         queue = [];
-        outstanding.clear();
+        inFlight = null;
       };
 
       /** @type {ReturnType<typeof setTimeout> | null} */
@@ -298,8 +297,8 @@ export function createFirewallLogReporter(opts) {
         // It ends when both are empty, when a pass cannot shrink the queue (with no usable transport
         // there is nothing to wait for, and spinning would be worse), or when the budget ends it.
         while (!ended) {
-          if (outstanding.size > 0) {
-            await Promise.all([...outstanding]);
+          if (inFlight) {
+            await inFlight;
             continue;
           }
           if (queue.length === 0) break;

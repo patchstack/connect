@@ -356,6 +356,10 @@ export function createSupabaseGuard(opts: {
   protection: Protection;
   supabaseUrl?: string;
   fetchImpl?: typeof fetch;
+  /** Maximum tunneled request body size. Default 1 MiB. */
+  maxBodyBytes?: number;
+  /** Maximum upstream request duration. Default 30 seconds. */
+  timeoutMs?: number;
 }): (request: Request) => Promise<Response>;
 
 /**

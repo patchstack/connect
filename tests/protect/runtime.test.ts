@@ -60,6 +60,82 @@ describe('@patchstack/connect/protect (vendored engine + supabase guard)', () =>
     expect(res.status).toBe(201);
     expect(detections.length).toBe(1);
   });
+
+  it('keeps app cookies and proxy metadata out of the upstream request and response', async () => {
+    let sentHeaders: Headers | null = null;
+    const protection = await createProtection({ rules, mode: 'block' });
+    const handle = createSupabaseGuard({
+      protection,
+      supabaseUrl: SUPABASE,
+      fetchImpl: async (_url, init) => {
+        sentHeaders = new Headers(init?.headers);
+        return new Response('[]', {
+          status: 200,
+          headers: { 'content-type': 'application/json', 'set-cookie': 'upstream=secret', 'x-result': 'ok' },
+        });
+      },
+    });
+
+    const result = await handle(insertReq('buy milk', {
+      authorization: 'Bearer supabase-user',
+      cookie: 'app_session=secret',
+      'x-forwarded-for': '127.0.0.1',
+    }));
+
+    expect(sentHeaders?.get('authorization')).toBe('Bearer supabase-user');
+    expect(sentHeaders?.get('cookie')).toBeNull();
+    expect(sentHeaders?.get('x-forwarded-for')).toBeNull();
+    expect(result.headers.get('set-cookie')).toBeNull();
+    expect(result.headers.get('x-result')).toBe('ok');
+  });
+
+  it('rejects a tunneled body above the configured bound before forwarding', async () => {
+    let forwarded = false;
+    const protection = await createProtection({ rules, mode: 'block' });
+    const handle = createSupabaseGuard({
+      protection,
+      supabaseUrl: SUPABASE,
+      maxBodyBytes: 8,
+      fetchImpl: async () => {
+        forwarded = true;
+        return new Response('[]');
+      },
+    });
+
+    expect((await handle(insertReq('a value longer than eight bytes'))).status).toBe(413);
+    expect(forwarded).toBe(false);
+  });
+
+  it('bounds upstream duration and does not pre-buffer an unscreened streaming response', async () => {
+    const minimalProtection = { fetchGuard: () => async () => null } as any;
+    const timeoutHandle = createSupabaseGuard({
+      protection: minimalProtection,
+      supabaseUrl: SUPABASE,
+      timeoutMs: 5,
+      fetchImpl: async (_url, init) => new Promise<Response>((_resolve, reject) => {
+        init?.signal?.addEventListener('abort', () => reject(init.signal?.reason));
+      }),
+    });
+    expect((await timeoutHandle(insertReq('buy milk'))).status).toBe(504);
+
+    const streamHandle = createSupabaseGuard({
+      protection: minimalProtection,
+      supabaseUrl: SUPABASE,
+      fetchImpl: async () => new Response(new ReadableStream({
+        start(controller) {
+          controller.enqueue(new TextEncoder().encode('first'));
+          // Intentionally remains open. The guard should return the streaming response immediately.
+        },
+      })),
+    });
+    const response = await Promise.race([
+      streamHandle(insertReq('buy milk')),
+      new Promise<never>((_, reject) => setTimeout(() => reject(new Error('response was buffered')), 250)),
+    ]);
+    const reader = response.body?.getReader();
+    expect(await reader?.read()).toMatchObject({ done: false });
+    await reader?.cancel();
+  });
 });
 
 describe('createServerFnGuard (TanStack server-function path)', () => {
