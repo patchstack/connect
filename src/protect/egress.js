@@ -94,6 +94,61 @@ export async function installEgressGuard({ shouldBlock, onBlock, onSkip, dnsScre
   if (typeof originalFetch === 'function' && !originalFetch.__patchstackGuarded) {
     const REDIRECT_STATUSES = new Set([301, 302, 303, 307, 308]);
     const MAX_REDIRECTS = 20;
+    const MAX_REPLAY_BODY_BYTES = 1024 * 1024;
+
+    const captureReplayBody = (request) => {
+      if (request.method === 'GET' || request.method === 'HEAD' || !request.body) {
+        return { result: Promise.resolve({ body: undefined, tooLarge: false }), cancel() {} };
+      }
+
+      let reader;
+      try {
+        reader = request.clone().body?.getReader();
+      } catch {
+        reader = null;
+      }
+      if (!reader) {
+        return { result: Promise.resolve({ body: undefined, tooLarge: true }), cancel() {} };
+      }
+
+      let cancelled = false;
+      const result = (async () => {
+        const chunks = [];
+        let total = 0;
+        try {
+          for (;;) {
+            const { done, value } = await reader.read();
+            if (done || cancelled) break;
+            total += value.byteLength;
+            if (total > MAX_REPLAY_BODY_BYTES) {
+              void reader.cancel().catch(() => {});
+              return { body: undefined, tooLarge: true };
+            }
+            chunks.push(value);
+          }
+          if (cancelled) return { body: undefined, tooLarge: false };
+          const body = new Uint8Array(total);
+          let offset = 0;
+          for (const chunk of chunks) {
+            body.set(chunk, offset);
+            offset += chunk.byteLength;
+          }
+          return { body, tooLarge: false };
+        } catch {
+          return { body: undefined, tooLarge: true };
+        } finally {
+          reader.releaseLock();
+        }
+      })();
+
+      return {
+        result,
+        cancel() {
+          cancelled = true;
+          void reader.cancel().catch(() => {});
+        },
+      };
+    };
 
     // Screen one outbound URL: hostname/allowlist/literal-IP check, then a DNS-resolution check for
     // real hostnames. Throws if the destination is disallowed.
@@ -127,26 +182,50 @@ export async function installEgressGuard({ shouldBlock, onBlock, onSkip, dnsScre
 
       // Otherwise follow redirects ourselves so EVERY hop is screened. Native `follow` re-resolves
       // internally and would let a 3xx to an internal address slip past the initial check — SSRF via
-      // an open redirect. Buffer the body once (a stream can't be re-read) so 307/308 can replay it.
+      // an open redirect. Capture a bounded clone concurrently with the first request: most calls never
+      // redirect, so their first byte must not wait for a complete request body, while 307/308 still have
+      // a replayable body when it is small enough to retain.
       const headers = new Headers(cur.headers);
       const signal = cur.signal;
-      let body = method === 'GET' || method === 'HEAD' ? undefined : await cur.clone().arrayBuffer();
+      const replay = captureReplayBody(cur);
+      let body;
 
       for (let hop = 0; ; hop++) {
-        const resp = await originalFetch(
-          hop === 0 ? cur : new Request(url, { method, headers, body, redirect: 'manual', signal }),
-        );
+        let resp;
+        try {
+          resp = await originalFetch(
+            hop === 0 ? cur : new Request(url, { method, headers, body, redirect: 'manual', signal }),
+          );
+        } catch (error) {
+          replay.cancel();
+          throw error;
+        }
         const location = REDIRECT_STATUSES.has(resp.status) ? resp.headers.get('location') : null;
-        if (!location) return resp;
-        if (hop >= MAX_REDIRECTS) throw new Error('Patchstack blocked an outbound request: too many redirects');
+        if (!location) {
+          replay.cancel();
+          return resp;
+        }
+        if (hop >= MAX_REDIRECTS) {
+          replay.cancel();
+          throw new Error('Patchstack blocked an outbound request: too many redirects');
+        }
 
         const next = new URL(location, url).href;
         // Fetch redirect semantics: 303, and 301/302 on a POST, become a bodyless GET.
         if (resp.status === 303 || ((resp.status === 301 || resp.status === 302) && method === 'POST')) {
           method = 'GET';
           body = undefined;
+          replay.cancel();
           headers.delete('content-type');
           headers.delete('content-length');
+        } else if (body === undefined && method !== 'GET' && method !== 'HEAD') {
+          const captured = await replay.result;
+          if (captured.tooLarge) {
+            throw new Error(
+              `Patchstack blocked a redirect that required replaying more than ${MAX_REPLAY_BODY_BYTES} bytes`,
+            );
+          }
+          body = captured.body;
         }
         // Drop credentials on a cross-origin hop, mirroring the browser.
         if (new URL(next).origin !== new URL(url).origin) {

@@ -66,4 +66,30 @@ describe('push refresh endpoint (refreshHandler)', () => {
     const res = await p.refreshHandler()(new Request('https://app/x?token=anything'));
     expect(res.status).toBe(404);
   });
+
+  it('does not accept the refresh secret in the URL', async () => {
+    const tick = vi.fn();
+    const { makeRefreshHandler } = await import('../../src/protect/rules/refresh.js');
+    const response = await makeRefreshHandler(tick, 'sekret')(
+      new Request('https://app/x?token=sekret'),
+    );
+    expect(response.status).toBe(403);
+    expect(tick).not.toHaveBeenCalled();
+  });
+
+  it('coalesces concurrent authenticated refreshes', async () => {
+    let release!: (value: { ok: boolean }) => void;
+    const tick = vi.fn(() => new Promise<{ ok: boolean }>((resolve) => { release = resolve; }));
+    const { makeRefreshHandler } = await import('../../src/protect/rules/refresh.js');
+    const handler = makeRefreshHandler(tick, 'sekret');
+    const request = () => new Request('https://app/x', { headers: { 'x-patchstack-refresh': 'sekret' } });
+
+    const first = handler(request());
+    const second = handler(request());
+    await Promise.resolve();
+    expect(tick).toHaveBeenCalledOnce();
+    release({ ok: true });
+    expect((await first).status).toBe(200);
+    expect((await second).status).toBe(200);
+  });
 });

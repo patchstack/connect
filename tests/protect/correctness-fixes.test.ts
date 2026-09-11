@@ -171,6 +171,42 @@ describe('egress fetch — redirect semantics', () => {
       },
     );
   });
+
+  it('does not wait to buffer a streaming body when the first response is final', async () => {
+    await withStub(
+      async () => new Response('ok'),
+      async () => {
+        const stream = new ReadableStream({
+          start(controller) {
+            controller.enqueue(new TextEncoder().encode('first'));
+            // Deliberately left open: pre-buffering the body would never reach the request.
+          },
+        });
+        const request = globalThis.fetch('http://93.184.216.34/start', {
+          method: 'POST',
+          body: stream,
+          duplex: 'half',
+        } as RequestInit & { duplex: string });
+        const result = await Promise.race([
+          request,
+          new Promise<never>((_, reject) => setTimeout(() => reject(new Error('request waited for body EOF')), 250)),
+        ]);
+        expect(await result.text()).toBe('ok');
+      },
+    );
+  });
+
+  it('refuses a redirect that would require retaining an oversized request body', async () => {
+    await withStub(
+      async () => new Response(null, { status: 307, headers: { location: 'http://93.184.216.34/final' } }),
+      async () => {
+        await expect(globalThis.fetch('http://93.184.216.34/start', {
+          method: 'POST',
+          body: new Uint8Array(1024 * 1024 + 1),
+        })).rejects.toThrow(/required replaying/);
+      },
+    );
+  });
 });
 
 describe('isInternalHost + redaction — extra edge cases', () => {

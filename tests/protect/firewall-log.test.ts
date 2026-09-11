@@ -479,4 +479,28 @@ describe('stopping the block log waits for what is outstanding, and is bounded',
     expect(settled, 'bounded on the post too').toBe(true);
     expect(aborted).toContain('post');
   });
+
+  it('serializes delivery and caps records retained during a slow send', async () => {
+    let active = 0;
+    let maxActive = 0;
+    let delivered = 0;
+    const impl = vi.fn(async (url: string, init?: RequestInit) => {
+      if (String(url).includes('/oauth/token')) {
+        return new Response(JSON.stringify({ access_token: 'jwt', expires_in: 3600 }), { status: 200 });
+      }
+      active++;
+      maxActive = Math.max(maxActive, active);
+      delivered += JSON.parse(new URLSearchParams(String(init?.body)).get('logs') ?? '[]').length;
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      active--;
+      return new Response('{}', { status: 200 });
+    });
+    const r: any = reporter(impl, { flushMs: 60_000 });
+
+    record(r, 1000);
+    await r.stop();
+
+    expect(maxActive).toBe(1);
+    expect(delivered).toBe(550); // active batch (50) plus the bounded waiting queue (500)
+  });
 });
