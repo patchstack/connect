@@ -3,10 +3,11 @@
 // a template + co-locate patchstack.rules.json. An EXISTING seam file is never clobbered — we scaffold
 // the rules and print a plan instead (so a hand-written hook is preserved).
 
-import { existsSync, mkdirSync, copyFileSync } from 'node:fs';
+import { existsSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { bakeSiteUuid, read, log, templatesDir } from './util.js';
 import type { WireOptions, WireResult, VerifyResult } from './types.js';
+import { copyProjectFileSync, ensureProjectDirectorySync } from '../../safe-file.js';
 
 export interface SeamSpec {
   templateName: string; // template copied to the seam target when none exists
@@ -26,13 +27,13 @@ export function wireSeam(cwd: string, opts: WireOptions, spec: SeamSpec): WireRe
   const templates = templatesDir();
   const existing = spec.candidates.find((c) => existsSync(join(cwd, c)));
   const seamRel = existing ?? spec.target;
-  mkdirSync(dirname(join(cwd, seamRel)), { recursive: true });
+  ensureProjectDirectorySync(cwd, dirname(join(cwd, seamRel)));
 
   // Rules co-locate next to the seam (the templates import ./patchstack.rules.json).
   const rulesDst = join(cwd, rulesRel(seamRel));
   const changed: string[] = [];
   if (opts.demo || !existsSync(rulesDst)) {
-    copyFileSync(join(templates, opts.demo ? 'demo-rules.json' : 'rules.json'), rulesDst);
+    copyProjectFileSync(cwd, join(templates, opts.demo ? 'demo-rules.json' : 'rules.json'), rulesDst);
     changed.push(rulesRel(seamRel));
   }
 
@@ -48,7 +49,7 @@ export function wireSeam(cwd: string, opts: WireOptions, spec: SeamSpec): WireRe
     return { ok: true, changed };
   }
 
-  copyFileSync(join(templates, spec.templateName), join(cwd, seamRel));
+  copyProjectFileSync(cwd, join(templates, spec.templateName), join(cwd, seamRel));
   if (!opts.demo) bakeSiteUuid(cwd, seamRel);
   changed.push(seamRel);
   log(`scaffolded ${seamRel}`);

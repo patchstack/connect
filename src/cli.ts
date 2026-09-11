@@ -1,8 +1,9 @@
-import { readFileSync, writeFileSync } from 'node:fs';
+import { readFileSync } from 'node:fs';
 import path from 'node:path';
 import type { Config, Environment } from './types.js';
 import type { GuideState } from './guide.js';
 import { createRequire } from 'node:module';
+import { writeProjectFileSync } from './safe-file.js';
 
 import { scanLockfile } from './parsers/index.js';
 import { buildWirePayload } from './normalize.js';
@@ -1481,7 +1482,7 @@ async function runMarkBuild(args: ParsedArgs): Promise<number> {
       after = ensured.html;
     }
     if (after !== before) {
-      writeFileSync(file, after);
+      writeProjectFileSync(cwd, file, after, { encoding: 'utf8' });
       marked += 1;
     }
   }

@@ -14,11 +14,12 @@
 // produced; a later `map --upload` in that pre-bundle lifecycle writes the new document identity. Leaving
 // A retained value would let a later build present an identity its coordinates did not earn.
 
-import { chmodSync, lstatSync, readFileSync, readdirSync, realpathSync, renameSync, unlinkSync, writeFileSync } from 'node:fs';
+import { lstatSync, readFileSync, readdirSync, realpathSync } from 'node:fs';
 import { join, relative, sep } from 'node:path';
 
 import { BUILD_STAMP_KEY, hasRawBuildStamp, readBuildStamp } from './build-id.js';
 import { stripComments } from './protect/install/source-scope.js';
+import { writeProjectFileSync } from './safe-file.js';
 
 /** File names a scaffolded guard imports its bundle from. */
 const RULES_FILE_NAMES = new Set(['rules.json', 'patchstack.rules.json']);
@@ -259,25 +260,9 @@ export function applyBuildStamp(cwd: string, id: string | null): StampOutcome {
   else bundle[BUILD_STAMP_KEY] = namespace;
 
   const serialised = JSON.stringify(bundle, null, detectIndent(text)) + (text.endsWith('\n') ? '\n' : '');
-  // Written beside the destination and renamed over it. `writeFileSync` truncates first, so a failure
-  // part-way through would leave the project's committed rules file corrupt — and this function reports
-  // rather than throws, so the build would carry on with a broken guard bundle. A rename within one
-  // directory replaces the file or does nothing.
-  const temporary = `${location.path}.patchstack-${process.pid}.tmp`;
   try {
-    // Renaming a newly created file also replaces the destination's metadata. Carry its mode onto the
-    // sibling first so stamping a committed file cannot make it more permissive or flip its executable bit.
-    const mode = lstatSync(location.path).mode & 0o7777;
-    writeFileSync(temporary, serialised, { encoding: 'utf8', mode });
-    chmodSync(temporary, mode); // creation applies the process umask; restore the exact original mode
-    renameSync(temporary, location.path);
+    writeProjectFileSync(cwd, location.path, serialised, { encoding: 'utf8' });
   } catch (err) {
-    try {
-      unlinkSync(temporary);
-    } catch {
-      // Nothing to clean up, or nothing that can be.
-    }
-
     return { kind: 'skipped', reason: `${file} could not be written (${(err as Error).message})` };
   }
 
