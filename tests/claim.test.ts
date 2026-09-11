@@ -29,7 +29,7 @@ function config(overrides: Partial<Config> = {}): Config {
 }
 
 const json = (body: unknown, status = 200) =>
-  ({ ok: status >= 200 && status < 300, status, json: async () => body }) as unknown as Response;
+  new Response(JSON.stringify(body), { status, headers: { 'Content-Type': 'application/json' } });
 
 const started = {
   device_code: 'device-code',

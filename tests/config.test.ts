@@ -73,6 +73,14 @@ describe('resolveConfig', () => {
     expect((await resolveConfig({ cwd })).endpointTrusted).toBe(true);
   });
 
+  it('rejects endpoints that cannot carry network traffic safely', async () => {
+    process.env.PATCHSTACK_ENDPOINT = 'http://remote.example/monitor/pulse/manifest';
+    await expect(resolveConfig({ cwd })).rejects.toMatchObject({ code: 'CONFIG_INVALID' });
+
+    process.env.PATCHSTACK_ENDPOINT = 'http://127.0.0.1:8080/monitor/pulse/manifest';
+    await expect(resolveConfig({ cwd })).resolves.toMatchObject({ endpointTrusted: true });
+  });
+
   it('returns siteUuid null when nothing is set', async () => {
     const config = await resolveConfig({ cwd });
     expect(config.siteUuid).toBeNull();

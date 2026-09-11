@@ -331,7 +331,7 @@ export async function collectGuideState(cwd: string): Promise<GuideState> {
   try {
     const config = await resolveConfig({ cwd });
     siteUuid = config.siteUuid;
-    if (siteUuid !== null) {
+    if (siteUuid !== null && config.endpointTrusted !== false) {
       claimUrl = buildClaimUrl(config.endpoint, siteUuid);
     }
     if (config.endpoint !== DEFAULT_ENDPOINT) {

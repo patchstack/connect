@@ -23,7 +23,10 @@ function config(overrides: Partial<Config> = {}): Config {
 }
 
 function tokenResponse(body: unknown, ok = true) {
-  return { ok, json: async () => body } as unknown as Response;
+  return new Response(JSON.stringify(body), {
+    status: ok ? 200 : 401,
+    headers: { 'Content-Type': 'application/json' },
+  });
 }
 
 beforeEach(() => clearPulseToken());
@@ -93,6 +96,12 @@ describe('getPulseToken', () => {
 
   it('returns null when the network fails', async () => {
     const fetchImpl = vi.fn().mockRejectedValue(new Error('offline'));
+
+    expect(await getPulseToken(config(), fetchImpl as never)).toBeNull();
+  });
+
+  it('rejects token values that cannot be used as a bounded header', async () => {
+    const fetchImpl = vi.fn().mockResolvedValue(tokenResponse({ access_token: 'line one\nline two', expires_in: 3600 }));
 
     expect(await getPulseToken(config(), fetchImpl as never)).toBeNull();
   });
