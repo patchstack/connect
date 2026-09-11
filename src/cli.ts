@@ -1,6 +1,6 @@
 import { readFileSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
-import type { Config } from './types.js';
+import type { Config, Environment } from './types.js';
 import type { GuideState } from './guide.js';
 import { createRequire } from 'node:module';
 
@@ -50,6 +50,8 @@ import {
   productionGate,
   resolveBuildDir,
   buildDirCandidates,
+  marksPublishedBuild,
+  staleBuildAge,
 } from './mark-build.js';
 import {
   collectGuideState,
@@ -124,6 +126,10 @@ Usage:
   patchstack-connect mark-build [options]            Stamp built HTML with a production flag +
                                                      build fingerprint, and ensure the widget
                                                      tag in built pages (run as a postbuild step).
+                                                     The flag marks a page as the LIVE site, so it
+                                                     is stamped only on a production build; a local
+                                                     or preview build gets the widget tag and no
+                                                     marker (and any stale marker is removed).
                                                      Looks in the framework's own output dir, an
                                                      --output the build script names, then dist/,
                                                      build/, out/, .output/public/, _site/ — inside
@@ -209,8 +215,15 @@ Options (for scan, setup, status, and uninstall):
                           too. Never written to a file, never printed back
 
 Options (for mark-build):
-  --dir <path>            Build output directory (default: auto-detect
-                          dist/ build/ out/ .output/public)
+  --dir <path>            Build output directory (default: auto-detect the
+                          framework's own output dir, an --output the build
+                          script names, then dist/ build/ out/ .output/public/
+                          _site/ — inside the project only)
+  --production            Stamp the live-site marker on a build this command
+                          cannot tell is a deployment — publishing a static
+                          build by hand from a laptop, say. PATCHSTACK_ENVIRONMENT=production
+                          does the same. Never needed on a hosting platform,
+                          whose own build is recognised
 
 Options (for demo and demo-guide):
   --url <url>             Test endpoint printed at the end
@@ -1340,6 +1353,9 @@ function readBuildScript(cwd: string): string | undefined {
 
 async function runMarkBuild(args: ParsedArgs): Promise<number> {
   const cwd = process.cwd();
+  // Captured before the lockfile scan below, which on a large tree takes long enough to matter when
+  // the output's freshness is judged against it.
+  const startedAt = Date.now();
 
   // Compute the build fingerprint and stack descriptor from the lockfile.
   // Best-effort: mark-build is a postbuild step and must never fail the build, so
@@ -1361,8 +1377,11 @@ async function runMarkBuild(args: ParsedArgs): Promise<number> {
     );
   }
 
-  // The widget pass needs the configured UUID; best-effort for the same reason.
+  // The widget pass needs the configured UUID, and the marker gate below needs the environment.
+  // Best-effort for the same reason: neither may fail a build.
   let widgetUuid: string | null = null;
+  let environment: Environment = 'local';
+  let environmentEvidence: string[] = [];
   try {
     const config = await resolveConfig({
       cwd,
@@ -1371,11 +1390,22 @@ async function runMarkBuild(args: ParsedArgs): Promise<number> {
     if (config.widget) {
       widgetUuid = config.siteUuid;
     }
+    environment = config.environment;
+    environmentEvidence = config.environmentEvidence ?? [];
   } catch (err) {
     console.warn(
       `mark-build: could not resolve the site UUID (${(err as Error).message}). Skipping the widget pass.`,
     );
+    // An unreadable config leaves the environment at its safe default: a build that cannot say it is
+    // production does not get to claim it is.
   }
+
+  // `--production` is the deliberate way to stamp a build this command cannot recognise as a
+  // deployment — most often a static site published by hand from a laptop (`netlify deploy --dir`,
+  // a drag-and-drop upload), where the build really is the one going live and nothing in the
+  // environment says so.
+  const forcedProduction = args.flags.get('production') === true;
+  const published = forcedProduction || marksPublishedBuild(environment);
 
   const buildDirOptions = { framework: stack?.framework ?? null, buildScript: readBuildScript(cwd) };
   const dir = resolveBuildDir(cwd, getStringFlag(args.flags, 'dir'), buildDirOptions);
@@ -1409,7 +1439,23 @@ async function runMarkBuild(args: ParsedArgs): Promise<number> {
     return 0;
   }
 
-  const snippet = buildInjectionSnippet(checksum, stack);
+  // A stale directory is the local failure this command cannot otherwise see: run by hand, or after a
+  // build that wrote nothing, it would attach this run's dependency fingerprint to pages built from a
+  // different tree. Said before the pass, because the numbers below look identical either way.
+  const staleBy = staleBuildAge(files, startedAt);
+  if (staleBy !== null) {
+    console.warn(
+      `mark-build: nothing in ${dir} has been written in the last ${Math.round(staleBy / 60000)} minute(s), so this looks like output from an earlier build.`,
+    );
+    console.warn(
+      'mark-build: run it as a postbuild hook (or straight after the build) so what is stamped is what was just produced.',
+    );
+  }
+
+  // An empty snippet strips a marker and adds none, which is exactly what a build that is not going
+  // to production needs: a directory carrying yesterday's production marker is corrected rather than
+  // left to claim the local preview is the live site.
+  const snippet = published ? buildInjectionSnippet(checksum, stack) : '';
   let marked = 0;
   let widgetTouched = 0;
   for (const file of files) {
@@ -1432,11 +1478,31 @@ async function runMarkBuild(args: ParsedArgs): Promise<number> {
   }
 
   const stackSummary = stack !== null ? describeStack(stack) : null;
+
+  if (published) {
+    console.log(
+      `mark-build: marked ${marked} HTML file(s) in ${dir}` +
+        `${checksum !== null ? ` (build ${checksum})` : ''}` +
+        `${widgetTouched > 0 ? `, widget tag ensured in ${widgetTouched}` : ''}` +
+        `${stackSummary !== null ? ` [${stackSummary}]` : ''}.`,
+    );
+    return 0;
+  }
+
+  // The withheld case has to account for itself. This is a build whose output a person is about to
+  // look at, and silence here reads as the marker having been stamped — which is how a local preview
+  // came to be reported as a live, connected site in the first place.
+  const because = environmentEvidence.length > 0 ? ` (${environmentEvidence.join('; ')})` : '';
   console.log(
-    `mark-build: marked ${marked} HTML file(s) in ${dir}` +
-      `${checksum !== null ? ` (build ${checksum})` : ''}` +
+    `mark-build: ${environment} build${because} — production marker withheld from ${files.length} HTML file(s) in ${dir}` +
       `${widgetTouched > 0 ? `, widget tag ensured in ${widgetTouched}` : ''}` +
       `${stackSummary !== null ? ` [${stackSummary}]` : ''}.`,
+  );
+  console.log(
+    'mark-build: the marker tells Patchstack a page is the live site, so only the build that deploys carries it. Your hosting platform\'s build stamps it automatically.',
+  );
+  console.log(
+    'mark-build: publishing this directory by hand? Re-run with --production (or set PATCHSTACK_ENVIRONMENT=production) so the deployed pages carry it.',
   );
   return 0;
 }

@@ -2,9 +2,63 @@ import { existsSync, readFileSync, readdirSync, realpathSync, statSync, writeFil
 import path from 'node:path';
 
 import { isEmptyStack, type StackDescriptor } from './stack.js';
+import type { Environment } from './types.js';
 
 /** Attribute that tags our injected <script> so re-runs replace it instead of stacking. */
 export const MARKER_ATTR = 'data-patchstack-build';
+
+/**
+ * Whether a build in this environment may carry the published-build marker.
+ *
+ * The marker says two things about the page it lands in: this is the live site, and this is the build
+ * it is running. Both are claims about a deployment, so only the build that IS the deployment may make
+ * them. A laptop build stamped as production is a deployed site that does not exist — the marker
+ * reaches the widget, the widget's heartbeat carries the fingerprint, and the fingerprint is the one
+ * piece of evidence that is trusted without a matching origin.
+ *
+ * `sandbox` withholds it too, and not only for honesty: a preview is where the site is still being
+ * claimed, and the marker is what hides the claim prompt.
+ *
+ * The JSX path in this same file has always been gated this way — `buildSourceMarkerSnippet` wraps the
+ * marker in the framework's production condition, so a dev server never sets it. This is that gate,
+ * for the stacks whose marker arrives by stamping a file instead of by compiling a condition.
+ */
+export function marksPublishedBuild(environment: Environment): boolean {
+  return environment === 'production';
+}
+
+/**
+ * How far behind this process a build directory's newest page may be before it is worth saying that
+ * nothing here looks freshly built.
+ *
+ * As a `postbuild` hook the gap is seconds. An hour means the command is looking at output some
+ * earlier build left behind — a different branch, a different day — and stamping it would attach
+ * today's dependency fingerprint to pages that do not contain those dependencies.
+ *
+ * A warning rather than a refusal: an incremental build legitimately leaves unchanged pages alone, and
+ * a command that runs inside somebody's build must not be the reason it fails.
+ */
+export const STALE_BUILD_WARNING_MS = 60 * 60 * 1000;
+
+/**
+ * Milliseconds between the newest page in `files` and `startedAt`, or null when the output is current.
+ * Reads mtimes only; an unreadable file is skipped rather than treated as old.
+ */
+export function staleBuildAge(files: readonly string[], startedAt: number): number | null {
+  let newest: number | null = null;
+  for (const file of files) {
+    try {
+      const at = statSync(file).mtimeMs;
+      if (newest === null || at > newest) newest = at;
+    } catch {
+      continue;
+    }
+  }
+  if (newest === null) return null;
+
+  const age = startedAt - newest;
+  return age > STALE_BUILD_WARNING_MS ? age : null;
+}
 
 /** Build output directories we look for, in priority order (Vite, CRA, Next export, Nuxt, Eleventy). */
 export const BUILD_DIR_CANDIDATES = ['dist', 'build', 'out', '.output/public', '_site'];
@@ -120,10 +174,13 @@ export function findHtmlFiles(dir: string): string[] {
 }
 
 /**
- * The <script> we inject into built HTML. Always marks the build as production
- * (so the widget hides the connect/claim prompt on the published site) and, when
- * available, exposes the build fingerprint (for the parity heartbeat) and the
- * detected stack descriptor (so the widget can report how the site was built).
+ * The <script> that marks a PUBLISHED build: it tells the widget to hide the connect/claim prompt,
+ * and carries the build fingerprint (for the parity heartbeat) and the detected stack descriptor.
+ *
+ * Whether this build may claim to be one is `marksPublishedBuild`'s question, and the caller's to ask.
+ * Everything here describes a live site, so there is no honest version of it for a build that is not
+ * going to be one — a local build gets no marker at all, which is also what the widget expects to find
+ * when it is running somewhere a person can still claim the site from.
  */
 export function buildInjectionSnippet(
   checksum: string | null,
