@@ -23,9 +23,37 @@ describe('fetch request-body cap', () => {
   it('truncates an oversize body to the cap and still scans the prefix', async () => {
     const overCap = await post('x'.repeat(200), 'text/plain', 32);
     expect(overCap._rawBody).toBe('x'.repeat(32)); // prefix kept for scanning, not discarded
+    expect(overCap._bodyInspectionSkip).toBe('body-cap');
 
     const underCap = await post('small', 'text/plain', 32);
     expect(underCap._rawBody).toBe('small');
+    expect(underCap._bodyInspectionSkip).toBeUndefined();
+  });
+
+  it('returns after the cap without waiting for the rest of an open stream', async () => {
+    let pulls = 0;
+    const stream = new ReadableStream({
+      pull(controller) {
+        pulls++;
+        controller.enqueue(new TextEncoder().encode('12345678'));
+      },
+    });
+    const request = new Request('https://app/x', {
+      method: 'POST',
+      headers: { 'content-type': 'text/plain' },
+      body: stream,
+      duplex: 'half',
+    } as RequestInit & { duplex: string });
+
+    const shaped: any = await Promise.race([
+      fromFetchRequest(request, { maxBodyBytes: 32 }),
+      new Promise<never>((_, reject) => setTimeout(() => reject(new Error('inspection waited for EOF')), 250)),
+    ]);
+
+    expect(shaped._rawBody).toBe('12345678'.repeat(4));
+    expect(shaped._bodyInspectionSkip).toBe('body-cap');
+    expect(pulls).toBeLessThan(20);
+    void request.body?.cancel().catch(() => {});
   });
 
   it('catches a front-loaded payload in an oversize body; a payload pushed past the cap still slips', async () => {

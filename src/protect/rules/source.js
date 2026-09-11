@@ -23,7 +23,11 @@ import { notify } from '../notify.js';
 function liveUpdateRejections(res, options) {
   if (options.acceptPartialBundle) return [];
   const { rejected } = validateBundle(
-    { firewall: Array.isArray(res.firewall) ? res.firewall : [], whitelists: Array.isArray(res.whitelists) ? res.whitelists : [] },
+    {
+      firewall: Array.isArray(res.firewall) ? res.firewall : [],
+      whitelists: Array.isArray(res.whitelists) ? res.whitelists : [],
+      whitelist_keys: res.whitelist_keys,
+    },
     { allowGlobalWhitelists: options.allowGlobalWhitelists },
   );
   return rejected;
@@ -325,6 +329,7 @@ export function normalizeBundle(b, options = {}) {
     {
       firewall: Array.isArray(b.firewall) ? b.firewall : [],
       whitelists: Array.isArray(b.whitelists) ? b.whitelists : [],
+      whitelist_keys: b.whitelist_keys,
     },
     { allowGlobalWhitelists: options.allowGlobalWhitelists },
   );
@@ -346,7 +351,7 @@ export function normalizeBundle(b, options = {}) {
   return {
     firewall: checked.firewall,
     whitelists: checked.whitelists,
-    whitelist_keys: b.whitelist_keys ?? {},
+    whitelist_keys: checked.whitelist_keys,
     ...(enforcement === 'block' || enforcement === 'dry-run' ? { enforcement } : {}),
   };
 }

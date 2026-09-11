@@ -33,8 +33,11 @@ export async function fromFetchRequest(request, options = {}) {
   }
 
   let rawBody = '';
+  let bodyInspectionSkip = null;
   if (method !== 'GET' && method !== 'HEAD') {
-    rawBody = await readCappedText(request, maxBodyBytes);
+    const read = await readCappedText(request, maxBodyBytes);
+    rawBody = read.text;
+    bodyInspectionSkip = read.skip;
   }
 
   const contentType = headers['content-type'] || '';
@@ -67,16 +70,14 @@ export async function fromFetchRequest(request, options = {}) {
     cookies: parseCookies(headers.cookie),
     // Verbatim body text: preserves literal keys (e.g. `__proto__`) that JSON.stringify
     // drops, so prototype-pollution rules on `raw` are robust.
-    _rawBody: rawBody
+    _rawBody: rawBody,
+    ...(bodyInspectionSkip === null ? {} : { _bodyInspectionSkip: bodyInspectionSkip })
   };
 }
 
-// Read a request body as text for inspection. Memory is bounded by a hard ceiling (4× the scan
-// cap): a body whose declared Content-Length exceeds it is left UNSCANNED (fail-open). Within the
-// ceiling, an oversize body is TRUNCATED to `max` and its prefix is still scanned — so a
-// front-loaded payload is caught — rather than being discarded outright. Reads a clone so the
-// downstream handler keeps an intact body. (`max` is compared in bytes against Content-Length; the
-// prefix slice is by character, which can only over-scan a multibyte body — the safe direction.)
+// Read a bounded request-body prefix for inspection. The clone is cancelled as soon as the cap is
+// reached, which also bounds the unread branch retained by the stream tee while the original request
+// waits for its handler.
 async function readCappedText(request, max) {
   // Do NOT skip scanning based on a declared Content-Length: an attacker can declare a huge length
   // (or none) to dodge inspection while sending a small exploit body. Always stream-scan the prefix
@@ -86,13 +87,9 @@ async function readCappedText(request, max) {
   try {
     clone = request.clone();
   } catch {
-    return '';
+    return { text: '', skip: 'clone-failed' };
   }
 
-  // Stream the read so a body WITHOUT a Content-Length can't buffer unbounded: retain only up to the
-  // scan cap (`max`) for inspection, but keep draining to completion so the original request stays
-  // intact. A front-loaded payload is still caught; anything past the cap is not scanned (same
-  // partial-scan tradeoff as before, now with a hard memory bound regardless of Content-Length).
   const body = clone.body;
   if (body && typeof body.getReader === 'function') {
     const reader = body.getReader();
@@ -102,25 +99,30 @@ async function readCappedText(request, max) {
       for (;;) {
         const { done, value } = await reader.read();
         if (done) break;
-        if (!value || buffered >= max) continue; // keep draining, stop buffering past the cap
+        if (!value) continue;
         const take = Math.min(value.byteLength, max - buffered);
-        chunks.push(take === value.byteLength ? value : value.subarray(0, take));
+        if (take > 0) chunks.push(take === value.byteLength ? value : value.subarray(0, take));
         buffered += take;
+        if (buffered >= max) {
+          void reader.cancel().catch(() => {});
+          return { text: decodeChunks(chunks, buffered), skip: 'body-cap' };
+        }
       }
     } catch {
-      return '';
+      void reader.cancel().catch(() => {});
+      return { text: '', skip: 'read-failed' };
+    } finally {
+      reader.releaseLock();
     }
-    try {
-      return new TextDecoder().decode(concatChunks(chunks, buffered));
-    } catch {
-      return '';
-    }
+    return { text: decodeChunks(chunks, buffered), skip: null };
   }
 
-  // No readable stream — fall back to text() with the post-read guard.
+  return { text: '', skip: 'unreadable-body' };
+}
+
+function decodeChunks(chunks, total) {
   try {
-    const text = await clone.text();
-    return text.length > max ? text.slice(0, max) : text;
+    return new TextDecoder().decode(concatChunks(chunks, total));
   } catch {
     return '';
   }
@@ -244,7 +246,10 @@ export function createFetchMiddleware(rulesData, options = {}) {
     let req;
     let result;
     try {
-      req = await fromFetchRequest(request); // shaping inside the try — a bad/relative request.url must fail open
+      req = await fromFetchRequest(request, options); // shaping inside the try — a bad/relative request.url must fail open
+      if (req._bodyInspectionSkip) {
+        notify(options.onSkip, { phase: 'request', reason: req._bodyInspectionSkip }, 'onSkip');
+      }
       result = engine.evaluate(req);
     } catch (err) {
       notify(options.onError, err, 'onError');

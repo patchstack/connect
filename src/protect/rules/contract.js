@@ -12,7 +12,7 @@
 // `rule-contract.json` is the published form. `tests/protect/rule-contract.test.ts` reads the engine's own
 // source and asserts these descriptions match what it implements.
 
-export const CONTRACT_VERSION = '2.10';
+export const CONTRACT_VERSION = '2.11';
 
 /**
  * Every parameter source, and what it accepts after the dot.
@@ -187,6 +187,21 @@ export function operandShapeProblem(shape, value) {
   const isFilledString = (v) => typeof v === 'string' && v.trim() !== '';
   const isScalar = (v) => typeof v === 'string' || typeof v === 'number' || typeof v === 'boolean';
   const isHeaderName = (v) => typeof v === 'string' && HEADER_NAME.test(v);
+  const stringLimit = (v) => typeof v === 'string' && v.length > LIMITS.maxValueLength
+    ? `must not be longer than ${LIMITS.maxValueLength} chars`
+    : null;
+  const listLimit = (v) => Array.isArray(v) && v.length > LIMITS.maxOperandItems
+    ? `must not have more than ${LIMITS.maxOperandItems} entries`
+    : null;
+
+  const tooLong = stringLimit(value);
+  if (tooLong) return tooLong;
+  const tooMany = listLimit(value);
+  if (tooMany) return tooMany;
+  if (Array.isArray(value)) {
+    const longMember = value.find((member) => stringLimit(member) !== null);
+    if (longMember !== undefined) return `contains a string longer than ${LIMITS.maxValueLength} chars`;
+  }
 
   switch (shape) {
     case 'positive-number':
@@ -227,8 +242,11 @@ export function operandShapeProblem(shape, value) {
       if (value === null || typeof value !== 'object' || Array.isArray(value)) return 'must be an object';
       const names = Object.keys(value);
       if (names.length === 0) return 'must be an object with at least one entry';
+      if (names.length > LIMITS.maxMapEntries) return `must not have more than ${LIMITS.maxMapEntries} entries`;
       const bad = names.find((name) => !isHeaderName(name));
-      return bad === undefined ? null : `names an invalid HTTP header, ${JSON.stringify(bad)}`;
+      if (bad !== undefined) return `names an invalid HTTP header, ${JSON.stringify(bad)}`;
+      const badValue = Object.values(value).find((entry) => typeof entry !== 'string' || entry.length > LIMITS.maxValueLength);
+      return badValue === undefined ? null : `values must be strings no longer than ${LIMITS.maxValueLength} chars`;
     }
     case 'header-name-list': {
       if (!Array.isArray(value) || value.length === 0) return 'must be a non-empty list of HTTP header names';
@@ -487,6 +505,11 @@ export const LIMITS = Object.freeze({
   maxNestingDepth: 12,
   maxRegexLength: 1000,
   maxValueLength: 8192,
+  maxParameterLength: 512,
+  maxParameterItems: 64,
+  maxOperandItems: 256,
+  maxMapEntries: 128,
+  maxPathSegments: 64,
 });
 
 /** The shape of a condition group: this parameter, and a nested `rules` array. */
@@ -536,6 +559,9 @@ export function parameterProblem(parameter) {
 
   if (Array.isArray(parameter)) {
     if (parameter.length === 0) return 'parameter list is empty';
+    if (parameter.length > LIMITS.maxParameterItems) {
+      return `parameter list has more than ${LIMITS.maxParameterItems} entries`;
+    }
     for (const member of parameter) {
       // One level, because the engine expands one level: it resolves each member of the list, and a
       // member that is itself a list resolves to nothing. Accepting it would validate a rule that names
@@ -549,6 +575,9 @@ export function parameterProblem(parameter) {
   }
 
   if (typeof parameter !== 'string' || parameter === '') return 'parameter must be a non-empty string';
+  if (parameter.length > LIMITS.maxParameterLength) {
+    return `parameter is longer than ${LIMITS.maxParameterLength} chars`;
+  }
 
   // Reached only for a LEAF: a whole group is recognised before this and never validated as a parameter.
   // So `rules` here — bare, or as a member of a list — is a leaf naming the group source, which the
@@ -607,6 +636,21 @@ export function matchProblem(match, parameter) {
   if (typeof match.type !== 'string' || match.type === '') return 'match.type must be a non-empty string';
   if (!MATCH_TYPES.includes(match.type)) return `unknown match type "${match.type}"`;
 
+  for (const operand of ['value', 'key', 'claim']) {
+    const value = match[operand];
+    if (typeof value === 'string' && value.length > LIMITS.maxValueLength) {
+      return `match operand "${operand}" is longer than ${LIMITS.maxValueLength} chars`;
+    }
+    if (Array.isArray(value)) {
+      if (value.length > LIMITS.maxOperandItems) {
+        return `match operand "${operand}" has more than ${LIMITS.maxOperandItems} entries`;
+      }
+      if (value.some((entry) => typeof entry === 'string' && entry.length > LIMITS.maxValueLength)) {
+        return `match operand "${operand}" contains a string longer than ${LIMITS.maxValueLength} chars`;
+      }
+    }
+  }
+
   const parameterless = PARAMETERLESS_MATCH_TYPES.includes(match.type);
   if (!parameterless && (parameter === undefined || parameter === null)) {
     return `match type "${match.type}" needs a parameter`;
@@ -631,6 +675,13 @@ export function matchProblem(match, parameter) {
     return `match type "${match.type}" needs a value`;
   }
 
+  if (match.type === 'array_key_value') {
+    const paths = Array.isArray(match.key) ? match.key : [match.key];
+    if (paths.some((path) => typeof path === 'string' && path.split('.').length > LIMITS.maxPathSegments)) {
+      return `match type "array_key_value" key has more than ${LIMITS.maxPathSegments} path segments`;
+    }
+  }
+
   return null;
 }
 
@@ -638,6 +689,9 @@ export function matchProblem(match, parameter) {
 export function mutationsProblem(mutations) {
   if (mutations === undefined || mutations === null) return null;
   if (!Array.isArray(mutations)) return 'mutations must be an array';
+  if (mutations.length > LIMITS.maxOperandItems) {
+    return `mutations has more than ${LIMITS.maxOperandItems} entries`;
+  }
 
   for (const mutation of mutations) {
     if (typeof mutation !== 'string' || !MUTATIONS.includes(mutation)) {
@@ -670,11 +724,20 @@ export function whenProblem(when) {
   if ('path' in when && !isNonEmptyString(when.path)) {
     return 'when.path must be a non-empty string';
   }
+  if (typeof when.path === 'string' && when.path.length > LIMITS.maxValueLength) {
+    return `when.path is longer than ${LIMITS.maxValueLength} chars`;
+  }
 
   if ('method' in when) {
     const methods = Array.isArray(when.method) ? when.method : [when.method];
     if (methods.length === 0) return 'when.method is an empty list, so the rule would match no method';
+    if (methods.length > LIMITS.maxParameterItems) {
+      return `when.method has more than ${LIMITS.maxParameterItems} entries`;
+    }
     if (!methods.every(isNonEmptyString)) return 'when.method must be a non-empty string, or a list of them';
+    if (methods.some((method) => method.length > LIMITS.maxParameterLength)) {
+      return `when.method entries must not be longer than ${LIMITS.maxParameterLength} chars`;
+    }
   }
 
   return null;
@@ -712,6 +775,12 @@ export function rulePropertyProblem(rule) {
     if (rule[property] === undefined || rule[property] === null) continue;
     const problem = operandShapeProblem(shape, rule[property]);
     if (problem) return `"${property}" ${problem}`;
+  }
+
+  for (const property of ['id', 'rule_id', 'title', 'category', 'message', 'source_revision']) {
+    if (typeof rule[property] === 'string' && rule[property].length > LIMITS.maxValueLength) {
+      return `"${property}" is longer than ${LIMITS.maxValueLength} chars`;
+    }
   }
 
   // `capture` is deliberately NOT checked here. It authorises collection, and a rule is a mitigation:
