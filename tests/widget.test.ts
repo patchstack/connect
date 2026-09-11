@@ -1,6 +1,7 @@
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
+import ts from 'typescript';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import {
   WIDGET_MARKER_ATTR,
@@ -132,5 +133,107 @@ describe('findSourceShell / ensureSourceWidget', () => {
     const result = ensureSourceWidget(cwd, UUID_A);
     expect(result.action).toBe('unchanged');
     expect(readFileSync(path.join(cwd, 'index.html'), 'utf8')).toBe(afterFirst);
+  });
+});
+
+/**
+ * A server-rendered project never produces an HTML shell, and until this existed those projects were
+ * told to paste the tag themselves. The instruction was reliably missed — a hosted builder's agent
+ * runs setup, reads "add this yourself", stops, and the published site carries no widget at all.
+ */
+describe('ensureSourceWidget on a JSX root', () => {
+  let cwd: string;
+
+  const ROOT = [
+    "import { HeadContent, Outlet, Scripts } from '@tanstack/react-router';",
+    '',
+    'function RootComponent() {',
+    '  return (',
+    '    <html lang="en">',
+    '      <head>',
+    '        <HeadContent />',
+    '      </head>',
+    '      <body>',
+    '        <Outlet />',
+    '        <Scripts />',
+    '      </body>',
+    '    </html>',
+    '  );',
+    '}',
+  ].join('\n');
+
+  const jsxRoot = (source = ROOT): string => {
+    mkdirSync(path.join(cwd, 'src', 'routes'), { recursive: true });
+    writeFileSync(path.join(cwd, 'src', 'routes', '__root.tsx'), source);
+    return 'src/routes/__root.tsx';
+  };
+
+  const read = (): string => readFileSync(path.join(cwd, 'src', 'routes', '__root.tsx'), 'utf8');
+
+  beforeEach(() => {
+    cwd = mkdtempSync(path.join(tmpdir(), 'ps-widget-jsx-'));
+  });
+
+  afterEach(() => {
+    rmSync(cwd, { recursive: true, force: true });
+  });
+
+  it('writes the tag into the root component when there is no HTML shell', () => {
+    const shell = jsxRoot();
+    expect(ensureSourceWidget(cwd, UUID_A, shell)).toEqual({ shell, action: 'added' });
+    expect(read()).toContain(buildWidgetTag(UUID_A));
+  });
+
+  it('leaves something the compiler can still parse', () => {
+    // The tag is inserted verbatim, so it has to be valid JSX as well as valid HTML: `defer` reads
+    // as a boolean attribute and the data-* attributes pass through.
+    ensureSourceWidget(cwd, UUID_A, jsxRoot());
+    const parsed = ts.createSourceFile('__root.tsx', read(), ts.ScriptTarget.ESNext, true, ts.ScriptKind.TSX);
+    expect(parsed.parseDiagnostics ?? []).toHaveLength(0);
+  });
+
+  it('anchors inside <body>, after the app it is reporting on', () => {
+    ensureSourceWidget(cwd, UUID_A, jsxRoot());
+    const source = read();
+    expect(source.indexOf('patchstack-widget.js')).toBeGreaterThan(source.indexOf('<Outlet />'));
+    expect(source.indexOf('patchstack-widget.js')).toBeLessThan(source.indexOf('</body>'));
+  });
+
+  it('is idempotent — a second scan does not stack a second tag', () => {
+    const shell = jsxRoot();
+    ensureSourceWidget(cwd, UUID_A, shell);
+    expect(ensureSourceWidget(cwd, UUID_A, shell).action).toBe('unchanged');
+    expect(read().match(/patchstack-widget\.js/g) ?? []).toHaveLength(1);
+  });
+
+  it('moves a managed tag to a new site rather than adding a second', () => {
+    const shell = jsxRoot();
+    ensureSourceWidget(cwd, UUID_A, shell);
+    expect(ensureSourceWidget(cwd, UUID_B, shell).action).toBe('updated');
+    const source = read();
+    expect(source).toContain(UUID_B);
+    expect(source).not.toContain(UUID_A);
+  });
+
+  it('adopts a tag somebody placed themselves', () => {
+    const shell = jsxRoot(ROOT.replace('<Scripts />', '<Scripts />\n        <script src="https://cdn.patchstack.com/patchstack-widget.js" data-site-uuid="whatever" defer></script>'));
+    expect(ensureSourceWidget(cwd, UUID_A, shell).action).toBe('manual');
+    expect(read()).not.toContain(UUID_A);
+  });
+
+  it('prefers a real HTML shell, which is the document actually served', () => {
+    // On a stack that has both, the JSX root only renders into the shell — editing it would put the
+    // tag one level further from the page than it needs to be.
+    writeFileSync(path.join(cwd, 'index.html'), SHELL);
+    const shell = jsxRoot();
+    expect(ensureSourceWidget(cwd, UUID_A, shell).shell).toBe('index.html');
+    expect(read()).not.toContain('patchstack-widget.js');
+  });
+
+  it('reports no-shell when the hinted root does not exist', () => {
+    expect(ensureSourceWidget(cwd, UUID_A, 'src/routes/__root.tsx')).toEqual({
+      shell: null,
+      action: 'no-shell',
+    });
   });
 });

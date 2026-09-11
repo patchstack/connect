@@ -715,8 +715,12 @@ async function runScan(
   // server round-trip, while `scan` is commonly chained as `scan || true`, so a
   // failed or offline post must not be what decides whether a published build
   // gets its production flag. --dry-run has already returned by here.
+  const shellFramework = detectStack(payload.packages).framework;
   if (config.widget) {
-    reportSourceMarker(detectStack(payload.packages).framework);
+    // The checksum of the manifest this run is posting — on a pre-build hook that is the build about
+    // to be compiled. Without it a server-rendered app's page says it is live but not which build is,
+    // which is the question the dashboard grades on.
+    reportSourceMarker(shellFramework, computeManifestChecksum(payload.packages));
   }
 
   const provisioning = config.siteUuid === null;
@@ -789,7 +793,7 @@ async function runScan(
   // returned above.
   const effectiveUuid = config.siteUuid ?? response.uuid ?? null;
   if (config.widget && effectiveUuid !== null && effectiveUuid.length > 0) {
-    reportSourceWidget(effectiveUuid);
+    reportSourceWidget(effectiveUuid, shellFramework);
   }
 
   // On the first scan (provisioning), surface the dashboard URL so the user can
@@ -840,9 +844,14 @@ async function runScan(
  * widget management is a convenience layered on top of a successful scan and
  * must not turn one into a failure.
  */
-function reportSourceWidget(siteUuid: string): void {
+function reportSourceWidget(siteUuid: string, framework: string | null): void {
   try {
-    const result = ensureSourceWidget(process.cwd(), siteUuid);
+    // A server-rendered project has no HTML shell to edit, so the framework's JSX root stands in for
+    // one. Only where a literal tag is known to belong — the same set the marker will write into.
+    const hint = hasJsxShell(framework) ? resolveWidgetFileHint(process.cwd(), framework) : null;
+    const jsxShell = hint !== null && !hint.toLowerCase().endsWith('.html') ? hint : null;
+
+    const result = ensureSourceWidget(process.cwd(), siteUuid, jsxShell);
     switch (result.action) {
       case 'added':
         console.log(`Widget: added the "Report a vulnerability" tag to ${result.shell}. Reload your preview to see it.`);
@@ -861,7 +870,7 @@ function reportSourceWidget(siteUuid: string): void {
         console.log(`  ${buildWidgetTag(siteUuid)}`);
         break;
       case 'no-shell':
-        console.log('Widget: no plain HTML shell found (index.html / public/index.html / src/app.html).');
+        console.log('Widget: no root shell found to edit (index.html / public/index.html / src/app.html, or a JSX root).');
         console.log('Add this tag to your root layout before </body> (run `guide` for framework-specific placement):');
         console.log(`  ${buildWidgetTag(siteUuid)}`);
         break;
@@ -883,7 +892,7 @@ function reportSourceWidget(siteUuid: string): void {
  * follows. On a server-rendered root that is the only way the marker reaches
  * production — `mark-build` runs after the build and has no HTML to stamp.
  */
-function reportSourceMarker(framework: string | null): void {
+function reportSourceMarker(framework: string | null, checksum: string | null = null): void {
   try {
     const shell = resolveWidgetFileHint(process.cwd(), framework);
     if (shell === null || shell.toLowerCase().endsWith('.html')) {
@@ -891,7 +900,7 @@ function reportSourceMarker(framework: string | null): void {
       return;
     }
 
-    const result = ensureSourceMarker(process.cwd(), shell, framework);
+    const result = ensureSourceMarker(process.cwd(), shell, framework, checksum);
     switch (result.action) {
       case 'added':
         console.log(`Production marker: added to ${shell} (guarded by ${productionGate(framework)}).`);

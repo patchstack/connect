@@ -21,9 +21,9 @@ const WIDGET_NEEDLE = 'patchstack-widget';
 
 /**
  * Root HTML shells the connector is willing to edit, in priority order:
- * Vite/plain SPA, CRA-style, SvelteKit. Framework layouts that are code rather
- * than HTML (Next/Nuxt/Astro layouts) are never edited automatically — `guide`
- * prints the snippet and the right file for those.
+ * Vite/plain SPA, CRA-style, SvelteKit. A framework whose root is code rather
+ * than HTML has no entry here; a JSX one is handled by `ensureSourceWidget`'s
+ * fallback below, and the rest get the snippet printed by `guide`.
  */
 export const SOURCE_SHELL_CANDIDATES = ['index.html', 'public/index.html', 'src/app.html'];
 
@@ -102,15 +102,38 @@ export interface SourceWidgetResult {
 }
 
 /**
- * Ensure the managed widget tag in the project's root HTML shell. Edits at most
- * that one file; returns what happened so the caller can report it.
+ * Ensure the managed widget tag in the project's root shell. Edits at most that one file; returns
+ * what happened so the caller can report it.
+ *
+ * `jsxShell` is the framework's root component, used only when the project has no plain HTML shell —
+ * a server-rendered app (TanStack Start, Next, Remix) never produces one, and until this fallback
+ * existed those projects were told to paste the tag themselves. That instruction was reliably missed:
+ * a hosted builder's agent runs setup, reads "add this yourself", finishes, and the published site
+ * carries no widget at all. Nothing downstream can tell that apart from a site that was never set up.
+ *
+ * The same tag works in both places. JSX reads `<script src="…" defer data-…="true" />` as an
+ * element with a boolean `defer`, which is exactly what the HTML form means — and it is already the
+ * snippet `guide` prints for these roots, so this inserts what a person following the instructions
+ * would have typed.
+ *
+ * Deliberately NOT behind the production gate the marker uses. The marker claims the site is live;
+ * the widget is how an owner claims the site in the first place, and that happens in the preview.
  */
-export function ensureSourceWidget(cwd: string, siteUuid: string): SourceWidgetResult {
-  const shell = findSourceShell(cwd);
+export function ensureSourceWidget(
+  cwd: string,
+  siteUuid: string,
+  jsxShell: string | null = null,
+): SourceWidgetResult {
+  // A real HTML shell always wins: it is the document the build actually serves, and on a stack that
+  // has one the JSX hint would point at a component that merely renders into it.
+  const shell = findSourceShell(cwd) ?? jsxShell;
   if (shell === null) {
     return { shell: null, action: 'no-shell' };
   }
   const file = path.join(cwd, shell);
+  if (!existsSync(file)) {
+    return { shell: null, action: 'no-shell' };
+  }
   const before = readFileSync(file, 'utf8');
   const { html, action } = ensureWidgetInHtml(before, siteUuid);
   if (html !== before) {
