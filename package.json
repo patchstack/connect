@@ -1,6 +1,6 @@
 {
   "name": "@patchstack/connect",
-  "version": "0.5.1",
+  "version": "0.5.4",
   "description": "Runtime application security for JavaScript and Node.js: dependency inventory, attack-surface mapping, and an in-process guard that virtually patches known vulnerabilities and hardens responses.",
   "keywords": [
     "patchstack",
