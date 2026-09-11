@@ -44,55 +44,90 @@ const ACTIONS = new Set(CONTRACT_ACTIONS);
  */
 export function validateBundle(bundle, opts = {}) {
   const rejected = [];
+  let omittedRejections = 0;
+  const reject = (entry) => {
+    if (rejected.length < 100) rejected.push(entry);
+    else omittedRejections++;
+  };
   const inFirewall = Array.isArray(bundle?.firewall) ? bundle.firewall : [];
   const inWhitelists = Array.isArray(bundle?.whitelists) ? bundle.whitelists : [];
   const bundleBudget = { count: 0 };
 
   const firewall = [];
-  for (const rule of inFirewall) {
-    if (firewall.length >= LIMITS.maxRules) {
-      rejected.push({ id: idOf(rule), reason: `bundle exceeds maxRules (${LIMITS.maxRules})` });
-      continue;
-    }
+  for (const rule of inFirewall.slice(0, LIMITS.maxRules)) {
     const reason = enforceableRuleProblem(rule, bundleBudget);
-    if (reason) rejected.push({ id: idOf(rule), reason });
+    if (reason) reject({ id: idOf(rule), reason });
     else firewall.push(rule);
+  }
+  if (inFirewall.length > LIMITS.maxRules) {
+    reject({ id: '(bundle)', reason: `bundle exceeds maxRules (${LIMITS.maxRules})` });
   }
 
   const whitelists = [];
-  for (const wl of inWhitelists) {
-    if (whitelists.length >= LIMITS.maxWhitelists) {
-      rejected.push({ id: idOf(wl), reason: `bundle exceeds maxWhitelists (${LIMITS.maxWhitelists})` });
-      continue;
-    }
+  for (const wl of inWhitelists.slice(0, LIMITS.maxWhitelists)) {
     // A whitelist SUPPRESSES rules, so a malformed one is a protection risk, not a detection risk.
     // One with no `rule_id` applies to EVERY rule — a single tripped condition disables the whole
     // firewall for that request — so it must be opted into explicitly.
     if (!opts.allowGlobalWhitelists && wl && Array.isArray(wl.rule_v2) && !wl.rule_id) {
-      rejected.push({ id: idOf(wl), reason: 'whitelist has no rule_id (would suppress every rule); set allowGlobalWhitelists to permit' });
+      reject({ id: idOf(wl), reason: 'whitelist has no rule_id (would suppress every rule); set allowGlobalWhitelists to permit' });
       continue;
     }
     // A scoped firewall rule can be narrowed to detect-only. A whitelist has no such state: when it
     // matches it suppresses protection. Refuse the property here rather than letting an uncorroborated
     // coordinate disable a rule for another build.
     if (wl && typeof wl === 'object' && BUILD_SCOPE_PROPERTY in wl) {
-      rejected.push({ id: idOf(wl), reason: `whitelist may not carry ${BUILD_SCOPE_PROPERTY}` });
+      reject({ id: idOf(wl), reason: `whitelist may not carry ${BUILD_SCOPE_PROPERTY}` });
       continue;
     }
     const reason = conditionsProblem(wl?.rule_v2, 0, { count: 0 }, bundleBudget);
-    if (reason) rejected.push({ id: idOf(wl), reason: `whitelist: ${reason}` });
+    if (reason) reject({ id: idOf(wl), reason: `whitelist: ${reason}` });
     else whitelists.push(wl);
+  }
+  if (inWhitelists.length > LIMITS.maxWhitelists) {
+    reject({ id: '(bundle)', reason: `bundle exceeds maxWhitelists (${LIMITS.maxWhitelists})` });
+  }
+
+  let whitelistKeys = {};
+  if (bundle?.whitelist_keys !== undefined) {
+    if (!bundle.whitelist_keys || typeof bundle.whitelist_keys !== 'object' || Array.isArray(bundle.whitelist_keys)) {
+      reject({ id: '(bundle)', reason: 'whitelist_keys must be an object' });
+    } else {
+      const entries = Object.entries(bundle.whitelist_keys);
+      if (entries.length > LIMITS.maxMapEntries) {
+        reject({ id: '(bundle)', reason: `whitelist_keys has more than ${LIMITS.maxMapEntries} entries` });
+      } else {
+        const invalid = entries.find(([key, value]) =>
+          key.length > LIMITS.maxParameterLength
+          || !Array.isArray(value)
+          || value.length > LIMITS.maxOperandItems
+          || value.some((entry) => typeof entry !== 'string' || entry.length > LIMITS.maxValueLength));
+        if (invalid) {
+          reject({ id: '(bundle)', reason: `whitelist_keys entry "${invalid[0].slice(0, 64)}" has an unsupported shape` });
+        } else {
+          whitelistKeys = bundle.whitelist_keys;
+        }
+      }
+    }
+  }
+
+  if (omittedRejections > 0) {
+    rejected.push({ id: '(bundle)', reason: `${omittedRejections} additional rejected entries omitted` });
   }
 
   return {
-    bundle: { ...bundle, firewall, whitelists },
+    bundle: { ...bundle, firewall, whitelists, whitelist_keys: whitelistKeys },
     rejected,
   };
 }
 
 function idOf(rule) {
   const id = rule?.id ?? rule?.rule_id;
-  return id === undefined || id === null ? '(unidentified)' : String(id);
+  if (id === undefined || id === null) return '(unidentified)';
+  try {
+    return String(id).slice(0, 128);
+  } catch {
+    return '(unidentified)';
+  }
 }
 
 /**

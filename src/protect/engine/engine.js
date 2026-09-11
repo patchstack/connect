@@ -46,7 +46,21 @@ function hasAdjacentUnbounded(body, flags) {
     } else if (ch === ')') {
       i++;
       atom = '.'; // Conservatively treat a quantified group as capable of consuming a delimiter.
-    } else if ('(|'.includes(ch)) {
+    } else if (ch === '(') {
+      const lookaround = body.startsWith('(?=', i) || body.startsWith('(?!', i)
+        || body.startsWith('(?<=', i) || body.startsWith('(?<!', i);
+      if (lookaround) {
+        i = groupEnd(body, i);
+        continue;
+      }
+      i++;
+      if (body.startsWith('?:', i)) i += 2;
+      else if (body.startsWith('?<', i)) {
+        const nameEnd = body.indexOf('>', i + 2);
+        if (nameEnd !== -1) i = nameEnd + 1;
+      }
+      continue;
+    } else if (ch === '|') {
       previousUnboundedAtom = null;
       i++;
       continue;
@@ -65,22 +79,28 @@ function hasAdjacentUnbounded(body, flags) {
     if (assertion) continue;
 
     let unbounded = false;
+    let mayBeEmpty = false;
     if (body[i] === '*' || body[i] === '+') {
       unbounded = true;
+      mayBeEmpty = body[i] === '*';
       i++;
     } else if (body[i] === '{') {
-      const quantifier = /^\{\d*,\}/.exec(body.slice(i));
+      const quantifier = /^\{(\d+)(?:,(\d*))?\}/.exec(body.slice(i));
       if (quantifier) {
-        unbounded = true;
+        unbounded = quantifier[2] === '';
+        mayBeEmpty = Number(quantifier[1]) === 0;
         i += quantifier[0].length;
       }
+    } else if (body[i] === '?') {
+      mayBeEmpty = true;
+      i++;
     }
     if (unbounded && (body[i] === '?' || body[i] === '+')) i++;
 
     if (unbounded && previousUnboundedAtom !== null) return true;
     if (unbounded) {
       previousUnboundedAtom = atom;
-    } else if (previousUnboundedAtom !== null) {
+    } else if (previousUnboundedAtom !== null && !mayBeEmpty) {
       try {
         const atomFlags = flags.replace(/[^iu]/g, '');
         const complementaryClass =
@@ -102,6 +122,23 @@ function hasAdjacentUnbounded(body, flags) {
     if (i === start) i++;
   }
   return false;
+}
+
+function groupEnd(body, start) {
+  let depth = 0;
+  let inClass = false;
+  for (let i = start; i < body.length; i++) {
+    const ch = body[i];
+    if (ch === '\\') {
+      i++;
+      continue;
+    }
+    if (ch === '[') inClass = true;
+    else if (ch === ']') inClass = false;
+    else if (!inClass && ch === '(') depth++;
+    else if (!inClass && ch === ')' && --depth === 0) return i + 1;
+  }
+  return body.length;
 }
 
 // Report once when a rule's regex is rejected (ReDoS-shaped or unparseable). Unlike an unknown match

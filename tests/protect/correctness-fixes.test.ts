@@ -86,6 +86,28 @@ describe('egress fetch — redirects are re-screened', () => {
       globalThis.fetch = origFetch;
     }
   });
+
+  it('releases an intermediate redirect body before following the next hop', async () => {
+    let cancelled = false;
+    const origFetch = globalThis.fetch;
+    globalThis.fetch = (async (input: any) => {
+      const url = typeof input === 'string' ? input : input.url;
+      if (url.includes('/final')) return new Response('final-body');
+      return new Response(new ReadableStream({ cancel() { cancelled = true; } }), {
+        status: 302,
+        headers: { location: 'http://93.184.216.34/final' },
+      });
+    }) as any;
+    const p: any = await createProtection({ egress: true, mode: 'block', allowHosts: [] });
+    try {
+      const res = await globalThis.fetch('http://93.184.216.34/start');
+      expect(await res.text()).toBe('final-body');
+      expect(cancelled).toBe(true);
+    } finally {
+      p.uninstallEgress?.();
+      globalThis.fetch = origFetch;
+    }
+  });
 });
 
 describe('egress fetch — redirect semantics', () => {
