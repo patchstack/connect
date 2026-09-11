@@ -65,6 +65,14 @@ describe('resolveConfig', () => {
     expect(config.siteUuid).toBe(VALID_UUID);
   });
 
+  it('marks a custom endpoint from project config as requiring operator trust', async () => {
+    await writeConfigFile(cwd, { endpoint: 'https://custom.example/monitor/pulse/manifest' });
+    expect((await resolveConfig({ cwd })).endpointTrusted).toBe(false);
+
+    process.env.PATCHSTACK_ENDPOINT = 'https://operator.example/monitor/pulse/manifest';
+    expect((await resolveConfig({ cwd })).endpointTrusted).toBe(true);
+  });
+
   it('returns siteUuid null when nothing is set', async () => {
     const config = await resolveConfig({ cwd });
     expect(config.siteUuid).toBeNull();

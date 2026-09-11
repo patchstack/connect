@@ -5,6 +5,8 @@
  * This module handles URL encoding, HTML entities, SQL comments, and other
  * obfuscation techniques that attackers use to evade pattern matching.
  */
+import { setOwn } from './own.js';
+
 
 const HTML_ENTITIES = {
     '&amp;': '&',
@@ -289,7 +291,7 @@ export function normalizeObject(value, options = {}, depth = 0) {
         const result = {};
 
         for (const [key, val] of Object.entries(value)) {
-            result[key] = normalizeObject(val, options, depth + 1);
+            setOwn(result, key, normalizeObject(val, options, depth + 1));
         }
 
         return result;

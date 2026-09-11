@@ -1,3 +1,5 @@
+import { setOwn } from './own.js';
+
 // Resolvable DATA attributes of an uploaded file part (files.<name>.<attr>). The engine only exposes
 // the raw data — WHAT counts as a malicious upload (signatures, type-vs-content mismatch) is expressed
 // in rules (see the triage-vpatch-npm skill), not hardcoded here.
@@ -135,8 +137,8 @@ export class RequestResolver {
     }
     if (key.startsWith('header.')) {
       const name = key.slice('header.'.length).toLowerCase();
-      const value = (resp.headers ?? {})[name];
-      return value !== undefined ? [value] : [];
+      const headers = resp.headers ?? {};
+      return Object.hasOwn(headers, name) ? [headers[name]] : [];
     }
     return [];
   }
@@ -256,7 +258,7 @@ export class RequestResolver {
 
     const value = this.#getNestedValue(query, key)
       ?? this.#getNestedValue(body, key)
-      ?? cookies[key];
+      ?? (Object.hasOwn(cookies, key) ? cookies[key] : undefined);
 
     return value !== undefined ? [value] : [];
   }
@@ -268,8 +270,7 @@ export class RequestResolver {
       return this.#resolveWildcard(cookies, key);
     }
 
-    const value = cookies[key];
-    return value !== undefined ? [value] : [];
+    return Object.hasOwn(cookies, key) ? [cookies[key]] : [];
   }
 
   #resolveServer(key) {
@@ -489,7 +490,7 @@ export class RequestResolver {
       }
       const name = pair.substring(0, eqIndex).trim();
       const value = pair.substring(eqIndex + 1).trim();
-      cookies[name] = value;
+      setOwn(cookies, name, value);
     }
 
     this.#cookies = cookies;

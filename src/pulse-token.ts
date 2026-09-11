@@ -1,4 +1,5 @@
 import type { Config } from './types.js';
+import { isSafeOrigin } from './protect/safe-origin.js';
 
 /**
  * Bearer tokens for the authenticated Pulse endpoints (ADR-0018).
@@ -33,12 +34,28 @@ export function parsePulseAuth(credential: string): { clientId: string; clientSe
   return { clientId, clientSecret: credential.slice(0, index) };
 }
 
-let cached: { token: string; expiresAt: number } | null = null;
-let inflight: Promise<string | null> | null = null;
+const cached = new Map<string, { token: string; expiresAt: number }>();
+const inflight = new Map<string, Promise<string | null>>();
+
+function cacheKey(tokenUrl: string, credential: string): string {
+  return `${tokenUrl}\n${credential}`;
+}
 
 /** Drops the cached token. Exported for tests and for 401 handling. */
-export function clearPulseToken(): void {
-  cached = null;
+export function clearPulseToken(config?: Config): void {
+  if (!config || typeof config.pulseAuth !== 'string') {
+    cached.clear();
+    inflight.clear();
+    return;
+  }
+
+  try {
+    const key = cacheKey(buildTokenUrl(config.endpoint), config.pulseAuth);
+    cached.delete(key);
+    inflight.delete(key);
+  } catch {
+    // An invalid endpoint cannot have produced a cached entry.
+  }
 }
 
 /**
@@ -57,18 +74,32 @@ export async function getPulseToken(
   // Not `=== null`: Config is public, so callers can hand us an object that
   // predates this field, and an unusable credential must never throw here.
   if (typeof config.pulseAuth !== 'string' || config.pulseAuth.length === 0) return null;
+  if (config.endpointTrusted === false) return null;
 
-  if (cached !== null && Date.now() < cached.expiresAt - TOKEN_SKEW_MS) {
-    return cached.token;
+  let tokenUrl: string;
+  try {
+    tokenUrl = buildTokenUrl(config.endpoint);
+  } catch {
+    return null;
   }
-  if (inflight !== null) return inflight;
+  if (!isSafeOrigin(tokenUrl)) return null;
+
+  const key = cacheKey(tokenUrl, config.pulseAuth);
+  const existing = cached.get(key);
+
+  if (existing !== undefined && Date.now() < existing.expiresAt - TOKEN_SKEW_MS) {
+    return existing.token;
+  }
+  const pending = inflight.get(key);
+  if (pending !== undefined) return pending;
 
   const credentials = parsePulseAuth(config.pulseAuth);
   if (credentials === null) return null;
 
-  inflight = (async () => {
+  let exchange!: Promise<string | null>;
+  exchange = (async () => {
     try {
-      const response = await fetchImpl(buildTokenUrl(config.endpoint), {
+      const response = await fetchImpl(tokenUrl, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -90,17 +121,18 @@ export async function getPulseToken(
 
       const expiresIn = Number(body.expires_in);
       const ttlMs = Number.isFinite(expiresIn) && expiresIn > 0 ? expiresIn * 1000 : 3600_000;
-      cached = { token: body.access_token, expiresAt: Date.now() + ttlMs };
+      cached.set(key, { token: body.access_token, expiresAt: Date.now() + ttlMs });
 
       return body.access_token;
     } catch {
       return null;
     } finally {
-      inflight = null;
+      if (inflight.get(key) === exchange) inflight.delete(key);
     }
   })();
+  inflight.set(key, exchange);
 
-  return inflight;
+  return exchange;
 }
 
 /**
@@ -148,7 +180,7 @@ export async function pulseFetch(
   // Retrying an unauthenticated request would just repeat it: the 401 was
   // about something other than our token.
   if (first.response.status === 401 && first.authenticated) {
-    clearPulseToken();
+    clearPulseToken(config);
 
     return (await send()).response;
   }

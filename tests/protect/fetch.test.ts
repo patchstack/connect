@@ -91,6 +91,38 @@ describe('fetch adapter', () => {
     assert.strictEqual(res?.status, 403, '__proto__ in the verbatim body should be caught');
   });
 
+  it('preserves magic-looking query and form keys as request-owned fields', async () => {
+    for (const key of ['__proto__', 'constructor', 'toString']) {
+      const queryRequest = new Request(`https://app.dev/read?${encodeURIComponent(key)}=evil`);
+      const shapedQuery = await fromFetchRequest(queryRequest);
+      assert.strictEqual(Object.hasOwn(shapedQuery.query, key), true);
+      assert.strictEqual(shapedQuery.query[key], 'evil');
+
+      const queryGuard = createFetchMiddleware({
+        firewall: [{ id: key, rule_v2: [{ parameter: `get.${key}`, match: { type: 'equals', value: 'evil' } }] }],
+        whitelists: [],
+        whitelist_keys: {},
+      });
+      assert.strictEqual((await queryGuard(queryRequest))?.status, 403);
+
+      const formRequest = new Request('https://app.dev/write', {
+        method: 'POST',
+        headers: { 'content-type': 'application/x-www-form-urlencoded' },
+        body: `${encodeURIComponent(key)}=evil`,
+      });
+      const shapedForm = await fromFetchRequest(formRequest);
+      assert.strictEqual(Object.hasOwn(shapedForm.body, key), true);
+      assert.strictEqual(shapedForm.body[key], 'evil');
+
+      const formGuard = createFetchMiddleware({
+        firewall: [{ id: key, rule_v2: [{ parameter: `post.${key}`, match: { type: 'equals', value: 'evil' } }] }],
+        whitelists: [],
+        whitelist_keys: {},
+      });
+      assert.strictEqual((await formGuard(formRequest))?.status, 403);
+    }
+  });
+
   it('fails open when a rule throws (never blocks on engine error)', async () => {
     const badEngine = { evaluate() { throw new Error('boom'); } };
     let captured = null;

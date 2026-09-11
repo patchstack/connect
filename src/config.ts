@@ -1,5 +1,6 @@
-import { readFile, writeFile, chmod } from 'node:fs/promises';
+import { readFile, chmod, lstat, open, rename, unlink } from 'node:fs/promises';
 import path from 'node:path';
+import { randomUUID } from 'node:crypto';
 import { PatchstackError, type Config, type Environment } from './types.js';
 import { DEFAULT_ENDPOINT, DEFAULT_TIMEOUT_MS } from './client.js';
 import { detectHostedBuilder, inferEnvironment } from './environment.js';
@@ -147,6 +148,9 @@ export async function resolveConfig(options: ResolveConfigOptions): Promise<Conf
     fromEnv.endpoint ??
     fromFile.endpoint ??
     DEFAULT_ENDPOINT;
+  const endpointTrusted =
+    endpoint === DEFAULT_ENDPOINT || options.cliEndpoint !== undefined || fromEnv.endpoint !== undefined ||
+    fromFile.endpoint === undefined;
 
   const timeoutMs = fromEnv.timeoutMs ?? fromFile.timeoutMs ?? DEFAULT_TIMEOUT_MS;
 
@@ -208,6 +212,7 @@ export async function resolveConfig(options: ResolveConfigOptions): Promise<Conf
     siteUrl: identity.url,
     siteName: identity.name,
     endpoint,
+    endpointTrusted,
     timeoutMs,
     environment,
     environmentEvidence,
@@ -219,7 +224,7 @@ export async function resolveConfig(options: ResolveConfigOptions): Promise<Conf
 export async function writeConfigFile(cwd: string, config: ConfigFile): Promise<string> {
   const target = path.join(cwd, CONFIG_FILENAME);
   const content = JSON.stringify(config, null, 2) + '\n';
-  await writeFile(target, content, 'utf8');
+  await writeAtomicFile(target, content, 0o644);
   return target;
 }
 
@@ -252,7 +257,7 @@ export interface SecretFileResult {
  */
 export async function writeSecretFile(cwd: string, secrets: SecretFile): Promise<SecretFileResult> {
   const target = path.join(cwd, SECRET_FILENAME);
-  await writeFile(target, JSON.stringify(secrets, null, 2) + '\n', { encoding: 'utf8', mode: 0o600 });
+  await writeAtomicFile(target, JSON.stringify(secrets, null, 2) + '\n', 0o600);
   // Explicit chmod as well as the create mode: an existing file keeps its old permissions, and a rotation
   // writes over one that may predate this.
   try {
@@ -264,6 +269,44 @@ export async function writeSecretFile(cwd: string, secrets: SecretFile): Promise
   const ignore = await ensureIgnored(cwd, SECRET_FILENAME);
 
   return { path: target, ...ignore };
+}
+
+async function writeAtomicFile(target: string, content: string, mode: number): Promise<void> {
+  const temporary = `${target}.${process.pid}.${randomUUID()}.tmp`;
+  let handle;
+  try {
+    handle = await open(temporary, 'wx', mode);
+    await handle.writeFile(content, 'utf8');
+    await handle.sync();
+    await handle.close();
+    handle = undefined;
+    try {
+      await rename(temporary, target);
+    } catch (error) {
+      const code = (error as NodeJS.ErrnoException).code;
+      if (process.platform !== 'win32' || (code !== 'EEXIST' && code !== 'EPERM')) throw error;
+      // Windows cannot atomically replace an existing path. Unlink removes a link itself rather than
+      // following it, then the owner-only temporary becomes the destination.
+      try {
+        await unlink(target);
+      } catch (unlinkError) {
+        if ((unlinkError as NodeJS.ErrnoException).code !== 'ENOENT') throw unlinkError;
+      }
+      await rename(temporary, target);
+    }
+  } catch (error) {
+    try {
+      await handle?.close();
+    } catch {
+      /* best-effort cleanup */
+    }
+    try {
+      await unlink(temporary);
+    } catch {
+      /* best-effort cleanup */
+    }
+    throw error;
+  }
 }
 
 /**
@@ -294,7 +337,7 @@ async function ensureIgnored(cwd: string, entry: string): Promise<{ ignored: boo
   const separator = existing === '' || existing.endsWith('\n') ? '' : '\n';
   const block = `${separator}\n# Patchstack credential — never commit this\n${entry}\n`;
   try {
-    await writeFile(target, existing + block, 'utf8');
+    await writeAtomicFile(target, existing + block, 0o644);
   } catch (err) {
     const code = (err as NodeJS.ErrnoException).code;
 
@@ -451,8 +494,15 @@ async function readJsonFile(cwd: string, filename: string): Promise<ConfigFile> 
   const target = path.join(cwd, filename);
   let raw: string;
   try {
+    if ((await lstat(target)).isSymbolicLink()) {
+      throw new PatchstackError(
+        `Could not read ${target}: configuration files must not be symbolic links.`,
+        'CONFIG_INVALID',
+      );
+    }
     raw = await readFile(target, 'utf8');
   } catch (err) {
+    if (err instanceof PatchstackError) throw err;
     if ((err as NodeJS.ErrnoException).code === 'ENOENT') {
       return {};
     }

@@ -10,6 +10,7 @@ import { resolveClientIp } from '../client-ip.js';
 import { RuleEngine } from './engine.js';
 import { parseBody } from './fetch.js';
 import { notify } from '../notify.js';
+import { appendOwn, setOwn } from './own.js';
 
 // Build the engine's request shape from a Node IncomingMessage + its raw body text.
 export function fromNodeRequest(req, rawBody = '', options = {}) {
@@ -17,7 +18,7 @@ export function fromNodeRequest(req, rawBody = '', options = {}) {
 
   const headers = {};
   for (const [key, value] of Object.entries(req.headers || {})) {
-    headers[key.toLowerCase()] = Array.isArray(value) ? value.join(', ') : value;
+    setOwn(headers, key.toLowerCase(), Array.isArray(value) ? value.join(', ') : value);
   }
 
   // An unusual Host header or req.url can make `new URL` throw; shaping must never crash the
@@ -36,11 +37,7 @@ export function fromNodeRequest(req, rawBody = '', options = {}) {
 
   const query = {};
   for (const [key, value] of url.searchParams) {
-    if (key in query) {
-      query[key] = Array.isArray(query[key]) ? [...query[key], value] : [query[key], value];
-    } else {
-      query[key] = value;
-    }
+    appendOwn(query, key, value);
   }
 
   const contentType = headers['content-type'] || '';
@@ -89,7 +86,7 @@ function parseCookies(header) {
     if (idx === -1) {
       continue;
     }
-    cookies[pair.slice(0, idx).trim()] = pair.slice(idx + 1).trim();
+    setOwn(cookies, pair.slice(0, idx).trim(), pair.slice(idx + 1).trim());
   }
   return cookies;
 }
