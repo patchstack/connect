@@ -1,8 +1,10 @@
-import type { AddressSpace, ArgumentRole, Flow, InputField, Limitation, Sink, TsModule } from './types.js';
+import type { AddressSpace, ApiInvocation, ArgumentRole, DependencyInputFlow, Flow, InputField, Limitation, Sink, TsModule } from './types.js';
 import { bindingKey, calleeName, isValueRead, lineOf, rootIdentifier } from './ast.js';
 import { REQ_SOURCES } from './inputs.js';
 import { addressSpaceOf } from './coordinates.js';
 import { argumentRoleOf, CANDIDATE_FAMILIES } from './sinks.js';
+
+const MAX_DEPENDENCY_INPUT_FLOWS_PER_ENDPOINT = 100;
 
 /** A tainted binding: the path prefix it stands for, and the request region it came from if known. */
 interface Root { path: string; space?: AddressSpace }
@@ -34,9 +36,14 @@ function spaceOfKey(key: string | undefined): AddressSpace | undefined {
 // the rest as "may reach". Matching is per (address space, path): a read of `query.id` is not evidence
 // about the body field `id`.
 // Spread onto an endpoint: `flows`, plus `limitations` only when there are any (keeps the common case clean).
-export function linkedFlows(body: any, params: any, inputs: InputField[], sinks: Sink[], ts: TsModule): { flows: Flow[]; limitations?: Limitation[] } {
-  const { flows, limitations } = linkFlows(body, params, inputs, sinks, ts);
-  return limitations.length > 0 ? { flows, limitations } : { flows };
+export function linkedFlows(body: any, params: any, inputs: InputField[], sinks: Sink[], ts: TsModule, invocations: ApiInvocation[] = []): { flows: Flow[]; limitations?: Limitation[]; dependencyInputFlows?: DependencyInputFlow[]; dependencyInputFlowsTruncated?: true } {
+  const { flows, limitations, dependencyInputFlows, dependencyInputFlowsTruncated } = linkFlows(body, params, inputs, sinks, ts, invocations);
+  return {
+    flows,
+    ...(limitations.length > 0 ? { limitations } : {}),
+    ...(dependencyInputFlows.length > 0 ? { dependencyInputFlows } : {}),
+    ...(dependencyInputFlowsTruncated ? { dependencyInputFlowsTruncated: true as const } : {}),
+  };
 }
 
 function linkFlows(
@@ -45,8 +52,11 @@ function linkFlows(
   inputs: InputField[],
   sinks: Sink[],
   ts: TsModule,
-): { flows: Flow[]; limitations: Limitation[] } {
-  if (!bodyNode || sinks.length === 0 || inputs.length === 0) return { flows: [], limitations: [] };
+  invocations: ApiInvocation[],
+): { flows: Flow[]; limitations: Limitation[]; dependencyInputFlows: DependencyInputFlow[]; dependencyInputFlowsTruncated: boolean } {
+  if (!bodyNode || inputs.length === 0 || (sinks.length === 0 && invocations.length === 0)) {
+    return { flows: [], limitations: [], dependencyInputFlows: [], dependencyInputFlowsTruncated: false };
+  }
 
   // Tainted roots and the PATH each one stands for. `req` → '' (its own members are the path);
   // `const { billing } = await req.json()` → billing stands for 'billing', so a read of
@@ -260,7 +270,60 @@ function linkFlows(
     }
     for (const l of sinkLimits) allLimits.push(l);
   }
-  return { flows, limitations: dedupeLimitations(allLimits) };
+  const dependencyInputFlows: DependencyInputFlow[] = [];
+  let dependencyInputFlowsTruncated = false;
+  const seenDependencyInputs = new Set<string>();
+  const modeledCalls = new Set(sinks.filter((s) => s.file === undefined && s.start !== undefined && s.end !== undefined)
+    .map((s) => `${s.start}:${s.end}`));
+  for (const invocation of invocations) {
+    if (invocation.package.startsWith('node:')) continue;
+    for (const site of invocation.sites) {
+      if (site.start === undefined || site.end === undefined) continue;
+      const span = `${site.start}:${site.end}`;
+      if (modeledCalls.has(span)) continue;
+      const call = callBySpan.get(span);
+      if (!call) continue;
+      const args = call.arguments ?? [];
+      for (let argumentIndex = 0; argumentIndex < args.length; argumentIndex++) {
+        const argument = args[argumentIndex];
+        if (sinkArgumentLimitations(argument, ts, rootPath).length > 0) continue;
+        const whole = pathFromTainted(argument, ts, rootPath);
+        for (const read of taintedReadPaths(argument, ts, rootPath, false)) {
+          // An unlocated request namespace is not enough to identify which runtime parameter a rule
+          // would inspect; keep this list to links whose address space is known.
+          if (read.space === undefined) continue;
+          for (const input of inputs) {
+            if (addressSpaceOf(input.source) !== read.space) continue;
+            const inputPath = normalizePath(input.name);
+            if (read.path !== inputPath && !read.path.startsWith(inputPath + '.')) continue;
+            const key = `${span}:${argumentIndex}:${input.id}:${invocation.package}:${invocation.symbol}`;
+            if (seenDependencyInputs.has(key)) continue;
+            seenDependencyInputs.add(key);
+            if (dependencyInputFlows.length >= MAX_DEPENDENCY_INPUT_FLOWS_PER_ENDPOINT) {
+              dependencyInputFlowsTruncated = true;
+              continue;
+            }
+            dependencyInputFlows.push({
+              input: input.name,
+              inputId: input.id,
+              package: invocation.package,
+              specifier: invocation.specifiers[0]!,
+              api: invocation.api,
+              symbol: invocation.symbol,
+              kind: invocation.kind,
+              resolution: invocation.resolution,
+              argumentIndex,
+              argumentUse: whole?.path === read.path && whole.space === read.space ? 'direct' : 'within-expression',
+              line: site.line,
+              start: site.start,
+              end: site.end,
+            });
+          }
+        }
+      }
+    }
+  }
+  return { flows, limitations: dedupeLimitations(allLimits), dependencyInputFlows, dependencyInputFlowsTruncated };
 }
 
 function dedupeLimitations(list: Limitation[]): Limitation[] {
@@ -323,7 +386,7 @@ function fluentChainCalls(call: any, ts: TsModule): any[] {
  * never be mistaken for the distinct input `billing.email`. Array indices normalize to `[]`.
  * Property KEYS, member names and binding names are not reads.
  */
-function taintedReadPaths(node: any, ts: TsModule, rootPath: Map<string, Root>): Root[] {
+function taintedReadPaths(node: any, ts: TsModule, rootPath: Map<string, Root>, includeDeferredBodies = true): Root[] {
   const out: Root[] = [];
   const seen = new Set<string>();
   const add = (r: Root) => {
@@ -332,6 +395,7 @@ function taintedReadPaths(node: any, ts: TsModule, rootPath: Map<string, Root>):
   };
   const visit = (n: any) => {
     if (!n) return;
+    if (!includeDeferredBodies && (ts.isArrowFunction(n) || ts.isFunctionExpression(n) || ts.isFunctionDeclaration(n))) return;
     if (ts.isPropertyAccessExpression(n) || ts.isElementAccessExpression(n)) {
       const read = pathFromTainted(n, ts, rootPath);
       if (read !== undefined) { add(read); return; } // the inner nodes are the path, not separate reads

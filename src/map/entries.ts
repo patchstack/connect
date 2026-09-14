@@ -6,6 +6,7 @@ import { withCoordinates } from './coordinates.js';
 import { inputsFromHandler, inputsFromValidator } from './inputs.js';
 import { sinksFrom, type SinkContext } from './sinks.js';
 import { linkedFlows } from './flows.js';
+import { collectInvocations } from './invocations.js';
 
 const HTTP_METHODS = new Set(['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'HEAD', 'OPTIONS']);
 
@@ -33,7 +34,7 @@ export function extractFromFile(sf: any, ts: TsModule, localSinks: Map<string, S
               ...spanOf(decl),
               inputs,
               sinks,
-              ...linkedFlows(handlerBody, handlerFn?.parameters, inputs, sinks, ts),
+              ...linkedFlows(handlerBody, handlerFn?.parameters, inputs, sinks, ts, handlerInvocations(handlerBody, ts, bindings, ctx)),
             };
             // Honesty marker: a validator EXISTS but couldn't be read — inputs are unknown, not "none".
             if (validatorCall && inputs.length === 0) ep.inputsResolved = false;
@@ -126,6 +127,11 @@ function hasUseServerDirective(fn: any, ts: TsModule): boolean {
   return Boolean(first && ts.isExpressionStatement(first) && ts.isStringLiteralLike(first.expression) && first.expression.text === 'use server');
 }
 
+function handlerInvocations(body: any, ts: TsModule, bindings: Bindings, ctx: SinkContext) {
+  const sf = body?.getSourceFile?.();
+  return sf ? collectInvocations(sf, ts, bindings, ctx, body).invocations : [];
+}
+
 function handlerEntry(
   name: string,
   kindLabel: string,
@@ -157,6 +163,6 @@ function handlerEntry(
     end: extra.end,
     inputs,
     sinks,
-    ...linkedFlows(body, params, inputs, sinks, ts),
+    ...linkedFlows(body, params, inputs, sinks, ts, handlerInvocations(body, ts, bindings, ctx)),
   };
 }
