@@ -292,6 +292,66 @@ describe('postManifest', () => {
     expect(result.manifest_id).toBe(1);
   });
 
+  it('does not use a custom project endpoint until the operator confirms it', async () => {
+    const fetchMock = vi.fn();
+    vi.stubGlobal('fetch', fetchMock);
+
+    await expect(
+      postManifest(
+        {
+          siteUuid: 'uuid',
+          endpoint: 'https://example.com',
+          endpointTrusted: false,
+          timeoutMs: 30_000,
+          widget: true,
+          environment: 'production',
+        },
+        { ecosystem: 'npm', packages: [] },
+      ),
+    ).rejects.toMatchObject({ code: 'CONFIG_INVALID' });
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it('rejects malformed provisioning responses', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockResolvedValue(new Response(JSON.stringify({ uuid: 'not-a-uuid', stored: true }), { status: 200 })),
+    );
+
+    await expect(
+      postManifest(
+        {
+          siteUuid: null,
+          endpoint: 'https://example.com',
+          timeoutMs: 30_000,
+          widget: true,
+          environment: 'production',
+        },
+        { ecosystem: 'npm', packages: [] },
+      ),
+    ).rejects.toMatchObject({ code: 'SERVER_ERROR' });
+  });
+
+  it('bounds response bodies before parsing them', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockResolvedValue(new Response('x'.repeat(256 * 1024 + 1), { status: 200 })),
+    );
+
+    await expect(
+      postManifest(
+        {
+          siteUuid: 'uuid',
+          endpoint: 'https://example.com',
+          timeoutMs: 30_000,
+          widget: true,
+          environment: 'production',
+        },
+        { ecosystem: 'npm', packages: [] },
+      ),
+    ).rejects.toMatchObject({ code: 'SERVER_ERROR' });
+  });
+
   it('sends the configured environment in the request body', async () => {
     const fetchMock = vi.fn().mockResolvedValue(
       new Response(JSON.stringify({ stored: true }), { status: 200 }),

@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { mkdtemp, readFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
-import { CLAIM_TOKEN_HEADER, claimOutcomeLines, postManifest } from '../src/client.js';
+import { CLAIM_TOKEN_HEADER, claimOutcomeLines, claimTokenHeader, postManifest } from '../src/client.js';
 import { persistApiKey, persistSiteUuid, resolveConfig } from '../src/config.js';
 import type { Config, ManifestClaimOutcome } from '../src/types.js';
 
@@ -101,6 +101,10 @@ describe('the claim token on the wire', () => {
 
     const [, init] = fetchMock.mock.calls[0] as [string, RequestInit];
     expect(init.headers as Record<string, string>).not.toHaveProperty(CLAIM_TOKEN_HEADER);
+  });
+
+  it('does not prepare the header for an unconfirmed project endpoint', () => {
+    expect(claimTokenHeader(config({ claimToken: 'tok-123', endpointTrusted: false }))).toEqual({});
   });
 });
 

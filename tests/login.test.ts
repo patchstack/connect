@@ -27,7 +27,7 @@ function config(overrides: Partial<Config> = {}): Config {
 }
 
 const json = (body: unknown, status = 200) =>
-  ({ ok: status >= 200 && status < 300, status, json: async () => body }) as unknown as Response;
+  new Response(JSON.stringify(body), { status, headers: { 'Content-Type': 'application/json' } });
 
 const started = {
   device_code: 'device-code',
@@ -162,6 +162,30 @@ describe('start and resume', () => {
     );
     // One call: the code endpoint. Nothing polled.
     expect(fetchImpl).toHaveBeenCalledOnce();
+  });
+
+  it('rejects an incomplete start response without saving it', async () => {
+    const fetchImpl = vi.fn().mockResolvedValueOnce(json({ device_code: 'code-only' }));
+
+    const result = await startLogin(config({ siteUuid: 'incomplete-response' }), {
+      fetchImpl: fetchImpl as never,
+      ...noSleep,
+    });
+
+    expect(result.status).toBe('failed');
+    expect(readPendingLogin('incomplete-response')).toBeNull();
+  });
+
+  it('does not contact an unconfirmed project endpoint', async () => {
+    const fetchImpl = vi.fn();
+
+    const result = await startLogin(config({ endpointTrusted: false }), {
+      fetchImpl: fetchImpl as never,
+      ...noSleep,
+    });
+
+    expect(result.status).toBe('failed');
+    expect(fetchImpl).not.toHaveBeenCalled();
   });
 
   it('hands the pending request to a later invocation', async () => {

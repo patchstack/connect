@@ -13,6 +13,8 @@ import path from 'node:path';
 import { createHash, randomUUID } from 'node:crypto';
 import { pulseFetch } from './pulse-token.js';
 import type { Config } from './types.js';
+import { readBoundedJson } from './bounded-response.js';
+import { assertConnectableEndpoint, isCredential, safeDisplayString, safeRemoteUrl } from './endpoint-policy.js';
 
 /**
  * The device authorization flow (RFC 8628) shared by `login` and `claim`.
@@ -186,18 +188,25 @@ export async function requestDeviceCode(
     };
   }
 
-  const base = baseFrom(config.endpoint);
-
-  const started = await pulseFetch(
-    config,
-    `${base}/device/code`,
-    {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
-      body: JSON.stringify({ site_uuid: config.siteUuid, intent }),
-    },
-    fetchImpl,
-  );
+  let base: string;
+  let started: Response;
+  try {
+    base = baseFrom(config.endpoint);
+    assertConnectableEndpoint(config, base);
+    started = await pulseFetch(
+      config,
+      `${base}/device/code`,
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
+        body: JSON.stringify({ site_uuid: config.siteUuid, intent }),
+        signal: AbortSignal.timeout(config.timeoutMs),
+      },
+      fetchImpl,
+    );
+  } catch {
+    return { status: 'failed', message: 'Could not start the request.' };
+  }
 
   if (started.status === 409) return { status: 'conflict', message: conflictMessage };
   if (started.status === 404) {
@@ -207,21 +216,39 @@ export async function requestDeviceCode(
     return { status: 'failed', message: `Could not start the request (HTTP ${started.status}).` };
   }
 
-  const body = (await started.json()) as {
-    device_code: string;
-    user_code: string;
-    expires_in: number;
-    interval: number;
-  };
+  let body: Record<string, unknown>;
+  try {
+    const raw = await readBoundedJson(started);
+    if (typeof raw !== 'object' || raw === null || Array.isArray(raw)) throw new Error('unexpected response');
+    body = raw as Record<string, unknown>;
+  } catch {
+    return { status: 'failed', message: 'Patchstack returned an unexpected response.' };
+  }
+  const deviceCode = safeDisplayString(body.device_code, 2_048);
+  const userCode = safeDisplayString(body.user_code, 128);
+  const expiresIn = Number(body.expires_in);
+  const interval = Number(body.interval);
+  if (
+    deviceCode === null ||
+    userCode === null ||
+    !Number.isInteger(expiresIn) ||
+    expiresIn < 1 ||
+    expiresIn > 86_400 ||
+    !Number.isFinite(interval) ||
+    interval < 1 ||
+    interval > 300
+  ) {
+    return { status: 'failed', message: 'Patchstack returned an unexpected response.' };
+  }
 
   const pending: PendingDeviceFlow = {
-    deviceCode: body.device_code,
-    userCode: body.user_code,
+    deviceCode,
+    userCode,
     // Points at the API, which redirects to the dashboard SPA — the CLI only knows the API origin,
     // and the approval page lives on the app.
-    verificationUri: `${base}/device?code=${encodeURIComponent(body.user_code)}`,
-    expiresAt: now() + body.expires_in * 1000,
-    intervalMs: Math.max(1, body.interval) * 1000,
+    verificationUri: `${base}/device?code=${encodeURIComponent(userCode)}`,
+    expiresAt: now() + expiresIn * 1000,
+    intervalMs: interval * 1000,
   };
 
   savePending(config.siteUuid, intent, pending);
@@ -245,11 +272,19 @@ export async function pollDeviceToken(
 ): Promise<PollOutcome> {
   const fetchImpl = deps.fetchImpl ?? fetch;
 
-  const polled = await fetchImpl(`${baseFrom(config.endpoint)}/device/token`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
-    body: JSON.stringify({ device_code: pending.deviceCode }),
-  });
+  let polled: Response;
+  try {
+    const url = `${baseFrom(config.endpoint)}/device/token`;
+    assertConnectableEndpoint(config, url);
+    polled = await fetchImpl(url, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
+      body: JSON.stringify({ device_code: pending.deviceCode }),
+      signal: AbortSignal.timeout(config.timeoutMs),
+    });
+  } catch {
+    return { state: 'expired' };
+  }
 
   if (polled.status === 428) return { state: 'pending' };
 
@@ -258,10 +293,29 @@ export async function pollDeviceToken(
     return { state: 'expired' };
   }
 
-  const body = (await polled.json()) as Record<string, unknown>;
+  let raw: unknown;
+  try {
+    raw = await readBoundedJson(polled);
+  } catch {
+    raw = null;
+  }
   if (config.siteUuid !== null) clearPending(config.siteUuid, intent);
-
-  return { state: 'approved', body };
+  if (typeof raw !== 'object' || raw === null || Array.isArray(raw)) return { state: 'expired' };
+  const value = raw as Record<string, unknown>;
+  const apiKey = value.api_key === undefined ? undefined : isCredential(value.api_key) ? value.api_key : null;
+  if (apiKey === null) return { state: 'expired' };
+  const dashboardUrl = value.dashboard_url === undefined ? undefined : safeRemoteUrl(value.dashboard_url);
+  if (value.dashboard_url !== undefined && dashboardUrl === null) return { state: 'expired' };
+  const account = value.account === undefined ? undefined : safeDisplayString(value.account, 256);
+  if (value.account !== undefined && account === null) return { state: 'expired' };
+  return {
+    state: 'approved',
+    body: {
+      ...(apiKey !== undefined ? { api_key: apiKey } : {}),
+      ...(dashboardUrl !== undefined ? { dashboard_url: dashboardUrl } : {}),
+      ...(account !== undefined ? { account } : {}),
+    },
+  };
 }
 
 /** Poll until the user approves, the code expires, or `until` passes. */

@@ -1,4 +1,5 @@
-import { isSafeOrigin } from './safe-origin.js';
+import { isSafeOrigin, safeBaseUrl } from './safe-origin.js';
+import { readBoundedJson } from '../bounded-response.js';
 // Fire-and-forget reporter: Connect runtime → existing connector POST /api/logs/log
 // (same path WordPress uses). Auth: WP-style api_key (`{secret}-{oauth.id}`) →
 // POST /oauth/token (client_credentials) → Bearer JWT on /api/logs/log.
@@ -48,7 +49,8 @@ export function resolveApiBase(pulseOrManifestUrl) {
   }
   if (typeof pulseOrManifestUrl === 'string' && pulseOrManifestUrl.length > 0) {
     try {
-      return new URL(pulseOrManifestUrl).origin;
+      const candidate = new URL(pulseOrManifestUrl).origin;
+      if (isSafeOrigin(candidate)) return candidate;
     } catch {
       /* fall through */
     }
@@ -56,7 +58,8 @@ export function resolveApiBase(pulseOrManifestUrl) {
   const endpoint = typeof process !== 'undefined' ? process.env?.PATCHSTACK_ENDPOINT : undefined;
   if (typeof endpoint === 'string' && endpoint.length > 0) {
     try {
-      return new URL(endpoint).origin;
+      const candidate = new URL(endpoint).origin;
+      if (isSafeOrigin(candidate)) return candidate;
     } catch {
       /* fall through */
     }
@@ -79,7 +82,7 @@ export function createFirewallLogReporter(opts) {
     return { record() {}, flush: () => Promise.resolve(), stop: () => Promise.resolve() };
   }
 
-  const apiBase = (opts.apiBase ?? DEFAULT_API_BASE).replace(/\/$/, '');
+  const apiBase = safeBaseUrl(opts.apiBase, DEFAULT_API_BASE, 'block-log API').replace(/\/$/, '');
   const fetchImpl = opts.fetchImpl ?? globalThis.fetch;
   const flushMs = Number.isFinite(opts.flushMs) ? opts.flushMs : DEFAULT_FLUSH_MS;
   const sourceHost = typeof opts.sourceHost === 'string' ? opts.sourceHost : '';
@@ -127,9 +130,9 @@ export function createFirewallLogReporter(opts) {
           }),
         });
         if (!res || !res.ok) return null;
-        const body = await res.json();
+        const body = await readBoundedJson(res);
         const token = body?.access_token;
-        if (typeof token !== 'string' || token.length === 0) return null;
+        if (typeof token !== 'string' || token.length === 0 || token.length > 8_192 || /[\u0000-\u0020\u007f-\u009f]/.test(token)) return null;
         const expiresIn = Number(body?.expires_in);
         const ttlMs = Number.isFinite(expiresIn) && expiresIn > 0 ? expiresIn * 1000 : 3600_000;
         cachedToken = { token, expiresAt: Date.now() + ttlMs };
