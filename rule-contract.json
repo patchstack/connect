@@ -1,6 +1,6 @@
 {
   "$comment": "Generated from src/protect/rules/contract.js by scripts/emit-rule-contract.mjs. Do not edit.",
-  "version": "2.10",
+  "version": "2.11",
   "sources": {
     "raw": {
       "keyed": false
@@ -437,6 +437,11 @@
     "maxConditionNodesPerBundle": 25000,
     "maxNestingDepth": 12,
     "maxRegexLength": 1000,
-    "maxValueLength": 8192
+    "maxValueLength": 8192,
+    "maxParameterLength": 512,
+    "maxParameterItems": 64,
+    "maxOperandItems": 256,
+    "maxMapEntries": 128,
+    "maxPathSegments": 64
   }
 }
