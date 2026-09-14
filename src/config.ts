@@ -169,8 +169,8 @@ export async function resolveConfig(options: ResolveConfigOptions): Promise<Conf
       'CONFIG_INVALID',
     );
   }
-  // Stated wins. Otherwise the process says where it is running: a deployment or CI build reports
-  // `production`, a developer's machine `local`. Nothing defaults to a deployed site any more.
+  // Stated wins. Otherwise the process says where it is running: the build platform's own tier or
+  // branch name decides between `production` and `sandbox`, a developer's machine reads `local`.
   //
   // The project itself gets the last word, after every platform has declined. A hosted builder sets
   // no variable we can read, and on those platforms a build only ever happens when the owner

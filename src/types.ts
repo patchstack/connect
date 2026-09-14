@@ -1,9 +1,10 @@
 export type Ecosystem = 'npm' | 'composer';
 
 /**
- * Where a manifest was built. `production` only when the hosting platform's own discriminator says this
- * build is the production one; `sandbox` for a preview it names as such, or a hosted builder's workspace;
- * `local` for everything else, a developer's machine included — inventory, never evidence of a live site.
+ * Where a manifest was built. `production` only when the build platform's own variables say this build is
+ * the production one — its tier, or a production branch name; `sandbox` for a preview, pull request or
+ * other branch, or a hosted builder's workspace; `local` for everything else, a developer's machine
+ * included — inventory, never evidence of a live site.
  * Inferred when nothing sets it (see `environment.ts`); `PATCHSTACK_ENVIRONMENT` or `"environment"` in
  * .patchstackrc.json overrides.
  */
