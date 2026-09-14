@@ -321,8 +321,9 @@ export interface CreateProtectionOptions {
   /** Hosts exempt from egress screening. */
   allowHosts?: string[];
   /**
-   * Screen the Node http/https path against DNS rebinding: resolve outbound hostnames and block +
-   * pin to the vetted address when they map to a disallowed (internal/metadata) IP. Default true;
+   * Screen hostname resolutions the guard performs for Node http/https requests. Disallowed
+   * internal/metadata addresses are blocked, and permitted results are used for those resolutions.
+   * Reused sockets or transports that bypass the guard's resolver are not covered. Default true;
    * only active when `egress` is on and node:dns is available (a no-op on edge runtimes).
    */
   screenDns?: boolean;
