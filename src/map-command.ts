@@ -1,4 +1,4 @@
-import { writeFileSync } from 'node:fs';
+import path from 'node:path';
 import { buildInputMap } from './map/index.js';
 import { resolveConfig } from './config.js';
 import { postInputMap } from './client.js';
@@ -7,6 +7,7 @@ import { type Flags, getStringFlag } from './flags.js';
 import { applyBuildStamp } from './build-stamp.js';
 import { isPreBundleBuildHook } from './build-hook.js';
 import { inputMapBuildId } from './input-map-id.js';
+import { atomicWriteFileSync } from './safe-file.js';
 
 /**
  * `patchstack-connect map` — build the attack-surface map and, with `--upload`, send it.
@@ -73,7 +74,7 @@ export async function runMap(flags: Flags): Promise<number> {
   const json = JSON.stringify(map, null, 2);
   const out = getStringFlag(flags, 'out');
   if (out) {
-    writeFileSync(out, json);
+    atomicWriteFileSync(path.resolve(out), json, { encoding: 'utf8' });
     console.error(`patchstack: wrote ${out}`);
   } else if (flags.get('upload') !== true) {
     // With --upload the map goes to Patchstack instead of stdout: printing a full structural document

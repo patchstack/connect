@@ -3,10 +3,11 @@
 // middleware file already exists, we do NOT clobber it — we scaffold the rules and print a plan
 // (add the guard to your middleware), so an existing middleware is never silently overwritten.
 
-import { writeFileSync, existsSync, mkdirSync, copyFileSync } from 'node:fs';
+import { existsSync } from 'node:fs';
 import { join } from 'node:path';
 import { bakeSiteUuid, read, log, templatesDir } from '../util.js';
 import type { Adapter, WireOptions, WireResult, VerifyResult } from '../types.js';
+import { copyProjectFileSync, ensureProjectDirectorySync } from '../../../safe-file.js';
 
 function hasNextDep(cwd: string): boolean {
   try {
@@ -40,13 +41,13 @@ function wire(cwd: string, opts: WireOptions): WireResult {
   const templates = templatesDir();
   const mw = middlewareInfo(cwd);
   const dir = join(cwd, mw.relDir === '.' ? '' : mw.relDir);
-  mkdirSync(dir, { recursive: true });
+  ensureProjectDirectorySync(cwd, dir);
 
   // Co-locate the rules next to the middleware (the template imports ./patchstack.rules.json).
   const rulesDst = join(dir, 'patchstack.rules.json');
   const changed: string[] = [];
   if (opts.demo || !existsSync(rulesDst)) {
-    copyFileSync(join(templates, opts.demo ? 'demo-rules.json' : 'rules.json'), rulesDst);
+    copyProjectFileSync(cwd, join(templates, opts.demo ? 'demo-rules.json' : 'rules.json'), rulesDst);
     changed.push(rulesFile(mw.relDir));
   }
 
@@ -69,7 +70,7 @@ function wire(cwd: string, opts: WireOptions): WireResult {
   }
 
   // Fresh → write the managed middleware.
-  copyFileSync(join(templates, 'next-middleware.ts'), mwPath);
+  copyProjectFileSync(cwd, join(templates, 'next-middleware.ts'), mwPath);
   if (!opts.demo) bakeSiteUuid(cwd, mw.relFile);
   changed.push(mw.relFile);
   log(`scaffolded ${mw.relFile} (Patchstack middleware)`);

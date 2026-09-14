@@ -14,15 +14,24 @@
 
 import { canonicalBuildId } from '../../build-id.js';
 
-let fsMod; // memoized { readFileSync, writeFileSync, mkdirSync, join } | null (unavailable)
+let fsMod; // memoized Node filesystem operations, or null when unavailable
 async function loadFs() {
   if (fsMod !== undefined) return fsMod;
   try {
     const [fs, path] = await Promise.all([import('node:fs'), import('node:path')]);
     fsMod = {
+      chmodSync: fs.chmodSync,
+      closeSync: fs.closeSync,
+      constants: fs.constants,
+      fstatSync: fs.fstatSync,
+      fsyncSync: fs.fsyncSync,
+      lstatSync: fs.lstatSync,
+      openSync: fs.openSync,
       readFileSync: fs.readFileSync,
-      writeFileSync: fs.writeFileSync,
       mkdirSync: fs.mkdirSync,
+      renameSync: fs.renameSync,
+      unlinkSync: fs.unlinkSync,
+      writeFileSync: fs.writeFileSync,
       join: path.join,
     };
   } catch {
@@ -81,11 +90,48 @@ async function cacheWrite(dir, env) {
   if (!dir) return;
   const fs = await loadFs();
   if (!fs) return; // filesystem-less runtime — memory tier only
+  const target = fs.join(dir, 'patchstack-rules.json');
+  const temporary = fs.join(dir, `.patchstack-rules-${randomSuffix()}.tmp`);
+  let descriptor = null;
   try {
     fs.mkdirSync(dir, { recursive: true });
-    fs.writeFileSync(fs.join(dir, 'patchstack-rules.json'), JSON.stringify(env));
+    const directory = fs.lstatSync(dir);
+    if (directory.isSymbolicLink() || !directory.isDirectory()) return;
+
+    let mode;
+    try {
+      const current = fs.lstatSync(target);
+      if (current.isSymbolicLink() || !current.isFile()) return;
+      mode = current.mode & 0o7777;
+    } catch (error) {
+      if (error?.code !== 'ENOENT') return;
+    }
+
+    descriptor = fs.openSync(temporary, 'wx', mode ?? 0o600);
+    fs.writeFileSync(descriptor, JSON.stringify(env), 'utf8');
+    fs.fsyncSync(descriptor);
+    fs.closeSync(descriptor);
+    descriptor = null;
+    if (mode !== undefined) fs.chmodSync(temporary, mode);
+    try {
+      fs.renameSync(temporary, target);
+    } catch (error) {
+      if (typeof process === 'undefined' || process.platform !== 'win32'
+        || (error?.code !== 'EEXIST' && error?.code !== 'EPERM')) throw error;
+      try {
+        fs.unlinkSync(target);
+      } catch (unlinkError) {
+        if (unlinkError?.code !== 'ENOENT') throw unlinkError;
+      }
+      fs.renameSync(temporary, target);
+    }
   } catch {
     /* cache is best-effort — the memory tier still holds last-known-good */
+  } finally {
+    if (descriptor !== null) {
+      try { fs.closeSync(descriptor); } catch { /* best-effort */ }
+    }
+    try { fs.unlinkSync(temporary); } catch { /* already renamed or never created */ }
   }
 }
 
@@ -93,11 +139,32 @@ async function cacheRead(dir) {
   if (!dir) return null;
   const fs = await loadFs();
   if (!fs) return null;
+  const target = fs.join(dir, 'patchstack-rules.json');
+  let descriptor = null;
   try {
-    return toEnvelope(JSON.parse(fs.readFileSync(fs.join(dir, 'patchstack-rules.json'), 'utf8')));
+    const entry = fs.lstatSync(target);
+    if (entry.isSymbolicLink() || !entry.isFile() || entry.size > 16 * 1024 * 1024) return null;
+    const flags = fs.constants.O_RDONLY | (fs.constants.O_NOFOLLOW ?? 0);
+    descriptor = fs.openSync(target, flags);
+    const opened = fs.fstatSync(descriptor);
+    if (!opened.isFile() || opened.size > 16 * 1024 * 1024) return null;
+    return toEnvelope(JSON.parse(fs.readFileSync(descriptor, 'utf8')));
   } catch {
     return null;
+  } finally {
+    if (descriptor !== null) {
+      try { fs.closeSync(descriptor); } catch { /* best-effort */ }
+    }
   }
+}
+
+function randomSuffix() {
+  try {
+    if (typeof globalThis.crypto?.randomUUID === 'function') return globalThis.crypto.randomUUID();
+  } catch {
+    // The exclusive create below is the collision backstop.
+  }
+  return `${Date.now()}-${Math.random().toString(36).slice(2)}`;
 }
 
 // Accept the current { bundle, etag, buildId, matchedBuildId } envelope, the older { bundle, etag }

@@ -3,7 +3,7 @@
 // the guard, then insert the registration call right after the app instance is created — dependency-free
 // anchor + #region-marker patching, idempotent.
 
-import { writeFileSync, existsSync } from 'node:fs';
+import { existsSync } from 'node:fs';
 import { join, dirname, resolve } from 'node:path';
 import { read, log } from './util.js';
 import { scaffoldGeneric } from './generic.js';
@@ -19,6 +19,7 @@ import {
   resolvesToGuardModule,
 } from './source-scope.js';
 import type { WireOptions, WireResult, VerifyResult } from './types.js';
+import { writeProjectFileSync } from '../../safe-file.js';
 
 /**
  * A route or router registration — `app.get(...)`, `app.post(...)`, `app.use('/path', router)`.
@@ -306,7 +307,7 @@ export function wireRegister(cwd: string, opts: WireOptions, spec: RegisterSpec)
   }
 
   const patched = lines.join('\n');
-  writeFileSync(p, patched);
+  writeProjectFileSync(cwd, p, patched, { encoding: 'utf8' });
 
   // Said at install time, because this is the moment somebody is looking. The guard goes after the body
   // parser — it reads the parsed body — so a route registered above that parser cannot be covered by moving
@@ -327,7 +328,7 @@ export function wireRegister(cwd: string, opts: WireOptions, spec: RegisterSpec)
   // down, and it is our edit — so it is reverted and reported rather than left for the next `npm start`.
   const parsed = parses(p);
   if (parsed === false) {
-    writeFileSync(p, s);
+    writeProjectFileSync(cwd, p, s, { encoding: 'utf8' });
     log(`${entry.relPath} would not parse after patching — reverted; ${spec.manualHint}`);
     return { ok: true, changed };
   }
