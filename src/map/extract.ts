@@ -14,6 +14,8 @@ import { extractFromFile } from './entries.js';
 import { collectFileImports, countUnresolvableImports, createImportInventory, readPathAliases, scanFileImports } from './imports.js';
 import { collectInvocations, createInvocationInventory } from './invocations.js';
 
+const MAX_DEPENDENCY_INPUT_FLOWS_PER_MAP = 500;
+
 // Framework-AGNOSTIC input-flow extractor. It doesn't gate on a specific stack — it walks any JS/TS
 // source and applies recognizer tables for (1) entry points, (2) inputs, (3) sinks, so it generalizes
 // across builders (TanStack Start, Next, SvelteKit, Express/Fastify/Hono, …) and providers, and
@@ -43,6 +45,7 @@ export async function extractInputMap(cwd: string, ts: TsModule, options: Extrac
   const files = collectSources(cwd, boundary, { followOutside: options.followSymlinks }, [], new Set(), stats);
   const imports = createImportInventory(readPathAliases(cwd));
   const invocations = createInvocationInventory();
+  let dependencyInputFlowCount = 0;
   let parsed = 0;
   let preFiltered = 0;
   let importScanFailures = 0;
@@ -88,8 +91,8 @@ export async function extractInputMap(cwd: string, ts: TsModule, options: Extrac
       unresolvableImports += countUnresolvableImports(text, ts);
       const ctx = { file, owner: relFile, graph };
       // The ctx reaches helper summaries too, so a same-file helper using an imported client resolves.
-      // The invocation inventory rides the parse we already did for sinks — no second pass, which is what
-      // makes it cheap enough to ship before deciding whether to parse more files.
+      // The file-wide invocation inventory rides the parse already used for sinks. Recognized handlers
+      // are then scanned separately for request-input links to those calls.
       const called = collectInvocations(sf, ts, bindings, ctx);
       invocations.add(called.invocations);
       calls.total += called.counts.total;
@@ -98,6 +101,13 @@ export async function extractInputMap(cwd: string, ts: TsModule, options: Extrac
       calls.ambiguous += called.counts.ambiguous;
       const localSinks = collectLocalSinks(sf, ts, bindings, ctx);
       for (const ep of extractFromFile(sf, ts, localSinks, bindings, ctx)) {
+        const links = ep.dependencyInputFlows ?? [];
+        const remaining = Math.max(0, MAX_DEPENDENCY_INPUT_FLOWS_PER_MAP - dependencyInputFlowCount);
+        if (links.length > remaining) {
+          ep.dependencyInputFlows = links.slice(0, remaining);
+          ep.dependencyInputFlowsTruncated = true;
+        }
+        dependencyInputFlowCount += ep.dependencyInputFlows?.length ?? 0;
         // A FILE-BASED route handler carries its URL path in its location, not in the code, so derive
         // it here — without this a rule can only be param-pinned, never route-scoped (`when.path`).
         if (ep.route === undefined && ep.entryKind === 'edge-function') {
@@ -159,6 +169,9 @@ export async function extractInputMap(cwd: string, ts: TsModule, options: Extrac
 
   notes.push('Static analysis is best-effort — this is the DETECTED surface, not a proof of completeness.');
   notes.push('`inputs` and `sinks` are INVENTORIES (both present in the handler). Only `flows` asserts that an input reaches a sink: require confidence "exact-local" or "transformed-local" before pinning a rule, and identify the input by `inputId` — a field NAME can occur in more than one request namespace.');
+  if (dependencyInputFlowCount > 0) {
+    notes.push('`dependencyInputFlows` records request inputs observed in arguments of dependency API calls. This is weaker than a modeled sink: it does not establish what the dependency does internally or authorize a blocking rule. Absence is not evidence that no such call exists.');
+  }
   notes.push('Sinks are followed into same-file helpers and ONE hop into an imported relative module (a dependency\u2019s internals are not followed); deeper or dynamic indirection is not traced. Sinks inside declared-but-uncalled local functions are excluded.');
   notes.push('A sink `package` is resolved from the file’s imports (`attribution: "import"`) or inferred from another import in the same file (`"inferred"`); an inferred package is a hint for a reviewer, not evidence about the receiver, and never licenses a rule.');
   if (!options.followSymlinks) notes.push('Symlinks leaving the project directory were not followed (use --follow-symlinks to include them).');
@@ -167,6 +180,10 @@ export async function extractInputMap(cwd: string, ts: TsModule, options: Extrac
     notes.push(`${failed.length} file(s) could not be analyzed and were skipped (fail-open): ${sample}${failed.length > 5 ? ', …' : ''}.`);
   }
   const unresolved = endpoints.filter((e) => e.inputsResolved === false).length;
+  const truncatedDependencyFlows = endpoints.filter((e) => e.dependencyInputFlowsTruncated).length;
+  if (truncatedDependencyFlows > 0) {
+    notes.push(`${truncatedDependencyFlows} endpoint(s) had more dependency-input links than the bounded map carries; those endpoint records are marked dependencyInputFlowsTruncated.`);
+  }
   if (unresolved > 0) {
     notes.push(`${unresolved} endpoint(s) declare an input validator that could not be statically parsed — their inputs are UNKNOWN, not empty (marked inputsResolved: false).`);
   }

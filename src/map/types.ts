@@ -175,6 +175,11 @@ export interface Endpoint {
    * consumer should use to pin a rule to a parameter. Empty when no link could be established.
    */
   flows: Flow[];
+  /** Request inputs observed in arguments of dependency API calls. Positive evidence only: the call
+   * is not a modeled dangerous sink, and this field alone never authorizes an enforcing rule. */
+  dependencyInputFlows?: DependencyInputFlow[];
+  /** More links existed than the bounded map could carry; absence beyond this point proves nothing. */
+  dependencyInputFlowsTruncated?: true;
   /**
    * false when the endpoint DECLARES an input validator that static analysis could not parse — its
    * `inputs` are UNKNOWN rather than empty. Absent when the extracted inputs can be trusted as-is.
@@ -250,6 +255,26 @@ export interface Flow {
   confidence: 'exact-local' | 'transformed-local' | 'imported' | 'heuristic' | 'unknown';
   /** 1-based line of the sink call — the auditable evidence location. */
   line?: number;
+}
+
+/** A request input reaches a dependency API call, without a claim about the dependency's internals. */
+export interface DependencyInputFlow {
+  input: string;
+  inputId: string;
+  package: string;
+  /** The imported specifier, which may name a package subpath. */
+  specifier: string;
+  api: string;
+  symbol: string;
+  kind: InvocationKind;
+  resolution: InvocationResolution;
+  /** Zero-based argument position receiving the input. */
+  argumentIndex: number;
+  /** Whether the input is the complete argument or appears within an expression. */
+  argumentUse: 'direct' | 'within-expression';
+  line?: number;
+  start?: number;
+  end?: number;
 }
 
 /**

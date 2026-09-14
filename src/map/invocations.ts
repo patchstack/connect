@@ -1,5 +1,5 @@
 import type { ApiInvocation, InvocationResolution, TsModule } from './types.js';
-import { isShadowedByEnclosingBinding, rootIdentifier, spanOf } from './ast.js';
+import { isShadowedByEnclosingBinding, isUninvokedFunctionDeclaration, rootIdentifier, spanOf } from './ast.js';
 import { npmPackageOf, type Bindings } from './bindings.js';
 import type { ModuleGraph } from './sinks.js';
 
@@ -80,6 +80,7 @@ export function collectInvocations(
   ts: TsModule,
   bindings: Bindings,
   ctx: InvocationContext,
+  root: any = sf,
 ): { invocations: ApiInvocation[]; counts: CallCounts } {
   const found: ApiInvocation[] = [];
   const counts: CallCounts = { total: 0, dependency: 0, local: 0, ambiguous: 0 };
@@ -160,6 +161,7 @@ export function collectInvocations(
   };
 
   const visit = (node: any) => {
+    if (root !== sf && node !== root && isUninvokedFunctionDeclaration(node, ts)) return;
     if (ts.isCallExpression(node) || ts.isNewExpression(node)) {
       const callee = node.expression;
       counts.total++;
@@ -218,7 +220,7 @@ export function collectInvocations(
     }
     ts.forEachChild(node, visit);
   };
-  visit(sf);
+  visit(root);
 
   return { invocations: found, counts };
 }
