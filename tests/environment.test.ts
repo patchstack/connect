@@ -9,6 +9,7 @@ describe('inferEnvironment', () => {
   it('reports local from a machine with no deployment evidence', () => {
     expect(inferEnvironment({ HOME: '/Users/someone', PATH: '/usr/bin', SHELL: '/bin/zsh' })).toEqual({
       environment: 'local',
+      source: null,
       evidence: [],
     });
   });
@@ -16,6 +17,7 @@ describe('inferEnvironment', () => {
   it('reports production only when the platform itself says this build is production', () => {
     expect(inferEnvironment({ VERCEL: '1', VERCEL_ENV: 'production' })).toEqual({
       environment: 'production',
+      source: 'platform',
       evidence: ['vercel: VERCEL_ENV=production'],
     });
     expect(inferEnvironment({ NETLIFY: 'true', CONTEXT: 'production', URL: 'https://x.netlify.app' }).environment).toBe(
@@ -28,6 +30,7 @@ describe('inferEnvironment', () => {
   it('reports a preview the platform names as such as sandbox, never production', () => {
     expect(inferEnvironment({ VERCEL: '1', VERCEL_ENV: 'preview' })).toEqual({
       environment: 'sandbox',
+      source: 'platform',
       evidence: ['vercel: VERCEL_ENV=preview'],
     });
     expect(inferEnvironment({ VERCEL: '1', VERCEL_ENV: 'development' }).environment).toBe('sandbox');
@@ -42,10 +45,12 @@ describe('inferEnvironment', () => {
       inferEnvironment({ CF_PAGES: '1', CF_PAGES_BRANCH: 'main', CF_PAGES_URL: 'https://x.pages.dev' }),
     ).toEqual({
       environment: 'production',
+      source: 'platform',
       evidence: ['cloudflare: CF_PAGES_BRANCH=main (a production branch by name)'],
     });
     expect(inferEnvironment({ CF_PAGES: '1', CF_PAGES_BRANCH: 'staging' })).toEqual({
       environment: 'sandbox',
+      source: 'platform',
       evidence: ['cloudflare: CF_PAGES_BRANCH=staging (not a production branch by name)'],
     });
   });
@@ -53,6 +58,7 @@ describe('inferEnvironment', () => {
   it('decides a Cloudflare Workers Builds build by its branch name', () => {
     expect(inferEnvironment({ WORKERS_CI: '1', WORKERS_CI_BRANCH: 'main' })).toEqual({
       environment: 'production',
+      source: 'platform',
       evidence: ['cloudflare: WORKERS_CI_BRANCH=main (a production branch by name)'],
     });
     expect(inferEnvironment({ WORKERS_CI: '1', WORKERS_CI_BRANCH: 'feature/login' }).environment).toBe('sandbox');
@@ -61,11 +67,13 @@ describe('inferEnvironment', () => {
   it('decides an AWS Amplify build by its branch name, and a pull-request preview as sandbox', () => {
     expect(inferEnvironment({ AWS_APP_ID: 'd1abc', AWS_BRANCH: 'main' })).toEqual({
       environment: 'production',
+      source: 'platform',
       evidence: ['aws: AWS_BRANCH=main (a production branch by name)'],
     });
     expect(inferEnvironment({ AWS_APP_ID: 'd1abc', AWS_BRANCH: 'dev' }).environment).toBe('sandbox');
     expect(inferEnvironment({ AWS_APP_ID: 'd1abc', AWS_BRANCH: 'main', AWS_PULL_REQUEST_ID: '42' })).toEqual({
       environment: 'sandbox',
+      source: 'platform',
       evidence: ['aws: AWS_PULL_REQUEST_ID set (a pull-request preview)'],
     });
   });
@@ -74,6 +82,7 @@ describe('inferEnvironment', () => {
     const push = { GITHUB_ACTIONS: 'true', GITHUB_EVENT_NAME: 'push', GITHUB_REF_TYPE: 'branch' };
     expect(inferEnvironment({ ...push, GITHUB_REF_NAME: 'main' })).toEqual({
       environment: 'production',
+      source: 'platform',
       evidence: ['github-actions: GITHUB_REF_NAME=main (a production branch by name)'],
     });
     expect(inferEnvironment({ ...push, GITHUB_REF_NAME: 'feature-x' }).environment).toBe('sandbox');
@@ -82,6 +91,7 @@ describe('inferEnvironment', () => {
       inferEnvironment({ ...push, GITHUB_EVENT_NAME: 'pull_request', GITHUB_REF_NAME: '12/merge' }),
     ).toEqual({
       environment: 'sandbox',
+      source: 'platform',
       evidence: ['github-actions: GITHUB_EVENT_NAME=pull_request (a pull-request build)'],
     });
     expect(
@@ -89,6 +99,7 @@ describe('inferEnvironment', () => {
     ).toBe('sandbox');
     expect(inferEnvironment({ ...push, GITHUB_REF_TYPE: 'tag', GITHUB_REF_NAME: 'v1.2.0' })).toEqual({
       environment: 'production',
+      source: 'platform',
       evidence: ['github-actions: GITHUB_REF_TYPE=tag (a tag build)'],
     });
   });
@@ -98,26 +109,32 @@ describe('inferEnvironment', () => {
       inferEnvironment({ GITLAB_CI: 'true', CI_ENVIRONMENT_TIER: 'production', CI_COMMIT_BRANCH: 'anything' }),
     ).toEqual({
       environment: 'production',
+      source: 'platform',
       evidence: ['gitlab-ci: CI_ENVIRONMENT_TIER=production'],
     });
     expect(inferEnvironment({ GITLAB_CI: 'true', CI_ENVIRONMENT_TIER: 'staging', CI_COMMIT_BRANCH: 'main' })).toEqual({
       environment: 'sandbox',
+      source: 'platform',
       evidence: ['gitlab-ci: CI_ENVIRONMENT_TIER=staging'],
     });
     expect(inferEnvironment({ GITLAB_CI: 'true', CI_MERGE_REQUEST_IID: '7', CI_COMMIT_BRANCH: 'main' })).toEqual({
       environment: 'sandbox',
+      source: 'platform',
       evidence: ['gitlab-ci: CI_MERGE_REQUEST_IID set (a merge-request build)'],
     });
     expect(inferEnvironment({ GITLAB_CI: 'true', CI_COMMIT_TAG: 'v1.2.0' })).toEqual({
       environment: 'production',
+      source: 'platform',
       evidence: ['gitlab-ci: CI_COMMIT_TAG set (a tag build)'],
     });
     expect(inferEnvironment({ GITLAB_CI: 'true', CI_COMMIT_BRANCH: 'trunk', CI_DEFAULT_BRANCH: 'trunk' })).toEqual({
       environment: 'production',
+      source: 'platform',
       evidence: ['gitlab-ci: CI_COMMIT_BRANCH=trunk (the default branch)'],
     });
     expect(inferEnvironment({ GITLAB_CI: 'true', CI_COMMIT_BRANCH: 'main', CI_DEFAULT_BRANCH: 'trunk' })).toEqual({
       environment: 'production',
+      source: 'platform',
       evidence: ['gitlab-ci: CI_COMMIT_BRANCH=main (a production branch by name)'],
     });
     expect(inferEnvironment({ GITLAB_CI: 'true', CI_COMMIT_BRANCH: 'feature-x', CI_DEFAULT_BRANCH: 'main' }).environment).toBe(
@@ -128,10 +145,12 @@ describe('inferEnvironment', () => {
   it('reads a Replit workspace as sandbox and a Replit Deployment as production', () => {
     expect(inferEnvironment({ REPL_ID: 'abc', REPL_SLUG: 'my-app' })).toEqual({
       environment: 'sandbox',
+      source: 'platform',
       evidence: ['replit: REPL_ID set without REPLIT_DEPLOYMENT (the workspace)'],
     });
     expect(inferEnvironment({ REPL_ID: 'abc', REPLIT_DEPLOYMENT: '1' })).toEqual({
       environment: 'production',
+      source: 'platform',
       evidence: ['replit: REPLIT_DEPLOYMENT set (a Replit Deployment build)'],
     });
   });
@@ -233,7 +252,10 @@ describe('inferEnvironment with a hosted builder', () => {
     // a working tree and the published page loses its marker.
     expect(inferEnvironment({ HOME: '/home/user' }, 'lovable')).toEqual({
       environment: 'production',
-      evidence: ['lovable: a build in a lovable project is its publish step'],
+      // Said to be the rule's word, not a platform's: the same build runs when the builder's agent is
+      // asked to build without publishing, and Patchstack grades an assumed label as a report.
+      source: 'builder',
+      evidence: ['lovable: a build in a lovable project is taken to be its publish step'],
     });
   });
 
@@ -248,6 +270,7 @@ describe('inferEnvironment with a hosted builder', () => {
   it('lets Cloudflare decide for a Lovable project deployed through Cloudflare Pages, not the builder', () => {
     expect(inferEnvironment({ CF_PAGES: '1', CF_PAGES_BRANCH: 'preview' }, 'lovable')).toEqual({
       environment: 'sandbox',
+      source: 'platform',
       evidence: ['cloudflare: CF_PAGES_BRANCH=preview (not a production branch by name)'],
     });
     expect(inferEnvironment({ CF_PAGES: '1', CF_PAGES_BRANCH: 'main' }, 'lovable').evidence).toEqual([

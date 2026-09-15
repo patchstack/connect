@@ -363,6 +363,8 @@ export function buildManifestBody(
   return {
     ...payload,
     environment: config.environment,
+    // How the label above was decided. Servers that predate the field ignore it.
+    ...(config.environmentSource ? { environment_source: config.environmentSource } : {}),
     ...(typeof config.siteUrl === 'string' && config.siteUrl !== '' ? { url: config.siteUrl } : {}),
     ...(typeof config.siteName === 'string' && config.siteName !== ''
       ? { name: config.siteName }

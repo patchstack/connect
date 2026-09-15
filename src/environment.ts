@@ -2,7 +2,7 @@ import { readFileSync } from 'node:fs';
 import path from 'node:path';
 
 import type { EnvLike } from './stack.js';
-import type { Environment } from './types.js';
+import type { Environment, EnvironmentSource } from './types.js';
 
 /**
  * Where a scan is running, when nothing has said.
@@ -201,8 +201,10 @@ const DISCRIMINATORS: readonly Discriminator[] = [
  * Dependencies that only appear in a project a hosted builder generated and builds for itself.
  *
  * These are the platforms where the app never leaves the builder: the edit preview runs a DEV
- * SERVER, and `npm run build` runs only when the owner publishes. So a build hook firing in one of
- * these projects IS the deploy — there is no other moment it could be.
+ * SERVER, and `npm run build` runs when the owner publishes — or when the builder's agent is asked to
+ * build, which nothing in the environment distinguishes. So a build hook firing in one of these
+ * projects is normally the deploy, and the label is reported as assumed (`source: 'builder'`) so
+ * Patchstack treats it as a report of a build until it sees that build on the live page.
  *
  * That matters where the platform sets no variable to read. Lovable sets none: without this, a Lovable
  * publish falls through every discriminator to `local`, and the site that is genuinely live reports as
@@ -257,6 +259,8 @@ export interface InferredEnvironment {
   environment: Environment;
   /** What decided it, for the line the CLI prints. Empty for `local`, which is decided by absence. */
   evidence: string[];
+  /** Whether a platform's variables or the hosted-builder rule decided it. Null for `local`. */
+  source: Exclude<EnvironmentSource, 'override'> | null;
 }
 
 /**
@@ -271,16 +275,23 @@ export function inferEnvironment(
   for (const discriminator of DISCRIMINATORS) {
     const verdict = discriminator.read(env);
     if (verdict !== null) {
-      return { environment: verdict.environment, evidence: [`${discriminator.platform}: ${verdict.evidence}`] };
+      return {
+        environment: verdict.environment,
+        evidence: [`${discriminator.platform}: ${verdict.evidence}`],
+        source: 'platform',
+      };
     }
   }
 
+  // Reported as `builder` so Patchstack knows this is the rule speaking and not the platform: the same
+  // build runs when the builder's agent is asked to build without publishing.
   if (builder !== null) {
     return {
       environment: 'production',
-      evidence: [`${builder}: a build in a ${builder} project is its publish step`],
+      evidence: [`${builder}: a build in a ${builder} project is taken to be its publish step`],
+      source: 'builder',
     };
   }
 
-  return { environment: 'local', evidence: [] };
+  return { environment: 'local', evidence: [], source: null };
 }
