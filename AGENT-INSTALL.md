@@ -17,7 +17,7 @@ Every command at a glance — what it does, whether it reads your source, what i
 | `guide` | Print this project's live setup status (done/missing, with tailored commands), then the full guide. `--full` prints it even when setup is complete. | No | Nothing | Nothing |
 | `status` | Re-print the site UUID + dashboard URL and check whether the site still exists (active / removed / could not verify). | No | Nothing | Site-existence check |
 | `init <site-uuid>` | Optional: pre-seed `.patchstackrc.json` with an existing UUID. | No | `.patchstackrc.json` only | Nothing |
-| `mark-build` | Ensure the widget tag in built pages, and — **on a production build only** — stamp the live-site flag + build fingerprint. A local or preview build is stamped with neither, and has a stale marker removed; `--production` forces it for a build published by hand. Run as a `postbuild` step. | No | Build output only (`dist/ build/ out/ .output/public/ _site/`) — never source | Nothing |
+| `mark-build` | Ensure the widget tag in built pages, and — **on a production build only** — stamp the live-site flag + build fingerprint. A local or preview build is stamped with neither, and has a stale marker removed; `--production` forces it for a build published by hand. Run as a `postbuild` step. | No | Build output only (`dist/ build/ out/ .output/public/ _site/`) — never source | The same manifest `scan` sent, plus one word for what it did with the marker — and only for a site already registered |
 | `claim` | Attach the site to a Patchstack account from the terminal: print a link the user opens to sign in (or sign up) and poll (10 min). Whoever approves becomes the owner. Does **not** rotate the credential. Same result as opening the dashboard link `scan` prints. Not usable in CI. | No | Nothing, unless the server issues a credential for a checkout that had none — then `.patchstackrc.local.json` | Device-code request + approval poll |
 | `login` | Recover a lost credential for an existing site: print an owner-approval link and poll (10 min). Approving **rotates** the credential. Not usable in CI. | No | New credential into `.patchstackrc.local.json` on approval | Device-code request + approval poll |
 | `uninstall` | Signal Patchstack that the package is being removed: an unclaimed record is deleted, a claimed one is flagged. Does **not** touch local files. | No | Nothing local | Removal signal |
@@ -181,7 +181,8 @@ It is server-only. Never put it in the widget tag, client bundles, or public env
    rules were delivered, that the deployed app is wired, or that ordinary traffic is blocked.
 
    Nothing else runs the application. `protect`, `protect --check`, `setup`, `guide`, `scan`, `status`
-   and `mark-build` only read and write files.
+   and `mark-build` only read and write files; `scan` and `mark-build` also report the dependency
+   manifest they read.
 
 5. **Commit** `.patchstackrc.json`, the updated `package.json`, the guard/framework source changes, and the layout/HTML file carrying the widget tag (and the production marker, when `scan` wrote one into a JSX root), so every developer and CI run reports to the same site.
 

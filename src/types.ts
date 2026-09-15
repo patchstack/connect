@@ -10,6 +10,24 @@ export type Ecosystem = 'npm' | 'composer';
  */
 export type Environment = 'production' | 'sandbox' | 'local';
 
+/**
+ * How an environment label was arrived at.
+ *
+ * `platform` is the build platform declaring it in its own variables. `builder` is an assumption
+ * about a project whose builds only happen when its owner publishes. `override` is the owner
+ * stating it. A `production` label is a claim that this build is the one going live, and which of
+ * these decided it is how much the claim can bear.
+ */
+export type EnvironmentSource = 'platform' | 'builder' | 'override';
+
+/**
+ * What a build's stamping pass did with the published-build marker.
+ *
+ * The marker is what lets the live page name the build it is running, so this is the difference
+ * between an app that can report itself deployed and one that cannot.
+ */
+export type BuildMarker = 'stamped' | 'withheld' | 'no-pages' | 'no-output';
+
 export interface PackageEntry {
   name: string;
   version: string;
@@ -79,6 +97,12 @@ export interface Config {
    * any such evidence.
    */
   environmentEvidence?: string[];
+  /**
+   * The kind of thing `environment` rests on: the platform's own variables, an assumption about a
+   * hosted builder's project, or the owner stating it outright. Reported alongside the label, so a
+   * `production` claim can be read for what it is worth. Null when nothing declared it.
+   */
+  environmentSource?: EnvironmentSource | null;
   /**
    * Whether the connector manages the disclosure-widget tag (source shell on
    * `scan`, built HTML on `mark-build`). Defaults to true; persist
