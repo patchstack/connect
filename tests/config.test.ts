@@ -142,6 +142,15 @@ describe('resolveConfig', () => {
     expect(config.environmentEvidence).toEqual([]);
   });
 
+  it('says whether the label was stated or inferred, and by what', async () => {
+    process.env.PATCHSTACK_ENVIRONMENT = 'production';
+    expect((await resolveConfig({ cwd, cliSiteUuid: VALID_UUID })).environmentSource).toBe('override');
+
+    delete process.env.PATCHSTACK_ENVIRONMENT;
+    const inferred = await resolveConfig({ cwd, cliSiteUuid: VALID_UUID });
+    expect(inferred.environmentSource).toBe(inferEnvironment(process.env).source);
+  });
+
   it('reads PATCHSTACK_ENVIRONMENT from the environment', async () => {
     process.env.PATCHSTACK_ENVIRONMENT = 'sandbox';
     const config = await resolveConfig({ cwd, cliSiteUuid: VALID_UUID });

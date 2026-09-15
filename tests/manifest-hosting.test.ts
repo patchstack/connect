@@ -35,6 +35,18 @@ describe('buildManifestBody hosting', () => {
   });
 });
 
+describe('buildManifestBody environment source', () => {
+  it('says how the environment label was decided, so an assumed label is graded as one', () => {
+    const assumed = { ...config, environmentSource: 'builder' } as Config;
+    expect(buildManifestBody(assumed, payload, { HOME: '/x' }).environment_source).toBe('builder');
+  });
+
+  it('omits the source when the label was decided by absence', () => {
+    const local = { ...config, environment: 'local', environmentSource: null } as Config;
+    expect(buildManifestBody(local, payload, { HOME: '/x' })).not.toHaveProperty('environment_source');
+  });
+});
+
 /**
  * A validation refusal in the shape the API uses: a sentence for people, and an `errors` object keyed by
  * the refused field. Synthetic — the wording is invented here, because the code must not depend on it.

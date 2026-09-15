@@ -10,6 +10,15 @@ export type Ecosystem = 'npm' | 'composer';
  */
 export type Environment = 'production' | 'sandbox' | 'local';
 
+/**
+ * What decided an environment label. `platform`: the build platform's own variables named the tier or
+ * the branch. `builder`: nothing did, and the project belongs to a hosted builder whose build is taken
+ * to be its publish step — an assumption, and reported as one. `override`: `PATCHSTACK_ENVIRONMENT` or
+ * the config file stated it. Sent with the manifest so Patchstack can weigh a platform's word
+ * differently from an assumption; `local` has no source, being decided by the absence of evidence.
+ */
+export type EnvironmentSource = 'platform' | 'builder' | 'override';
+
 export interface PackageEntry {
   name: string;
   version: string;
@@ -79,6 +88,8 @@ export interface Config {
    * any such evidence.
    */
   environmentEvidence?: string[];
+  /** What decided `environment`, or null for a `local` label decided by absence. See {@link EnvironmentSource}. */
+  environmentSource?: EnvironmentSource | null;
   /**
    * Whether the connector manages the disclosure-widget tag (source shell on
    * `scan`, built HTML on `mark-build`). Defaults to true; persist

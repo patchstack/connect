@@ -1,7 +1,7 @@
 import { readFile, chmod, lstat, open, rename, unlink } from 'node:fs/promises';
 import path from 'node:path';
 import { randomUUID } from 'node:crypto';
-import { PatchstackError, type Config, type Environment } from './types.js';
+import { PatchstackError, type Config, type Environment, type EnvironmentSource } from './types.js';
 import { DEFAULT_ENDPOINT, DEFAULT_TIMEOUT_MS } from './client.js';
 import { detectHostedBuilder, inferEnvironment } from './environment.js';
 import { detectSiteUrl, normaliseSiteUrl } from './site-url.js';
@@ -173,14 +173,16 @@ export async function resolveConfig(options: ResolveConfigOptions): Promise<Conf
   // branch name decides between `production` and `sandbox`, a developer's machine reads `local`.
   //
   // The project itself gets the last word, after every platform has declined. A hosted builder sets
-  // no variable we can read, and on those platforms a build only ever happens when the owner
-  // publishes — so a Lovable app would otherwise report its live site as a working tree.
+  // no variable we can read, and on those platforms a build is normally the owner publishing — so a
+  // Lovable app would otherwise report its live site as a working tree. How the label was decided
+  // travels with it, so a build that was not a publish is not called deployed on that word alone.
   const inferred =
     environmentRaw === undefined
       ? inferEnvironment(process.env, detectHostedBuilder(options.cwd))
       : null;
   const environment: Environment = environmentRaw ?? inferred!.environment;
   const environmentEvidence: string[] = inferred?.evidence ?? [];
+  const environmentSource: EnvironmentSource | null = inferred === null ? 'override' : inferred.source;
 
   if (siteUuid !== null && siteUuid.length > 0 && !isCanonicalUuid(siteUuid)) {
     throw new PatchstackError(
@@ -224,6 +226,7 @@ export async function resolveConfig(options: ResolveConfigOptions): Promise<Conf
     timeoutMs,
     environment,
     environmentEvidence,
+    environmentSource,
     widget: fromFile.widget !== false,
     claimToken,
   };
