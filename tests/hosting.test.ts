@@ -10,7 +10,12 @@ describe('detectHostingPlatform', () => {
     });
     expect(detectHostingPlatform({ VERCEL: '1', VERCEL_ENV: 'production' }).platform).toBe('vercel');
     expect(detectHostingPlatform({ CF_PAGES: '1' }).platform).toBe('cloudflare');
+    expect(detectHostingPlatform({ WORKERS_CI: '1', WORKERS_CI_BRANCH: 'main' })).toEqual({
+      platform: 'cloudflare',
+      evidence: ['WORKERS_CI', 'WORKERS_CI_BRANCH'],
+    });
     expect(detectHostingPlatform({ AWS_APP_ID: 'd1abc' }).platform).toBe('aws');
+    expect(detectHostingPlatform({ AWS_APP_ID: 'd1abc', AWS_BRANCH: 'main' }).evidence).toEqual(['AWS_APP_ID', 'AWS_BRANCH']);
     expect(detectHostingPlatform({ RENDER: 'true' }).platform).toBe('render');
     expect(detectHostingPlatform({ DYNO: 'web.1' }).platform).toBe('heroku');
     expect(detectHostingPlatform({ K_SERVICE: 'api' }).platform).toBe('google-cloud');

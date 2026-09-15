@@ -31,8 +31,8 @@ interface HostingRule {
 const RULES: readonly HostingRule[] = [
   { platform: 'netlify', any: ['NETLIFY', 'NETLIFY_BUILD_BASE', 'DEPLOY_PRIME_URL'] },
   { platform: 'vercel', any: ['VERCEL', 'VERCEL_ENV', 'VERCEL_URL'] },
-  { platform: 'cloudflare', any: ['CF_PAGES', 'CF_PAGES_URL', 'CLOUDFLARE_ACCOUNT_ID'] },
-  { platform: 'aws', any: ['AWS_APP_ID', 'AWS_LAMBDA_FUNCTION_NAME', 'AWS_EXECUTION_ENV'] },
+  { platform: 'cloudflare', any: ['CF_PAGES', 'CF_PAGES_URL', 'WORKERS_CI', 'WORKERS_CI_BRANCH', 'CLOUDFLARE_ACCOUNT_ID'] },
+  { platform: 'aws', any: ['AWS_APP_ID', 'AWS_BRANCH', 'AWS_LAMBDA_FUNCTION_NAME', 'AWS_EXECUTION_ENV'] },
   { platform: 'render', any: ['RENDER', 'RENDER_SERVICE_ID', 'RENDER_EXTERNAL_URL'] },
   { platform: 'railway', any: ['RAILWAY_ENVIRONMENT', 'RAILWAY_ENVIRONMENT_NAME', 'RAILWAY_PROJECT_ID'] },
   { platform: 'fly', any: ['FLY_APP_NAME', 'FLY_REGION', 'FLY_ALLOC_ID'] },

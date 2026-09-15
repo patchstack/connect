@@ -238,7 +238,7 @@ Environment:
   PATCHSTACK_API_BASE     API origin for /oauth/token and /api/logs/log (default: https://api.patchstack.com)
   PATCHSTACK_ENDPOINT     API endpoint (default: https://api.patchstack.com/monitor/pulse/manifest)
   PATCHSTACK_TIMEOUT_MS   Request timeout in ms (default: 30000; a scan that needs longer saves what worked to .patchstackrc.json)
-  PATCHSTACK_ENVIRONMENT  Manifest label: production, sandbox or local. Unset, a deployment or CI build reports production and a developer machine reports local.
+  PATCHSTACK_ENVIRONMENT  Manifest label: production, sandbox or local. Unset, the build platform's own tier or branch name decides; a developer machine reports local.
   PATCHSTACK_MODE         (protect) Runtime guard mode: block (default) | dry-run
   PATCHSTACK_ROUTE_WAF    (protect) Set to 1 to also screen every request at the route level (opt-in)
 
@@ -651,7 +651,7 @@ async function runScan(
   // site, a local one is inventory — so the line says which, and what decided it, every time.
   if (config.environment === 'local') {
     console.log(
-      'Reporting from this machine as the local environment: the dashboard will show the app as configured, not deployed. Builds on your hosting platform report as production.',
+      'Reporting from this machine as the local environment: the dashboard will show the app as configured, not deployed. A build on a platform this recognises reports production or sandbox on its own; on a platform it does not know, set PATCHSTACK_ENVIRONMENT=production for the build that goes live.',
     );
   } else {
     const because = (config.environmentEvidence ?? []).length > 0
