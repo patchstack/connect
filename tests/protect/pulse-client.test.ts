@@ -36,6 +36,7 @@ describe('PulseRuleClient', () => {
     // Exchanged on the same origin, then the rules request carried the token.
     expect(fetchMock.mock.calls[0][0]).toBe('https://x.test/monitor/pulse/token');
     expect(fetchMock.mock.calls[1][1].headers.Authorization).toBe('Bearer tok');
+    expect(fetchMock.mock.calls[1][1].headers['X-Patchstack-Per-Rule-Dry-Run']).toBe('1');
   });
 
   it('fetches unauthenticated when no credential is configured', async () => {
@@ -48,6 +49,7 @@ describe('PulseRuleClient', () => {
     // One call: no exchange attempted, and no Authorization header.
     expect(fetchMock).toHaveBeenCalledOnce();
     expect(fetchMock.mock.calls[0][1].headers.Authorization).toBeUndefined();
+    expect(fetchMock.mock.calls[0][1].headers['X-Patchstack-Per-Rule-Dry-Run']).toBeUndefined();
   });
 
   it('still fetches rules when the credential exchange fails', async () => {
@@ -67,6 +69,7 @@ describe('PulseRuleClient', () => {
     // Protection must never hinge on getting a token.
     expect(res.success).toBe(true);
     expect(fetchMock.mock.calls[1][1].headers.Authorization).toBeUndefined();
+    expect(fetchMock.mock.calls[1][1].headers['X-Patchstack-Per-Rule-Dry-Run']).toBeUndefined();
   });
 
   it('fails open (success:false, empty rules) on a non-200', async () => {
