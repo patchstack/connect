@@ -1377,6 +1377,9 @@ function readBuildScript(cwd: string): string | undefined {
  * and a report that cannot be delivered costs a line of output. Reports only against a site that is
  * already registered — provisioning one from a postbuild hook would be a surprise.
  */
+/** How long the build-stamp report may take before it is given up on. See `reportBuildStamp`. */
+const REPORT_TIMEOUT_MS = 10_000;
+
 async function reportBuildStamp(
   config: Config | null,
   payload: WirePayload | null,
@@ -1387,7 +1390,14 @@ async function reportBuildStamp(
   }
 
   try {
-    await postManifestWithEnvironmentFallback(config, payload, marker);
+    // Bounded well below the manifest timeout. The scan's report is the one the build cannot do
+    // without; this one only explains a build afterwards, and a diagnostic has not earned the right
+    // to hold somebody's build open while a network decides whether to answer.
+    const bounded: Config = {
+      ...config,
+      timeoutMs: Math.min(config.timeoutMs, REPORT_TIMEOUT_MS),
+    };
+    await postManifestWithEnvironmentFallback(bounded, payload, marker);
   } catch (err) {
     console.warn(
       `mark-build: this build was not reported to Patchstack (${(err as Error).message}). The pages were still marked as described above.`,
