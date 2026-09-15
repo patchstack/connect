@@ -1,12 +1,12 @@
 import { readFileSync } from 'node:fs';
 import path from 'node:path';
-import type { Config, Environment } from './types.js';
+import type { BuildMarker, Config, Environment } from './types.js';
 import type { GuideState } from './guide.js';
 import { createRequire } from 'node:module';
 import { writeProjectFileSync } from './safe-file.js';
 
 import { scanLockfile } from './parsers/index.js';
-import { buildWirePayload } from './normalize.js';
+import { buildWirePayload, type WirePayload } from './normalize.js';
 import { computeManifestChecksum } from './checksum.js';
 import {
   postInputMap,
@@ -1361,6 +1361,50 @@ function readBuildScript(cwd: string): string | undefined {
   }
 }
 
+/**
+ * Tell Patchstack what this build did with the published-build marker.
+ *
+ * The stamping pass is the only thing that knows whether the live pages will be able to name the
+ * build they are running. Without this report a site that never carries a marker — because it is
+ * server-rendered, or because the build was not a deployment — reads on the dashboard as an app
+ * nothing has been heard from, which is a different problem with a different fix.
+ *
+ * The manifest travels with it because it is what identifies the build, and it is the same one the
+ * scan reported before the bundler ran: the server keeps one copy and reads the two reports as the
+ * two halves of one build. A project that wired only this hook still gets its build recorded.
+ *
+ * Best-effort in every direction. This runs inside somebody's build, so nothing here may fail one,
+ * and a report that cannot be delivered costs a line of output. Reports only against a site that is
+ * already registered — provisioning one from a postbuild hook would be a surprise.
+ */
+/** How long the build-stamp report may take before it is given up on. See `reportBuildStamp`. */
+const REPORT_TIMEOUT_MS = 10_000;
+
+async function reportBuildStamp(
+  config: Config | null,
+  payload: WirePayload | null,
+  marker: BuildMarker,
+): Promise<void> {
+  if (config === null || payload === null || config.siteUuid === null || config.siteUuid === '') {
+    return;
+  }
+
+  try {
+    // Bounded well below the manifest timeout. The scan's report is the one the build cannot do
+    // without; this one only explains a build afterwards, and a diagnostic has not earned the right
+    // to hold somebody's build open while a network decides whether to answer.
+    const bounded: Config = {
+      ...config,
+      timeoutMs: Math.min(config.timeoutMs, REPORT_TIMEOUT_MS),
+    };
+    await postManifestWithEnvironmentFallback(bounded, payload, marker);
+  } catch (err) {
+    console.warn(
+      `mark-build: this build was not reported to Patchstack (${(err as Error).message}). The pages were still marked as described above.`,
+    );
+  }
+}
+
 async function runMarkBuild(args: ParsedArgs): Promise<number> {
   const cwd = process.cwd();
   // Captured before the lockfile scan below, which on a large tree takes long enough to matter when
@@ -1373,12 +1417,14 @@ async function runMarkBuild(args: ParsedArgs): Promise<number> {
   // a fingerprint or stack.
   let checksum: string | null = null;
   let stack: StackDescriptor | null = null;
+  let wirePayload: WirePayload | null = null;
   try {
     const manifest = await scanLockfile(cwd);
     for (const warning of manifest.warnings ?? []) {
       console.warn(`mark-build: ${warning}`);
     }
     const { payload } = buildWirePayload(manifest);
+    wirePayload = payload;
     checksum = computeManifestChecksum(payload.packages);
     stack = detectStack(payload.packages);
   } catch (err) {
@@ -1387,13 +1433,14 @@ async function runMarkBuild(args: ParsedArgs): Promise<number> {
     );
   }
 
-  // The widget pass needs the configured UUID, and the marker gate below needs the environment.
-  // Best-effort for the same reason: neither may fail a build.
+  // The widget pass needs the configured UUID, the marker gate below needs the environment, and the
+  // report needs both. Best-effort for the same reason: none of it may fail a build.
+  let config: Config | null = null;
   let widgetUuid: string | null = null;
   let environment: Environment = 'local';
   let environmentEvidence: string[] = [];
   try {
-    const config = await resolveConfig({
+    config = await resolveConfig({
       cwd,
       cliSiteUuid: getStringFlag(args.flags, 'site-uuid'),
     });
@@ -1417,6 +1464,13 @@ async function runMarkBuild(args: ParsedArgs): Promise<number> {
   const forcedProduction = args.flags.get('production') === true;
   const published = forcedProduction || marksPublishedBuild(environment);
 
+  // `--production` is the owner stating where this build is going, so the report says so too —
+  // otherwise the pages would claim to be the live site while the report called them a working tree.
+  const reported: Config | null =
+    config !== null && forcedProduction && config.environment !== 'production'
+      ? { ...config, environment: 'production', environmentSource: 'override' }
+      : config;
+
   const buildDirOptions = { framework: stack?.framework ?? null, buildScript: readBuildScript(cwd) };
   const dir = resolveBuildDir(cwd, getStringFlag(args.flags, 'dir'), buildDirOptions);
   if (dir === null) {
@@ -1430,6 +1484,7 @@ async function runMarkBuild(args: ParsedArgs): Promise<number> {
     console.warn(
       'mark-build: if the build writes elsewhere, set it once in package.json → "postbuild": "patchstack-connect mark-build --dir <path>".',
     );
+    await reportBuildStamp(reported, wirePayload, 'no-output');
     return 0;
   }
 
@@ -1446,6 +1501,7 @@ async function runMarkBuild(args: ParsedArgs): Promise<number> {
     console.warn(
       'mark-build: add the marker to your root shell instead — run `patchstack-connect guide` for the snippet.',
     );
+    await reportBuildStamp(reported, wirePayload, 'no-pages');
     return 0;
   }
 
@@ -1496,6 +1552,7 @@ async function runMarkBuild(args: ParsedArgs): Promise<number> {
         `${widgetTouched > 0 ? `, widget tag ensured in ${widgetTouched}` : ''}` +
         `${stackSummary !== null ? ` [${stackSummary}]` : ''}.`,
     );
+    await reportBuildStamp(reported, wirePayload, 'stamped');
     return 0;
   }
 
@@ -1514,6 +1571,7 @@ async function runMarkBuild(args: ParsedArgs): Promise<number> {
   console.log(
     'mark-build: publishing this directory by hand? Re-run with --production (or set PATCHSTACK_ENVIRONMENT=production) so the deployed pages carry it.',
   );
+  await reportBuildStamp(reported, wirePayload, 'withheld');
   return 0;
 }
 

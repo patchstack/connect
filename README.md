@@ -192,7 +192,8 @@ Windows reports exit `2` without starting anything: the cleanup this relies on i
 group, and a verification that can leave a server running is worse than an unanswered question.
 
 No other command runs your application. `protect`, `protect --check`, `setup`, `guide`, `scan`,
-`status` and `mark-build` only read and write files.
+`status` and `mark-build` only read and write files, and — for `scan` and `mark-build` — report the
+dependency manifest they read.
 
 ## Configuration
 
@@ -311,7 +312,7 @@ The widget is a floating "Report a vulnerability" button — a disclosure channe
 
   Re-runs update the tag in place (the `data-patchstack-connect-widget` attribute marks it as connector-managed); a pre-existing manual widget tag is left untouched. `--dry-run` never edits anything; a failed post still skips the widget tag (it needs the site UUID) but the production marker may already have been written, since it runs before the post. Projects whose root layout is code rather than HTML (Next.js, Nuxt, Astro, …) get the exact snippet and target file printed instead — `guide` shows framework-specific placement.
 
-- **`mark-build`** ensures the same tag in built HTML output, covering builds whose source shell the connector couldn't edit, and stamps `window.__PATCHSTACK_PROD__` so the widget hides the claim/login UI on the published site (owners reach it by appending `#patchstack` to the live URL). The marker says the page is the live site, so **only a production build carries it**: the environment is read the same way `scan` reads it (the build platform's own tier or branch name, then the hosted builder the project belongs to), and a local or preview build gets the widget tag, no marker, and any marker an earlier build left behind removed. Publishing a static build by hand from your machine is the case that needs `--production` (or `PATCHSTACK_ENVIRONMENT=production`), because nothing in that environment can say the build is a deployment.
+- **`mark-build`** ensures the same tag in built HTML output, covering builds whose source shell the connector couldn't edit, and stamps `window.__PATCHSTACK_PROD__` so the widget hides the claim/login UI on the published site (owners reach it by appending `#patchstack` to the live URL). It then reports what it did — `stamped`, `withheld`, `no-pages` for a server-rendered build, or `no-output` — alongside the same manifest `scan` sent before the bundler ran, so the dashboard can say why a published app is or is not reporting its build. That report is the second half of one build, not a second build: Patchstack keeps one copy of the manifest and reads the two together. It is sent only for a site that is already registered, and never carries the site's address or name, which `mark-build` does not resolve. The marker says the page is the live site, so **only a production build carries it**: the environment is read the same way `scan` reads it (the build platform's own tier or branch name, then the hosted builder the project belongs to), and a local or preview build gets the widget tag, no marker, and any marker an earlier build left behind removed. Publishing a static build by hand from your machine is the case that needs `--production` (or `PATCHSTACK_ENVIRONMENT=production`), because nothing in that environment can say the build is a deployment.
 
 - **Opting out:** persist `"widget": false` in `.patchstackrc.json` to disable both the widget tag and the production marker (dependency scanning only). Without it, the next successful scan re-adds the managed tag, and the next scan re-adds the marker on a JSX root.
 

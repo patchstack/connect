@@ -1,5 +1,6 @@
 import {
   PatchstackError,
+  type BuildMarker,
   type Config,
   type ManifestClaimOutcome,
   type StoreManifestResponse,
@@ -354,6 +355,7 @@ export function buildManifestBody(
   config: Config,
   payload: WirePayload,
   env: EnvLike = process.env,
+  marker: BuildMarker | null = null,
 ): Record<string, unknown> {
   // Where this build is running, when it is a deployment. A local machine has no hosting to
   // report, and even if its shell carried a platform's variable that would describe the shell,
@@ -363,6 +365,13 @@ export function buildManifestBody(
   return {
     ...payload,
     environment: config.environment,
+    // What the label rests on, sent with the label itself: a `production` claim decided by an
+    // assumption about the project is worth less than one the platform declared, and only the
+    // report can say which this was.
+    ...(config.environmentSource != null ? { environment_source: config.environmentSource } : {}),
+    // Present only on the report from a finished build, which is also what tells the two reports
+    // of one build apart.
+    ...(marker !== null ? { marker } : {}),
     ...(typeof config.siteUrl === 'string' && config.siteUrl !== '' ? { url: config.siteUrl } : {}),
     ...(typeof config.siteName === 'string' && config.siteName !== ''
       ? { name: config.siteName }
@@ -473,19 +482,24 @@ export interface ManifestPostResult {
 export async function postManifestWithEnvironmentFallback(
   config: Config,
   payload: WirePayload,
+  marker: BuildMarker | null = null,
 ): Promise<ManifestPostResult> {
   try {
-    return { response: await postManifest(config, payload), environmentUsed: config.environment };
+    return {
+      response: await postManifest(config, payload, marker),
+      environmentUsed: config.environment,
+    };
   } catch (err) {
     if (config.environment !== 'local' || !environmentRejected(err)) throw err;
     const fallback: Config = { ...config, environment: 'sandbox' };
-    return { response: await postManifest(fallback, payload), environmentUsed: 'sandbox' };
+    return { response: await postManifest(fallback, payload, marker), environmentUsed: 'sandbox' };
   }
 }
 
 export async function postManifest(
   config: Config,
   payload: WirePayload,
+  marker: BuildMarker | null = null,
 ): Promise<StoreManifestResponse> {
   const url = buildEndpointUrl(config.endpoint, config.siteUuid);
   const timeoutMs = config.timeoutMs;
@@ -504,7 +518,7 @@ export async function postManifest(
         'User-Agent': '@patchstack/connect',
         ...claimTokenHeader(config),
       },
-      body: JSON.stringify(buildManifestBody(config, payload)),
+      body: JSON.stringify(buildManifestBody(config, payload, process.env, marker)),
       signal: AbortSignal.timeout(timeoutMs),
     });
   } catch (cause) {

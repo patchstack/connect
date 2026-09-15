@@ -1,7 +1,7 @@
 import { readFile, chmod, lstat, open, rename, unlink } from 'node:fs/promises';
 import path from 'node:path';
 import { randomUUID } from 'node:crypto';
-import { PatchstackError, type Config, type Environment } from './types.js';
+import { PatchstackError, type Config, type Environment, type EnvironmentSource } from './types.js';
 import { DEFAULT_ENDPOINT, DEFAULT_TIMEOUT_MS } from './client.js';
 import { detectHostedBuilder, inferEnvironment } from './environment.js';
 import { detectSiteUrl, normaliseSiteUrl } from './site-url.js';
@@ -181,6 +181,10 @@ export async function resolveConfig(options: ResolveConfigOptions): Promise<Conf
       : null;
   const environment: Environment = environmentRaw ?? inferred!.environment;
   const environmentEvidence: string[] = inferred?.evidence ?? [];
+  // Stated is `override` whichever file or variable stated it: both are the owner's word, and the
+  // report has no use for which one they reached for.
+  const environmentSource: EnvironmentSource | null =
+    environmentRaw !== undefined ? 'override' : inferred!.source;
 
   if (siteUuid !== null && siteUuid.length > 0 && !isCanonicalUuid(siteUuid)) {
     throw new PatchstackError(
@@ -224,6 +228,7 @@ export async function resolveConfig(options: ResolveConfigOptions): Promise<Conf
     timeoutMs,
     environment,
     environmentEvidence,
+    environmentSource,
     widget: fromFile.widget !== false,
     claimToken,
   };

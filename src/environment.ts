@@ -2,7 +2,7 @@ import { readFileSync } from 'node:fs';
 import path from 'node:path';
 
 import type { EnvLike } from './stack.js';
-import type { Environment } from './types.js';
+import type { Environment, EnvironmentSource } from './types.js';
 
 /**
  * Where a scan is running, when nothing has said.
@@ -257,7 +257,18 @@ export interface InferredEnvironment {
   environment: Environment;
   /** What decided it, for the line the CLI prints. Empty for `local`, which is decided by absence. */
   evidence: string[];
+  /**
+   * Which kind of thing decided it, for the report. `platform` is the build platform saying so in
+   * its own variables; `builder` is an assumption about a project whose builds only happen when
+   * its owner publishes. Null for `local`, which nothing declared.
+   *
+   * A `production` label is a claim that this build is the one going live, and how much that claim
+   * can bear depends on which of these decided it.
+   */
+  source: EnvironmentSource | null;
 }
+
+
 
 /**
  * @param builder A hosted builder this project belongs to, from {@link detectHostedBuilder}. Consulted
@@ -271,7 +282,11 @@ export function inferEnvironment(
   for (const discriminator of DISCRIMINATORS) {
     const verdict = discriminator.read(env);
     if (verdict !== null) {
-      return { environment: verdict.environment, evidence: [`${discriminator.platform}: ${verdict.evidence}`] };
+      return {
+        environment: verdict.environment,
+        evidence: [`${discriminator.platform}: ${verdict.evidence}`],
+        source: 'platform',
+      };
     }
   }
 
@@ -279,8 +294,9 @@ export function inferEnvironment(
     return {
       environment: 'production',
       evidence: [`${builder}: a build in a ${builder} project is its publish step`],
+      source: 'builder',
     };
   }
 
-  return { environment: 'local', evidence: [] };
+  return { environment: 'local', evidence: [], source: null };
 }
