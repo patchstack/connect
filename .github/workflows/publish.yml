@@ -195,8 +195,7 @@ jobs:
   # vulnerabilities, a manifest that names the wrong version means someone believing they have a fix they
   # do not have — so the two must not be allowed to drift.
   #
-  # A pull request rather than a push, because branch protection is the point of branch protection. Never
-  # auto-merged.
+  # A pull request rather than a push, so the recorded version passes the same checks as other changes.
   record-version:
     name: Record the published version on main
     # Depends on both, and gated on the PUBLISH result alone.
@@ -267,10 +266,8 @@ jobs:
             echo "changed=true" >> "$GITHUB_OUTPUT"
           fi
 
-      # Evidence for the reviewer, gathered here because it may not be available on the pull request
-      # itself: a pull request opened with GITHUB_TOKEN does not start workflow runs. The consistency
-      # invariant is the whole content of this change, so it is checked here and the result stated in the
-      # body rather than leaving a reviewer to approve two edited strings on trust.
+      # Check version consistency before proposing the recorded version. The publishing run's result is
+      # also part of the automatic merge gate, so a failed check leaves the proposal open.
       #
       # `continue-on-error`, because this check must not be able to prevent the pull request. A step that
       # exits non-zero stops the job, and a later step whose condition contains no status function carries
@@ -287,6 +284,17 @@ jobs:
           npm run build
           npx vitest run tests/package-version.test.ts
 
+      - name: Create a proposal token
+        id: proposal-token
+        if: steps.apply.outputs.changed == 'true' && vars.AUTOMATION_APP_CLIENT_ID != ''
+        uses: actions/create-github-app-token@v3
+        continue-on-error: true
+        with:
+          client-id: ${{ vars.AUTOMATION_APP_CLIENT_ID }}
+          private-key: ${{ secrets.AUTOMATION_APP_PRIVATE_KEY }}
+          permission-contents: write
+          permission-pull-requests: write
+
       # `!cancelled()` rather than a bare condition: a condition without a status function is implicitly
       # ANDed with `success()`, which would skip this step whenever the check above failed — precisely when
       # the pull request matters most.
@@ -302,7 +310,7 @@ jobs:
       - name: Commit the recorded version, signed
         if: ${{ !cancelled() && steps.apply.outputs.changed == 'true' }}
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_TOKEN: ${{ steps.proposal-token.outputs.token || github.token }}
         run: |
           set -euo pipefail
           node scripts/record-published-version.mjs \
@@ -314,7 +322,7 @@ jobs:
       - name: Open or update the pull request
         if: ${{ !cancelled() && steps.apply.outputs.changed == 'true' }}
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_TOKEN: ${{ steps.proposal-token.outputs.token || github.token }}
           TITLE: "Record published version ${{ env.VERSION }}"
         run: |
           set -euo pipefail
@@ -350,11 +358,13 @@ jobs:
               echo "before merging: this pull request may not be sufficient on its own."
             fi
             echo
-            echo "A pull request opened with \`GITHUB_TOKEN\` does not start workflow runs, so the checks on"
-            echo "this pull request may be empty. Two things cover that: the invariant above was verified"
-            echo "inside the workflow, and CI was dispatched on this branch — a dispatched run proves the"
-            echo "branch is green but does not attach here, so it does not satisfy a required status."
-            echo "**Close and reopen this pull request** to get the required checks."
+            if [ "${{ steps.proposal-token.outcome }}" = success ]; then
+              echo "The proposal App opened this pull request so its required CI checks run normally."
+              echo "It can merge automatically only after those checks and the publishing run pass."
+            else
+              echo "The proposal App was unavailable. GitHub requires approval to start CI on a pull"
+              echo "request opened with the workflow token; automatic merging remains disabled."
+            fi
           } > /tmp/pr-body.md
 
           cat /tmp/pr-body.md >> "$GITHUB_STEP_SUMMARY"
@@ -369,19 +379,14 @@ jobs:
             gh pr create --title "$TITLE" --body-file /tmp/pr-body.md --head "$BRANCH"
           fi
 
-          # Start CI on the branch explicitly. A pull request opened with `GITHUB_TOKEN` does not start
-          # workflow runs, so without this the branch has no run at all and the only evidence is the
-          # in-workflow check above.
-          #
-          # Stated precisely because the distinction decides whether a human has to do something: a
-          # dispatched run does NOT attach to the pull request and so does NOT satisfy a required status.
-          # It proves the branch is green; closing and reopening the pull request is what produces the
-          # required checks. Never fatal — the version is already published and recorded by this point,
-          # and a dispatch that fails to start is not a reason to fail the release.
-          if gh workflow run ci.yml --ref "$BRANCH" 2>/dev/null; then
-            echo "Dispatched CI on $BRANCH (does not attach to the pull request)." >> "$GITHUB_STEP_SUMMARY"
-          else
-            echo "::warning::Could not dispatch CI on $BRANCH. The pull request has no run of its own; close and reopen it to get one."
+          # The fallback proposal still needs a branch run for diagnostic evidence. It cannot satisfy
+          # a required PR check; a configured proposal App is what removes that manual approval.
+          if [ "${{ steps.proposal-token.outcome }}" != success ]; then
+            if GH_TOKEN="${{ github.token }}" gh workflow run ci.yml --ref "$BRANCH" 2>/dev/null; then
+              echo "Dispatched diagnostic CI on $BRANCH; approve the PR checks separately." >> "$GITHUB_STEP_SUMMARY"
+            else
+              echo "::warning::Could not dispatch diagnostic CI on $BRANCH."
+            fi
           fi
 
       # Last, so failing is the final act rather than something that prevents the work above: the release
