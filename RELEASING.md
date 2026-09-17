@@ -30,6 +30,15 @@ actually resolved. `Publish` runs the version check and records its result in
 the pull request body. A proposal opened with the App receives normal PR CI;
 one opened with the workflow token may need a maintainer to approve those runs.
 
+When the proposal App is configured, a verified published tarball also triggers
+freshness checks in configured downstream repositories. Set the
+`RELEASE_REFRESH_TARGETS` Actions secret to a JSON array of repository names
+owned by the same organization; keep those names out of this public repository
+and its workflow logs. The App must be installed on each target with Contents
+write permission. A notification failure makes `Publish` red without undoing the
+already-published package. A dry-run or failed tarball verification sends no
+notification.
+
 ## How to release (recommended)
 
 Run the **`Release`** workflow from the Actions tab (or `gh` below) and pick a

@@ -185,6 +185,65 @@ jobs:
 
           PS_CANARY_ENGINE="$engine" PS_REQUIRE_CANARY=1 npx vitest run tests/protect/canary-engine-proof.test.ts
 
+  notify-release-consumers:
+    name: Notify configured release consumers
+    needs:
+      - publish
+      - verify-published
+    if: needs.verify-published.result == 'success' && vars.AUTOMATION_APP_CLIENT_ID != ''
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Check out the published tag
+        uses: actions/checkout@v7
+        with:
+          ref: refs/tags/v${{ needs.publish.outputs.version }}
+          persist-credentials: false
+
+      - name: Create a release notification token
+        id: release-token
+        uses: actions/create-github-app-token@v3
+        with:
+          client-id: ${{ vars.AUTOMATION_APP_CLIENT_ID }}
+          private-key: ${{ secrets.AUTOMATION_APP_PRIVATE_KEY }}
+          owner: ${{ github.repository_owner }}
+          permission-contents: write
+
+      - name: Notify configured repositories
+        env:
+          GH_TOKEN: ${{ steps.release-token.outputs.token }}
+          TARGETS: ${{ secrets.RELEASE_REFRESH_TARGETS }}
+          VERSION: ${{ needs.publish.outputs.version }}
+        run: |
+          set -euo pipefail
+
+          if ! jq -e 'type == "array" and length > 0 and
+            all(.[]; type == "string" and test("^[A-Za-z0-9._-]+$")) and
+            ((unique | length) == length)' <<< "$TARGETS" >/dev/null; then
+            echo "::error::Release notification targets are missing or invalid."
+            exit 1
+          fi
+
+          source_sha=$(git rev-parse HEAD)
+          payload=$(jq -nc --arg version "$VERSION" --arg source_sha "$source_sha" \
+            '{event_type:"verified-package-release", client_payload:{version:$version, source_sha:$source_sha}}')
+
+          failures=0
+          while IFS= read -r target; do
+            if [ "$target" = "${GITHUB_REPOSITORY#*/}" ] ||
+              ! gh api -X POST "repos/${GITHUB_REPOSITORY_OWNER}/${target}/dispatches" \
+                --input - <<< "$payload" >/dev/null 2>&1; then
+              failures=$((failures + 1))
+            fi
+          done < <(jq -r '.[]' <<< "$TARGETS")
+
+          if [ "$failures" -ne 0 ]; then
+            echo "::error::Could not notify every configured release consumer."
+            exit 1
+          fi
+          echo "Notified $(jq 'length' <<< "$TARGETS") configured release consumers."
+
   # The tag is the source of truth for what gets published, and this brings the repository's own copy in
   # line with it afterwards.
   #
