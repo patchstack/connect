@@ -1,0 +1,82 @@
+name: Merge generated version record
+
+on:
+  workflow_run:
+    workflows: [CI]
+    types: [completed]
+  schedule:
+    - cron: '17 * * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  merge:
+    name: Merge verified version record
+    if: vars.AUTOMATION_APP_BOT_LOGIN != ''
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check the generated proposal and merge it
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          BOT_LOGIN: ${{ vars.AUTOMATION_APP_BOT_LOGIN }}
+          BRANCH: chore/record-published-version
+        run: |
+          set -euo pipefail
+
+          proposals=$(gh pr list --repo "$REPO" --head "$BRANCH" --state open --limit 2 --json number)
+          if [ "$(jq 'length' <<< "$proposals")" != 1 ]; then
+            exit 0
+          fi
+          pr=$(jq -r '.[0].number' <<< "$proposals")
+
+          proposal=$(gh pr view "$pr" --repo "$REPO" \
+            --json author,baseRefName,changedFiles,files,headRefName,headRefOid,headRepository,isDraft,mergeable,reviewDecision,statusCheckRollup)
+
+          if ! jq -e --arg bot "$BOT_LOGIN" --arg repo "$REPO" --arg branch "$BRANCH" '
+            .author.login == $bot and .baseRefName == "main" and
+            .headRefName == $branch and .headRepository.nameWithOwner == $repo and
+            .isDraft == false and .mergeable == "MERGEABLE" and
+            .reviewDecision != "CHANGES_REQUESTED" and
+            .changedFiles == 2 and (.files | length) == 2 and
+            ([.files[].path] | sort) == ["package-lock.json", "package.json"] and
+            (.statusCheckRollup | length) > 0 and
+            all(.statusCheckRollup[];
+              if .__typename == "CheckRun" then
+                .status == "COMPLETED" and
+                (.conclusion == "SUCCESS" or .conclusion == "NEUTRAL" or .conclusion == "SKIPPED")
+              else .state == "SUCCESS" end) and
+            any(.statusCheckRollup[]; .name == "Required CI gate" and .conclusion == "SUCCESS")
+          ' <<< "$proposal" >/dev/null; then
+            echo "Generated version proposal #$pr is not mergeable yet."
+            exit 0
+          fi
+
+          sha=$(jq -r '.headRefOid' <<< "$proposal")
+          commit_count=$(gh api "repos/$REPO/pulls/$pr" --jq '.commits')
+          if [ "$commit_count" -lt 1 ] || [ "$commit_count" -gt 20 ]; then
+            echo "Unexpected commit count on #$pr: $commit_count."
+            exit 0
+          fi
+          while read -r commit; do
+            if [ "$(gh api "repos/$REPO/commits/$commit" --jq '.commit.verification.verified')" != true ]; then
+              echo "An unverified commit is present on #$pr."
+              exit 0
+            fi
+          done < <(gh api "repos/$REPO/pulls/$pr/commits?per_page=100" --jq '.[].sha')
+
+          publish_run=$(gh api "repos/$REPO/commits/$sha" --jq '.commit.message' |
+            sed -n 's/^Publish run: \([0-9][0-9]*\)$/\1/p')
+          if [ -z "$publish_run" ] || [ "$(gh api "repos/$REPO/actions/runs/$publish_run" \
+            --jq '.name == "Publish" and .conclusion == "success"')" != true ]; then
+            echo "The publishing run for #$pr has not passed."
+            exit 0
+          fi
+
+          if [ "$(jq -r '.reviewDecision // ""' <<< "$proposal")" != APPROVED ]; then
+            gh pr review "$pr" --repo "$REPO" --approve
+          fi
+          gh pr merge "$pr" --repo "$REPO" --squash --delete-branch --match-head-commit "$sha"
