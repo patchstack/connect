@@ -9,8 +9,10 @@ release — which is what makes this work with branch protection.
 You do **not** bump `package.json` before releasing. After a successful publish,
 the `Publish` workflow opens a pull request on `chore/record-published-version`
 bringing `package.json` and `package-lock.json` up to the version that was just
-published. Merge it; it is two version strings and the lockfile entries `npm
-version` derives from them.
+published. When the proposal App is configured, this pull request merges after
+the publishing run and its required CI checks pass. Without the App, it remains
+for a maintainer to merge. The change contains only two version strings and the
+lockfile entries `npm version` derives from them.
 
 That pull request is not bookkeeping. Five surfaces answer the question "which
 version is this?" — the manifest, the two places the lockfile records it, the
@@ -24,10 +26,18 @@ they have a fix they do not have. Merging keeps the two in step.
 `tests/package-version.test.ts` pins the surfaces that can be checked from the
 repository, and the consumer matrix
 (`npm run test:consumers`) proves the installed binary reports the version npm
-actually resolved. A pull request opened by `GITHUB_TOKEN` does not start
-workflow runs, so `Publish` runs that test itself and states the result in the
-pull request body; close and reopen the pull request if you want the full suite
-to run on it.
+actually resolved. `Publish` runs the version check and records its result in
+the pull request body. A proposal opened with the App receives normal PR CI;
+one opened with the workflow token may need a maintainer to approve those runs.
+
+When the proposal App is configured, a verified published tarball also triggers
+freshness checks in configured downstream repositories. Set the
+`RELEASE_REFRESH_TARGETS` Actions secret to a JSON array of repository names
+owned by the same organization; keep those names out of this public repository
+and its workflow logs. The App must be installed on each target with Contents
+write permission. A notification failure makes `Publish` red without undoing the
+already-published package. A dry-run or failed tarball verification sends no
+notification.
 
 ## How to release (recommended)
 

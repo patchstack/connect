@@ -107,6 +107,17 @@ const run = (api: unknown, extra: Record<string, unknown> = {}) =>
 const ops = (api: { calls: Array<{ op: string }> }) => api.calls.map((call) => call.op);
 
 describe('the staging sequence', () => {
+  it('records the publishing workflow run in the signed commit', async () => {
+    const api = fakeApi();
+
+    await run(api);
+
+    const commit = api.calls.find((call) => call.op === 'commit')!.args[0] as {
+      message: { body: string };
+    };
+    expect(commit.message.body).toContain('Publish run: 77');
+  });
+
   it('moves an existing branch straight onto the signed commit', async () => {
     const api = fakeApi({}, { 'refs/heads/chore/record-published-version': OLD });
 

@@ -138,7 +138,7 @@ export async function recordPublishedVersion(input) {
       expectedHeadOid: mainOid,
       message: {
         headline: `Record published version ${version}`,
-        body: `Prepared automatically after publishing v${version}. Not auto-merged.`,
+        body: `Prepared automatically after publishing v${version}.\nPublish run: ${runId.split('-')[0]}`,
       },
       files,
     });
