@@ -497,6 +497,8 @@ export function renderGuideChecklist(state: GuideState, useColor: boolean): stri
     lines.push(detail('Run → npx @patchstack/connect scan'));
     lines.push(detail('Reads the lockfile, registers the project, writes .patchstackrc.json,'));
     lines.push(detail('and prints a dashboard link. The CLI prints the link but never opens it.'));
+    lines.push(detail('If your tool refuses to run this command, hand it to the person instead of working'));
+    lines.push(detail('around it — see "When your tool will not run this CLI" in the reference guide.'));
   }
 
   // 3. Dependency-change scan
