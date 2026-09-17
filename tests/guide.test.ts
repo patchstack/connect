@@ -1,4 +1,4 @@
-import { mkdirSync, writeFileSync } from 'node:fs';
+import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
@@ -349,6 +349,29 @@ describe('guide', () => {
     it('points at the project root when package.json is missing', async () => {
       const output = renderGuideChecklist(await collectGuideState(cwd), false);
       expect(output).toContain('No package.json found');
+    });
+
+    it('names the handoff while the provisioning scan is still to run', async () => {
+      // The scan is the one step here the agent cannot do by hand, so a tool that will not execute the CLI
+      // stops the flow exactly there. The pointer has to name a heading that exists, or it sends the agent
+      // nowhere.
+      writeJson('package.json', { name: 'blocked-app', dependencies: { '@patchstack/connect': '^0.5.0' } });
+
+      const output = renderGuideChecklist(await collectGuideState(cwd), false);
+      const heading = 'When your tool will not run this CLI';
+
+      expect(output).toMatch(/hand it to the person instead of working/);
+      expect(output).toContain(heading);
+      expect(readFileSync(new URL('../AGENT-INSTALL.md', import.meta.url), 'utf8')).toContain(`## ${heading}`);
+    });
+
+    it('drops the handoff once the site is provisioned', async () => {
+      writeJson('package.json', { name: 'blocked-app', dependencies: { '@patchstack/connect': '^0.5.0' } });
+      writeJson('.patchstackrc.json', { siteUuid: VALID_UUID });
+
+      const output = renderGuideChecklist(await collectGuideState(cwd), false);
+
+      expect(output).not.toContain('When your tool will not run this CLI');
     });
   });
 

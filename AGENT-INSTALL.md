@@ -94,6 +94,66 @@ This is a request, not a mechanism: nothing in the install depends on it. Do it 
 
    **Then tell them to deploy.** Setup changes source files, and the deployed site keeps serving its previous build until the next deploy — so visitors get no widget, and on a server-rendered root no production marker, until the user deploys (or hits Publish) again. Say it as a reminder; do not deploy anything yourself.
 
+## When your tool will not run this CLI
+
+Some coding tools refuse to execute a third-party command until the person approves it. In Claude Code,
+auto mode's classifier can decline `npx @patchstack/connect setup` and the installed `patchstack-connect`
+binary on that ground instead of prompting. The command is not the problem; the approval is missing.
+Handle it in this order:
+
+1. **Stop at the refused command.** Do not route around the refusal: do not call the Patchstack API
+   yourself, do not wrap the command in a `package.json` script so a later install runs it, and do not add
+   the `postinstall` / `prebuild` hooks first so the next install provisions the site. Each of those runs
+   the command the tool declined, with the person's decision taken away from them. Leave `package.json`
+   and the source tree as they were.
+
+2. **Hand the person the ways forward, with the exact text.** Say what the command does in plain words —
+   it registers the site with Patchstack, writes two small config files, adds the "Report a vulnerability"
+   line to the page, and adds the protection files and build steps described above — then give them:
+
+   - **Run it themselves, in this session.** In Claude Code a line that starts with `!` runs in their shell
+     and its output lands in the conversation: `! npx @patchstack/connect setup`. Other tools have a
+     terminal beside the chat; the command is the same without the `!`.
+   - **Approve it once.** In Claude Code, `/permissions` → **Recently denied** → `r` retries the command
+     with a manual approval; or `Shift+Tab` switches to Manual mode, and the tool prompts them when you
+     try again.
+   - **Allow it for good, then ask you to run it again.** For Claude Code these rules pre-approve every
+     `npx @patchstack/connect …` command and nothing else. They go in `.claude/settings.json` (shared with
+     the repository), `.claude/settings.local.json` (this person only), or through `/permissions`:
+
+     ```json
+     {
+       "permissions": {
+         "allow": [
+           "Bash(npx @patchstack/connect *)",
+           "Bash(npx --yes @patchstack/connect *)"
+         ]
+       }
+     }
+     ```
+
+     Other tools keep their own allowlists; the README section "If your coding tool blocks the command"
+     shows the Gemini CLI and OpenCode forms.
+
+3. **Write the command as `npx @patchstack/connect <command>`.** A rule matches the command text as
+   written. `./node_modules/.bin/patchstack-connect setup`, `PATCHSTACK_ENVIRONMENT=sandbox npx …` and
+   `npx --yes patchstack-connect setup` are different texts, and the rules above do not cover them. On a
+   developer's machine the sandbox label is not needed anyway: a scan there reports `local` on its own.
+
+4. **Resume from the output.** `setup` prints the same checklist, dashboard link and outcome block whoever
+   ran it, and re-running it changes nothing that is already done. If the person ran it, relay the
+   dashboard link and the outcome block from their output as they are. If your tool still will not run
+   `guide` or `status` for you, verify from the files instead of guessing: `siteUuid` in
+   `.patchstackrc.json` means the site is provisioned; `patchstack-connect scan` and
+   `patchstack-connect mark-build` in the `package.json` scripts mean the hooks are wired;
+   `patchstack-widget.js` in the root shell means the widget is in place; `.patchstackrc.local.json` in
+   `.gitignore` means the credential stays out of the commit. Never construct a dashboard link yourself —
+   it comes from `setup`, `status` or `claim` output.
+
+5. **`claim` and `login` are the same shape.** Both print a link the person opens. If your tool will not
+   run them, the person runs `npx @patchstack/connect claim` (or `login`) themselves and you relay the
+   link from their output.
+
 ## Manual setup
 
 1. **First scan** — provisions a Patchstack site automatically, writes the UUID to `.patchstackrc.json`, and installs the disclosure widget's `<script>` tag into the root HTML shell (`index.html`, `public/index.html`, or `src/app.html`) when one exists — or, when the root shell is JSX, the production marker instead. No signup, dashboard step, or UUID is needed up front:
@@ -197,6 +257,7 @@ It is server-only. Never put it in the widget tag, client bundles, or public env
 - The CLI never opens the dashboard link and never asks for Patchstack credentials.
 - Label hosted workspace scans with `PATCHSTACK_ENVIRONMENT=sandbox` in that process only. Leave production builds unset (a platform's own tier or production branch name, or the hosted builder the project belongs to, makes the build report `production`; a developer machine or a CI runner this does not know reports `local`) and never commit a sandbox label into files shared with production.
 - If a step fails, stop and report it. Don't proceed with placeholders.
+- If your tool refuses to execute the CLI, stop and hand the command to the person — see "When your tool will not run this CLI". Never work around a permission refusal.
 - CI never has the credential in a file: `.patchstackrc.local.json` is git-ignored by design, so set `PATCHSTACK_API_KEY` as an env var there (and `PATCHSTACK_SITE_UUID` too where `.patchstackrc.json` is also absent). Precedence for the site UUID and settings: CLI flag → env var → `.patchstackrc.json`. For the API key: env var → `.patchstackrc.local.json` → `.patchstackrc.json` (where installs made before the split still hold it). `login` is interactive and refuses to run in CI, so CI always takes its credential from the environment.
 
 ## Which build a rule belongs to

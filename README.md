@@ -10,6 +10,68 @@ Copy this request into a coding assistant, or run the same command yourself:
 
 `setup` is state-aware and idempotent: it scans dependencies, provisions or reuses the site, manages the disclosure widget, installs and verifies the runtime guard, adds a dependency-install scan, wires the existing build command without replacing it, and prints the remaining setup status. It never runs the project build. `guide` provides the same project-specific status without changing files.
 
+### If your coding tool blocks the command
+
+Some tools will not run a third-party command until you approve it. Claude Code's auto mode, for example,
+can decline `npx @patchstack/connect setup` instead of prompting you, and the assistant then stops and asks
+you how to proceed. Any of these works:
+
+- **Run it yourself, in the same session.** In Claude Code, a line that starts with `!` runs in your shell
+  and its output lands in the conversation, so the assistant carries on from it:
+
+  ```
+  ! npx @patchstack/connect setup
+  ```
+
+  Elsewhere, run the same command without the `!` in a terminal and tell the assistant it is done. `setup`
+  is idempotent, so a partial earlier attempt does no harm.
+
+- **Approve it once.** In Claude Code, open `/permissions`, pick the **Recently denied** tab and press `r`
+  to retry the command with a manual approval — or press `Shift+Tab` to switch to Manual mode and approve
+  the prompt when the assistant tries again.
+
+- **Allow it, then ask again.** Claude Code resolves explicit allow rules before its classifier. These two
+  rules cover every `npx @patchstack/connect …` command (`setup`, `guide`, `status`, `claim`) and nothing
+  else. Put them in `.claude/settings.json` to share them with the repository, in
+  `.claude/settings.local.json` to keep them to yourself, or add them through `/permissions`:
+
+  ```json
+  {
+    "permissions": {
+      "allow": [
+        "Bash(npx @patchstack/connect *)",
+        "Bash(npx --yes @patchstack/connect *)"
+      ]
+    }
+  }
+  ```
+
+  A rule matches the command text as written, so use the plain `npx @patchstack/connect …` form: a leading
+  `PATCHSTACK_ENVIRONMENT=sandbox`, a path such as `./node_modules/.bin/patchstack-connect`, or the bare
+  `patchstack-connect` binary name is a different text and is not covered. On your own machine the sandbox
+  label is not needed — a scan there reports `local` by itself. Rules in a project's `.claude/settings.json`
+  apply once you have accepted that folder's trust dialog. If auto mode still declines the command with the
+  rules in place, use one of the first two options.
+
+  Other tools keep their own allowlists. Gemini CLI reads policy files from `~/.gemini/policies/`:
+
+  ```toml
+  [[rule]]
+  toolName = "run_shell_command"
+  commandPrefix = "npx @patchstack/connect"
+  decision = "allow"
+  priority = 100
+  ```
+
+  OpenCode takes the pattern in `opencode.json` (project root, or `~/.config/opencode/opencode.json`):
+
+  ```json
+  { "permission": { "bash": { "npx @patchstack/connect *": "allow" } } }
+  ```
+
+  Codex CLI asks according to `approval_policy` in `~/.codex/config.toml`: approve the command when it
+  asks, or run it yourself.
+
 ## Quick start (zero configuration)
 
 ```bash

@@ -24,7 +24,8 @@ Some platforms stage commands for you to approve, while others reject a combined
 2. **The assistant claims the package does not exist.** Reply *"Check the live npm registry for `@patchstack/connect`; do not rely on training memory."* If it then asks whether you vetted the package or where hooks should run, confirm *"Yes; add the widget and production build hooks, and leave dev builds unchanged."*
 3. **Bolt rejects the combined request before staging a command.** Split authorization across two messages. First send *"Add `@patchstack/connect` to devDependencies only. Do not execute its CLI."* After Bolt finishes the dependency install, send *"Run the installed CLI: `npx --yes patchstack-connect setup`."* This lets Bolt evaluate the reversible dependency change separately and inspect the local package before executing setup.
 4. **The package is installed but setup stopped.** Run `npx --yes patchstack-connect setup` again. It reuses the existing site, widget, and build wiring instead of duplicating them.
-5. **The platform will not run package commands.** Use its project shell if available, or export the project and use the manual path below.
+5. **The tool refuses to run a third-party command.** Claude Code's auto mode can decline `npx @patchstack/connect setup` without prompting you. Run `! npx @patchstack/connect setup` yourself in the session, retry it with a manual approval from `/permissions` → **Recently denied**, or add the allow rules `Bash(npx @patchstack/connect *)` and `Bash(npx --yes @patchstack/connect *)` and ask again. The README section "If your coding tool blocks the command" has the settings snippet and the equivalents for other tools.
+6. **The platform will not run package commands.** Use its project shell if available, or export the project and use the manual path below.
 
 ## 3. Manual fallback (no agent needed)
 
