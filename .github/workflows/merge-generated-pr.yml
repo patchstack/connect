@@ -9,6 +9,7 @@ on:
   workflow_dispatch:
 
 permissions:
+  actions: read
   checks: read
   contents: write
   pull-requests: write
@@ -34,12 +35,14 @@ jobs:
             exit 0
           fi
           pr=$(jq -r '.[0].number' <<< "$proposals")
+          pull=$(gh api "repos/$REPO/pulls/$pr")
+          author_login=$(jq -r '.user.login' <<< "$pull")
 
           proposal=$(gh pr view "$pr" --repo "$REPO" \
-            --json author,baseRefName,changedFiles,files,headRefName,headRefOid,headRepository,isDraft,mergeable,reviewDecision,statusCheckRollup)
+            --json baseRefName,changedFiles,files,headRefName,headRefOid,headRepository,isDraft,mergeable,reviewDecision,statusCheckRollup)
 
-          if ! jq -e --arg bot "$BOT_LOGIN" --arg repo "$REPO" --arg branch "$BRANCH" '
-            .author.login == $bot and .baseRefName == "main" and
+          if ! jq -e --arg author "$author_login" --arg bot "$BOT_LOGIN" --arg repo "$REPO" --arg branch "$BRANCH" '
+            $author == $bot and .baseRefName == "main" and
             .headRefName == $branch and .headRepository.nameWithOwner == $repo and
             .isDraft == false and .mergeable == "MERGEABLE" and
             .reviewDecision != "CHANGES_REQUESTED" and
@@ -58,7 +61,7 @@ jobs:
           fi
 
           sha=$(jq -r '.headRefOid' <<< "$proposal")
-          commit_count=$(gh api "repos/$REPO/pulls/$pr" --jq '.commits')
+          commit_count=$(jq -r '.commits' <<< "$pull")
           if [ "$commit_count" -lt 1 ] || [ "$commit_count" -gt 20 ]; then
             echo "Unexpected commit count on #$pr: $commit_count."
             exit 0
