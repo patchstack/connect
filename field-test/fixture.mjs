@@ -6,6 +6,7 @@
 //   populated node_modules and NO package-lock.json — the shape of a
 //   bun-managed vibe-platform export. Exercises the node_modules-walk path.
 // - vite-npm: same app, plain npm project with package-lock.json.
+// - express-npm: an HTTP server with a static HTML shell and an existing build command.
 import { execSync } from 'node:child_process';
 import { mkdirSync, rmSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
@@ -67,7 +68,7 @@ export default defineConfig(({ mode }) => ({
 }));
 `;
 
-export const TEMPLATES = ['lovable-bun', 'vite-npm'];
+export const TEMPLATES = ['lovable-bun', 'vite-npm', 'express-npm'];
 
 export function makeFixture(dir, template = 'lovable-bun') {
   if (!TEMPLATES.includes(template)) {
@@ -77,23 +78,39 @@ export function makeFixture(dir, template = 'lovable-bun') {
   rmSync(dir, { recursive: true, force: true });
   mkdirSync(path.join(dir, 'src'), { recursive: true });
 
-  const pkg = structuredClone(PACKAGE_JSON);
+  const pkg = template === 'express-npm' ? {
+    name: 'field-test-server', private: true, version: '0.0.0', type: 'module', main: 'server.js',
+    scripts: { start: 'node server.js', dev: 'node --watch server.js', build: 'node --check server.js' },
+    dependencies: { express: '^4.21.2' },
+  } : structuredClone(PACKAGE_JSON);
   if (template === 'vite-npm') {
     delete pkg.devDependencies['lovable-tagger'];
   }
   writeFileSync(path.join(dir, 'package.json'), JSON.stringify(pkg, null, 2) + '\n');
-  writeFileSync(path.join(dir, 'index.html'), INDEX_HTML);
-  writeFileSync(path.join(dir, 'src', 'main.tsx'), MAIN_TSX);
-  writeFileSync(path.join(dir, 'src', 'App.tsx'), APP_TSX);
-  writeFileSync(
-    path.join(dir, 'vite.config.ts'),
-    template === 'lovable-bun'
-      ? VITE_CONFIG
-      : VITE_CONFIG.replace(/import { componentTagger }.*\n/, '').replace(
-          /, mode === "development" && componentTagger\(\)/,
-          '',
-        ),
-  );
+  if (template === 'express-npm') {
+    writeFileSync(path.join(dir, 'index.html'), '<!doctype html><html><head><title>Recipe Glow</title></head><body><h1>Recipe Glow</h1></body></html>\n');
+    writeFileSync(path.join(dir, 'server.js'), `import express from 'express';
+
+const app = express();
+app.use(express.json());
+app.get('/', (_request, response) => response.sendFile('index.html', { root: process.cwd() }));
+app.get('/api/health', (_request, response) => response.json({ ok: true }));
+app.listen(process.env.PORT || 3000);
+`);
+  } else {
+    writeFileSync(path.join(dir, 'index.html'), INDEX_HTML);
+    writeFileSync(path.join(dir, 'src', 'main.tsx'), MAIN_TSX);
+    writeFileSync(path.join(dir, 'src', 'App.tsx'), APP_TSX);
+    writeFileSync(
+      path.join(dir, 'vite.config.ts'),
+      template === 'lovable-bun'
+        ? VITE_CONFIG
+        : VITE_CONFIG.replace(/import { componentTagger }.*\n/, '').replace(
+            /, mode === "development" && componentTagger\(\)/,
+            '',
+          ),
+    );
+  }
 
   execSync('npm install --no-audit --no-fund', { cwd: dir, stdio: 'pipe' });
 
@@ -109,7 +126,7 @@ const invokedDirectly = process.argv[1] && import.meta.url.endsWith(process.argv
 if (invokedDirectly) {
   const [dir, template] = process.argv.slice(2);
   if (!dir) {
-    console.error('Usage: node fixture.mjs <dir> [lovable-bun|vite-npm]');
+    console.error(`Usage: node fixture.mjs <dir> [${TEMPLATES.join('|')}]`);
     process.exit(1);
   }
   makeFixture(path.resolve(dir), template ?? 'lovable-bun');

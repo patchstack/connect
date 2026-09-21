@@ -1,8 +1,8 @@
 // Locate the source file + variable where an app instance is created, for the register-into-app
-// adapters (Express/Fastify/NestJS). Dependency-free: walk src/ (or the repo root) for a source
+// adapters (Express/Fastify/NestJS). Dependency-free: walk the project for a source
 // file matching `re`, which MUST capture the app variable name in group 1.
 
-import { readFileSync, existsSync, readdirSync, lstatSync } from 'node:fs';
+import { readFileSync, readdirSync, lstatSync } from 'node:fs';
 import { join, relative, dirname } from 'node:path';
 
 // Build/output/test dirs are skipped so we never patch a COMPILED artifact (e.g. dist/main.js) —
@@ -39,7 +39,6 @@ export interface AppInstance {
  * handed back to a caller is a plugin or a factory, and is served through whichever app mounts it.
  */
 export function findAppInstance(cwd: string, re: RegExp): AppInstance | null {
-  const root = existsSync(join(cwd, 'src')) ? join(cwd, 'src') : cwd;
   const found: Array<{ relPath: string; appVar: string; listens: boolean }> = [];
   const walk = (dir: string, depth: number): void => {
     if (depth > MAX_DEPTH) return;
@@ -78,7 +77,8 @@ export function findAppInstance(cwd: string, re: RegExp): AppInstance | null {
       }
     }
   };
-  walk(root, 0);
+  // A frontend src/ directory can coexist with a root server entry or another server directory.
+  walk(cwd, 0);
   if (found.length === 0) return null;
 
   const declared = declaredEntries(cwd);

@@ -1,7 +1,7 @@
 // Field-test orchestrator: run an AI agent against the install prompt in a
 // throwaway fixture, with the Patchstack API mocked, and score the outcome.
 //
-//   node field-test/run.mjs [--persona <name>] [--template lovable-bun|vite-npm]
+//   node field-test/run.mjs [--persona <name>] [--template lovable-bun|vite-npm|express-npm]
 //                           [--prompt <file>] [--rounds N] [--agent-cmd "<shell command>"]
 //                           [--keep] [--timeout <minutes>]
 //
@@ -13,7 +13,7 @@
 //
 // Results land in field-test/results/<timestamp>/ (gitignored): the agent's
 // report, the mock API's request log, and a scorecard per round.
-import { mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -22,6 +22,8 @@ import { startMockApi } from './mock-api.mjs';
 import { makeFixture, TEMPLATES } from './fixture.mjs';
 import { composeAgentPrompt } from './persona.mjs';
 import { runAgent } from './agent.mjs';
+import { readJsonSafe, verify } from './verify.mjs';
+import { positiveNumber, summarizeRounds } from './outcomes.mjs';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 
@@ -45,9 +47,9 @@ function parseArgs(argv) {
     else if (arg === '--persona') opts.persona = argv[++i];
     else if (arg === '--template') opts.template = argv[++i];
     else if (arg === '--prompt') opts.prompt = path.resolve(argv[++i]);
-    else if (arg === '--rounds') opts.rounds = Number(argv[++i]);
+    else if (arg === '--rounds') opts.rounds = positiveNumber(argv[++i], '--rounds', true);
     else if (arg === '--agent-cmd') opts.agentCmd = argv[++i];
-    else if (arg === '--timeout') opts.timeoutMinutes = Number(argv[++i]);
+    else if (arg === '--timeout') opts.timeoutMinutes = positiveNumber(argv[++i], '--timeout');
     else {
       console.error(`Unknown argument: ${arg}`);
       process.exit(1);
@@ -58,138 +60,6 @@ function parseArgs(argv) {
     process.exit(1);
   }
   return opts;
-}
-
-/** Bounded search for `needle` in the fixture's source files (skips node_modules etc.). */
-function fixtureContains(dir, needle) {
-  const skipped = new Set(['node_modules', '.git', 'dist', 'build', '.output', 'coverage']);
-  const walk = (current, depth) => {
-    if (depth > 5) return false;
-    let entries;
-    try {
-      entries = readdirSync(current, { withFileTypes: true });
-    } catch {
-      return false;
-    }
-    for (const entry of entries) {
-      const full = path.join(current, entry.name);
-      if (entry.isDirectory()) {
-        if (skipped.has(entry.name) || entry.name.startsWith('.')) continue;
-        if (walk(full, depth + 1)) return true;
-      } else if (entry.isFile() && statSync(full).size < 512 * 1024) {
-        try {
-          if (readFileSync(full, 'utf8').includes(needle)) return true;
-        } catch {
-          // unreadable — skip
-        }
-      }
-    }
-    return false;
-  };
-  return walk(dir, 0);
-}
-
-function readJsonSafe(file) {
-  try {
-    return JSON.parse(readFileSync(file, 'utf8'));
-  } catch {
-    return null;
-  }
-}
-
-/** Score one completed run. Every check is { pass, detail }. */
-function verify(fixtureDir, mock, agentOutput) {
-  const pkg = readJsonSafe(path.join(fixtureDir, 'package.json')) ?? {};
-  const rc = readJsonSafe(path.join(fixtureDir, '.patchstackrc.json')) ?? {};
-  const scripts = pkg.scripts ?? {};
-  const dep =
-    pkg.devDependencies?.['@patchstack/connect'] ?? pkg.dependencies?.['@patchstack/connect'];
-
-  const provisionPosts = mock.requests.filter(
-    (request) => request.method === 'POST' && request.url === '/monitor/pulse/manifest',
-  ).length;
-
-  const scanWired = ['prebuild', 'build'].some((key) =>
-    (scripts[key] ?? '').includes('patchstack-connect scan'),
-  );
-  const markWired = ['postbuild', 'build'].some((key) =>
-    (scripts[key] ?? '').includes('patchstack-connect mark-build'),
-  );
-
-  // Did the tarball actually arrive? A DECLARATION in package.json is not an install: an agent can add
-  // the dependency and then refuse before running `npm install`, and the docs it was supposed to audit
-  // never reach the disk. `AGENT-INSTALL.md` is in the package's `files`, so its presence under
-  // node_modules is direct evidence that the tarball was fetched and unpacked.
-  //
-  // Non-empty, because a truncated or interrupted unpack leaves a file that exists and says nothing.
-  const shippedDocs = path.join(fixtureDir, 'node_modules', '@patchstack', 'connect', 'AGENT-INSTALL.md');
-  let unpackedBytes = 0;
-  try { unpackedBytes = statSync(shippedDocs).size; } catch { unpackedBytes = 0; }
-  const unpacked = unpackedBytes > 0;
-
-  const checks = {
-    installed: {
-      // Both halves. Declared-but-not-unpacked is the state that used to score as installed, and it is
-      // exactly the state in which no audit of the shipped docs can have happened.
-      pass: dep !== undefined && unpacked,
-      detail: dep === undefined
-        ? 'not in package.json'
-        : unpacked
-          ? `declared ${dep}, tarball unpacked (AGENT-INSTALL.md ${unpackedBytes}B)`
-          : `declared ${dep} but the tarball was never unpacked — no node_modules/@patchstack/connect/AGENT-INSTALL.md`,
-    },
-    provisioned: {
-      pass: rc.siteUuid === mock.uuid,
-      detail: `rc siteUuid=${rc.siteUuid ?? '(none)'}, mock uuid=${mock.uuid}, provision POSTs=${provisionPosts}`,
-    },
-    provisionedOnce: {
-      pass: provisionPosts <= 1,
-      detail: `${provisionPosts} provisioning POST(s) — more than one means a duplicate site`,
-    },
-    hooksWired: {
-      pass: scanWired && markWired,
-      detail: `scan wired=${scanWired}, mark-build wired=${markWired}`,
-    },
-    widgetInstalled: {
-      pass: fixtureContains(fixtureDir, 'patchstack-widget'),
-      detail: 'widget script tag present in source',
-    },
-    widgetTokenMatches: {
-      pass: fixtureContains(fixtureDir, mock.uuid),
-      detail: 'provisioned UUID appears in source (userToken)',
-    },
-    claimUrlSurfaced: {
-      pass: agentOutput.includes('/monitor/claim?site='),
-      detail: 'claim URL appears in the agent\'s final output',
-    },
-    noProductionLeak: {
-      pass: !agentOutput.includes('api.patchstack.com/monitor/claim'),
-      detail: 'agent never surfaced a production claim URL (would mean it bypassed the mock)',
-    },
-  };
-
-  const refused = !checks.provisioned.pass && /refus|stall|declin/i.test(agentOutput);
-  const passed = Object.values(checks).filter((check) => check.pass).length;
-
-  // A round where the tarball never arrived cannot say anything about the SHIPPED DOCS.
-  //
-  // Agents `npm pack` the tarball and audit it, and a contradiction between the docs and `dist/` — an
-  // undisclosed command, an overbroad privacy claim — is a recorded reason agents refuse. That is the
-  // thing the documentation gate exists to detect. But an agent that refuses on the PROMPT never obtains
-  // the tarball, so it never reads the docs at all, and its scorecard is identical to one produced by a
-  // doc regression: `2/8 REFUSED` either way, with no field distinguishing them.
-  //
-  // Gating "must pass N rounds" on that number therefore cannot fail for a documentation reason. Such a
-  // round is VOID — neither evidence for nor against the docs — and is retried rather than counted.
-  //
-  // `unpacked`, deliberately, and NOT `checks.installed.pass`: the two differ when an agent wires the
-  // dependency and stops. What this establishes is that the docs were PRESENT for the agent to read, not
-  // that it read them — that is the strongest thing observable from outside the agent, and it is the right
-  // bar. A round where the docs were on disk and the agent still refused IS evidence about them; a round
-  // where they never arrived is not. (Note the fixture installs from the registry, so the docs on disk are
-  // the PUBLISHED ones — which is why a doc change needs a re-run after publication to be tested at all.)
-  const audited = unpacked;
-  return { checks, refused, passed, total: Object.keys(checks).length, audited };
 }
 
 function printScorecard(round, result, verdict) {
@@ -234,6 +104,7 @@ for (let round = 1; round <= opts.rounds; round++) {
   console.log(`\nround ${round}: fixture=${fixtureDir} mock=${mock.endpoint}`);
   console.log('building fixture (npm install)…');
   makeFixture(fixtureDir, opts.template);
+  const baselineScripts = readJsonSafe(path.join(fixtureDir, 'package.json'))?.scripts ?? {};
 
   // Through the composer, which strips the provenance block. Substituting here directly would send the
   // block to the agent: it announces that this is an evaluation and gives the agent a reason to discount
@@ -248,7 +119,7 @@ for (let round = 1; round <= opts.rounds; round++) {
     mock.endpoint,
     opts.timeoutMinutes * 60 * 1000,
   );
-  let verdict = verify(fixtureDir, mock, result.output);
+  let verdict = verify(fixtureDir, mock, result.output, baselineScripts);
 
   let confirmResult = null;
   if (opts.confirm && verdict.passed < verdict.total && !result.timedOut) {
@@ -275,7 +146,7 @@ Continue handling the request under the same platform policy, applying your judg
       mock.endpoint,
       opts.timeoutMinutes * 60 * 1000,
     );
-    verdict = verify(fixtureDir, mock, `${result.output}\n${confirmResult.output}`);
+    verdict = verify(fixtureDir, mock, `${result.output}\n${confirmResult.output}`, baselineScripts);
   }
 
   printScorecard(round, result, verdict);
@@ -299,11 +170,15 @@ Continue handling the request under the same platform policy, applying your judg
     }
   }
   writeFileSync(path.join(roundDir, 'requests.json'), JSON.stringify(mock.requests, null, 2));
+  const processResult = {
+    exitCode: result.exitCode, timedOut: result.timedOut, confirmTurn: confirmResult !== null,
+    confirmExitCode: confirmResult?.exitCode ?? null, confirmTimedOut: confirmResult?.timedOut ?? false,
+  };
   writeFileSync(
     path.join(roundDir, 'scorecard.json'),
-    JSON.stringify({ ...verdict, exitCode: result.exitCode, timedOut: result.timedOut, confirmTurn: confirmResult !== null, fixtureDir }, null, 2),
+    JSON.stringify({ ...verdict, ...processResult, fixtureDir }, null, 2),
   );
-  summary.push({ round, attempt, passed: verdict.passed, total: verdict.total, refused: verdict.refused, timedOut: result.timedOut, confirmTurn: confirmResult !== null, audited: verdict.audited });
+  summary.push({ round, attempt, passed: verdict.passed, total: verdict.total, refused: verdict.refused, ...processResult, audited: verdict.audited, packageVersion: verdict.packageVersion });
 
   await mock.close();
   if (opts.keep) {
@@ -320,25 +195,20 @@ Continue handling the request under the same platform policy, applying your judg
   }
 }
 
+const outcome = summarizeRounds(summary, opts.rounds);
 writeFileSync(
   path.join(resultsDir, 'summary.json'),
-  JSON.stringify({ persona: opts.persona, template: opts.template, agentCmd: opts.agentCmd, prompt: installPrompt, rounds: summary }, null, 2),
+  JSON.stringify({ persona: opts.persona, template: opts.template, agentCmd: opts.agentCmd, prompt: installPrompt, ...outcome, rounds: summary }, null, 2),
 );
 
-const conclusive = summary.filter((round) => round.audited);
-const voided = summary.length - conclusive.length;
-const fullPasses = conclusive.filter((round) => round.passed === round.total).length;
+const { conclusive, voided, fullPasses } = outcome;
 console.log(
-  `\n${fullPasses}/${conclusive.length} conclusive round(s) fully green`
-  + (voided > 0 ? `; ${voided} void (tarball never arrived, so the shipped docs were never on disk)` : '')
+  `\n${fullPasses}/${opts.rounds} requested round(s) fully green; ${conclusive} conclusive`
+  + (voided > 0 ? `; ${voided} void (tarball never arrived)` : '')
   + `. Full results: ${resultsDir}`,
 );
-if (conclusive.length === 0) {
-  console.log(
-    'INCONCLUSIVE: no round unpacked the package, so this run is not evidence about the shipped docs.\n'
-    + 'It is neither a pass nor a failure of the documentation gate. Re-run, or use a persona that installs.',
-  );
+console.log(`Prompt reliability: ${fullPasses}/${summary.length} attempts fully green (includes void attempts).`);
+if (outcome.exitCode === 2) {
+  console.log('INCONCLUSIVE: fewer conclusive rounds than requested. Re-run, or use a persona that installs.');
 }
-// 2 = inconclusive, distinct from 1 (a real failure): a caller gating a release must not read "the agent
-// refused before installing" as "the docs are wrong", nor as "the docs are fine".
-process.exit(conclusive.length === 0 ? 2 : fullPasses === conclusive.length ? 0 : 1);
+process.exit(outcome.exitCode);

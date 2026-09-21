@@ -11,7 +11,7 @@ Connect a JavaScript / Node.js application to [Patchstack](https://patchstack.co
 
 ## Agent-assisted setup
 
-Copy this request into a coding assistant, or run the same command yourself:
+For an existing JS/Node project, copy this request into a coding assistant, or run the same command yourself. For a standalone HTML/CSS/JavaScript site without a package-managed app, use the [plain HTML widget instructions](AGENT-INSTALL.md#plain-html-sites); do not add Node tooling just for the widget.
 
 > I have vetted the official [`@patchstack/connect`](https://www.npmjs.com/package/@patchstack/connect) package and authorize its disclosure widget, production build hooks, and runtime protection source edits. Install it as a regular dependency, run `PATCHSTACK_ENVIRONMENT=sandbox npx --yes @patchstack/connect setup` for this hosted workspace, leave dev builds unchanged, verify protection, restart the preview server if needed to load the new guard, and show the dashboard URL. Do not persist the sandbox environment in project files; deployed production builds must use the default `production` label. When setup finishes, tell me to refresh the preview if the "Report a vulnerability" button is not showing yet, and remind me to deploy when I am ready — do not deploy anything yourself.
 

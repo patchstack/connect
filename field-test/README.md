@@ -51,10 +51,9 @@ The documentation gate exists to catch a contradiction between the shipped docs 
 such as an overbroad privacy claim. Catching that requires the agent to have READ the docs, which means
 it must have obtained the tarball, which means it must have installed.
 
-An agent that refuses on the *prompt* never gets there. Its scorecard is `2/8 REFUSED`, which is
-byte-identical to what a documentation regression would produce, and no field distinguished the two. So
-"must pass `--rounds 3`" could not fail for a documentation reason at all — the gate was unable to detect
-the thing it existed for, and `2/8 REFUSED` is the modal outcome for `hostile`.
+An agent that refuses on the *prompt* never gets there. Failed installation checks alone cannot
+distinguish that from a refusal after reading the shipped docs. The `audited` field records whether
+the package docs reached disk, so the report distinguishes these outcomes.
 
 Such a round is now **void**: neither evidence for nor against the docs.
 
@@ -76,8 +75,8 @@ Such a round is now **void**: neither evidence for nor against the docs.
   number and overwrite the void attempt's report, destroying the record a reviewer needs to tell a
   prompt refusal from a doc regression.
 - The summary counts only conclusive rounds, and reports how many were void.
-- Exit codes are three-way: `0` all conclusive rounds green, `1` a real failure, **`2` inconclusive** —
-  nothing unpacked, so the run says nothing. A release gate must not read `2` as "the docs are fine".
+- Exit codes are three-way: `0` the requested number of conclusive rounds completed successfully, `1` a conclusive failure (including an agent timeout or process error), **`2` inconclusive** — fewer conclusive rounds than requested. A release gate must not read `2` as "the docs are fine".
+- The summary also reports successes across **every attempt**, including void attempts. The matrix requires all requested rounds to pass without void attempts: a refusal before unpacking still matters when assessing prompt reliability, even though it cannot establish a documentation defect.
 
 Two consequences for how to use it:
 
@@ -96,7 +95,7 @@ node field-test/run.mjs --rounds 1 --agent-cmd "node '$PWD/field-test/stub-decla
 
 | stub | what it models | expected |
 |---|---|---|
-| `stub-compliant` | performs the whole flow | `8/8`, `1/1 conclusive`, exit **0** |
+| `stub-compliant` | performs the whole flow | `12/12`, `1/1 conclusive`, exit **0** when the published package completes setup for the fixture; known setup limitations fail visibly |
 | `stub-refusing` | refuses before touching anything | 3 void rounds, INCONCLUSIVE, exit **2** |
 | `stub-declares-only` | writes the dependency, never installs | 3 void rounds, INCONCLUSIVE, exit **2** |
 
@@ -104,13 +103,12 @@ node field-test/run.mjs --rounds 1 --agent-cmd "node '$PWD/field-test/stub-decla
 package.json declaration, that run reported `0/1 conclusive` and exit **1** — a definitive failure verdict
 about documentation it had never obtained.
 
-Quote the path: `--agent-cmd` is handed to `sh -c`, and this repository's own checkout sits under a
-directory with a space in it, so an unquoted command silently fails to start — which voids the round,
-correctly but confusingly.
+Quote the path: `--agent-cmd` is handed to `sh -c`, so an unquoted path containing spaces can prevent
+the agent from starting and leave the round void.
 
 ## Prerequisites
 
-- Node ≥ 18, network access (fixtures run a real `npm install`; the agent installs the real published `@patchstack/connect`).
+- Node ≥ 20, network access (fixtures run a real `npm install`; the agent installs the real published `@patchstack/connect`).
 - An agent CLI. Default: [Claude Code](https://claude.com/claude-code) headless (`claude -p`). Any CLI that reads a prompt from stdin and prints the agent's final message to stdout works via `--agent-cmd`.
 
 ## Safety model — read before running
@@ -146,14 +144,14 @@ node field-test/run.mjs --agent-cmd "claude -p --dangerously-skip-permissions --
 
 # Prove no provenance reaches the agent: capture the exact stdin it receives
 PS_CAPTURE_STDIN=/tmp/captured.txt node field-test/run.mjs --persona lovable --rounds 1 \
-  --agent-cmd "node field-test/stub-capture.mjs"
+  --agent-cmd "node '$PWD/field-test/stub-capture.mjs'"
 grep -c 'field-test:meta' /tmp/captured.txt   # must be 0
 
-# Self-test the harness (scripted stub, no AI, ~1 min) — should be fully green
-node field-test/run.mjs --agent-cmd "node $PWD/field-test/stub-compliant.mjs"
+# Exercise the published install (scripted stub, no AI, ~1 min); setup limitations remain failures
+node field-test/run.mjs --agent-cmd "node '$PWD/field-test/stub-compliant.mjs'"
 ```
 
-Flags: `--persona <name>` (any `personas/<name>.md`), `--template lovable-bun|vite-npm`, `--prompt <file>`, `--rounds N`, `--agent-cmd "<cmd>"`, `--keep` (don't delete the fixture), `--timeout <minutes>`, `--confirm` (see below), `--confirm-reply <file>` (override the confirmation text).
+Flags: `--persona <name>` (any `personas/<name>.md`), `--template lovable-bun|vite-npm|express-npm`, `--prompt <file>`, `--rounds N`, `--agent-cmd "<cmd>"`, `--keep` (don't delete the fixture), `--timeout <minutes>`, `--confirm` (see below), `--confirm-reply <file>` (override the confirmation text).
 
 ### `--confirm` — legacy two-turn prompt experiments
 
@@ -168,9 +166,14 @@ The agent harness installs the published package, so use the local demo to exerc
 ```bash
 npm run build
 node field-test/setup-demo.mjs
+
+# The same checks on a server with an applicable runtime guard
+node field-test/setup-demo.mjs --template express-npm
 ```
 
-It packs the local package into a throwaway React/Vite fixture with a Bun lockfile, installs it as a dev dependency, runs `setup` twice against the mock API, and verifies that one site, one widget, and one copy of each build command remain. It never calls the production API, runs the fixture build, or invokes `protect`.
+It packs the local package into a throwaway fixture, installs it as a regular dependency, runs `setup` twice against the mock API, and verifies that one site, one widget, and one copy of each build command remain. It also runs the field-test file and protection checks, excluding agent-message checks. It uses the mock manifest API and never runs the fixture build or starts the app. `express-npm` verifies source wiring for an applicable guard.
+
+The default React/Vite fixture has a Bun lockfile and no server request path, but the CLI conservatively classifies a bundler-only project as runtime unknown. Its uncompleted generic guard makes the protection check fail. The strict demo and matrix retain that failure; do not add an artificial server just to turn a browser-only fixture green. The result identifies a setup limitation rather than proving an agent made a mistake.
 
 ### Matrix runs — personas × models
 
@@ -183,6 +186,9 @@ node field-test/matrix.mjs
 # Full matrix: 3 platform personas × 3 model families (9 agent runs — budget ~30-60 min)
 node field-test/matrix.mjs --agents claude,codex,gemini
 
+# Repeat for server-side installation, alongside the default browser-only fixture
+node field-test/matrix.mjs --agents claude,codex,gemini --template express-npm
+
 # Everything run.mjs accepts passes through
 node field-test/matrix.mjs --personas hostile,bolt-diy --agents claude,codex --rounds 3 --prompt /tmp/v2.txt
 
@@ -190,22 +196,53 @@ node field-test/matrix.mjs --personas hostile,bolt-diy --agents claude,codex --r
 node field-test/matrix.mjs --agents stub --personas bolt-diy,lovable,replit
 ```
 
-Named agents (see the `AGENTS` table in `matrix.mjs`): `claude` (logged-in Claude Code), `codex` (`codex login` or `OPENAI_API_KEY`), `gemini` (interactive login once or `GEMINI_API_KEY`; Workspace accounts also need `GOOGLE_CLOUD_PROJECT`), `stub`. Agents missing from PATH are skipped with a warning; unauthenticated ones fail their cells visibly. The aggregate lands in `field-test/results/matrix-<timestamp>/matrix.md` with links to each cell's full run.mjs results; exit code is 0 only if every cell is fully green.
+Named agents (see the `AGENTS` table in `matrix.mjs`): `claude` (logged-in Claude Code), `codex` (`codex login` or `OPENAI_API_KEY`), `gemini` (interactive login once or `GEMINI_API_KEY`; Workspace accounts also need `GOOGLE_CLOUD_PROJECT`), `stub`. Requested agents missing from PATH remain in the report as `UNAVAILABLE` and make the matrix fail; unauthenticated ones fail their cells visibly. The aggregate lands in `field-test/results/matrix-<timestamp>/matrix.md` with links to each cell's full run.mjs results; exit code is 0 only if every cell is fully green.
+
+### Additional models and harnesses
+
+Use `--agent-config <file>` to add named commands or override the built-ins. The file is a JSON object; each entry specifies an executable to check and a shell command to run. The command must accept the composed prompt on stdin and return its report on stdout. A harness with a different protocol needs a wrapper that implements that contract.
+
+For example, with your own `agent-wrapper` executable:
+
+```json
+{
+  "model_a": {
+    "executable": "agent-wrapper",
+    "command": "agent-wrapper --model model-a"
+  },
+  "model_b": {
+    "executable": "agent-wrapper",
+    "command": "agent-wrapper --model model-b"
+  }
+}
+```
+
+```bash
+node field-test/matrix.mjs --agent-config /tmp/agents.json --agents model_a,model_b --personas standard,hostile --rounds 3
+```
+
+These are trusted local commands, executed with the runner's permissions. Quote paths with spaces inside `command`; pass credentials through the environment, not this file. The resolved commands are recorded in the ignored matrix results so a result identifies the requested model configuration. Use explicit model selectors when comparing models; a CLI's default model can change. The harness does not independently attest which model a provider served.
+
+A green cell requires all requested rounds, successful agent exits, no timeouts, and no void attempts. A successful retry can supply documentation evidence without erasing a failed prompt attempt. Empty or incomplete results cannot pass.
 
 ## What gets scored
 
-Each round prints a scorecard and exits non-zero unless every round is fully green:
+Each round prints a scorecard. The scorer checks resulting files and runs the installed CLI's source-only `protect --check`; it does not start the app or establish deployed protection. All current templates render `index.html`, so widget checks deliberately inspect that shell:
 
 | Check | Meaning |
 |---|---|
-| `installed` | `@patchstack/connect` declared in the fixture's `package.json` |
+| `installed` | A regular dependency, absent from devDependencies, with non-empty package docs unpacked |
 | `provisioned` | `.patchstackrc.json` carries the mock's site UUID |
 | `provisionedOnce` | exactly one provisioning POST — more means duplicate sites |
 | `hooksWired` | `scan` and `mark-build` reachable from `prebuild`/`postbuild`/`build` |
-| `widgetInstalled` | widget script tag present in source |
-| `widgetTokenMatches` | the provisioned UUID appears in source as the `userToken` |
-| `claimUrlSurfaced` | the agent's final message shows the claim URL to the user |
-| `noProductionLeak` | the agent never surfaced a production claim URL (mock bypass) |
+| `dependencyScanWired` | `postinstall` contains the dependency scan |
+| `devScriptsPreserved` | Development scripts match the fixture before the agent ran |
+| `sandboxNotPersisted` | No sandbox override in config, package scripts, or shared/production env files |
+| `widgetInstalled` | Exactly one widget script tag in the fixture's rendered `index.html` |
+| `widgetTokenMatches` | The widget tag itself carries the mock site UUID |
+| `protectionVerified` | The installed `protect --check` succeeds and reports wired or explicitly not applicable |
+| `claimUrlSurfaced` | Agent output includes the mock dashboard URL for the correct site |
+| `noProductionLeak` | No production claim URL in agent output; this does not establish network isolation |
 
 Everything is saved under `field-test/results/<timestamp>-<persona>/` (gitignored): the agent's full report (`report.md` — read HESITATIONS and UX FRICTION, that's where the insight is), the mock's request log, and per-round scorecards.
 
@@ -228,7 +265,7 @@ The agent audits the *published* tarball, so the gate's pass rate is a function 
 
 Until a publish lands and ages, use this ladder instead of burning hostile rounds on a known-red gate:
 
-1. **Stub self-test** — `node field-test/run.mjs --agent-cmd "node $PWD/field-test/stub-compliant.mjs"`. Validates the harness, mock, and scoring in ~1 min. No AI, no registry dependency.
+1. **Stub self-test** — `node field-test/run.mjs --agent-cmd "node '$PWD/field-test/stub-compliant.mjs'"`. Validates the harness, mock, and scoring in ~1 min. No AI; this installs the published package and requires registry access. The offline scorer/process regressions run with `npx vitest run tests/field-test-verify.test.ts tests/field-test-outcomes.test.ts`.
 2. **Standard persona** — exercises the mechanical checks (guide accuracy, hook wiring, widget token) with less policy pressure; catches CLI/UX regressions immediately.
 3. **Hostile rounds scored by refusal *reason*, not exit code.** Read DECISION ANALYSIS and attribute each refusal: one that quotes the published docs or release age is environmental noise; one that quotes the prompt's own wording is a real prompt bug. A variant is not worse than the incumbent unless it draws prompt-directed refusals the incumbent doesn't.
 4. **(Not built) local-registry mode** — run a local registry (e.g. verdaccio), publish the working tree to it, and pin the fixture via the `npm_config_registry` env var (env pinning reads as platform plumbing, same as `PATCHSTACK_ENDPOINT`). This is the only way to exercise unpublished doc/CLI changes end-to-end. Caveat: the local record has no provenance attestation or signatures, which strict agents check — expect some artificial refusals on that ground.
@@ -237,3 +274,5 @@ Until a publish lands and ages, use this ladder instead of burning hostile round
 
 - The personas are synthetic and the matrix covers multiple model families, but a hosted platform is still (prompt × model × runtime × UI) — and neither the real policy text, the runtime, nor the UI layer is reproduced here. A green harness is necessary and not sufficient, and this is not hypothetical: a refusal has been found by a real user after this harness passed a prompt. Treat a real-world refusal report as a new persona — encode the pressure it applied into `personas/`, in your own words, so the regression stays covered. Do not describe a green run as evidence about a platform's policy.
 - The fixture installs the *published* package. An unpublished `guide`/CLI change can't be exercised end-to-end by the agent (it will install the registry version); publish first or accept that the run validates the prompt shape only.
+- The compliant stub executes the published package without repairing failed setup steps. A release that cannot complete `protect --check` fails the stricter scorecard. Plain Vite projects currently produce an unknown runtime classification and an uncompleted generic guard in both the working tree and the published flow; a failed cell on that fixture is not necessarily a model refusal. Use the local setup demo to distinguish working-tree behavior from registry behavior; do not weaken the score to make the release pass.
+- The fixtures cover a browser-only React/Vite project and an Express server, with npm installation and a Bun lockfile marker. They do not reproduce native package-manager execution for every manager, SSR frameworks, monorepos, or a hosted UI's persistence and command-approval behavior.
