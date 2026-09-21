@@ -611,14 +611,24 @@ export function renderGuideChecklist(state: GuideState, useColor: boolean): stri
     lines.push(detail('Prove a request reaches the guard (starts your app) → npx @patchstack/connect protect --check --runtime'));
   }
 
-  // 7. Dashboard access — always keep the URL prominent.
+  // 7. Attaching the site to an account. Three routes reach the same place, and the widget's own
+  // panel leads because it is already on the page the person is looking at. The link and `claim`
+  // are for a project with no preview open, or none carrying the widget.
   lines.push('');
   if (state.claimUrl !== null) {
-    lines.push(` ${paint(ANSI.cyan, '➜')} ${paint(ANSI.bold, 'Dashboard link (open to view reports):')}`);
-    lines.push(`   ${paint(ANSI.cyan, state.claimUrl)}`);
-    lines.push(detail('Open this link in a browser. The CLI never opens it.'));
-    lines.push(detail('Or from this terminal → npx @patchstack/connect claim'));
-    lines.push(detail('  (prints a link to sign in with, then attaches the site to that account)'));
+    lines.push(` ${paint(ANSI.cyan, '➜')} ${paint(ANSI.bold, 'Connect this site to your Patchstack account:')}`);
+    let route = 1;
+    if (widgetTagInPlace(state)) {
+      lines.push(`   ${route++}. In the preview — while the site is unclaimed the widget shows a`);
+      lines.push('      "Connect this website" panel. Signing in there attaches the site.');
+    }
+    lines.push(`   ${route++}. In a browser — open the dashboard link (the CLI never opens it):`);
+    lines.push(`      ${paint(ANSI.cyan, state.claimUrl)}`);
+    lines.push(`   ${route}. From this terminal → npx @patchstack/connect claim`);
+    lines.push('      (prints a link to sign in with, then attaches the site to that account)');
+    lines.push(detail('Reports have no owner to reach until one of these completes. The site UUID ships'));
+    lines.push(detail('in the page and claiming is first-come, so an unclaimed site stays claimable by'));
+    lines.push(detail('anyone who loads it.'));
     if (state.endpointOverride !== null) {
       lines.push(detail('(this URL inherits the endpoint override above)'));
     }
@@ -627,13 +637,17 @@ export function renderGuideChecklist(state: GuideState, useColor: boolean): stri
   }
 
   // 8. Preview refresh. The tag is in the source, but a page that was already open
-  // loaded before it existed and renders no button until it reloads.
+  // loaded before it existed and renders nothing until it reloads. Which control appears
+  // then depends on claim state: the widget serves the connect panel until the site has an
+  // owner, and the report button only after.
   if (widgetTagInPlace(state)) {
     lines.push('');
     lines.push(` ${paint(ANSI.cyan, '➜')} ${paint(ANSI.bold, 'Refresh the preview to see the widget:')}`);
-    lines.push('   The "Report a vulnerability" button loads with the page, so a preview that was');
-    lines.push('   already open still shows the HTML from before this change. Builders that hot');
-    lines.push('   reload refresh it themselves; if the button is missing, refresh the preview once.');
+    lines.push('   The widget loads with the page, so a preview that was already open still shows');
+    lines.push('   the HTML from before this change. Builders that hot reload refresh it themselves;');
+    lines.push('   if nothing appears, refresh the preview once.');
+    lines.push('   Unclaimed, the widget shows the "Connect this website" panel; the public');
+    lines.push('   "Report a vulnerability" button takes its place once the site is claimed.');
   }
 
   // 9. Deploy. Everything above is a source change, so the running production site keeps

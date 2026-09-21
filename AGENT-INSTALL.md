@@ -200,7 +200,7 @@ Handle it in this order:
 
    **Bun-managed projects:** `bun run` does not execute npm-style `pre`/`post` scripts, so wire the build script directly instead: `"build": "patchstack-connect scan && <existing build command> && patchstack-connect mark-build"`.
 
-3. **Verify the disclosure widget** — a floating "Report a vulnerability" button. `scan` installs it automatically into a plain HTML shell **or a JSX root** (Next, Remix, React Router, TanStack Start, Gatsby), and `mark-build` carries it into built HTML. Only when `scan` reported that it found no editable shell at all — a root whose head mechanism is not a plain script tag, e.g. Nuxt's `useHead` or an Astro layout — add the one-liner it printed to the root layout yourself, just before `</body>` (never a JS entry point), reading `siteUuid` from `.patchstackrc.json`. On those same roots the widget also needs the production marker above the tag — `scan` adds it automatically to a JSX root, and prints it to paste when it finds no anchor. A server-rendered site without the marker serves the build-mode claim flow to its visitors:
+3. **Verify the disclosure widget** — a floating control whose form follows the site's claim state: while the site is unclaimed it is a one-time "Connect this website" panel, and it becomes the public "Report a vulnerability" button once the site is claimed. Do not tell the user the report button will appear on a site that has not been connected to an account yet. `scan` installs it automatically into a plain HTML shell **or a JSX root** (Next, Remix, React Router, TanStack Start, Gatsby), and `mark-build` carries it into built HTML. Only when `scan` reported that it found no editable shell at all — a root whose head mechanism is not a plain script tag, e.g. Nuxt's `useHead` or an Astro layout — add the one-liner it printed to the root layout yourself, just before `</body>` (never a JS entry point), reading `siteUuid` from `.patchstackrc.json`. On those same roots the widget also needs the production marker above the tag — `scan` adds it automatically to a JSX root, and prints it to paste when it finds no anchor. A server-rendered site without the marker serves the build-mode claim flow to its visitors:
 
    ```html
    <script src="https://cdn.patchstack.com/patchstack-widget.js" data-site-uuid="<SITE_UUID>" defer></script>
@@ -268,7 +268,11 @@ It is server-only. Never put it in the widget tag, client bundles, or public env
 
    **Do not commit `.patchstackrc.local.json`.** That file holds the API key issued at provision; the scan writes it and adds it to `.gitignore`, and tells you if it could not. `.patchstackrc.json` holds only the site UUID and settings, and the UUID is public by design — it ships in the widget tag in served HTML.
 
-6. **Open the dashboard link** from the scan in a browser and sign in. The site is monitored either way, but the vulnerability reports are only visible after connecting it to an account. The same connection flow is available from the widget's "Connect this website" prompt. On the published site, the owner reaches the widget login by appending `#patchstack` to the live URL.
+6. **Connect the site to a Patchstack account.** The site is monitored either way, but its vulnerability reports are only visible once it is attached to an account, and an unattached site stays claimable by anyone who loads the page — the site UUID ships in the HTML and claiming is first-come. Three routes reach the same place; tell the user all three and lead with the first, which needs no terminal and no copied URL:
+
+   1. **The widget's "Connect this website" panel**, already on the preview. While the site is unclaimed the widget serves this panel *instead of* the report button, and signing in there attaches the site. On a published build it is hidden from visitors; the owner reveals it by appending `#patchstack` (or `?patchstack`) to the live URL.
+   2. **The dashboard link** the scan printed — open it in a browser and sign in.
+   3. **`npx @patchstack/connect claim`** from the terminal, which prints a link to sign in with and then attaches the site.
 
 ## Rules
 
