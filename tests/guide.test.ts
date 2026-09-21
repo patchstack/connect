@@ -373,6 +373,22 @@ describe('guide', () => {
 
       expect(output).not.toContain('When your tool will not run this CLI');
     });
+
+    it('gives standalone HTML a widget-only path without manufacturing an application', async () => {
+      writeFileSync(path.join(cwd, 'index.html'), '<!doctype html><html><body>Example</body></html>');
+
+      const state = await collectGuideState(cwd);
+      const output = renderGuideChecklist(state, false);
+
+      expect(state.hasPackageJson).toBe(false);
+      expect(output).toContain('standalone HTML/CSS/browser-JavaScript');
+      expect(output).toContain('Do not create a Node project');
+      expect(output).toContain('site UUID or widget snippet from the Patchstack dashboard');
+      expect(output).toContain('no dependency scan or runtime protection');
+      expect(output).not.toContain('npm install');
+      expect(output).not.toContain('Finish runtime protection');
+      expect(output).not.toContain('prebuild');
+    });
   });
 
   /**

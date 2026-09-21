@@ -40,6 +40,8 @@ question is document accuracy; those personas install more reliably than `hostil
 
 What it establishes is **structural regression coverage**: the prompt still survives pressures that once broke it. The personas are synthetic — written from our own analysis, not from any platform's policy text — so a green run is not evidence that a live platform accepts the prompt, and should not be reported as though it were.
 
+For coverage across models, run `node field-test/matrix.mjs --agents claude,codex,gemini --rounds 3` and repeat with `--template express-npm` for server-side installation. Use `--agent-config` for explicit model selections or additional harness wrappers (see the field-test README). The matrix retains unavailable agents as failing cells and includes void attempts in prompt reliability. A documentation run that succeeds only after retries is not a fully green prompt matrix.
+
 This split is a limitation of the current harness. A local-registry mode would let every artifact be
 tested before publication; until one exists, do not describe a run against the previous tarball as a
 gate on unpublished docs.

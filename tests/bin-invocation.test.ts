@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
-import { execFile, execFileSync } from 'node:child_process';
+import { execFile, execFileSync, spawnSync } from 'node:child_process';
 import { promisify } from 'node:util';
-import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { createServer } from 'node:http';
 import type { AddressInfo } from 'node:net';
 import { fileURLToPath } from 'node:url';
@@ -81,6 +81,27 @@ describe.skipIf(!built)('the packaged bin, invoked as npm invokes it', () => {
       encoding: 'utf8',
     }));
     expect(pkg['patchstack-connect']).toBe('./dist/cli.js');
+  });
+
+  it('leaves a standalone HTML page unchanged and explains the widget-only path', () => {
+    const project = mkdtempSync(path.join(tmpdir(), 'ps-bin-html-'));
+    const html = '<!doctype html><html><body>Example</body></html>\n';
+    try {
+      writeFileSync(path.join(project, 'index.html'), html);
+      const result = spawnSync(process.execPath, [bin, 'setup'], {
+        cwd: project,
+        encoding: 'utf8',
+        env: { ...process.env, PATCHSTACK_ENDPOINT: 'http://127.0.0.1:1/monitor/pulse/manifest' },
+      });
+
+      expect(result.status).toBe(1);
+      expect(result.stderr).toContain('standalone HTML site');
+      expect(result.stderr).toContain('widget-only instructions');
+      expect(readdirSync(project)).toEqual(['index.html']);
+      expect(readFileSync(path.join(project, 'index.html'), 'utf8')).toBe(html);
+    } finally {
+      rmSync(project, { recursive: true, force: true });
+    }
   });
 
   /**

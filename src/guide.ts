@@ -457,7 +457,11 @@ export function renderGuideChecklist(state: GuideState, useColor: boolean): stri
 
   if (!state.hasPackageJson) {
     lines.push(todo('No package.json found in this directory.'));
-    lines.push(detail('Run the guide from the project root.'));
+    lines.push(detail('For a JS/Node app, run the guide from its package directory; check that package.json is readable and valid.'));
+    lines.push(detail('For a standalone HTML/CSS/browser-JavaScript site, use the disclosure widget directly.'));
+    lines.push(detail('Do not create a Node project, build hooks, or a server just to install the widget.'));
+    lines.push(detail('Use the correct site UUID or widget snippet from the Patchstack dashboard; never invent one.'));
+    lines.push(detail('See "Plain HTML sites" in AGENT-INSTALL.md. Widget-only setup provides no dependency scan or runtime protection.'));
     return lines.join('\n');
   }
 

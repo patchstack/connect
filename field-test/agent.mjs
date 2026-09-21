@@ -39,16 +39,29 @@ export function runAgent(agentCmd, promptText, fixtureDir, endpoint, timeoutMs) 
       cwd: fixtureDir,
       env: { ...process.env, PATCHSTACK_ENDPOINT: endpoint },
       stdio: ['pipe', 'pipe', 'pipe'],
+      detached: process.platform !== 'win32',
     });
     let out = '';
     let err = '';
     let timedOut = false;
     const timer = setTimeout(() => {
       timedOut = true;
-      child.kill('SIGKILL');
+      if (process.platform !== 'win32' && child.pid) {
+        try { process.kill(-child.pid, 'SIGKILL'); } catch { child.kill('SIGKILL'); }
+      } else {
+        child.kill('SIGKILL');
+      }
     }, timeoutMs);
     child.stdout.on('data', (chunk) => (out += chunk));
     child.stderr.on('data', (chunk) => (err += chunk));
+    child.stdin.on('error', (error) => {
+      // A CLI can exit before reading stdin; its exit status remains the result of the attempt.
+      if (error.code !== 'EPIPE') err += `\nstdin error: ${error.code ?? 'unknown'}`;
+    });
+    child.on('error', (error) => {
+      clearTimeout(timer);
+      resolve({ output: out, stderr: `${err}\nagent launch failed: ${error.code ?? 'unknown'}`, exitCode: null, timedOut });
+    });
     child.on('close', (code) => {
       clearTimeout(timer);
       resolve({ output: out, stderr: err, exitCode: code, timedOut });

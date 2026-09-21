@@ -1144,6 +1144,7 @@ async function runSetup(args: ParsedArgs): Promise<number> {
   const before = await collectGuideState(process.cwd());
   if (!before.hasPackageJson) {
     console.error('Error: no package.json found. Run setup from the project root.');
+    console.error('For a standalone HTML site, use the widget-only instructions in AGENT-INSTALL.md; do not create a Node project just to run setup.');
     return 1;
   }
   if (before.installed === null) {
