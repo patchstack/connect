@@ -411,7 +411,10 @@ describe('guide', () => {
       expect(output).toContain('Refresh the preview to see the widget');
       // Not an unconditional "refresh now": a builder that hot reloads has already done it,
       // and telling someone to refresh a page that just refreshed itself reads as a fault.
-      expect(output).toContain('if the button is missing, refresh the preview once');
+      expect(output).toContain('if nothing appears, refresh the preview once');
+      // An unclaimed site gets the connect panel, not the report button, so the checklist
+      // must not promise the button before there is an owner.
+      expect(output).toContain('"Connect this website" panel');
     });
 
     it('stays quiet while the tag is still missing', async () => {

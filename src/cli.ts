@@ -805,16 +805,24 @@ async function runScan(
   const linkUuid = response.uuid ?? config.siteUuid;
   if (!connected && (provisioning || claimLines.length > 0) && linkUuid !== null && linkUuid !== undefined && linkUuid.length > 0) {
     console.log('');
-    console.log('Open this dashboard link to view vulnerability reports:');
-    console.log(`  ${buildClaimUrl(config.endpoint, linkUuid)}`);
+    console.log('Connect this site to your Patchstack account — any one of these:');
+    // The widget's own panel is the shortest route and is already rendered on the preview, so it
+    // leads. The link and `claim` follow for a project with no preview open: in a terminal the
+    // link is output nobody is looking at, which is why the command is named too.
+    if (config.widget) {
+      console.log('  1. In the preview — the widget shows a "Connect this website" panel while the');
+      console.log('     site is unclaimed. Signing in there attaches it.');
+      console.log('  2. Open this dashboard link in a browser:');
+      console.log(`     ${buildClaimUrl(config.endpoint, linkUuid)}`);
+      console.log('  3. From this terminal: npx @patchstack/connect claim');
+    } else {
+      console.log('  1. Open this dashboard link in a browser:');
+      console.log(`     ${buildClaimUrl(config.endpoint, linkUuid)}`);
+      console.log('  2. From this terminal: npx @patchstack/connect claim');
+    }
     if (config.endpoint !== DEFAULT_ENDPOINT) {
       console.log('  (this URL inherits the endpoint override above)');
     }
-    // A site provisioned by this scan has no owner yet. In a terminal the link above is output
-    // nobody is looking at, so name the command that does the same thing from here.
-    console.log('');
-    console.log('Or attach it to your account from this terminal:');
-    console.log('  npx @patchstack/connect claim');
   }
 
   // A scan can't wire the build hooks itself — an agent that runs `scan` but not
@@ -855,7 +863,8 @@ function reportSourceWidget(siteUuid: string, framework: string | null): void {
     const result = ensureSourceWidget(process.cwd(), siteUuid, jsxShell);
     switch (result.action) {
       case 'added':
-        console.log(`Widget: added the "Report a vulnerability" tag to ${result.shell}. Reload your preview to see it.`);
+        console.log(`Widget: added the disclosure widget tag to ${result.shell}. Reload your preview to see it.`);
+        console.log('  Unclaimed, it shows a "Connect this website" panel; the "Report a vulnerability" button replaces it once the site is claimed.');
         break;
       case 'updated':
         console.log(`Widget: updated the managed tag in ${result.shell} to site ${siteUuid}.`);
@@ -1253,7 +1262,7 @@ function setupOutcome(
   if (protection.install.status === 'not-applicable' && protection.install.leftovers.length > 0) {
     warnings.push(`earlier guard scaffold does nothing here and can be deleted: ${protection.install.leftovers.join(', ')}`);
   }
-  if (state.claimUrl !== null) warnings.push('the site is not attached to an account until the dashboard link is opened or `npx @patchstack/connect claim` completes');
+  if (state.claimUrl !== null) warnings.push('the site is not attached to an account until someone signs in through the widget\'s "Connect this website" panel, the dashboard link is opened, or `npx @patchstack/connect claim` completes');
   if (warnings.length > 0) lines.push(['Warnings', warnings.join('; ')]);
 
   return lines;
@@ -1273,7 +1282,9 @@ async function runStatus(args: ParsedArgs): Promise<number> {
   console.log(`Environment: ${config.environment}`);
   if (config.siteUuid !== null) {
     console.log(`Dashboard URL: ${buildClaimUrl(config.endpoint, config.siteUuid)}`);
-    console.log('  Not attached to an account yet? Run `npx @patchstack/connect claim`.');
+    console.log('  Not attached to an account yet? Sign in through the widget\'s "Connect this');
+    console.log('  website" panel on the preview, open the link above, or run');
+    console.log('  `npx @patchstack/connect claim`.');
 
     switch (await fetchSiteStatus(config)) {
       case 'active':
