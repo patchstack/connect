@@ -1,6 +1,13 @@
 # @patchstack/connect
 
-Connect a JavaScript / Node.js application to [Patchstack](https://patchstack.com) for continuous vulnerability monitoring. Scans your `package-lock.json` and reports installed packages so Patchstack can match them against its vulnerability database and notify you when something needs patching.
+Connect a JavaScript / Node.js application to [Patchstack](https://patchstack.com). Connect does four things:
+
+- **Dependency inventory** — reads your lockfile and reports the installed package names and versions, so Patchstack can match them against its vulnerability database and tell you when something needs patching. See *[What gets sent](#what-gets-sent)*.
+- **Runtime guard** — an in-process guard, wired into your server, that virtually patches known vulnerabilities in those dependencies rather than waiting for you to upgrade. See *[Verifying the guard at runtime](#verifying-the-guard-at-runtime-opt-in)*.
+- **Disclosure widget** — a floating button labelled **"Report a vulnerability"** that Connect adds to *your* site, so visitors who spot a security problem have somewhere to send it. This is a channel for reports about your site; it is not how you report a bug in this package. See *[The disclosure widget](#the-disclosure-widget)*.
+- **Attack-surface map** — a description of your server's entry points and the sinks they can reach, built by reading your source locally. See *[`map`](#cli)*.
+
+`setup` installs the first three in one command. `map` is never run for you — see the [CLI](#cli) section for what each command does and what it touches.
 
 ## Agent-assisted setup
 
@@ -383,55 +390,27 @@ Every scanned source is validated against `package.json`: if the chosen lockfile
 ## Development
 
 ```bash
-npm install
+npm ci
 npm run typecheck
+npm run build      # before the tests: several only run once dist/ exists, and skip silently without it
 npm test
-npm run build
 ```
 
-### Manifest endpoint testing
-
-To post the current lockfile manifest to a local Patchstack API endpoint and provision a new site:
-
-```bash
-bun run test:manifest -- --endpoint http://localhost:8000/monitor/pulse/manifest
-```
-
-The response should include the new site UUID. To re-test an existing site, pass that UUID explicitly:
-
-```bash
-bun run test:manifest -- --endpoint http://localhost:8000/monitor/pulse/manifest --site-uuid YOUR_REAL_UUID
-```
-
-Use `--dry-run` to preview the payload without posting.
+`CONTRIBUTING.md` covers the rest — the Node versions this needs, the packaging checks, and what to run before opening a pull request. Changing onboarding, the install prompt or the setup guide? Read `MAINTAINING.md` first.
 
 ## Release process
 
 Pull requests run typecheck, tests, build, package verification, and a production dependency audit in GitHub Actions.
 
-Publishing runs when a GitHub Release is published. The release tag must match the package version in `package.json` with a leading `v`. For example, `package.json` version `0.2.0` must be released with tag `v0.2.0`; otherwise the workflow fails before publishing.
+Releases are cut by the `Release` workflow, which works out the next version, tags it, and hands off to `Publish`:
 
-To publish a release:
+```bash
+gh workflow run Release -f bump=patch   # or: minor, major
+```
 
-1. Bump the package version, for example `npm version 0.2.0 --no-git-tag-version`.
-2. Commit `package.json` and `package-lock.json`.
-3. Merge the version bump to `main`.
-4. Create and publish a GitHub Release tagged `v0.2.0`.
-5. The `Publish` workflow verifies the package, then runs `npm publish --provenance --access public`.
+The git tag is the source of truth for the published version. `Publish` reads the version out of the tag, writes it into `package.json` in CI, then builds and publishes to npm with provenance — so you do **not** bump `package.json` before releasing. After publishing it opens a pull request bringing the committed manifest up to the version that just went out; merge that.
 
-Before the first release, configure npm trusted publishing for this package:
-
-1. Merge `.github/workflows/publish.yml` to `main`.
-2. Open the `@patchstack/connect` package settings on npmjs.com.
-3. In **Trusted publishing**, choose **GitHub Actions**.
-4. Configure:
-   - Organization/user: `patchstack`
-   - Repository: `connect`
-   - Workflow filename: `publish.yml`
-   - Environment name: `npm`
-5. In GitHub repository settings, create an `npm` environment. Optional but recommended: require reviewer approval for that environment.
-
-Do not add an npm publish token to GitHub secrets for this workflow. Trusted publishing uses GitHub OIDC short-lived credentials. After the first trusted publish succeeds, npm recommends setting package publishing access to require two-factor authentication and disallow tokens.
+`RELEASING.md` has the details: how to pick the bump (a compatibility break on a `0.x` version needs at least a minor), the manual fallback, and the npm trusted-publishing configuration.
 
 ## License
 

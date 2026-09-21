@@ -54,6 +54,23 @@ Build before testing, in that order. `dist/` is not committed, and several tests
 they skip in a plain checkout and are required in CI. Run in the other order and those tests skip, which
 reads exactly like passing.
 
+### Posting a manifest at a local endpoint
+
+To post the current lockfile manifest to a Patchstack API endpoint you are running locally, and provision
+a new site against it:
+
+```bash
+bun run test:manifest -- --endpoint http://localhost:8000/monitor/pulse/manifest
+```
+
+The response should include the new site UUID. To re-test an existing site, pass that UUID explicitly:
+
+```bash
+bun run test:manifest -- --endpoint http://localhost:8000/monitor/pulse/manifest --site-uuid YOUR_REAL_UUID
+```
+
+Use `--dry-run` to preview the payload without posting.
+
 ## Before you open a pull request
 
 - `npm run typecheck`, `npm run build`, `npm test` all clean — in that order, for the reason above.
