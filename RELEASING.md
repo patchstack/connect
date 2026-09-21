@@ -112,6 +112,22 @@ who has already installed it:
 
 Delete this section once both have shipped.
 
+## npm trusted publishing
+
+This is configured already; it is recorded here so the settings can be checked or rebuilt.
+
+1. `.github/workflows/publish.yml` is on `main`.
+2. In the `@patchstack/connect` package settings on npmjs.com, **Trusted publishing** is set to
+   **GitHub Actions** with organization `patchstack`, repository `connect`, workflow filename
+   `publish.yml`, environment name `npm`.
+3. An `npm` environment exists in the GitHub repository settings. Requiring reviewer approval on it is
+   optional and recommended.
+
+There is deliberately **no npm publish token** in GitHub secrets for this workflow — trusted publishing
+uses short-lived GitHub OIDC credentials instead. npm's own recommendation, once a trusted publish has
+succeeded, is to set the package's publishing access to require two-factor authentication and disallow
+tokens.
+
 ## Notes
 
 - Tags must be `vX.Y.Z` (the leading `v` is stripped to get the npm version).
