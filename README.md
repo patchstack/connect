@@ -95,13 +95,13 @@ That's it. `setup`:
 2. POSTs the package list to Patchstack with **no** UUID.
 3. Patchstack provisions a fresh site and returns its UUID.
 4. The connector writes the UUID to `.patchstackrc.json` so the next `scan` targets the same site.
-5. The connector installs the disclosure widget's `<script>` tag into your root HTML shell (see *The disclosure widget* below) so the "Report a vulnerability" button shows up on the next preview reload. On a server-rendered root it also adds the production marker, which is what tells the widget to switch from build mode to visitor report intake on the published site.
+5. The connector installs the disclosure widget's `<script>` tag into your root HTML shell (see *The disclosure widget* below) so the widget shows up on the next preview reload — as the "Connect this website" panel until the site is claimed, then as the "Report a vulnerability" button. On a server-rendered root it also adds the production marker, which is what tells the widget to switch from build mode to visitor report intake on the published site.
 6. Installs the runtime guard after provisioning, bakes the site UUID into it, and verifies the framework seam. Known server stacks are auto-wired; unmatched or conflicting layouts get a generic scaffold and exact manual checks.
 7. Adds `postinstall: patchstack-connect scan`, preserving any existing command, so dependencies added during a sandbox session and build-less production installs are reported immediately.
 8. Wires `scan` before builds and `mark-build` after builds, preserving existing commands and using direct build chaining for Bun.
 9. Prints a dashboard link — open it in a browser to attach the new site to your Patchstack account. You can re-display it any time with `npx @patchstack/connect status`.
 
-Then **refresh your preview**. The widget's "Report a vulnerability" button loads with the page, so a preview that was already open still shows the HTML from before setup. Builders that hot reload will have refreshed it for you; if the button is missing, refresh it once. `setup` prints the same reminder, and the CLI has no way to reload a browser itself.
+Then **refresh your preview**. The widget loads with the page, so a preview that was already open still shows the HTML from before setup. Builders that hot reload will have refreshed it for you; if the widget is missing, refresh it once. Until the site is claimed it shows the "Connect this website" panel; the "Report a vulnerability" button takes its place once it is. `setup` prints the same reminder, and the CLI has no way to reload a browser itself.
 
 Then **deploy**. These are source changes, so your live site keeps serving its previous build — visitors get the widget, and a server-rendered root gets the production marker, only after the next deploy.
 

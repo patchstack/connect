@@ -22,6 +22,16 @@ For a standalone site made of HTML, CSS, and browser JavaScript, with no package
 
 Report this as **disclosure widget installed**, with any remaining preview or publishing step. This path does not inventory local JavaScript files or scripts loaded from a CDN, scan npm dependencies, or install runtime exploit protection. External APIs used by the page require their own server-side integration.
 
+### JS/Node applications — the usual path
+
+1. Check what is already done with `npx @patchstack/connect guide` (read-only). If the project is already provisioned, reuse it — see "Before you start — never install twice".
+2. Install `@patchstack/connect` as a runtime dependency with the project's package manager.
+3. Run `npx @patchstack/connect setup`. In a hosted builder, scope `PATCHSTACK_ENVIRONMENT=sandbox` to that command — see "Automated setup".
+4. Finish any step the checklist at the end of `setup` still lists. "Automated setup" names each one.
+5. Tell the person the dashboard link, which parts are active and which are not, to refresh their preview, and to deploy when they are ready.
+
+If your tool will not run the command, see "When your tool will not run this CLI". The sections below describe what each command reads, writes, and sends.
+
 ## Command reference
 
 Every command at a glance — what it does, whether it reads your source, what it writes, and what leaves your machine. Full behavior, flags, and edge cases follow in the sections below.
@@ -108,13 +118,26 @@ This is a request, not a mechanism: nothing in the install depends on it. Do it 
 
    **If the request you were given includes a claim token**, pass it exactly as given: `npx @patchstack/connect setup --claim-token <token>`. The site is then created in the person's own Patchstack account and `setup` prints their dashboard link for it — there is no sign-in step to relay. The token comes only from the person's Patchstack dashboard; never invent one, never write it to a file, never print it back. If `setup` reports that the token had expired or was not recognised, the site is not connected: hand over the dashboard link it prints instead, and tell the person they can copy a fresh prompt from the dashboard.
 
-   In a hosted builder, run setup with `PATCHSTACK_ENVIRONMENT=sandbox` scoped to the workspace process/command, ensure the CLI's on-disk edits are adopted into the platform's persisted project state, then restart any already-running preview/server process so it loads the guard. Do not persist `"environment": "sandbox"` in `.patchstackrc.json`: deployed builds use the same committed files and report `production` only when the build platform's own variables say so — its tier (Vercel, Netlify, Render, Railway, GitLab CI) or a branch named `main`, `master`, `production`, `prod`, `release` or `live` (Cloudflare Pages and Workers Builds, AWS Amplify, GitHub Actions, GitLab CI without a tier); a preview, pull request or other branch there reports `sandbox`, as does the Replit workspace, while a Replit Deployment reports `production`. A build in a project the builder generated and builds for itself (Lovable, Replit) reports `production` without an override, because the edit preview is a dev server and a build is the publish step — which is exactly why the sandbox label belongs in the workspace process and not in a file. A scan on a developer's machine, in a CI runner this does not know (`CI=true` alone), or on a platform with no such signal reports `local` on its own, and the dashboard shows that app as configured, not deployed. A positively identified static build reports runtime protection as not applicable. A bundler-only project, including plain Vite, can remain runtime unknown and receive a generic scaffold with incomplete wiring. Report that limitation; do not add an artificial server merely to make the check pass, and never describe a widget or an unwired scaffold as runtime protection.
+   **In a hosted builder:**
+
+   - Run setup with `PATCHSTACK_ENVIRONMENT=sandbox` scoped to the workspace process/command.
+   - Ensure the CLI's on-disk edits are adopted into the platform's persisted project state.
+   - Restart any already-running preview/server process so it loads the guard.
+   - Do not persist `"environment": "sandbox"` in `.patchstackrc.json`: deployed builds use the same committed files and report `production` only when the build platform's own variables say so.
+
+   **How each environment is labelled:**
+
+   - A build platform's tier (Vercel, Netlify, Render, Railway, GitLab CI) or a branch named `main`, `master`, `production`, `prod`, `release` or `live` (Cloudflare Pages and Workers Builds, AWS Amplify, GitHub Actions, GitLab CI without a tier) reports `production`; a preview, pull request or other branch there reports `sandbox`, as does the Replit workspace, while a Replit Deployment reports `production`.
+   - A build in a project the builder generated and builds for itself (Lovable, Replit) reports `production` without an override, because the edit preview is a dev server and a build is the publish step — which is exactly why the sandbox label belongs in the workspace process and not in a file.
+   - A scan on a developer's machine, in a CI runner this does not know (`CI=true` alone), or on a platform with no such signal reports `local` on its own, and the dashboard shows that app as configured, not deployed.
+
+   **What runtime protection can report:** a positively identified static build reports runtime protection as not applicable. A bundler-only project, including plain Vite, can remain runtime unknown and receive a generic scaffold with incomplete wiring. Report that limitation; do not add an artificial server merely to make the check pass, and never describe a widget or an unwired scaffold as runtime protection.
 
    **A step the checklist still lists is yours to finish, not a result to report.** `setup` applies what it can apply safely and prints the exact edit for anything it would have had to overwrite user code to do. They are: moving `@patchstack/connect` out of `devDependencies`, the widget tag in a root layout `setup` could not edit, the production marker on a server-rendered root, and wiring a generic guard into the server entry. The last three are steps 3 and 4 of "Manual setup" below; after the guard one, `npx @patchstack/connect protect --check` must exit 0.
 
    **A tick is "nothing owed here", not "this part is on".** The checklist marks steps this project still owes, so a part it cannot carry — or one that is switched off — is green with nothing outstanding. `No build script to integrate`, `Disclosure widget disabled by config` and `Runtime protection: not applicable` all read that way. So report what the project ended up with by name — dependency scans, the disclosure widget, the build hooks, runtime protection — and say which of them are not active and why, rather than reporting an empty checklist as a finished install. Of those, the widget is the one that can be off by setting rather than by the shape of the project: if `.patchstackrc.json` carries `"widget": false` and the person did not ask for that, tell them it is off and ask whether they want it on.
 
-   **Finish by telling the user to refresh their preview.** The widget's "Report a vulnerability" button loads with the page, so a preview that was already open still shows the HTML from before setup — the button is missing there until it reloads. Nothing in the CLI can reach the user's browser, so relaying this is your job. Phrase it as a check rather than a required step: a builder that hot reloads, or a preview server you restarted, may have refreshed it already.
+   **Finish by telling the user to refresh their preview.** The widget loads with the page, so a preview that was already open still shows the HTML from before setup — the widget is missing there until it reloads. Tell them what to expect after the refresh: a site that is not yet connected to an account shows the "Connect this website" panel, and the "Report a vulnerability" button takes its place once the site is claimed. A freshly set up site is unclaimed unless setup ran with a claim token. Nothing in the CLI can reach the user's browser, so relaying this is your job. Phrase it as a check rather than a required step: a builder that hot reloads, or a preview server you restarted, may have refreshed it already.
 
    **Then tell them to deploy.** Setup changes source files, and the deployed site keeps serving its previous build until the next deploy — so visitors get no widget, and on a server-rendered root no production marker, until the user deploys (or hits Publish) again. Say it as a reminder; do not deploy anything yourself.
 
@@ -186,7 +209,7 @@ Handle it in this order:
    npx @patchstack/connect scan
    ```
 
-   It prints a dashboard link but never opens it. Open that link in a browser to view reports. It also prints what it did about the widget — if it added the tag, reload the preview and confirm the "Report a vulnerability" button appears.
+   It prints a dashboard link but never opens it. Open that link in a browser to view reports. It also prints what it did about the widget — if it added the tag, reload the preview and confirm the widget appears: the "Connect this website" panel while the site is unclaimed, the "Report a vulnerability" button once it is claimed.
 
 2. **Wire builds** in `package.json`:
 
@@ -568,7 +591,7 @@ Two more endpoints the package can call, for completeness:
 - `npx @patchstack/connect status` re-prints the site UUID and dashboard URL, and checks whether the site still exists on Patchstack (`Site status: active / removed / could not be verified`).
 - `npx @patchstack/connect protect --check` verifies from the source that the runtime guard is connected to the request path. It does not run the app.
 - `npx @patchstack/connect protect --check --runtime` additionally **starts the app** on a loopback port and sends it one request, to establish that a request reaches the guard seam. Opt-in, and the only command that runs the application; exit `0`/`1`/`2` as described in step 4.
-- Load the site in a browser — the "Report a vulnerability" button should appear. Refresh a page that was already open before the tag was added: the button only loads with the page.
+- Load the site in a browser — the widget should appear: the "Connect this website" panel while the site is unclaimed, the "Report a vulnerability" button once it is claimed. Refresh a page that was already open before the tag was added: the widget only loads with the page.
 - On the deployed site, the button appears only after a deploy that includes these source changes.
 
 ## Answering "is Patchstack installed?" / "is Patchstack removed?"

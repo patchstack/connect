@@ -12,7 +12,7 @@ For an existing JS/Node project on a platform that can install npm packages and 
 
 When setup finishes it shows you a **dashboard URL**. Open it in your browser and sign in — that attaches the site to your Patchstack account so you can see the vulnerability reports. That's the only manual step.
 
-Then look at your preview. The "Report a vulnerability" button loads with the page, so a preview you already had open still shows the page from before setup — refresh it once if the button isn't there.
+Then look at your preview. The widget loads with the page, so a preview you already had open still shows the page from before setup — refresh it once if the widget isn't there. Until the site is attached to your account it shows a "Connect this website" panel; once it is, that becomes the "Report a vulnerability" button.
 
 When you are happy with it, deploy (or hit Publish). Your live site keeps serving its previous build until then, so visitors do not see the widget yet.
 
@@ -45,7 +45,7 @@ Run commands from the application's package directory. In a hosted workspace, se
 - `npx @patchstack/connect status` prints a site UUID and dashboard URL.
 - You've opened the dashboard URL in your browser and the site shows in your Patchstack dashboard.
 - `npx @patchstack/connect guide` reports the expected build hooks and widget, and `npx @patchstack/connect protect --check` confirms the guard's source wiring. A client-only or static project can report runtime protection as not applicable; describe it as dependency monitoring and a disclosure widget, not runtime protection. A source check alone does not prove deployed traffic reaches the guard.
-- Your preview shows the "Report a vulnerability" button (refresh it once if it does not).
+- Your preview shows the widget (refresh it once if it does not): the "Connect this website" panel before the site is attached to your account, the "Report a vulnerability" button after.
 - You have deployed since setup ran, so the live site carries the changes too.
 - `.patchstackrc.json`, `package.json`, the package manager's lockfile, and the generated guard/framework and widget source changes are saved in the platform's persisted project state and committed, so teammates and CI receive the same setup.
 - `.patchstackrc.local.json` is **not** committed. It holds the API key; setup adds it to `.gitignore`. Teammates and CI get the credential from `PATCHSTACK_API_KEY` instead.
