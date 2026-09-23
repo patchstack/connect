@@ -478,6 +478,20 @@ export function renderGuideChecklist(state: GuideState, useColor: boolean): stri
     lines.push('');
   }
 
+  // Until the first scan, `setup` covers every step listed below in one bounded command, so the
+  // checklist names it first rather than leaving the agent to assemble the steps by hand.
+  if (state.siteUuid === null) {
+    lines.push(` ${paint(ANSI.cyan, '➜')} ${paint(ANSI.bold, 'Nothing is set up yet — two commands cover the steps below:')}`);
+    if (state.installed?.section !== 'dependencies') {
+      lines.push(`   ${installCommand(state.packageManager)}`);
+    }
+    lines.push('   npx @patchstack/connect setup');
+    lines.push('   setup provisions the site, adds the widget, installs and verifies runtime protection,');
+    lines.push('   and wires the install and build scans, then prints this checklist again. Anything');
+    lines.push('   still listed there is a step setup could not apply safely, and is yours to finish.');
+    lines.push('');
+  }
+
   // 1. Install
   if (state.installed?.section === 'dependencies') {
     lines.push(done(`@patchstack/connect installed (${state.installed.version}, ${state.installed.section})`));

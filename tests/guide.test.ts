@@ -346,6 +346,35 @@ describe('guide', () => {
       expect(output).toContain('the first scan does this for you');
     });
 
+    it('names setup as the command that covers every step on an unprovisioned project', async () => {
+      writeJson('package.json', { name: 'fresh-app' });
+
+      const output = renderGuideChecklist(await collectGuideState(cwd), false);
+      const lead = output.indexOf('Nothing is set up yet');
+
+      expect(lead).toBeGreaterThan(-1);
+      expect(lead).toBeLessThan(output.indexOf('Install @patchstack/connect as a runtime dependency'));
+      expect(output.slice(lead)).toContain(`${installCommand('npm')}\n   npx @patchstack/connect setup`);
+    });
+
+    it('leaves the install command out of the setup lead once the package is a runtime dependency', async () => {
+      writeJson('package.json', { name: 'fresh-app', dependencies: { '@patchstack/connect': '^0.5.0' } });
+
+      const output = renderGuideChecklist(await collectGuideState(cwd), false);
+
+      expect(output).toContain('Nothing is set up yet');
+      expect(output).not.toContain(installCommand('npm'));
+    });
+
+    it('drops the setup lead once the site is provisioned', async () => {
+      writeJson('package.json', { name: 'fresh-app', dependencies: { '@patchstack/connect': '^0.5.0' } });
+      writeJson('.patchstackrc.json', { siteUuid: VALID_UUID });
+
+      const output = renderGuideChecklist(await collectGuideState(cwd), false);
+
+      expect(output).not.toContain('Nothing is set up yet');
+    });
+
     it('points at the project root when package.json is missing', async () => {
       const output = renderGuideChecklist(await collectGuideState(cwd), false);
       expect(output).toContain('No package.json found');
