@@ -1,4 +1,4 @@
-import type { Manifest, PackageEntry } from './types.js';
+import type { Manifest } from './types.js';
 
 export interface WirePackage {
   name: string;
@@ -209,11 +209,4 @@ function compareSegments(a: string[], b: string[]): number {
     }
   }
   return 0;
-}
-
-export function findPackageInManifest(
-  manifest: Manifest,
-  name: string,
-): PackageEntry[] {
-  return manifest.packages.filter((p) => p.name === name);
 }

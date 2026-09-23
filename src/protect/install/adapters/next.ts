@@ -5,18 +5,9 @@
 
 import { existsSync } from 'node:fs';
 import { join } from 'node:path';
-import { bakeSiteUuid, read, log, templatesDir } from '../util.js';
+import { bakeSiteUuid, hasDependency, read, log, templatesDir } from '../util.js';
 import type { Adapter, WireOptions, WireResult, VerifyResult } from '../types.js';
 import { copyProjectFileSync, ensureProjectDirectorySync } from '../../../safe-file.js';
-
-function hasNextDep(cwd: string): boolean {
-  try {
-    const pkg = JSON.parse(read(join(cwd, 'package.json')));
-    return Boolean({ ...pkg.dependencies, ...pkg.devDependencies }.next);
-  } catch {
-    return false;
-  }
-}
 
 // Next reads middleware from `middleware.ts` at the project root, or `src/middleware.ts` when the
 // app uses a `src/` dir. Return the existing one if present, else the conventional target.
@@ -30,7 +21,7 @@ function middlewareInfo(cwd: string): { relDir: string; relFile: string; exists:
 }
 
 function detect(cwd: string): boolean {
-  return hasNextDep(cwd);
+  return hasDependency(cwd, 'next');
 }
 
 function rulesFile(relDir: string): string {

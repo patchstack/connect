@@ -5,7 +5,7 @@
 
 import { readFileSync, existsSync, readdirSync, lstatSync } from 'node:fs';
 import { join, dirname } from 'node:path';
-import { bakeSiteUuid, read, templatesDir } from './util.js';
+import { bakeSiteUuid, hasDependency, read, templatesDir } from './util.js';
 import type { WireOptions, VerifyResult } from './types.js';
 import type { GuardModuleQuery } from './source-scope.js';
 import { copyProjectFileSync, ensureProjectDirectorySync } from '../../safe-file.js';
@@ -132,18 +132,9 @@ function candidateEntries(cwd: string): string[] {
   return [...new Set(hits)];
 }
 
-function usesExpress(cwd: string): boolean {
-  try {
-    const pkg = JSON.parse(read(join(cwd, 'package.json')));
-    return Boolean({ ...pkg.dependencies, ...pkg.devDependencies }.express);
-  } catch {
-    return false;
-  }
-}
-
 export function wiringPlan(cwd: string, dir: string): string {
   const entries = candidateEntries(cwd);
-  const express = usesExpress(cwd);
+  const express = hasDependency(cwd, 'express');
   const target = genericGuardTarget(cwd);
   const lines = [
     `no built-in adapter matched this stack — scaffolded a generic guard at ${dir}/${target.file} + ${dir}/rules.json.`,

@@ -67,6 +67,9 @@ function isUnpublishableHost(hostname: string): boolean {
   return RESERVED_SUFFIXES.some((suffix) => host.endsWith(suffix));
 }
 
+/** The most Patchstack accepts for an address. */
+const URL_MAX_LENGTH = 191;
+
 /**
  * Reduce a reported address to the `scheme://host[:port]` Patchstack stores, or null when it is not one.
  *
@@ -92,8 +95,8 @@ export function normaliseSiteUrl(value: string | undefined | null): string | nul
 
   const origin = `${parsed.protocol}//${parsed.host}`;
 
-  // 191 characters is the most Patchstack accepts for an address; an origin near that length is not one.
-  return origin.length <= 191 ? origin : null;
+  // An origin near the limit is not one.
+  return origin.length <= URL_MAX_LENGTH ? origin : null;
 }
 
 /**

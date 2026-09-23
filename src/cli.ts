@@ -38,6 +38,7 @@ import {
   secretFileIgnored,
   persistSiteUuid,
   resolveConfig,
+  type ResolveConfigOptions,
   writeConfigFile,
   persistTimeout,
 } from './config.js';
@@ -76,6 +77,7 @@ import { runProtect, runVerify } from './protect/install/index.js';
 import { formatRuntimeCheck, runRuntimeCheck, runtimeExitCode } from './protect/install/runtime/check.js';
 import { runMap } from './map-command.js';
 import { getStringFlag } from './flags.js';
+import { isCanonicalUuid } from './endpoint-policy.js';
 import { setupProtection, wireBuildScripts } from './setup.js';
 import type { SetupProtectionResult, WireBuildScriptsResult } from './setup.js';
 import { isInstallOrBuildHook, isPreBundleBuildHook, undeliveredReportLines } from './build-hook.js';
@@ -296,7 +298,38 @@ function parseArgs(argv: string[]): ParsedArgs {
   };
 }
 
+/** The site/endpoint overrides every command accepts, resolved against the current directory. */
+function resolveCliConfig(
+  args: ParsedArgs,
+  extra: Omit<ResolveConfigOptions, 'cwd' | 'cliSiteUuid' | 'cliEndpoint'> = {},
+): Promise<Config> {
+  return resolveConfig({
+    cwd: process.cwd(),
+    cliSiteUuid: getStringFlag(args.flags, 'site-uuid'),
+    cliEndpoint: getStringFlag(args.flags, 'endpoint'),
+    ...extra,
+  });
+}
 
+/**
+ * Whether a build agent is running this. `CI=false` is how a platform says "not a CI build", so it
+ * counts as absent — the interactive commands refuse only where there is really no one to answer.
+ */
+function runningInCi(): boolean {
+  return process.env.CI !== undefined && process.env.CI !== '' && process.env.CI !== 'false';
+}
+
+/**
+ * What became of the credential file's ignore entry, for the person reading the output.
+ *
+ * Only claimed when `.gitignore` was read back and really covers it: an assurance that turns out to be
+ * false is worse than none, because it is the reason somebody stops checking.
+ */
+function gitignoreOutcomeLine(ignore: { ignored: boolean; reason?: string }): string {
+  return ignore.ignored
+    ? '    Added to .gitignore.'
+    : `    NOT ignored by git — ${ignore.reason ?? 'unknown reason'}. Add it to .gitignore yourself before committing.`;
+}
 
 async function runInit(args: ParsedArgs): Promise<number> {
   const uuid = args.positional[0];
@@ -305,7 +338,7 @@ async function runInit(args: ParsedArgs): Promise<number> {
     console.error('Usage: patchstack-connect init <site-uuid>');
     return 1;
   }
-  if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(uuid)) {
+  if (!isCanonicalUuid(uuid)) {
     console.error(`Error: "${uuid}" does not look like a valid UUID.`);
     return 1;
   }
@@ -319,16 +352,12 @@ async function runInit(args: ParsedArgs): Promise<number> {
 
 async function runClaim(args: ParsedArgs): Promise<number> {
   // No browser and no human to sign in. A deploy inherits an already-claimed site; it never claims.
-  if (process.env.CI !== undefined && process.env.CI !== '' && process.env.CI !== 'false') {
+  if (runningInCi()) {
     console.error('`claim` is interactive and cannot run in CI. Claim the site from a developer machine.');
     return 1;
   }
 
-  const config = await resolveConfig({
-    cwd: process.cwd(),
-    cliSiteUuid: getStringFlag(args.flags, 'site-uuid'),
-    cliEndpoint: getStringFlag(args.flags, 'endpoint'),
-  });
+  const config = await resolveCliConfig(args);
 
   const siteUuid = config.siteUuid;
   if (siteUuid === null) {
@@ -345,11 +374,7 @@ async function runClaim(args: ParsedArgs): Promise<number> {
       const ignore = await secretFileIgnored(process.cwd());
       // The value itself is never printed — only that it landed, and only that it is ignored when it is.
       console.log(`    A credential for this site was issued and saved to ${SECRET_CONFIG_FILENAME}.`);
-      console.log(
-        ignore.ignored
-          ? '    Added to .gitignore.'
-          : `    NOT ignored by git — ${ignore.reason ?? 'unknown reason'}. Add it to .gitignore yourself before committing.`,
-      );
+      console.log(gitignoreOutcomeLine(ignore));
     }
     console.log('');
     return 0;
@@ -438,16 +463,12 @@ async function runClaim(args: ParsedArgs): Promise<number> {
 async function runLogin(args: ParsedArgs): Promise<number> {
   // CI has no browser and no human; build agents must not print credentials
   // into logs. Deploys use PATCHSTACK_PULSE_AUTH from the platform's secrets.
-  if (process.env.CI !== undefined && process.env.CI !== '' && process.env.CI !== 'false') {
+  if (runningInCi()) {
     console.error('`login` is interactive and cannot run in CI. Set PATCHSTACK_PULSE_AUTH instead.');
     return 1;
   }
 
-  const config = await resolveConfig({
-    cwd: process.cwd(),
-    cliSiteUuid: getStringFlag(args.flags, 'site-uuid'),
-    cliEndpoint: getStringFlag(args.flags, 'endpoint'),
-  });
+  const config = await resolveCliConfig(args);
 
   // Checked here rather than carried up from the write: the rotation happens several layers down, and the
   // claim belongs to the line that prints it.
@@ -455,11 +476,7 @@ async function runLogin(args: ParsedArgs): Promise<number> {
     const ignore = await secretFileIgnored(process.cwd());
     // The value itself is never printed — only that it landed, and only that it is ignored when it is.
     console.log(`\n  ✓ Credential restored and saved to ${SECRET_CONFIG_FILENAME}.`);
-    console.log(
-      ignore.ignored
-        ? '    Added to .gitignore.'
-        : `    NOT ignored by git — ${ignore.reason ?? 'unknown reason'}. Add it to .gitignore yourself before committing.`,
-    );
+    console.log(gitignoreOutcomeLine(ignore));
     console.log('    The previous credential no longer works. Update it anywhere else it was set:');
     console.log('    CI secrets, hosting env vars, preview environments, other checkouts.\n');
     return 0;
@@ -619,10 +636,7 @@ async function runScan(
   options: { showRemainingSetup?: boolean } = {},
 ): Promise<number> {
   const dryRun = args.flags.get('dry-run') === true;
-  const config = await resolveConfig({
-    cwd: process.cwd(),
-    cliSiteUuid: getStringFlag(args.flags, 'site-uuid'),
-    cliEndpoint: getStringFlag(args.flags, 'endpoint'),
+  const config = await resolveCliConfig(args, {
     cliClaimToken: getStringFlag(args.flags, 'claim-token'),
     // The one command that reports them, so the one command that resolves them.
     detectSiteIdentity: true,
@@ -1009,12 +1023,7 @@ async function runDemoCommand(args: ParsedArgs): Promise<number> {
   try {
     const scenario = resolveDemoScenario(args.positional[0]);
     const cwd = process.cwd();
-    const config = await resolveConfig({
-      cwd,
-      cliSiteUuid: getStringFlag(args.flags, 'site-uuid'),
-      cliEndpoint: getStringFlag(args.flags, 'endpoint'),
-      requireSiteUuid: true,
-    });
+    const config = await resolveCliConfig(args, { requireSiteUuid: true });
     if (config.environment !== 'production') {
       throw new DemoError(
         'The production-backed demo requires PATCHSTACK_ENVIRONMENT=production. Unset the sandbox override and try again.',
@@ -1269,11 +1278,7 @@ function setupOutcome(
 }
 
 async function runStatus(args: ParsedArgs): Promise<number> {
-  const config = await resolveConfig({
-    cwd: process.cwd(),
-    cliSiteUuid: getStringFlag(args.flags, 'site-uuid'),
-    cliEndpoint: getStringFlag(args.flags, 'endpoint'),
-  });
+  const config = await resolveCliConfig(args);
   console.log(`Site UUID:   ${config.siteUuid ?? '(none yet — the next `scan` will provision one)'}`);
   console.log(
     `Endpoint:    ${config.endpoint}${config.endpoint === DEFAULT_ENDPOINT ? '' : ' (override)'}`,
@@ -1311,11 +1316,7 @@ async function runStatus(args: ParsedArgs): Promise<number> {
 }
 
 async function runUninstall(args: ParsedArgs): Promise<number> {
-  const config = await resolveConfig({
-    cwd: process.cwd(),
-    cliSiteUuid: getStringFlag(args.flags, 'site-uuid'),
-    cliEndpoint: getStringFlag(args.flags, 'endpoint'),
-  });
+  const config = await resolveCliConfig(args);
 
   if (config.siteUuid === null) {
     console.log('No site UUID configured — there is no site record to signal about.');

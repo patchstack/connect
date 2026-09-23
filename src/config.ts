@@ -448,13 +448,13 @@ export async function persistTimeout(cwd: string, timeoutMs: number): Promise<st
  * credential the server has replaced.
  */
 export async function persistApiKey(cwd: string, apiKey: string): Promise<SecretFileResult> {
-  const { apiKey: _movedKey, pulseAuth: _movedPulse, ...publicConfig } = await readConfigFile(cwd);
+  const { apiKey: movedKey, pulseAuth: movedPulse, ...publicConfig } = await readConfigFile(cwd);
   const existingSecrets = await readSecretFile(cwd);
 
   const target = await writeSecretFile(cwd, { ...existingSecrets, apiKey, pulseAuth: undefined });
 
   // Only rewritten when it actually held a credential, so a normal provision does not touch it.
-  if (_movedKey !== undefined || _movedPulse !== undefined) {
+  if (movedKey !== undefined || movedPulse !== undefined) {
     await writeConfigFile(cwd, publicConfig);
   }
 
