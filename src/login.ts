@@ -1,6 +1,3 @@
-import { mkdtempSync } from 'node:fs';
-import { tmpdir } from 'node:os';
-import path from 'node:path';
 import { persistApiKey } from './config.js';
 import {
   clearPending,
@@ -126,9 +123,4 @@ export async function login(
   onPrompt(started.pending.userCode, started.pending.verificationUri);
 
   return waitForApproval(config, started.pending, deps);
-}
-
-/** Exported for tests that need a scratch temp dir. */
-export function makeTempDir(prefix = 'patchstack-'): string {
-  return mkdtempSync(path.join(tmpdir(), prefix));
 }

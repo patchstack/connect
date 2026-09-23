@@ -1,6 +1,5 @@
 // Adapter: SvelteKit. Wires the guard as a server hook (`src/hooks.server.ts` → `handle`).
-import { join } from 'node:path';
-import { read } from '../util.js';
+import { hasDependency } from '../util.js';
 import { wireSeam, verifySeam, type SeamSpec } from '../seam.js';
 import type { Adapter, WireOptions, WireResult, VerifyResult } from '../types.js';
 
@@ -14,12 +13,7 @@ const SPEC: SeamSpec = {
 };
 
 function detect(cwd: string): boolean {
-  try {
-    const pkg = JSON.parse(read(join(cwd, 'package.json')));
-    return Boolean({ ...pkg.dependencies, ...pkg.devDependencies }['@sveltejs/kit']);
-  } catch {
-    return false;
-  }
+  return hasDependency(cwd, '@sveltejs/kit');
 }
 
 function wire(cwd: string, opts: WireOptions): WireResult {

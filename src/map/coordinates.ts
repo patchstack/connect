@@ -76,19 +76,6 @@ export function inputIdOf(source: InputSource | undefined, path: string): string
   return `${addressSpaceOf(source)}:${path}`;
 }
 
-/**
- * The rule-engine NAMESPACE an input lands in (`post`, `get`, `cookie`, `files`, `server`), or null when
- * it has no address. Derived from `runtimeCoordinate` on purpose: comparing raw source labels would call
- * `json-body` and an Express `req.body` read different places when both resolve to `post.*`, and would
- * miss that `post.id` and `get.id` are genuinely different places.
- */
-export function namespaceOf(source: InputSource | undefined, path: string): string | null {
-  const { runtimeParameter } = runtimeCoordinate(source, path);
-  if (!runtimeParameter) return null;
-  const dot = runtimeParameter.indexOf('.');
-  return dot === -1 ? runtimeParameter : runtimeParameter.slice(0, dot);
-}
-
 /** Place extracted fields in a request region: attach `source`, the runtime coordinate, and the id. */
 export function withCoordinates(fields: FieldShape[], source: InputSource): InputField[] {
   return fields.map((f) => {
