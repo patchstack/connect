@@ -56,7 +56,7 @@ describe('the claim token in configuration', () => {
     expect((await resolveConfig({ cwd, cliClaimToken: '' })).claimToken).toBeNull();
   });
 
-  it('is never written to the project, whichever file the connector persists', async () => {
+  it('is never written to the project, whichever file Connect persists', async () => {
     process.env.PATCHSTACK_CLAIM_TOKEN = 'from-env';
     await resolveConfig({ cwd, cliClaimToken: 'from-flag' });
 

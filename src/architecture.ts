@@ -208,7 +208,7 @@ export function classifyArchitecture(cwd: string): ArchitectureVerdict {
       note:
         `This project builds a static site (${statics.join(', ')}) and nothing in it receives a request, ` +
         'so there is no request path for a runtime guard to attach to. Dependency monitoring and the ' +
-        'disclosure widget still apply; runtime protection does not.',
+        'Patchstack Connector still apply; runtime protection does not.',
     };
   }
 

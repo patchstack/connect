@@ -125,7 +125,7 @@ export function buildRulesUrl(manifestEndpoint: string, siteUuid: string): strin
  * the API endpoint, at `/monitor/claim?site=<uuid>`. Using the API endpoint's
  * origin (rather than a hard-coded https://api.patchstack.com) means staging,
  * ngrok tunnels and local dev environments all produce a claim URL on the same
- * host the connector is already talking to.
+ * host Connect is already talking to.
  */
 export function buildClaimUrl(endpoint: string, siteUuid: string): string {
   const origin = new URL(endpoint).origin;
@@ -476,7 +476,7 @@ export interface ManifestPostResult {
 /**
  * Post the manifest, falling back from `local` to `sandbox` for a server that does not know `local`.
  *
- * Keeps the connector publishable ahead of the server change: the honest label is tried first, and the
+ * Keeps Connect publishable ahead of the server change: the honest label is tried first, and the
  * older server's nearest label is used only when it refuses, never silently on a server that accepts.
  */
 export async function postManifestWithEnvironmentFallback(

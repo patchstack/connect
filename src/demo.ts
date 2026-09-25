@@ -185,7 +185,7 @@ export function renderDemoGuide(state: DemoGuideState): string {
     `Patchstack demo guide — ${scenario.name}`,
     '',
     'Goal: prove that a live Patchstack virtual patch blocks the vulnerable payload while normal traffic still succeeds.',
-    'Deployment required: no. Keep the app running locally; the connector and generated guard contact Patchstack’s production API.',
+    'Deployment required: no. Keep the app running locally; Connect and the generated guard contact Patchstack’s production API.',
     '',
     `1. ${siteReady ? '✓' : '○'} Connect this project from Bolt’s Host account dropdown`,
     siteReady

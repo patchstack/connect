@@ -458,7 +458,7 @@ export function renderGuideChecklist(state: GuideState, useColor: boolean): stri
   if (!state.hasPackageJson) {
     lines.push(todo('No package.json found in this directory.'));
     lines.push(detail('For a JS/Node app, run the guide from its package directory; check that package.json is readable and valid.'));
-    lines.push(detail('For a standalone HTML/CSS/browser-JavaScript site, use the disclosure widget directly.'));
+    lines.push(detail('For a standalone HTML/CSS/browser-JavaScript site, use the Patchstack Connector directly.'));
     lines.push(detail('Do not create a Node project, build hooks, or a server just to install the widget.'));
     lines.push(detail('Use the correct site UUID or widget snippet from the Patchstack dashboard; never invent one.'));
     lines.push(detail('See "Plain HTML sites" in AGENT-INSTALL.md. Widget-only setup provides no dependency scan or runtime protection.'));
@@ -546,21 +546,21 @@ export function renderGuideChecklist(state: GuideState, useColor: boolean): stri
     }
   }
 
-  // 5. Disclosure widget
+  // 5. Patchstack Connector
   const widgetOk = state.widgetInstalled && state.widgetTokenMatches !== false;
   if (state.widgetOptOut && !widgetOk) {
-    lines.push(done('Disclosure widget disabled by config ("widget": false in .patchstackrc.json)'));
+    lines.push(done('Patchstack Connector disabled by config ("widget": false in .patchstackrc.json)'));
   } else if (widgetOk) {
-    lines.push(done('Disclosure widget installed'));
+    lines.push(done('Patchstack Connector installed'));
   } else if (state.widgetInstalled) {
-    lines.push(todo("Fix the disclosure widget yourself — its site UUID doesn't match this project's"));
+    lines.push(todo("Fix the Patchstack Connector yourself — its site UUID doesn't match this project's"));
     lines.push(detail(`Edit the widget tag → set data-site-uuid (or userToken) to '${state.siteUuid}' (a wrong UUID makes the widget silently no-op)`));
   } else if (state.siteUuid === null) {
-    lines.push(todo('Add the "Report a vulnerability" widget — the first scan does this for you'));
+    lines.push(todo('Add the Patchstack Connector — the first scan does this for you'));
     lines.push(detail('Run → npx @patchstack/connect scan  (provisions the site and adds the widget tag'));
     lines.push(detail('  to the root HTML shell: index.html / public/index.html / src/app.html)'));
   } else {
-    lines.push(todo('Add the "Report a vulnerability" widget yourself — this root is code, not a plain HTML shell'));
+    lines.push(todo('Add the Patchstack Connector yourself — this root is code, not a plain HTML shell'));
     lines.push(detail('Note → a normal `scan` adds this tag to a plain HTML shell automatically; add it by hand here:'));
     const placement =
       state.widgetFileHint !== null

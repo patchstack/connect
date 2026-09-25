@@ -65,7 +65,7 @@ export function isSiteUuid(value: unknown): value is string {
 /**
  * Bake the site UUID written by `scan` into a managed runtime-guard template.
  *
- * The UUID is public project configuration (the disclosure widget exposes the
+ * The UUID is public project configuration (the Patchstack Connector exposes the
  * same value). Keeping the environment-variable fallback in the template lets
  * unscanned projects remain inert and lets deployments override it explicitly.
  */

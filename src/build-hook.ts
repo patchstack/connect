@@ -18,7 +18,7 @@ const INSTALL_AND_BUILD_EVENTS: ReadonlySet<string> = new Set([
 /**
  * Whether this process is a lifecycle hook on an install or build.
  *
- * In that position the report is the connector's concern and the build is not: a manifest Patchstack
+ * In that position the report is Connect's concern and the build is not: a manifest Patchstack
  * cannot accept is said in full, and the build goes on. Run directly, the same failure exits non-zero.
  *
  * npm, pnpm, Yarn and `bun run` name the running script in `npm_lifecycle_event`; a direct invocation

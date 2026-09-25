@@ -335,7 +335,7 @@ describe('guide', () => {
       expect(countRemainingSteps(state)).toBe(0);
 
       const output = renderGuideChecklist(state, false);
-      expect(output).toContain('Disclosure widget disabled by config');
+      expect(output).toContain('Patchstack Connector disabled by config');
       expect(output).not.toContain('✖');
     });
 
