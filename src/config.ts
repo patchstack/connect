@@ -437,7 +437,7 @@ export async function persistTimeout(cwd: string, timeoutMs: number): Promise<st
 
 /**
  * Persist the WP-format api_key issued at provision. Authenticates both the Pulse endpoints and connector
- * log reporting. Never embed it in the public disclosure widget.
+ * log reporting. Never embed it in the public Patchstack Connector.
  *
  * Written to the credential file, which setup adds to the project's ignore list — the public config is
  * meant to be committed, so a credential in it is a credential in the repository.

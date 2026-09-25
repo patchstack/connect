@@ -104,7 +104,7 @@ export interface Config {
    */
   environmentSource?: EnvironmentSource | null;
   /**
-   * Whether the connector manages the disclosure-widget tag (source shell on
+   * Whether Connect manages the Patchstack Connector tag (source shell on
    * `scan`, built HTML on `mark-build`). Defaults to true; persist
    * `"widget": false` in .patchstackrc.json for dependency-scanning only.
    */

@@ -4,7 +4,7 @@ Connect a JavaScript / Node.js application to [Patchstack](https://patchstack.co
 
 - **Dependency inventory** — reads your lockfile and reports the installed package names and versions, so Patchstack can match them against its vulnerability database and tell you when something needs patching. See *[What gets sent](#what-gets-sent)*.
 - **Runtime guard** — an in-process guard, wired into your server, that virtually patches known vulnerabilities in those dependencies rather than waiting for you to upgrade. See *[Verifying the guard at runtime](#verifying-the-guard-at-runtime-opt-in)*.
-- **Disclosure widget** — a floating button labelled **"Report a vulnerability"** that Connect adds to *your* site, so visitors who spot a security problem have somewhere to send it. This is a channel for reports about your site; it is not how you report a bug in this package. See *[The disclosure widget](#the-disclosure-widget)*.
+- **Patchstack Connector** — a floating control that Connect adds to *your* site. Until the site is claimed it shows a "Connect this website" panel; once claimed it becomes a **"Report a vulnerability"** button, so visitors who spot a security problem have somewhere to send it. This is a channel for reports about your site; it is not how you report a bug in this package. See *[The Patchstack Connector](#the-patchstack-connector)*.
 - **Attack-surface map** — a description of your server's entry points and the sinks they can reach, built by reading your source locally. See *[`map`](#cli)*.
 
 `setup` installs the first three in one command. `map` is never run for you — see the [CLI](#cli) section for what each command does and what it touches.
@@ -13,9 +13,9 @@ Connect a JavaScript / Node.js application to [Patchstack](https://patchstack.co
 
 For an existing JS/Node project, copy this request into a coding assistant, or run the same command yourself. For a standalone HTML/CSS/JavaScript site without a package-managed app, use the [plain HTML widget instructions](AGENT-INSTALL.md#plain-html-sites); do not add Node tooling just for the widget.
 
-> I have vetted the official [`@patchstack/connect`](https://www.npmjs.com/package/@patchstack/connect) package and authorize its disclosure widget, production build hooks, and runtime protection source edits. Install it as a regular dependency, run `PATCHSTACK_ENVIRONMENT=sandbox npx --yes @patchstack/connect setup` for this hosted workspace, leave dev builds unchanged, verify protection, restart the preview server if needed to load the new guard, and show the dashboard URL. Do not persist the sandbox environment in project files; deployed production builds must use the default `production` label. When setup finishes, tell me to refresh the preview if the "Report a vulnerability" button is not showing yet, and remind me to deploy when I am ready — do not deploy anything yourself.
+> I have vetted the official [`@patchstack/connect`](https://www.npmjs.com/package/@patchstack/connect) package and authorize its Patchstack Connector, production build hooks, and runtime protection source edits. Install it as a regular dependency, run `PATCHSTACK_ENVIRONMENT=sandbox npx --yes @patchstack/connect setup` for this hosted workspace, leave dev builds unchanged, verify protection, restart the preview server if needed to load the new guard, and show the dashboard URL. Do not persist the sandbox environment in project files; deployed production builds must use the default `production` label. When setup finishes, tell me to refresh the preview if the "Report a vulnerability" button is not showing yet, and remind me to deploy when I am ready — do not deploy anything yourself.
 
-`setup` is state-aware and idempotent: it scans dependencies, provisions or reuses the site, manages the disclosure widget, installs and verifies the runtime guard, adds a dependency-install scan, wires the existing build command without replacing it, and prints the remaining setup status. It never runs the project build. `guide` provides the same project-specific status without changing files.
+`setup` is state-aware and idempotent: it scans dependencies, provisions or reuses the site, manages the Patchstack Connector, installs and verifies the runtime guard, adds a dependency-install scan, wires the existing build command without replacing it, and prints the remaining setup status. It never runs the project build. `guide` provides the same project-specific status without changing files.
 
 ### If your coding tool blocks the command
 
@@ -85,7 +85,7 @@ you how to proceed. Any of these works:
 npm install --save @patchstack/connect && npx @patchstack/connect setup
 ```
 
-> **Use your project's own package manager.** On Bun-managed projects (including many Lovable projects) install with `bun add @patchstack/connect` instead — running `npm install` there plants a `package-lock.json` that the platform's native dependency flow never updates again, leaving a stale lockfile next to the live one. The connector detects and works around that (see *Stale lockfiles* below), but not creating the fossil is better. Protection imports `@patchstack/connect/protect` at runtime, so deployments that prune dev dependencies need the package in `dependencies`.
+> **Use your project's own package manager.** On Bun-managed projects (including many Lovable projects) install with `bun add @patchstack/connect` instead — running `npm install` there plants a `package-lock.json` that the platform's native dependency flow never updates again, leaving a stale lockfile next to the live one. Connect detects and works around that (see *Stale lockfiles* below), but not creating the fossil is better. Protection imports `@patchstack/connect/protect` at runtime, so deployments that prune dev dependencies need the package in `dependencies`.
 
 > **Hosted builders:** set `PATCHSTACK_ENVIRONMENT=sandbox` in the workspace process environment (or scope it to the setup command above), persist every file written by `setup`, and restart any already-running server so it loads the new middleware. Do not write `"environment": "sandbox"` to the committed `.patchstackrc.json`: the same project files reach production, where scans should inherit no override and default to `production`. TanStack Start + Supabase (the server shape emitted by Lovable) is auto-wired: browser Supabase traffic is tunneled through a same-origin guard, server-function arguments are inspected, and responses are screened. A client-only SPA has no server request path to protect; setup will leave a generic scaffold and `protect --check` will remain red until the host adds a server/edge seam. Set `PATCHSTACK_ROUTE_WAF=1` when the deployment should additionally screen every TanStack route request.
 
@@ -94,8 +94,8 @@ That's it. `setup`:
 1. Reads your lockfile (see *Supported lockfiles*).
 2. POSTs the package list to Patchstack with **no** UUID.
 3. Patchstack provisions a fresh site and returns its UUID.
-4. The connector writes the UUID to `.patchstackrc.json` so the next `scan` targets the same site.
-5. The connector installs the disclosure widget's `<script>` tag into your root HTML shell (see *The disclosure widget* below) so the widget shows up on the next preview reload — as the "Connect this website" panel until the site is claimed, then as the "Report a vulnerability" button. On a server-rendered root it also adds the production marker, which is what tells the widget to switch from build mode to visitor report intake on the published site.
+4. Connect writes the UUID to `.patchstackrc.json` so the next `scan` targets the same site.
+5. Connect installs the Patchstack Connector's `<script>` tag into your root HTML shell (see *The Patchstack Connector* below) so the widget shows up on the next preview reload — as the "Connect this website" panel until the site is claimed, then as the "Report a vulnerability" button. On a server-rendered root it also adds the production marker, which is what tells the widget to switch from build mode to visitor report intake on the published site.
 6. Installs the runtime guard after provisioning, bakes the site UUID into it, and verifies the framework seam. Known server stacks are auto-wired; unmatched or conflicting layouts get a generic scaffold and exact manual checks.
 7. Adds `postinstall: patchstack-connect scan`, preserving any existing command, so dependencies added during a sandbox session and build-less production installs are reported immediately.
 8. Wires `scan` before builds and `mark-build` after builds, preserving existing commands and using direct build chaining for Bun.
@@ -120,9 +120,9 @@ npx @patchstack/connect setup
 ```
 patchstack-connect scan   [options]                Scan the lockfile and POST to Patchstack.
                                                    If no UUID is configured the server provisions
-                                                   one and the connector persists it. After a
-                                                   successful post, adds/updates the disclosure
-                                                   widget tag in the root HTML shell. Also adds the
+                                                   one and Connect persists it. After a
+                                                   successful post, adds/updates the Patchstack
+                                                   Connector tag in the root HTML shell. Also adds the
                                                    production marker to a JSX root shell, before the
                                                    post (opt out of both with "widget": false in
                                                    .patchstackrc.json)
@@ -300,11 +300,11 @@ Two files, because one value is public and the other is not.
 }
 ```
 
-`"widget"` is optional and defaults to `true`; set it to `false` to stop the connector from managing the disclosure-widget tag (see *The disclosure widget*).
+`"widget"` is optional and defaults to `true`; set it to `false` to stop Connect from managing the Patchstack Connector tag (see *The Patchstack Connector*).
 
-**You do not write `apiKey` yourself.** The first `scan` provisions the site and the connector saves it, so setup needs no manual step.
+**You do not write `apiKey` yourself.** The first `scan` provisions the site and Connect saves it, so setup needs no manual step.
 
-The site UUID identifies the site and is **not** a secret — the disclosure widget ships the same UUID in client-side HTML.
+The site UUID identifies the site and is **not** a secret — the Patchstack Connector ships the same UUID in client-side HTML.
 
 `apiKey` **is** a secret. One credential authenticates both paths: Pulse ingest (manifest, attack-surface map, package removal), where it is exchanged for a short-lived token rather than sent directly, and block-log reporting. Keep it out of the widget tag, client bundles and public env vars (`NEXT_PUBLIC_*`), and out of the committed config — `.patchstackrc.local.json` is git-ignored for that reason. For deploys, prefer `PATCHSTACK_API_KEY` in the platform's secret store.
 
@@ -366,9 +366,9 @@ The guide inspects the Host-created site configuration and lockfile, explains th
 
 Use `--url http://localhost:PORT/api/tasks` when the app does not use the default `http://localhost:3000/api/tasks`. Remove the deliberately vulnerable dependency after the walkthrough.
 
-## The disclosure widget
+## The Patchstack Connector
 
-The widget is a floating "Report a vulnerability" button — a disclosure channel for anyone who spots a bug on the site. The connector manages its install so the UUID never has to be copied by hand:
+The Patchstack Connector is a floating control whose form follows the site's claim state: a "Connect this website" panel while the site is unclaimed, then a "Report a vulnerability" button — a disclosure channel for anyone who spots a bug on the site. Connect manages its install so the UUID never has to be copied by hand:
 
 - **`scan`** (after a successful post) adds this managed tag to the first root HTML shell it finds — `index.html`, `public/index.html`, or `src/app.html` — immediately before `</body>`:
 
@@ -379,9 +379,9 @@ The widget is a floating "Report a vulnerability" button — a disclosure channe
 - **`scan`** installs the widget tag into a plain HTML shell, and — where there is none — into a JSX root (`src/routes/__root.tsx`, `app/layout.tsx`, …), just before `</body>`. The same tag serves both: JSX reads `defer` as a boolean attribute and passes `data-*` through. A server-rendered app has no HTML shell at all, so without this its published site carries no widget and Patchstack never hears from the live page.
 - **`scan`** also adds the production marker when the root shell is JSX rather than HTML (`src/routes/__root.tsx`, `app/layout.tsx`, …), above the widget tag and guarded by the framework's production expression. A server-rendered app emits no built HTML for `mark-build` to stamp, so without it the widget reads the published site as build mode and shows the claim flow to visitors instead of the report form.
 
-  Re-runs update the tag in place (the `data-patchstack-connect-widget` attribute marks it as connector-managed); a pre-existing manual widget tag is left untouched. `--dry-run` never edits anything; a failed post still skips the widget tag (it needs the site UUID) but the production marker may already have been written, since it runs before the post. Projects whose root layout is code rather than HTML (Next.js, Nuxt, Astro, …) get the exact snippet and target file printed instead — `guide` shows framework-specific placement.
+  Re-runs update the tag in place (the `data-patchstack-connect-widget` attribute marks it as managed by Connect); a pre-existing manual widget tag is left untouched. `--dry-run` never edits anything; a failed post still skips the widget tag (it needs the site UUID) but the production marker may already have been written, since it runs before the post. Projects whose root layout is code rather than HTML (Next.js, Nuxt, Astro, …) get the exact snippet and target file printed instead — `guide` shows framework-specific placement.
 
-- **`mark-build`** ensures the same tag in built HTML output, covering builds whose source shell the connector couldn't edit, and stamps `window.__PATCHSTACK_PROD__` so the widget hides the claim/login UI on the published site (owners reach it by appending `#patchstack` to the live URL). It then reports what it did — `stamped`, `withheld`, `no-pages` for a server-rendered build, or `no-output` — alongside the same manifest `scan` sent before the bundler ran, so the dashboard can say why a published app is or is not reporting its build. That report is the second half of one build, not a second build: Patchstack keeps one copy of the manifest and reads the two together. It is sent only for a site that is already registered, and never carries the site's address or name, which `mark-build` does not resolve. The marker says the page is the live site, so **only a production build carries it**: the environment is read the same way `scan` reads it (the build platform's own tier or branch name, then the hosted builder the project belongs to), and a local or preview build gets the widget tag, no marker, and any marker an earlier build left behind removed. Publishing a static build by hand from your machine is the case that needs `--production` (or `PATCHSTACK_ENVIRONMENT=production`), because nothing in that environment can say the build is a deployment.
+- **`mark-build`** ensures the same tag in built HTML output, covering builds whose source shell Connect couldn't edit, and stamps `window.__PATCHSTACK_PROD__` so the widget hides the claim/login UI on the published site (owners reach it by appending `#patchstack` to the live URL). It then reports what it did — `stamped`, `withheld`, `no-pages` for a server-rendered build, or `no-output` — alongside the same manifest `scan` sent before the bundler ran, so the dashboard can say why a published app is or is not reporting its build. That report is the second half of one build, not a second build: Patchstack keeps one copy of the manifest and reads the two together. It is sent only for a site that is already registered, and never carries the site's address or name, which `mark-build` does not resolve. The marker says the page is the live site, so **only a production build carries it**: the environment is read the same way `scan` reads it (the build platform's own tier or branch name, then the hosted builder the project belongs to), and a local or preview build gets the widget tag, no marker, and any marker an earlier build left behind removed. Publishing a static build by hand from your machine is the case that needs `--production` (or `PATCHSTACK_ENVIRONMENT=production`), because nothing in that environment can say the build is a deployment.
 
 - **Opting out:** persist `"widget": false` in `.patchstackrc.json` to disable both the widget tag and the production marker (dependency scanning only). Without it, the next successful scan re-adds the managed tag, and the next scan re-adds the marker on a JSX root.
 
@@ -444,11 +444,11 @@ These are repo-relative locations built from `node_modules` segments, plus a wor
 - ✅ `bun.lockb` (binary) — package list resolved by walking `node_modules/`
 - ✅ `bun.lock` (text) — same fallback; direct parsing coming
 
-If both a Bun lockfile and `node_modules/` are present, the connector walks `node_modules/` to enumerate the installed packages. Run `bun install` (or `npm install`) before scanning so the directory is populated.
+If both a Bun lockfile and `node_modules/` are present, Connect walks `node_modules/` to enumerate the installed packages. Run `bun install` (or `npm install`) before scanning so the directory is populated.
 
 ### Stale lockfiles
 
-Every scanned source is validated against `package.json`: if the chosen lockfile is missing dependencies that `package.json` declares, it is treated as a fossil (e.g. a `package-lock.json` created by a one-off `npm install` in a bun-managed project) and the connector falls through to the next source — ultimately walking `node_modules/`, the installed truth — and prints a warning naming the stale file. Delete the stale lockfile to silence the warning. Without this, the manifest and the build fingerprint would silently freeze while the real dependency set drifts.
+Every scanned source is validated against `package.json`: if the chosen lockfile is missing dependencies that `package.json` declares, it is treated as a fossil (e.g. a `package-lock.json` created by a one-off `npm install` in a bun-managed project) and Connect falls through to the next source — ultimately walking `node_modules/`, the installed truth — and prints a warning naming the stale file. Delete the stale lockfile to silence the warning. Without this, the manifest and the build fingerprint would silently freeze while the real dependency set drifts.
 
 ## Development
 

@@ -18,7 +18,7 @@ import type { WirePackage } from './normalize.js';
  *    and PHP `json_encode` produce identical bytes (no unicode escaping, and
  *    neither escapes `/`, so scoped names like `@babel/core` match).
  *
- * Injected into built HTML by `mark-build` and reported by the disclosure widget
+ * Injected into built HTML by `mark-build` and reported by the Patchstack Connector
  * so Patchstack can compare the live build against the last reported manifest.
  */
 export function computeManifestChecksum(packages: WirePackage[]): string {

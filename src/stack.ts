@@ -4,7 +4,7 @@ import type { WirePackage } from './normalize.js';
  * A best-effort description of the stack a build was produced with, derived
  * entirely from the lockfile (ground truth) plus the build-time environment.
  *
- * The disclosure widget reads this from `window.__PATCHSTACK_STACK__` (injected
+ * The Patchstack Connector reads this from `window.__PATCHSTACK_STACK__` (injected
  * by `mark-build`) and reports it to Patchstack, so we learn how the sites we
  * protect are actually built and hosted — across every "vibe" platform — without
  * shipping a runtime probe onto the host server. Every field is a coarse label
@@ -39,7 +39,7 @@ interface StackRule {
 /**
  * Package → stack-label registry. First match per category wins, so order
  * within a category is priority order (most specific first). Add a row to teach
- * the connector a new framework, bundler, or vibe platform.
+ * Connect a new framework, bundler, or vibe platform.
  */
 const STACK_RULES: readonly StackRule[] = [
   // Meta-frameworks (most specific first).

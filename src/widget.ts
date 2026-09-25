@@ -1,6 +1,6 @@
-// Managed disclosure-widget tag — the connector installs the widget for you.
+// Managed Patchstack Connector tag — Connect installs it for you.
 //
-// After a successful scan the connector ensures the site's root HTML shell
+// After a successful scan Connect ensures the site's root HTML shell
 // carries the widget's one-liner CDN tag (the canonical install form from the
 // widget docs: a single <script> with `data-site-uuid`, auto-initialising on
 // DOMContentLoaded). The tag carries an ownership attribute so re-runs update
@@ -14,14 +14,14 @@ import { writeProjectFileSync } from './safe-file.js';
 
 export const WIDGET_SCRIPT_URL = 'https://cdn.patchstack.com/patchstack-widget.js';
 
-/** Attribute that tags the connector-managed widget tag so re-runs update it. */
+/** Attribute that tags the Connect-managed widget tag so re-runs update it. */
 export const WIDGET_MARKER_ATTR = 'data-patchstack-connect-widget';
 
 /** Substring that marks any widget install (managed or manual) in HTML. */
 const WIDGET_NEEDLE = 'patchstack-widget';
 
 /**
- * Root HTML shells the connector is willing to edit, in priority order:
+ * Root HTML shells Connect is willing to edit, in priority order:
  * Vite/plain SPA, CRA-style, SvelteKit. A framework whose root is code rather
  * than HTML has no entry here; a JSX one is handled by `ensureSourceWidget`'s
  * fallback below, and the rest get the snippet printed by `guide`.

@@ -93,7 +93,7 @@ Usage:
                                                      If no UUID is configured, the server
                                                      provisions one and we persist it. After a
                                                      successful post it also adds/updates the
-                                                     disclosure-widget <script> tag in the root
+                                                     Patchstack Connector <script> tag in the root
                                                      HTML shell (index.html, public/index.html,
                                                      or src/app.html) — opt out with
                                                      "widget": false in .patchstackrc.json.
@@ -802,7 +802,7 @@ async function runScan(
   const connected = response.claim?.state === 'claimed' || response.claim?.state === 'owned-by-you';
 
   // With a UUID in hand (existing or freshly provisioned), ensure the
-  // disclosure widget's managed tag in the source HTML shell so the very next
+  // Patchstack Connector's managed tag in the source HTML shell so the very next
   // preview reload shows the "Report a vulnerability" button. Best-effort and
   // opt-out-able; a failed post never reaches this point, and --dry-run
   // returned above.
@@ -877,7 +877,7 @@ function reportSourceWidget(siteUuid: string, framework: string | null): void {
     const result = ensureSourceWidget(process.cwd(), siteUuid, jsxShell);
     switch (result.action) {
       case 'added':
-        console.log(`Widget: added the disclosure widget tag to ${result.shell}. Reload your preview to see it.`);
+        console.log(`Widget: added the Patchstack Connector tag to ${result.shell}. Reload your preview to see it.`);
         console.log('  Unclaimed, it shows a "Connect this website" panel; the "Report a vulnerability" button replaces it once the site is claimed.');
         break;
       case 'updated':
