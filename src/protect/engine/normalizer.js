@@ -398,35 +398,63 @@ export function normalizeRequest(req, options = {}) {
     };
 }
 
-// Depth bound for the recursive walk: a pathologically deep object would otherwise overflow the
-// stack, and the engine's per-rule catch would swallow that into a fail-open. Beyond the bound the
-// sub-value is left un-normalized (still matched, just in its raw form) rather than crashing.
-const MAX_NORMALIZE_DEPTH = 200;
+// The same depth bound as the engine's leaf walk, so every value that walk reaches is normalized. Past
+// it a sub-value is kept as it is (still matched, in its raw form) and `options.onLimit` is called.
+const MAX_NORMALIZE_DEPTH = 1000;
 
+/**
+ * A copy of `value` with every string inside it normalized.
+ *
+ * Iterative, so depth cannot overflow the stack; the work is linear in the size of the value. A shared
+ * or cyclic node is copied once, and array holes stay holes.
+ */
 export function normalizeObject(value, options = {}, depth = 0) {
     if (typeof value === 'string') {
         return normalize(value, options);
     }
 
-    if (depth >= MAX_NORMALIZE_DEPTH) {
+    if (value === null || typeof value !== 'object') {
         return value;
     }
 
-    if (Array.isArray(value)) {
-        return value.map(item => normalizeObject(item, options, depth + 1));
+    if (depth >= MAX_NORMALIZE_DEPTH) {
+        options.onLimit?.();
+        return value;
     }
 
-    if (typeof value === 'object' && value !== null) {
-        const result = {};
+    const copies = new Map();
+    const copyOf = (node) => {
+        const copy = Array.isArray(node) ? new Array(node.length) : {};
+        copies.set(node, copy);
+        return copy;
+    };
+    const top = copyOf(value);
+    const stack = [[value, top, depth]];
 
-        for (const [key, val] of Object.entries(value)) {
-            setOwn(result, key, normalizeObject(val, options, depth + 1));
+    while (stack.length > 0) {
+        const [node, copy, level] = stack.pop();
+
+        for (const key of Object.keys(node)) {
+            const child = node[key];
+
+            if (typeof child === 'string') {
+                setOwn(copy, key, normalize(child, options));
+            } else if (child === null || typeof child !== 'object') {
+                setOwn(copy, key, child);
+            } else if (copies.has(child)) {
+                setOwn(copy, key, copies.get(child));
+            } else if (level + 1 >= MAX_NORMALIZE_DEPTH) {
+                setOwn(copy, key, child);
+                options.onLimit?.();
+            } else {
+                const childCopy = copyOf(child);
+                setOwn(copy, key, childCopy);
+                stack.push([child, childCopy, level + 1]);
+            }
         }
-
-        return result;
     }
 
-    return value;
+    return top;
 }
 
 export function createMatchVariants(value) {

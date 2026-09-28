@@ -44,6 +44,8 @@ export interface EvaluateResult {
   blocked: boolean;
   rule: FirewallRule | null;
   message: string | null;
+  /** Inspection limits this evaluation reached (e.g. `container-cap`), when it reached any. */
+  skips?: string[];
 }
 
 export declare class RuleEngine {
@@ -56,6 +58,8 @@ export declare class RequestResolver {
   constructor(req: any);
   resolve(parameter: string): any[];
   applyMutations(mutations: string[], value: any): any;
+  noteSkip(reason: string): void;
+  readonly skips: string[];
 }
 
 // Middleware
@@ -111,6 +115,8 @@ export interface NormalizeOptions {
   sqlComments?: boolean;
   nullBytes?: boolean;
   whitespace?: boolean;
+  /** Called when a nested value is past the depth bound and is kept un-normalized. */
+  onLimit?: () => void;
 }
 
 export declare function normalize(value: string, options?: NormalizeOptions): string;

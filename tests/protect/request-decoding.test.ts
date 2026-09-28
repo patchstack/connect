@@ -1,7 +1,9 @@
 import { describe, expect, it } from 'vitest';
 import { RuleEngine } from '../../src/protect/engine/engine.js';
 import { RequestResolver } from '../../src/protect/engine/request.js';
-import { decodeHtmlEntities, safeUrlDecode, urlDecode } from '../../src/protect/engine/normalizer.js';
+import {
+  decodeHtmlEntities, normalizeObject, normalizeRequest, safeUrlDecode, urlDecode,
+} from '../../src/protect/engine/normalizer.js';
 import { createProtection } from '../../src/protect/runtime.js';
 
 // Every value below is synthetic. Each case pairs a request the rule must match with one it must not, so a
@@ -54,6 +56,19 @@ describe('+ in form and query data', () => {
       expect(blocks(condition, request({ url: '/search?q=sample+value', originalUrl: '/search?q=sample+value' }))).toBe(true);
       expect(blocks(condition, request({ url: '/search?q=sample-value', originalUrl: '/search?q=sample-value' }))).toBe(false);
     }
+  });
+
+  it('reads + as a space in a request target given only as url', () => {
+    const normalized = normalizeRequest({ url: '/search?q=sample+value&r=a%2Bb' });
+    expect(normalized.url).toBe('/search?q=sample value&r=a+b');
+    expect(normalized.originalUrl).toBe('/search?q=sample value&r=a+b');
+    expect(normalizeRequest({ url: '/a+b?q=sample-value' }).url).toBe('/a+b?q=sample-value');
+  });
+
+  it('reads + as a space in url and originalUrl independently', () => {
+    const normalized = normalizeRequest({ url: '/inner?q=first+value', originalUrl: '/outer?q=second+value' });
+    expect(normalized.url).toBe('/inner?q=first value');
+    expect(normalized.originalUrl).toBe('/outer?q=second value');
   });
 
   it('keeps an encoded + and a + in the path literal', () => {
@@ -165,5 +180,100 @@ describe('text mutations on structured values', () => {
     const decoded = resolver.applyMutations(['urldecode'], value);
     expect(Object.getPrototypeOf(decoded)).toBe(Object.prototype);
     expect(Object.getOwnPropertyDescriptor(decoded, '__proto__')?.value).toEqual({ text: '<sample>' });
+  });
+});
+
+describe('normalization depth', () => {
+  // `levels` nested objects, the innermost holding `text`: the top object is level 0, the innermost is
+  // level `levels - 1`.
+  const nest = (levels: number, text: string) => {
+    let value: Record<string, unknown> = { text };
+    for (let i = 1; i < levels; i++) value = { next: value };
+    return value;
+  };
+  const innermost = (value: any): any => (value.next ? innermost(value.next) : value);
+
+  it('normalizes a value at the deepest level inside the bound, without reporting a limit', () => {
+    let limits = 0;
+    const out = normalizeObject(nest(1000, '%3Csample%3E'), { onLimit: () => { limits++; } });
+    expect(innermost(out).text).toBe('<sample>');
+    expect(limits).toBe(0);
+  });
+
+  it('keeps a value one level past the bound as it is, and reports the limit', () => {
+    let limits = 0;
+    const out = normalizeObject(nest(1001, '%3Csample%3E'), { onLimit: () => { limits++; } });
+    expect(innermost(out).text).toBe('%3Csample%3E');
+    expect(limits).toBe(1);
+  });
+
+  it('reports a limit reached at the top of the walk', () => {
+    let limits = 0;
+    const value = { text: '%41' };
+    expect(normalizeObject(value, { onLimit: () => { limits++; } }, 1000)).toBe(value);
+    expect(limits).toBe(1);
+  });
+
+  it('normalizes nested values well past a few hundred levels', () => {
+    const condition = { parameter: 'post.data', match: { type: 'contains', value: '<sample>' } };
+    const deep = (text: string) => request({ method: 'POST', body: { data: nest(500, text) } });
+    expect(blocks(condition, deep('%3Csample%3E'))).toBe(true);
+    expect(blocks(condition, deep('%3Cother%3E'))).toBe(false);
+  });
+
+  it('normalizes a cyclic value once per node', () => {
+    const value: Record<string, unknown> = { text: '%41' };
+    value.self = value;
+    const out = normalizeObject(value) as Record<string, unknown>;
+    expect(out.text).toBe('A');
+    expect(out.self).toBe(out);
+  });
+
+  it('keeps array holes and non-string leaves', () => {
+    const value = [1, , '%41', null, true];
+    const out = normalizeObject(value) as unknown[];
+    expect(out).toHaveLength(5);
+    expect(1 in out).toBe(false);
+    expect(out).toEqual([1, undefined, 'A', null, true]);
+    expect(normalizeObject(['%41', , ]) as unknown[]).toHaveLength(2);
+  });
+
+  async function screened(body: unknown, onSkip: (event: any) => void, parameter = 'post.data') {
+    const protection: any = await createProtection({
+      mode: 'dry-run',
+      rules: { firewall: [{ id: 1, title: 'sample', rule_v2: [{ parameter, match: { type: 'isset' } }] }], whitelists: [], whitelist_keys: {} },
+      onSkip,
+    });
+    const guard = protection.fetchGuard();
+    const send = () => guard(new Request('https://app.example.test/', {
+      method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body),
+    }));
+    return { protection, send };
+  }
+
+  it('reports a request past the bound as a container-cap skip, once per request', async () => {
+    const skips: any[] = [];
+    const { protection, send } = await screened({ data: nest(1001, 'sample'), more: nest(1001, 'sample') }, (event) => skips.push(event));
+    await send();
+    expect(protection.coverage().skipped['request:container-cap']).toBe(1);
+    await send();
+    expect(protection.coverage().skipped['request:container-cap']).toBe(2);
+    expect(skips.map((event) => [event.phase, event.reason])).toEqual([['request', 'container-cap'], ['request', 'container-cap']]);
+  });
+
+  it('reports the skip when no rule matches the request', async () => {
+    const skips: any[] = [];
+    const { protection, send } = await screened({ data: nest(1001, 'sample') }, (event) => skips.push(event), 'post.absent');
+    await send();
+    expect(protection.coverage().skipped['request:container-cap']).toBe(1);
+    expect(skips).toHaveLength(1);
+  });
+
+  it('reports nothing for a request inside the bound', async () => {
+    const skips: any[] = [];
+    const { protection, send } = await screened({ data: nest(999, 'sample') }, (event) => skips.push(event));
+    await send();
+    expect(protection.coverage().skipped['request:container-cap']).toBeUndefined();
+    expect(skips).toEqual([]);
   });
 });

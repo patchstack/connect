@@ -70,10 +70,21 @@ function mapStringLeaves(root, fn) {
 export class RequestResolver {
   #req;
   #cookies;
+  #skips = new Set();
 
   constructor(req) {
     this.#req = req;
     this.#cookies = null;
+  }
+
+  /** Record an inspection limit this evaluation reached (reported once per reason). */
+  noteSkip(reason) {
+    this.#skips.add(reason);
+  }
+
+  /** The inspection limits recorded so far, in the order first reached. */
+  get skips() {
+    return [...this.#skips];
   }
 
   resolve(parameter) {
