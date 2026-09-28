@@ -36,7 +36,7 @@ import { resolveRules } from './rules/source.js';
 import { startRefresh, startRecovery, makeRefreshHandler, serialise } from './rules/refresh.js';
 import { createDetectionReporter } from './detections.js';
 import { reportingState } from './reporting-state.js';
-import { hardensWithoutBody } from './response-hardening.js';
+import { hardensWithoutBody, readsOnlyResponseHeaders } from './response-hardening.js';
 import { notify } from './notify.js';
 import { SOURCE_REQUEST } from './supabase-guard.js';
 import { createFirewallLogReporter, resolveApiBase, telemetryEnabled } from './firewall-log.js';
@@ -397,22 +397,36 @@ export async function createProtection(options = {}) {
     });
     // One engine per response rule so we can find ALL matches (to redact each). `action:
     // "redact"` masks the offending span(s); anything else withholds the whole response.
-    responseRuleSet = responseRules.map((rule) => ({
-      rule,
-      engine: new RuleEngine({ firewall: [rule], onError }),
-      redactors: rule.action === 'redact' || rule.action === 'encode' ? extractRedactors(rule) : null,
+    responseRuleSet = responseRules.map((rule) => {
+      const redactors = rule.action === 'redact' || rule.action === 'encode' ? extractRedactors(rule) : null;
       // A redact/encode condition that carries body-transforming mutations (base64_decode, urldecode,
       // json_decode, …) detects on the DECODED body but the span redactors run on the RAW body — so
       // they mask nothing and the secret is served while the log says "redacted". Flag it so screenText
       // fails such a rule CLOSED (block) instead of serving a no-op redaction.
-      mutatedSpan: (rule.action === 'redact' || rule.action === 'encode') && hasSpanMutations(rule),
-      // Optional cheap pre-filter: literal anchor(s) that MUST appear for the (expensive) regex to
-      // have any chance of matching. Lets screenText skip the full scan on bodies with no candidate —
-      // the common case — cutting CPU/latency and shrinking the regex/ReDoS surface. Case-insensitive.
-      prefilter: Array.isArray(rule.prefilter) && rule.prefilter.length
-        ? rule.prefilter.map((s) => String(s).toLowerCase())
-        : null,
-    }));
+      const mutatedSpan = (rule.action === 'redact' || rule.action === 'encode') && hasSpanMutations(rule);
+
+      return {
+        rule,
+        engine: new RuleEngine({ firewall: [rule], onError }),
+        redactors,
+        mutatedSpan,
+        // A redaction that reads response headers only, and masks spans in them, is decided and carried
+        // out without the body — so it still applies to a response whose body was not screened.
+        redactsHeaders:
+          rule.action === 'redact' &&
+          !mutatedSpan &&
+          (redactors ?? []).some((r) => !r.jsonPath) &&
+          readsOnlyResponseHeaders(rule),
+        // Optional cheap pre-filter: literal anchor(s) that MUST appear for the (expensive) regex to
+        // have any chance of matching. Lets screenText skip the full scan on responses with no candidate
+        // — the common case — cutting CPU/latency and shrinking the regex/ReDoS surface.
+        // Case-insensitive, and checked against the header values as well as the body, since a rule may
+        // read either.
+        prefilter: Array.isArray(rule.prefilter) && rule.prefilter.length
+          ? rule.prefilter.map((s) => String(s).toLowerCase())
+          : null,
+      };
+    });
     // One engine per rule, as the response phase does. It preserves the identity of every rule that
     // matches: each is evaluated on its own, and each match is attributable to the rule that made it.
     egressRuleSet = egressRules.map((rule) => ({
@@ -532,6 +546,11 @@ export async function createProtection(options = {}) {
     return effectiveMode === 'block' ? block() : allow();
   };
 
+  // The rules a response whose body was not read can still be screened against: header hardening, and
+  // redactions of header values. Neither reads the body, and neither needs one to act on.
+  const decidedWithoutBody = (rule, entry) => hardensWithoutBody(rule) || Boolean(entry?.redactsHeaders);
+  const redactsHeaders = (_rule, entry) => Boolean(entry?.redactsHeaders);
+
   // Response phase core: screen a text body → { verdict: 'pass'|'block'|'redact', body? }.
   // redact masks matched spans; block withholds; block wins over redact. Enforcement only in
   // block mode (dry-run records via onDetect but returns 'pass').
@@ -539,18 +558,19 @@ export async function createProtection(options = {}) {
     let blockRule = null;
     const redactions = [];
     const headerMutations = [];
-    let lowerText = null; // lazily lowercased body, only if a rule uses a prefilter
+    let lowerText = null; // lazily lowercased body and header values, only if a rule uses a prefilter
     const responseSkips = new Set(); // each inspection limit counted once per response
-    for (const { rule, engine: re, redactors, prefilter, mutatedSpan } of responseRuleSet) {
+    for (const entry of responseRuleSet) {
+      const { rule, engine: re, redactors, prefilter, mutatedSpan } = entry;
       // `only` narrows the set to the rules a caller is entitled to run. The no-body path uses it to
       // exclude every rule that reads the body, rather than evaluating one against an empty string —
       // `not_contains` matches everything when there is nothing there, so that is not an undecided rule
       // but a wrongly decided one.
-      if (only && !only(rule)) continue;
-      // Cheap pre-filter: if none of the rule's literal anchors is in the body, its regex can't
+      if (only && !only(rule, entry)) continue;
+      // Cheap pre-filter: if none of the rule's literal anchors is in the response, its regex can't
       // match — skip the full scan (the common no-secret case) before touching the engine.
       if (prefilter) {
-        if (lowerText === null) lowerText = text.toLowerCase();
+        if (lowerText === null) lowerText = prefilterText(text, meta.headers);
         if (!prefilter.some((p) => lowerText.includes(p))) continue;
       }
       let result;
@@ -979,8 +999,9 @@ export async function createProtection(options = {}) {
   const hardenHeadersOnly = (response, reqCtx) => {
     try {
       const meta = { status: response.status, headers: headerObject(response.headers) };
-      const r = screenText('', meta, reqCtx, hardensWithoutBody);
-      // `block` cannot arise: only header actions were eligible.
+      const r = screenText('', meta, reqCtx, decidedWithoutBody);
+      // `block` cannot arise: only header actions, and redactions that have a header span to mask,
+      // were eligible.
       if (r.verdict !== 'redact' || !r.headers) return response;
 
       // A matched rule is not a changed header. `harden-cookie` on a response that sets no cookie,
@@ -1248,6 +1269,37 @@ export async function createProtection(options = {}) {
     };
 
     /**
+     * Redactions of header values, for a response whose body will not be screened.
+     *
+     * Such a rule reads headers only, so it is decided the same way whether or not the body is read — it
+     * is run here instead of at `end`, never as well, so it reports once. Returns the changes for
+     * `sendHead`, or undefined when there are none. A head that has already gone cannot take them, which
+     * is recorded, as it is for a screened body.
+     */
+    const redactUnreadHeaders = () => {
+      try {
+        const head = effectiveHead();
+        const r = screenText('', head, reqCtx, redactsHeaders);
+        if (r.verdict !== 'redact' || !r.headers) return undefined;
+        const changed = new Map();
+        for (const [name, value] of Object.entries(r.headers)) {
+          if (headerValueChanged(head.headers[name], value)) changed.set(name.toLowerCase(), value);
+        }
+        if (changed.size && reallySent()) {
+          recordSkip('response', 'headers-sent', { headers: [...changed.keys()] });
+
+          return undefined;
+        }
+
+        return changed.size ? { headers: changed } : undefined;
+      } catch (err) {
+        notify(onError, err, 'onError');
+
+        return undefined;
+      }
+    };
+
+    /**
      * Send the head, if the application asked for one explicitly. `changes` is what the screen at `end`
      * decided: a new status, and header values keyed by lower-cased name (null removes one). Applied to
      * both places a header can live — the held arguments and the response's own header state — because
@@ -1300,7 +1352,7 @@ export async function createProtection(options = {}) {
         // Too big to screen — abandon buffering, but FLUSH what we already captured (the head) plus
         // this chunk before switching to pass-through, so the client gets a complete body (not a
         // truncated one missing everything before the cap was hit).
-        sendHead();
+        sendHead(redactUnreadHeaders());
         for (const c of chunks) origWrite(c);
         chunks.length = 0;
         origWrite(buf);
@@ -1325,8 +1377,8 @@ export async function createProtection(options = {}) {
       if (overflow) return origEnd(cb); // collect just flushed head + final chunk on overflow
       hardenOnce();
 
-      const passThrough = () => {
-        sendHead();
+      const passThrough = (changes) => {
+        sendHead(changes);
         for (const c of chunks) origWrite(c);
 
         return origEnd(cb);
@@ -1341,7 +1393,7 @@ export async function createProtection(options = {}) {
       if (kind === 'skip' || (kind === 'sniff' && looksBinary(buffer))) {
         recordSkip('response', kind === 'skip' ? (baseContentType(ct) === 'text/event-stream' ? 'live-stream' : 'non-text-content-type') : 'binary-body');
 
-        return passThrough();
+        return passThrough(redactUnreadHeaders());
       }
       // Encoded bytes cannot be screened as text: sent exactly as they are, under their own coding. The
       // coding is read from the head that will be sent, which includes a held `writeHead`'s own headers.
@@ -1349,7 +1401,7 @@ export async function createProtection(options = {}) {
       if (codings.length > 0 && stillEncoded(buffer)) {
         recordSkip('response', 'encoded-body', { encoding: codings.join(', ') });
 
-        return passThrough();
+        return passThrough(redactUnreadHeaders());
       }
       const text = buffer.toString('utf8');
       let r;
@@ -1932,6 +1984,17 @@ function screenableContentType(ct) {
   if (base === 'application/octet-stream') return 'sniff'; // maybe a text/JSON export mislabeled
   return 'skip'; // image/video/audio/font/pdf/zip/wasm/… — don't buffer binary
 }
+/** What a response rule's prefilter looks for its anchors in, lower-cased: the body and every header value. */
+function prefilterText(body, headers) {
+  const values = [];
+  for (const value of Object.values(headers ?? {})) {
+    if (Array.isArray(value)) values.push(...value.map(String));
+    else if (value !== undefined && value !== null) values.push(String(value));
+  }
+
+  return [body, ...values].join('\n').toLowerCase();
+}
+
 // Cheap binary sniff over a byte prefix: a NUL byte, or many control chars, means "don't treat as text".
 function looksBinary(bytes) {
   const n = Math.min(bytes.length, 512);
