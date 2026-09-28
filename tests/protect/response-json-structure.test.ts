@@ -34,15 +34,16 @@ describe('a span rewrite inside a JSON document', () => {
     expect(out.text).toBe('{"a":"x"\t,"b":"y"}');
   });
 
+  // A non-ASCII escape, which screening leaves escaped, so the rewrite reaches the escape itself.
   it('withholds a rewrite that breaks a unicode escape', async () => {
-    const out = await rewrite('{"a":"\\u0041BC"}', [spanRule('escape', { type: 'contains', value: '0041' })], { maskWith: 'zzzz' });
+    const out = await rewrite('{"a":"\\u00e9BC"}', [spanRule('escape', { type: 'contains', value: '00e9' })], { maskWith: 'zzzz' });
     expect(out.status).toBe(500);
   });
 
   it('allows a rewrite that keeps a unicode escape well formed', async () => {
-    const out = await rewrite('{"a":"\\u0041BC"}', [spanRule('escape', { type: 'contains', value: '0041' })], { maskWith: '0042' });
+    const out = await rewrite('{"a":"\\u00e9BC"}', [spanRule('escape', { type: 'contains', value: '00e9' })], { maskWith: '00e8' });
     expect(out.status).toBe(200);
-    expect(JSON.parse(out.text)).toEqual({ a: 'BBC' });
+    expect(JSON.parse(out.text)).toEqual({ a: '\u00e8BC' });
   });
 
   it('allows a key spelled with different escapes when it still names the same member', async () => {
