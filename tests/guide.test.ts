@@ -27,7 +27,9 @@ describe('guide', () => {
     delete process.env.PATCHSTACK_SITE_UUID;
     delete process.env.PATCHSTACK_ENDPOINT;
     delete process.env.PATCHSTACK_TIMEOUT_MS;
-    delete process.env.PATCHSTACK_ENVIRONMENT;
+    // A developer's machine. Without this, a CI runner's own variables decide the environment: a
+    // pull-request build reads as sandbox and the publish job on main as production.
+    process.env.PATCHSTACK_ENVIRONMENT = 'local';
   });
 
   afterEach(async () => {
@@ -229,8 +231,6 @@ describe('guide', () => {
     };
 
     it('prints the four progress steps in order, with the agreed wording', async () => {
-      // A developer's machine. Without this, a CI runner's own variables name the environment.
-      process.env.PATCHSTACK_ENVIRONMENT = 'local';
       writeJson('package.json', { name: 'fresh-app' });
 
       const output = renderGuideChecklist(await collectGuideState(cwd), false);
@@ -336,8 +336,6 @@ describe('guide', () => {
     });
 
     it('makes connecting the next step on a wired project, with the claim link', async () => {
-      // A developer's machine. Without this, a CI runner's own variables name the environment.
-      process.env.PATCHSTACK_ENVIRONMENT = 'local';
       wiredProject();
 
       const output = renderGuideChecklist(await collectGuideState(cwd), false);
@@ -645,7 +643,7 @@ describe('guide on a project with no request path', () => {
   beforeEach(async () => {
     cwd = await mkdtemp(path.join(tmpdir(), 'patchstack-guide-static-'));
     delete process.env.PATCHSTACK_SITE_UUID;
-    delete process.env.PATCHSTACK_ENVIRONMENT;
+    process.env.PATCHSTACK_ENVIRONMENT = 'local';
   });
 
   afterEach(async () => {
