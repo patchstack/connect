@@ -51,6 +51,54 @@ export function startRefresh(tick, { refreshMs, onError } = {}) {
   };
 }
 
+/**
+ * Retry a rules source that failed, until one attempt comes back clean — for a guard with no poll loop.
+ *
+ * Without a loop a guard resolves its rules once, at boot, and a single slow or failed call there leaves
+ * a long-lived server on its cache or its bundled fallback until it restarts. This asks again on a
+ * lengthening schedule, and stops for good at the first attempt that reports `ok`. `unref`'d, like the
+ * loop, so it never keeps the process alive.
+ */
+const RECOVERY_DELAYS_MS = [5_000, 15_000, 45_000, 120_000, 300_000, 600_000];
+
+export function startRecovery(tick, { onError } = {}) {
+  let stopped = false;
+  let attempt = 0;
+  let timer = null;
+
+  const schedule = () => {
+    if (stopped) return;
+    const delay = RECOVERY_DELAYS_MS[Math.min(attempt, RECOVERY_DELAYS_MS.length - 1)];
+    timer = setTimeout(run, delay * (1 - Math.random() * JITTER_FRACTION));
+    timer?.unref?.();
+  };
+
+  const run = async () => {
+    if (stopped) return;
+    attempt++;
+    try {
+      const status = await tick();
+      if (!status || status.ok !== false) {
+        stopped = true;
+
+        return;
+      }
+    } catch (err) {
+      notify(onError, err, 'onError');
+    }
+    schedule();
+  };
+
+  schedule();
+
+  return {
+    stop() {
+      stopped = true;
+      if (timer) clearTimeout(timer);
+    },
+  };
+}
+
 export function makeRefreshHandler(tick, secret) {
   let inflight = null;
 

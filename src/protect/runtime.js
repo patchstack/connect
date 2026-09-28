@@ -33,7 +33,7 @@ import { renderBlockPage } from './block-page.js';
 // composing the engine + guards and running the three screening phases.
 import { makeStore } from './rules/store.js';
 import { resolveRules } from './rules/source.js';
-import { startRefresh, makeRefreshHandler } from './rules/refresh.js';
+import { startRefresh, startRecovery, makeRefreshHandler } from './rules/refresh.js';
 import { createDetectionReporter } from './detections.js';
 import { reportingState } from './reporting-state.js';
 import { hardensWithoutBody } from './response-hardening.js';
@@ -243,6 +243,36 @@ export async function createProtection(options = {}) {
     pulseAuth,
     detectionState: preFetchState,
   });
+
+  /**
+   * Where the rules in force came from, and whether the last resolution was clean.
+   *
+   * With a live source, rules that are not current are a protection gap the application may not know it
+   * has: a failed fetch, a rejected update and held build-scoped rules are all reported through
+   * `onError`, and without one they were reported nowhere. So when no `onError` is given, each distinct
+   * cause is written to the console once — enough to be seen, without repeating on every refresh.
+   */
+  let ruleSource = { ...(bundle.source ?? { ok: true, origin: 'empty' }) };
+  const warnedSources = new Set();
+  const hasLiveSource = Boolean(options.siteUuid || options.token);
+  const noteRuleSource = (source) => {
+    ruleSource = { ...(source ?? { ok: true, origin: ruleSource.origin }) };
+    if (!hasLiveSource || typeof onError === 'function' || ruleSource.ok !== false) return;
+    const cause = `${ruleSource.origin}:${ruleSource.reason ?? ''}`;
+    if (warnedSources.has(cause)) return;
+    warnedSources.add(cause);
+    const running =
+      ruleSource.origin === 'cache'
+        ? 'the last rules it received'
+        : ruleSource.origin === 'bundled'
+          ? 'its bundled fallback rules'
+          : 'no rules at all';
+    console.warn(
+      `[patchstack] the guard's rules are not current (${ruleSource.reason ?? 'the rules source did not answer'}); ` +
+        `it is running on ${running}. Pass { onError } to handle this yourself.`,
+    );
+  };
+  noteRuleSource(bundle.source);
   // ON by default for an enrolled site running Patchstack-delivered rules, and off otherwise — a local
   // install and a guard running its own bundle send nothing. That default is a change in what an
   // installed app does on the network, so it is disclosed in `AGENT-INSTALL.md` and in the option
@@ -1340,6 +1370,7 @@ export async function createProtection(options = {}) {
     }
   }
 
+  let recovery = null;
   const runRefreshTick = async () => {
     if (reporter) {
       try {
@@ -1359,6 +1390,8 @@ export async function createProtection(options = {}) {
     });
     mode = resolveMode(options, next);
     applyBundle(next);
+    noteRuleSource(next.source);
+    if (next.source?.ok !== false) recovery?.stop();
     // Recomputed from the origin this refresh resolved. Within one process the reachable changes are a
     // rules source that STARTS being the platform's, and an opt-out appearing in the environment. It
     // cannot stop being the platform's: once a bundle has been accepted the memory tier holds it, so a
@@ -1388,6 +1421,13 @@ export async function createProtection(options = {}) {
   const loop = options.refreshMs > 0 && live
     ? startRefresh(runRefreshTick, { refreshMs: options.refreshMs, onError })
     : null;
+  // No loop to try again later, and the first resolution was not clean: retry until it is, rather than
+  // serving stale or fallback rules for the life of the process. Only with a credential to ask with: the
+  // site-addressed rules endpoint refuses a request without one, the credential is resolved once at
+  // boot, and asking again every ten minutes forever would change nothing. The boot warning above
+  // already says what is missing.
+  const canAsk = Boolean(options.token || pulseAuth);
+  recovery = live && canAsk && !loop && ruleSource.ok === false ? startRecovery(runRefreshTick, { onError }) : null;
 
   // One method, always present, that reaches everything holding a timer or a buffer: the refresh loop,
   // the block log, the detection reporter. Always present because a lifecycle method that exists only
@@ -1399,6 +1439,7 @@ export async function createProtection(options = {}) {
   // that terminates regardless still wins — and ignoring the return behaves exactly as before.
   protection.stop = () => {
     loop?.stop();
+    recovery?.stop();
     // Both reporters, because the promise says every buffer this reaches is finished with. Waiting only
     // for one would resolve while the other still had records outstanding — and resolve immediately in a
     // configuration where the one being waited for was never built.
@@ -1414,6 +1455,10 @@ export async function createProtection(options = {}) {
   // not requested. A boolean would collapse the middle one into "off", which is the reassuring reading.
   // A getter, because the state follows refreshes: a property assigned once would report the boot value
   // for the life of the process, including after reporting started or stopped.
+  Object.defineProperty(protection, 'ruleSource', {
+    get: () => ({ ...ruleSource }),
+    enumerable: true,
+  });
   Object.defineProperty(protection, 'detectionReporting', {
     get: () => detectionReporting,
     enumerable: true,
