@@ -86,7 +86,9 @@ describe('push refresh endpoint (refreshHandler)', () => {
 
     const first = handler(request());
     const second = handler(request());
-    await Promise.resolve();
+    // Both requests pass the secret check before the first refresh settles; they share one refresh.
+    await vi.waitFor(() => expect(tick).toHaveBeenCalled());
+    await new Promise((resolve) => setTimeout(resolve, 20));
     expect(tick).toHaveBeenCalledOnce();
     release({ ok: true });
     expect((await first).status).toBe(200);

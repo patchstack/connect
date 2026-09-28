@@ -62,9 +62,9 @@ export interface Protection {
    *   reporter is finished with it, not that the underlying request has ended.
    * - A runtime that terminates the process regardless still wins, whatever this resolves.
    *
-   * What is accounted for also differs by reporter. Every detection event ends up delivered, refused or
-   * dropped, and `detectionHealth()` reports each. Block-log records have no counters at all, so one lost
-   * to a failed token exchange, a failed post, or a shutdown that ran out of time is reported nowhere.
+   * Both reporters account for what they held. Every detection event ends up delivered, refused or
+   * dropped, and `detectionHealth()` reports each; every block-log record ends up delivered, failed or
+   * dropped, and `blockLogHealth()` reports those.
    */
   stop: () => Promise<void>;
   /** Alias of `stop`, under the name callers already have. */
@@ -127,6 +127,20 @@ export interface Protection {
       retried: number;
       lastAcknowledgedAt: string | null;
     };
+  };
+  /** Present when block-log reporting is on — where the block records went, in records. Carries no
+   *  request data. */
+  blockLogHealth?: () => {
+    /** Records the queue accepted. Each ends up delivered, failed, or dropped by a shutdown. */
+    recorded: number;
+    /** Records in a batch the endpoint acknowledged. */
+    delivered: number;
+    /** Records in a batch that was refused, or that could not be sent (including a failed token exchange). */
+    failed: number;
+    /** Records a shutdown discarded, plus records turned away because the queue was full. */
+    dropped: number;
+    /** Records waiting to be sent now. */
+    queued: number;
   };
 }
 

@@ -457,8 +457,9 @@ requests are aborted, it starts nothing further, and it discards what it was hol
 request to stop, not a guarantee — a transport that ignores it is detached rather than completed, so
 "resolved" means the reporter is finished with it, and a runtime that kills the process still wins
 regardless. Every detection event ends up delivered, refused or dropped and is reported in the health
-counts; block-log records have no counters, so one lost to a failed send or an expired shutdown is
-reported nowhere.
+counts. The block log keeps the same kind of local counts: `protection.blockLogHealth()` returns how many
+block records were accepted, delivered, failed or dropped, and how many are still queued. Those counts
+carry no request data and stay in your process.
 
 The client address is reported with its **provenance**, because an address is only as trustworthy as
 whatever supplied it. `client_ip_source` is one of `runtime` (the address the transport observed),

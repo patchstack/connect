@@ -159,7 +159,7 @@ export function makeRefreshHandler(tick, secret) {
     // No secret configured → the endpoint doesn't exist (never an open refresh-DoS surface).
     if (!secret) return new Response('not found', { status: 404 });
     const provided = request?.headers?.get?.('x-patchstack-refresh') ?? null;
-    if (provided !== secret) return new Response('forbidden', { status: 403 });
+    if (!(await sameSecret(provided, secret))) return new Response('forbidden', { status: 403 });
     let refreshed = true;
     try {
       // `{ ok: false }` means the tick ran but the rules did not come from the source, which is not a
@@ -171,4 +171,45 @@ export function makeRefreshHandler(tick, secret) {
     }
     return new Response(JSON.stringify({ refreshed }), { status: 200, headers: { 'content-type': 'application/json' } });
   };
+}
+
+/**
+ * Whether a presented refresh secret equals the configured one, in time that does not depend on where
+ * they first differ.
+ *
+ * Both are digested and the fixed-length digests compared in full, so neither the position of the first
+ * differing character nor the secret's length shapes the time taken. Without Web Crypto the strings are
+ * compared in full over the longer length instead.
+ */
+async function sameSecret(provided, secret) {
+  if (typeof provided !== 'string' || typeof secret !== 'string') return false;
+  const subtle = globalThis.crypto?.subtle;
+  if (subtle && typeof TextEncoder === 'function') {
+    try {
+      const encoder = new TextEncoder();
+      const [a, b] = await Promise.all([
+        subtle.digest('SHA-256', encoder.encode(provided)),
+        subtle.digest('SHA-256', encoder.encode(secret)),
+      ]);
+
+      return equalBytes(new Uint8Array(a), new Uint8Array(b));
+    } catch {
+      // Fall through to the full-length comparison.
+    }
+  }
+  let diff = provided.length ^ secret.length;
+  const length = Math.max(provided.length, secret.length);
+  for (let i = 0; i < length; i++) {
+    diff |= (provided.charCodeAt(i) || 0) ^ (secret.charCodeAt(i) || 0);
+  }
+
+  return diff === 0;
+}
+
+function equalBytes(a, b) {
+  if (a.length !== b.length) return false;
+  let diff = 0;
+  for (let i = 0; i < a.length; i++) diff |= a[i] ^ b[i];
+
+  return diff === 0;
 }
