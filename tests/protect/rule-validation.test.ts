@@ -214,3 +214,57 @@ describe('rule endpoint origin', () => {
     vi.restoreAllMocks();
   });
 });
+
+describe('repetition shapes that backtrack exponentially', () => {
+  const { safeRegExp } = _testExports;
+
+  // Each of these re-splits a run that does not match in more ways than any request can wait for. The
+  // outer bound does not have to be `+` or `*`, and a lookaround is a pattern of its own.
+  it.each([
+    ['a bounded repeat of an unbounded run', '/(a+){2,40}$/'],
+    ['a fixed repeat of a run with a wildcard', '/(.*a){12}$/'],
+    ['an open-ended repeat of a run', '/(?:x+y?){3,}/'],
+    ['a bounded repeat of a bounded run, when the product is large', '/(a{1,30}){1,30}$/'],
+    ['a large bounded repeat of an alternation', '/(a|a){1,40}$/'],
+    ['adjacent wildcards inside a lookahead', '/^(?=.*.*.*.*x)/'],
+    ['adjacent wildcards inside a lookbehind', '/(?<=.*.*.*x)y/'],
+    ['a fence the repeated class can also match', '/(?:\\.[a-z.]+){0,8}$/'],
+    ['an optional fence', '/(?:\\.?[a-z]+){0,8}!/'],
+    ['two optional elements repeated many times', '/(?:a?a?){30}$/'],
+    ['optional elements repeated without a bound', '/(?:a?b?)+$/'],
+    ['a single optional element repeated many times', '/(a?){25}$/'],
+    ['an optional element beside one that matches the same character', '/(?:a?a){30}!/'],
+    ['an alternation with an empty branch repeated many times', '/(?:a|a?){20}!/'],
+    ['a fence an optional element can also take', '/(?:y?y){20}$/'],
+    ['a class fence an optional element overlaps', '/(?:\\w[a-z]?){20}$/'],
+    ['a class fence under the unicode flag, where it cannot be proven', '/(?:\\d[ -]?){13,16}/u'],
+  ])('refuses %s', (_label, pattern) => {
+    expect(safeRegExp(pattern)).toBeNull();
+  });
+
+  it.each([
+    ['a small bounded repeat of a small run', '/(\\d{1,3}\\.){3}\\d{1,3}/'],
+    ['a repeat fenced by a character its run cannot match', '/[A-Za-z0-9._%+-]+@[A-Za-z0-9-]+(?:\\.[A-Za-z0-9-]+){0,8}\\.[A-Za-z]{2,}/'],
+    ['a bounded repeat of a fixed sequence', '/(?:ab){2,5}/'],
+    ['a small bounded repeat of an alternation', '/(?:a|b){2}/'],
+    ['a plain lookahead', '/^(?=.*x)abc/'],
+    ['a unicode property run', '/\\p{L}{2,}/u'],
+    ['a named group and its back-reference', '/(?<y>\\d{4})-\\k<y>/'],
+    ['a literal brace', '/x{/'],
+    ['a class fence nothing optional inside can take', '/(?:\\d[ -]?){13,16}/'],
+    ['a fence at the end of each repetition', '/(?:x?y){0,40}$/'],
+    ['an optional element after a literal fence', '/(?:\\.a?){40}$/'],
+    ['an optional element repeated a few times', '/(?:a?b?){4}$/'],
+  ])('accepts %s', (_label, pattern) => {
+    expect(safeRegExp(pattern)).not.toBeNull();
+  });
+
+  it('hands out a fresh pattern each time, so a global one keeps no position between matches', () => {
+    const first = safeRegExp('/a/g')!;
+    first.test('a');
+    const second = safeRegExp('/a/g')!;
+
+    expect(second).not.toBe(first);
+    expect(second.lastIndex).toBe(0);
+  });
+});

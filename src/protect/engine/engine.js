@@ -124,6 +124,242 @@ function hasAdjacentUnbounded(body, flags) {
   return false;
 }
 
+/**
+ * The repetition structure of a pattern body, parsed rather than pattern-matched.
+ *
+ * Only what the safety check below needs: groups (with their kind and source span), alternation, and
+ * quantifiers with their bounds. Everything else — a class, an escape, a literal — is an opaque atom.
+ * Returns null for syntax this does not model, and the caller then relies on the textual checks alone.
+ */
+function parseRepetition(body) {
+  let i = 0;
+
+  const parseAlternation = () => {
+    const branches = [parseSequence()];
+    while (body[i] === '|') {
+      i++;
+      branches.push(parseSequence());
+    }
+    return branches.length === 1 ? branches[0] : { type: 'alt', branches };
+  };
+
+  const parseSequence = () => {
+    const items = [];
+    while (i < body.length && body[i] !== '|' && body[i] !== ')') {
+      const atom = parseAtom();
+      if (atom === null) return null;
+      const quantified = parseQuantifier(atom);
+      if (quantified === null) return null;
+      items.push(quantified);
+    }
+    return { type: 'seq', items };
+  };
+
+  const parseAtom = () => {
+    const ch = body[i];
+    if (ch === '(') {
+      const start = i;
+      i++;
+      let kind = 'capture';
+      if (body.startsWith('?:', i)) {
+        kind = 'group';
+        i += 2;
+      } else if (body.startsWith('?=', i) || body.startsWith('?!', i)) {
+        kind = 'look';
+        i += 2;
+      } else if (body.startsWith('?<=', i) || body.startsWith('?<!', i)) {
+        kind = 'look';
+        i += 3;
+      } else if (body.startsWith('?<', i)) {
+        const close = body.indexOf('>', i + 2);
+        if (close === -1) return null;
+        i = close + 1;
+      } else if (body[i] === '?') {
+        return null; // a group modifier this does not model
+      }
+      const inner = parseAlternation();
+      if (inner === null || body[i] !== ')') return null;
+      i++;
+      return { type: 'group', kind, body: inner, source: body.slice(start, i) };
+    }
+    const start = i;
+    if (ch === '[') {
+      i++;
+      if (body[i] === '^') i++;
+      if (body[i] === ']') i++;
+      while (i < body.length && body[i] !== ']') i += body[i] === '\\' ? 2 : 1;
+      if (body[i] !== ']') return null;
+      i++;
+      return { type: 'atom', source: body.slice(start, i) };
+    }
+    if (ch === '\\') {
+      const next = body[i + 1];
+      if (next === undefined) return null;
+      if ((next === 'p' || next === 'P' || next === 'u') && body[i + 2] === '{') {
+        const close = body.indexOf('}', i + 3);
+        if (close === -1) return null;
+        i = close + 1;
+      } else if (next === 'k' && body[i + 2] === '<') {
+        const close = body.indexOf('>', i + 3);
+        if (close === -1) return null;
+        i = close + 1;
+      } else {
+        i += 2;
+      }
+      return { type: /[bB]/.test(next) ? 'assert' : 'atom', source: body.slice(start, i) };
+    }
+    if (ch === '^' || ch === '$') {
+      i++;
+      return { type: 'assert' };
+    }
+    if (ch === '*' || ch === '+' || ch === '?') return null; // nothing to repeat
+    i++;
+    return { type: 'atom', source: body.slice(start, i) };
+  };
+
+  const parseQuantifier = (atom) => {
+    let min;
+    let max;
+    const ch = body[i];
+    if (ch === '*') [min, max, i] = [0, Infinity, i + 1];
+    else if (ch === '+') [min, max, i] = [1, Infinity, i + 1];
+    else if (ch === '?') [min, max, i] = [0, 1, i + 1];
+    else if (ch === '{') {
+      const bounds = /^\{(\d+)(,(\d*))?\}/.exec(body.slice(i));
+      // Not a quantifier: outside unicode mode, a `{` that does not open one is a literal.
+      if (!bounds) return atom;
+      min = Number(bounds[1]);
+      max = bounds[2] === undefined ? min : bounds[3] === '' ? Infinity : Number(bounds[3]);
+      i += bounds[0].length;
+    } else {
+      return atom;
+    }
+    if (body[i] === '?') i++; // lazy: the same backtracking, explored in another order
+    if (body[i] === '*' || body[i] === '+' || body[i] === '?' || body[i] === '{') return null;
+    return { type: 'quant', min, max, body: atom };
+  };
+
+  const root = parseAlternation();
+  return root !== null && i === body.length ? root : null;
+}
+
+/** Every node under `node`, depth first, `node` included. */
+function* nodesOf(node) {
+  if (!node) return;
+  yield node;
+  if (node.type === 'alt') for (const branch of node.branches) yield* nodesOf(branch);
+  else if (node.type === 'seq') for (const item of node.items) yield* nodesOf(item);
+  else if (node.type === 'group' || node.type === 'quant') yield* nodesOf(node.body);
+}
+
+// How many ways a bounded nesting may split a run before it counts as catastrophic. `(\d{1,3}\.){3}`
+// is 9; `(a{1,30}){1,30}` is 900 and backtracks for as long as anyone waits.
+const BOUNDED_NESTING_LIMIT = 100;
+// How often an alternation may repeat under a bounded quantifier. `(a|a){1,40}` re-tries both branches
+// at every repetition, which is two to the fortieth on a run that does not match.
+const BOUNDED_ALTERNATION_LIMIT = 16;
+// How often a group holding an optional element may repeat. `(?:a?a?){20}` can place each character in
+// either optional slot of any repetition — three to the twentieth ways to fail — and a single `(a?)`
+// repeated thirty times is the same shape.
+const OPTIONAL_REPEAT_LIMIT = 8;
+
+/**
+ * Whether every repetition of `quant` is fenced by characters nothing variable inside it can match.
+ *
+ * `(?:\.[a-z0-9-]+){0,8}` repeats `[a-z0-9-]+`, but each repetition must start with a `.` that class
+ * cannot consume, and `(?:\d[ -]?){13,16}` must start each repetition with a digit its optional
+ * separator cannot be. Where one repetition ends and the next begins is then forced, there is one way to
+ * split any run, and the nesting costs nothing.
+ *
+ * The fence is the first or last element of every repetition, mandatory (not itself quantified), and
+ * shares no character with any element inside whose extent varies — repeated or merely optional.
+ * Without the `u` or `v` flag a class matches UTF-16 code units, so checking every one of them makes that
+ * disjointness exact rather than sampled; with either flag only a single literal character is accepted
+ * as a fence. Anything this cannot prove is not a fence.
+ */
+function hasFencedRepetitions(quant, flags) {
+  let body = quant.body;
+  if (body.type === 'group' && body.kind !== 'look') body = body.body;
+  if (body.type !== 'seq' || body.items.length < 2) return false;
+
+  const variable = [...nodesOf(body)].filter((n) => n.type === 'quant' && (n.max > 1 || n.min < n.max));
+  if (variable.some((n) => n.body.type !== 'atom' || n.body.source === undefined)) return false;
+
+  const atomFlags = flags.replace(/[^i]/g, '');
+  const unicode = /[uv]/.test(flags);
+  let insides;
+  try {
+    insides = variable.map((n) => new RegExp(`^(?:${n.body.source})$`, `${atomFlags}${unicode ? 'u' : ''}`));
+  } catch {
+    return false;
+  }
+
+  const literalOf = (source) => {
+    if (source.length === 1 && !'.[]()|^$\\'.includes(source)) return source;
+    if (source.length === 2 && source[0] === '\\' && /[^\w\s]/.test(source[1])) return source[1];
+    return null;
+  };
+  const disjoint = (edge) => {
+    if (edge?.type !== 'atom' || edge.source === undefined) return false;
+    const literal = literalOf(edge.source);
+    if (literal !== null) return insides.every((re) => !re.test(literal));
+    if (unicode) return false;
+    let fence;
+    try {
+      fence = new RegExp(`^(?:${edge.source})$`, atomFlags);
+    } catch {
+      return false;
+    }
+    for (let unit = 0; unit <= 0xffff; unit++) {
+      const ch = String.fromCharCode(unit);
+      if (fence.test(ch) && insides.some((re) => re.test(ch))) return false;
+    }
+    return true;
+  };
+
+  return disjoint(body.items[0]) || disjoint(body.items[body.items.length - 1]);
+}
+
+/**
+ * Whether a pattern body has an exponential repetition shape, judged on its structure.
+ *
+ * A repeated group whose content can itself repeat — with either bound unlimited, or both large — can
+ * split one run of input in exponentially many ways, and a non-matching run makes the engine try them
+ * all. The outer bound does not have to be `+` or `*`: `(a+){2,40}` and `(.*a){12}` are the same shape.
+ * An alternation, or an optional element, repeated without a small bound is refused for the same reason:
+ * each repetition can then take the same characters in more than one way. Lookaround bodies are
+ * patterns of their own and get the adjacent-atom check as well. Null when the body could not be parsed.
+ */
+function hasCatastrophicShape(body, flags) {
+  const root = parseRepetition(body);
+  if (root === null) return null;
+
+  for (const node of nodesOf(root)) {
+    if (node.type === 'group' && node.kind === 'look' && hasAdjacentUnbounded(lookaroundBody(node.source), flags)) return true;
+    if (node.type !== 'quant' || node.max <= 1) continue;
+    const fenced = hasFencedRepetitions(node, flags);
+    for (const inner of nodesOf(node.body)) {
+      if (inner === node.body && inner.type === 'quant') continue;
+      if (inner.type === 'quant' && inner.max > 1 && !fenced) {
+        if (node.max === Infinity || inner.max === Infinity || node.max * inner.max > BOUNDED_NESTING_LIMIT) return true;
+      }
+      if (inner.type === 'quant' && inner.min === 0 && inner.max <= 1 && !fenced
+          && (node.max === Infinity || node.max > OPTIONAL_REPEAT_LIMIT)) {
+        return true;
+      }
+      if (inner.type === 'alt' && inner.branches.length > 1 && (node.max === Infinity || node.max > BOUNDED_ALTERNATION_LIMIT)) {
+        return true;
+      }
+    }
+  }
+  return false;
+}
+
+/** A lookaround's own pattern: its source without the `(?=` / `(?!` / `(?<=` / `(?<!` and the `)`. */
+function lookaroundBody(source) {
+  return source.slice(source.startsWith('(?<') ? 4 : 3, -1);
+}
+
 function groupEnd(body, start) {
   let depth = 0;
   let inClass = false;
@@ -159,6 +395,13 @@ function warnRejectedPatternOnce(pattern) {
 // backstop for a caller-supplied bundle that never went through it.
 const MAX_PATTERN_LENGTH = 1000;
 
+// The verdict on a pattern, remembered: a rule's pattern is judged once rather than for every value it
+// is matched against. Only the verdict — a fresh RegExp is built per call, because a `g` or `y` pattern
+// carries `lastIndex` and a shared instance would leak it between unrelated matches. Bounded, and cleared
+// rather than evicted when full, since a rule set holds far fewer patterns than this.
+const regexVerdicts = new Map();
+const REGEX_VERDICT_LIMIT = 2048;
+
 export function safeRegExp(pattern) {
   if (!pattern) {
     return null;
@@ -172,16 +415,36 @@ export function safeRegExp(pattern) {
     return null;
   }
 
-  for (const dangerous of REDOS_PATTERNS) {
-    if (dangerous.test(match[1])) return null;
+  let safe = regexVerdicts.get(pattern);
+  if (safe === undefined) {
+    safe = isSafeBody(match[1], match[2]);
+    if (regexVerdicts.size >= REGEX_VERDICT_LIMIT) regexVerdicts.clear();
+    regexVerdicts.set(pattern, safe);
   }
-  if (hasAdjacentUnbounded(match[1], match[2])) return null;
+  if (!safe) return null;
 
   try {
     return new RegExp(match[1], match[2]);
   } catch {
     return null;
   }
+}
+
+function isSafeBody(body, flags) {
+  for (const dangerous of REDOS_PATTERNS) {
+    if (dangerous.test(body)) return false;
+  }
+  if (hasAdjacentUnbounded(body, flags)) return false;
+  // In addition to the textual checks above, never instead of them: a shape either one refuses is
+  // refused. A body this cannot parse is left to the textual checks and to `new RegExp`.
+  if (hasCatastrophicShape(body, flags) === true) return false;
+  try {
+    new RegExp(body, flags);
+  } catch {
+    return false;
+  }
+
+  return true;
 }
 
 // ctype_*/is_numeric compare their character-class result to the rule's expected
