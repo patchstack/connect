@@ -3,7 +3,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 
-import { makeStore } from '../../src/protect/rules/store.js';
+import { makeStore, sourceIdentity } from '../../src/protect/rules/store.js';
 
 const roots: string[] = [];
 const temporaryDirectory = (): string => {
@@ -19,13 +19,14 @@ afterEach(() => {
 describe('filesystem rule store', () => {
   it('updates the cache through an atomic sibling file', async () => {
     const cacheDir = temporaryDirectory();
-    const store = makeStore({ cacheDir });
+    const store = makeStore({ cacheDir, siteUuid: 's' });
     const envelope = { bundle: { firewall: [], whitelists: [], whitelist_keys: {} }, etag: 'v1' };
 
     await store.write(envelope);
 
-    expect(await makeStore({ cacheDir }).read()).toEqual(expect.objectContaining(envelope));
-    expect(readFileSync(join(cacheDir, 'patchstack-rules.json'), 'utf8')).toBe(JSON.stringify(envelope));
+    const stamped = { ...envelope, source: await sourceIdentity({ siteUuid: 's' }) };
+    expect(await makeStore({ cacheDir, siteUuid: 's' }).read()).toEqual(expect.objectContaining(stamped));
+    expect(readFileSync(join(cacheDir, 'patchstack-rules.json'), 'utf8')).toBe(JSON.stringify(stamped));
   });
 
   it('does not read or replace a linked cache file', async () => {
@@ -34,7 +35,7 @@ describe('filesystem rule store', () => {
     writeFileSync(outside, JSON.stringify({ bundle: { firewall: [{ id: 'outside' }] } }));
     const target = join(cacheDir, 'patchstack-rules.json');
     symlinkSync(outside, target);
-    const store = makeStore({ cacheDir });
+    const store = makeStore({ cacheDir, siteUuid: 's' });
 
     expect(await store.read()).toBeNull();
     await store.write({ bundle: { firewall: [], whitelists: [], whitelist_keys: {} }, etag: 'v2' });

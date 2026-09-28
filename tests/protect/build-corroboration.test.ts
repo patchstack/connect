@@ -15,6 +15,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { createProtection, createServerFnGuard } from '../../src/protect/runtime.js';
+import { sourceIdentity } from '../../src/protect/rules/store.js';
 
 const A = 'a'.repeat(64);
 const B = 'b'.repeat(64);
@@ -252,6 +253,7 @@ describe('the cache', () => {
       etag: 'v1',
       buildId: B,
       matchedBuildId: A,
+      source: await sourceIdentity({ siteUuid: 's', pulseRulesUrl: URL_OPT }),
     };
     const ruleCache = { read: () => crossed, write: vi.fn() };
     vi.stubGlobal('fetch', vi.fn(async () => new Response('nope', { status: 500 })));

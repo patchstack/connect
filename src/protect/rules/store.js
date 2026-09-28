@@ -1,4 +1,4 @@
-// Rule cache as a TIERED store of a `{ bundle, etag, buildId, matchedBuildId }` envelope:
+// Rule cache as a TIERED store of a `{ bundle, etag, buildId, matchedBuildId, source }` envelope:
 //   1. memory     — always present; last-known-good within the process. Survives refreshes and is
 //                   the fallback when the disk isn't writable (read-only FS, sandbox).
 //   2. durable    — filesystem (default, via `cacheDir`) OR a pluggable adapter (`ruleCache`, e.g.
@@ -40,19 +40,69 @@ async function loadFs() {
   return fsMod;
 }
 
+/**
+ * The rules source a guard is configured for, as a string an envelope can be compared against.
+ *
+ * A cache is only ever one source's last-known-good. The same `cacheDir` can be shared by a site and a
+ * re-provisioned site, by the site-UUID and token paths, or by two endpoints, and an envelope read for
+ * the wrong one would be enforced, attributed and revalidated as if it were this guard's own policy. So
+ * every envelope carries the source it was fetched for, and an envelope for any other source — or for
+ * none, as every cache written before this existed — reads as no cache.
+ *
+ * The token is never stored: its SHA-256 identifies it. Null when there is no live source, or when this
+ * runtime cannot compute a digest, and a null identity reads nothing.
+ */
+export async function sourceIdentity(options = {}) {
+  if (typeof options.siteUuid === 'string' && options.siteUuid.trim() !== '') {
+    const endpoint = typeof options.pulseRulesUrl === 'string' ? options.pulseRulesUrl : '';
+
+    return `site:${options.siteUuid.trim().toLowerCase()}@${endpoint}`;
+  }
+  if (typeof options.token === 'string' && options.token !== '') {
+    const digest = await sha256Hex(options.token);
+    if (digest === null) return null;
+    const endpoint = typeof options.baseUrl === 'string' ? options.baseUrl : '';
+
+    return `token:${digest}@${endpoint}`;
+  }
+
+  return null;
+}
+
+async function sha256Hex(text) {
+  try {
+    const subtle = globalThis.crypto?.subtle;
+    if (!subtle || typeof TextEncoder === 'undefined') return null;
+    const digest = await subtle.digest('SHA-256', new TextEncoder().encode(text));
+
+    return Array.from(new Uint8Array(digest), (b) => b.toString(16).padStart(2, '0')).join('');
+  } catch {
+    return null;
+  }
+}
+
 export function makeStore(options = {}) {
   let mem = null;
   const durable = durableTier(options);
+  let identity;
+  const identityOf = () => (identity ??= sourceIdentity(options));
+
   return {
     async read() {
       if (mem) return mem;
+      const source = await identityOf();
+      if (source === null) return null;
       const env = await durable.read();
-      if (env) mem = env;
+      if (!env || env.source !== source) return null;
+      mem = env;
+
       return env;
     },
     async write(env) {
-      if (env) mem = env;
-      await durable.write(env);
+      if (!env) return;
+      const stamped = { ...env, source: await identityOf() };
+      mem = stamped;
+      await durable.write(stamped);
     },
   };
 }
@@ -193,10 +243,12 @@ export function toEnvelope(value) {
       // A confirmation belongs to the presentation stored beside it. A crossed or partially written
       // envelope confirms nothing, even when one of its fields happens to name the current map.
       matchedBuildId: buildId !== null && matched === buildId ? matched : null,
+      source: typeof value.source === 'string' ? value.source : null,
     };
   }
   if (Array.isArray(value.firewall) || Array.isArray(value.whitelists)) {
-    return { bundle: value, etag: null, buildId: null, matchedBuildId: null }; // legacy cache file
+    // legacy cache file: no source identity, so it matches no configured source
+    return { bundle: value, etag: null, buildId: null, matchedBuildId: null, source: null };
   }
   return null;
 }

@@ -244,7 +244,13 @@ export interface CreateProtectionOptions {
   reportManifest?: boolean;
   /** Directory the manifest re-scan reads the lockfile from during a refresh. Default process.cwd(). */
   cwd?: string;
-  /** Directory for the last-known-good rule cache (disk — the default cache backend). */
+  /**
+   * Directory for the last-known-good rule cache (disk — the default cache backend).
+   *
+   * A cache belongs to the source it was fetched for: the site UUID or token, and the rules endpoint.
+   * One written for any other source — or by a version that did not record its source — reads as
+   * empty, so it is never enforced, revalidated or used to attribute detections for this guard.
+   */
   cacheDir?: string;
   /**
    * Pluggable last-known-good cache, for runtimes without a filesystem (Workers/Deno). Overrides

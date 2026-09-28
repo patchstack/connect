@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { makeStore } from '../../src/protect/rules/store.js';
+import { makeStore, sourceIdentity } from '../../src/protect/rules/store.js';
 import { createProtection } from '../../src/protect/runtime.js';
 
 afterEach(() => vi.restoreAllMocks());
@@ -11,7 +11,7 @@ const URL_OPT = 'https://x.test/monitor/pulse';
 describe('tiered rule store', () => {
   it('memory tier serves last-known-good when the durable write fails', async () => {
     let disk: unknown = null;
-    const store = makeStore({ ruleCache: { read: () => disk, write: () => { throw new Error('read-only FS'); } } });
+    const store = makeStore({ siteUuid: 's', ruleCache: { read: () => disk, write: () => { throw new Error('read-only FS'); } } });
     await store.write({ bundle: RULES, etag: 'v1' });
     expect(disk).toBeNull(); // durable write threw…
     expect((await store.read()) as any).toMatchObject({ etag: 'v1' }); // …but memory kept it
@@ -19,8 +19,8 @@ describe('tiered rule store', () => {
 
   it('reads durable once, then serves from memory', async () => {
     let reads = 0;
-    const durable = { bundle: RULES, etag: 'e' };
-    const store = makeStore({ ruleCache: { read: () => { reads++; return durable; }, write: () => {} } });
+    const durable = { bundle: RULES, etag: 'e', source: await sourceIdentity({ siteUuid: 's' }) };
+    const store = makeStore({ siteUuid: 's', ruleCache: { read: () => { reads++; return durable; }, write: () => {} } });
     expect(((await store.read()) as any).etag).toBe('e');
     await store.read();
     expect(reads).toBe(1); // second read came from the memory tier

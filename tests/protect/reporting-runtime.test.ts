@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, afterEach } from 'vitest';
 import { createProtection } from '../../src/protect/runtime.js';
+import { sourceIdentity } from '../../src/protect/rules/store.js';
 
 /**
  * Reporting at the runtime seam: is it on by default for a managed site, does each opt-out reach it, does
@@ -267,7 +268,11 @@ describe('the settled state reaches the platform', () => {
   it('is not acknowledged when the fetch already declared the settled state', async () => {
     // A site whose store already holds a platform bundle declares `on` before the fetch and settles on
     // `on`, so there is nothing to correct and no extra request to make.
-    let cached: unknown = { bundle: { firewall: [], whitelists: [], whitelist_keys: {} }, etag: '"v0"' };
+    let cached: unknown = {
+      bundle: { firewall: [], whitelists: [], whitelist_keys: {} },
+      etag: '"v0"',
+      source: await sourceIdentity({ siteUuid: 'site-1', pulseRulesUrl: 'https://x.test/monitor/pulse' }),
+    };
     const { bodies } = stubFetch();
 
     const p: any = await createProtection({
