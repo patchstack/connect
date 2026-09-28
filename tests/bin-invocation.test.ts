@@ -137,13 +137,13 @@ describe.skipIf(!built)('the packaged bin, invoked as npm invokes it', () => {
       });
 
       // Said in prose before the preview, so it is noticed here rather than in the dashboard.
-      expect(stdout).toContain(`Reporting this app's address as https://recipes.example.com.`);
-      expect(stdout).toContain(`Reporting this app's name as "Recipe Box".`);
+      expect(stdout).toContain('Reporting app address: https://recipes.example.com');
+      expect(stdout).toContain('Reporting app name: "Recipe Box"');
 
       const preview = stdout.slice(stdout.indexOf('Payload preview:'));
       expect(preview).toContain('"url": "https://recipes.example.com"');
       expect(preview).toContain('"name": "Recipe Box"');
-      expect(stdout).toContain('Reporting from this machine as the local environment');
+      expect(stdout).toContain('Environment: local (this machine)');
       expect(preview).toContain('"environment": "local"');
       expect(preview).toContain('"packages"');
     } finally {
@@ -223,7 +223,7 @@ describe.skipIf(!built)('the packaged bin, invoked as npm invokes it', () => {
         const result = await runScan(dir, server.endpoint, 'build');
 
         expect(result.status).toBe(0);
-        expect(result.stderr).toContain('manifest not reported');
+        expect(result.stderr).toContain('could not send the package list');
         expect(result.stderr).toContain('PATCHSTACK_API_KEY');
       } finally {
         await server.close();
@@ -268,12 +268,222 @@ describe.skipIf(!built)('the packaged bin, invoked as npm invokes it', () => {
         const result = await runScan(dir, server.endpoint);
 
         expect(result.status).toBe(1);
-        expect(result.stderr).toContain('Error (UNAUTHORIZED)');
+        expect(result.stderr).toContain('(UNAUTHORIZED)');
         expect(result.stderr).not.toContain('continuing the build');
       } finally {
         await server.close();
         rmSync(dir, { recursive: true, force: true });
       }
+    });
+  });
+
+  /** A direct scan ends on the same four-step checklist as `guide` and `setup`, filled in from this report. */
+  describe('the progress checklist a scan ends on', () => {
+    const SITE = '22222222-2222-4222-8222-222222222222';
+
+    async function acceptingServer(
+      claim?: Record<string, unknown>,
+    ): Promise<{ endpoint: string; close: () => Promise<void> }> {
+      const server = createServer((req, res) => {
+        req.resume();
+        req.on('end', () => {
+          res.writeHead(200, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ uuid: SITE, stored: true, manifest_id: 7, checksum: 'abc', ...(claim ? { claim } : {}) }));
+        });
+      });
+      await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+      const { port } = server.address() as AddressInfo;
+
+      return {
+        endpoint: `http://127.0.0.1:${port}/monitor/pulse/manifest`,
+        close: () => new Promise<void>((resolve) => server.close(() => resolve())),
+      };
+    }
+
+    function freshProject(): string {
+      const dir = mkdtempSync(path.join(tmpdir(), 'ps-bin-progress-'));
+      writeFileSync(
+        path.join(dir, 'package.json'),
+        JSON.stringify({ name: 'example-app', version: '1.0.0', dependencies: { '@patchstack/connect': '^0.5.0', axios: '^1.6.0' } }),
+      );
+      copyFileSync(path.join(root, 'tests', 'fixtures', 'package-lock-v3.json'), path.join(dir, 'package-lock.json'));
+      writeFileSync(path.join(dir, 'index.html'), '<html><body></body></html>');
+      return dir;
+    }
+
+    async function scan(cwd: string, endpoint: string, extra: NodeJS.ProcessEnv = {}, args: string[] = []): Promise<string> {
+      return run(cwd, endpoint, ['scan', ...args], extra);
+    }
+
+    async function run(cwd: string, endpoint: string, args: string[], extra: NodeJS.ProcessEnv = {}): Promise<string> {
+      const { stdout } = await promisify(execFile)('node', [bin, ...args], {
+        cwd,
+        env: { PATH: process.env.PATH, HOME: process.env.HOME, PATCHSTACK_ENDPOINT: endpoint, ...extra },
+        encoding: 'utf8',
+      });
+      return stdout;
+    }
+
+    it('marks the local sync done and names connecting as the one next step', async () => {
+      const server = await acceptingServer();
+      const dir = freshProject();
+      try {
+        const stdout = await scan(dir, server.endpoint);
+
+        expect(stdout).toContain(' ✔ Install the Patchstack connector');
+        expect(stdout).toContain(' ✘ Connect project to Patchstack account');
+        expect(stdout).toContain(' ✔ Sync and monitor in local environment');
+        expect(stdout).toContain(' ✘ Deploy project to protect live app');
+        expect(stdout.match(/Next: /g)).toHaveLength(1);
+        expect(stdout).toContain('Next: connect this project to your Patchstack account');
+        expect(stdout).toContain(`/monitor/claim?site=${SITE}`);
+        expect(stdout).toContain(' ✔ Added the Patchstack widget to index.html');
+        expect(stdout).toContain('anyone who opens your app can connect it to their own account');
+        expect(stdout).not.toMatch(/report a vulnerability/i);
+      } finally {
+        await server.close();
+        rmSync(dir, { recursive: true, force: true });
+      }
+    });
+
+    it('reports a production scan without ticking the deploy the dashboard has not seen', async () => {
+      const server = await acceptingServer();
+      const dir = freshProject();
+      try {
+        const stdout = await scan(dir, server.endpoint, { PATCHSTACK_ENVIRONMENT: 'production' });
+
+        expect(stdout).toContain(' ✔ Sync and monitor in production environment');
+        expect(stdout).toContain(' ✘ Deploy project to protect live app');
+        expect(stdout).toContain('Patchstack ticks this once it sees the live site.');
+      } finally {
+        await server.close();
+        rmSync(dir, { recursive: true, force: true });
+      }
+    });
+
+    it('marks the site connected when the claim token connected it', async () => {
+      const server = await acceptingServer({ state: 'claimed' });
+      const dir = freshProject();
+      try {
+        const stdout = await scan(dir, server.endpoint, {}, ['--claim-token', 'tok-123']);
+
+        expect(stdout).toContain(' ✔ Connect project to Patchstack account');
+        expect(stdout).toContain('Next: deploy your project to protect the live app');
+        expect(stdout).not.toContain('/monitor/claim?site=');
+      } finally {
+        await server.close();
+        rmSync(dir, { recursive: true, force: true });
+      }
+    });
+
+    /**
+     * The default output is read by people who do not write code. The technical words are still there for
+     * whoever needs them, behind --verbose.
+     */
+    describe('plain by default, technical with --verbose', () => {
+      const BANNED = [
+        /manifest/i,
+        /checksum/i,
+        /uuid/i,
+        /endpoint/i,
+        /lockfile/i,
+        /provision/i,
+        /\bguard\b/i,
+        /adapter/i,
+        /\bseam\b/i,
+        /scaffold/i,
+        /marker/i,
+        /npm ecosystem/i,
+        /environment_source/i,
+        /Reporting app name/,
+        /Environment: /,
+        /patchstack protect:/,
+        /Tell the user/,
+        /jargon/i,
+      ];
+
+      function expectPlain(output: string): void {
+        for (const word of BANNED) expect(output, String(word)).not.toMatch(word);
+      }
+
+      it('keeps scan, setup and guide free of technical words', async () => {
+        const server = await acceptingServer();
+        const dir = freshProject();
+        try {
+          const fresh = await run(dir, server.endpoint, ['guide']);
+          expectPlain(fresh.slice(0, fresh.indexOf('———— Full reference guide')));
+          expectPlain(await scan(dir, server.endpoint));
+          const setup = await run(dir, server.endpoint, ['setup']);
+          expect(setup).toContain('Patchstack setup');
+          expect(setup).toContain('Done\n');
+          expect(setup).not.toContain('1/3');
+          expectPlain(setup);
+          const guide = await run(dir, server.endpoint, ['guide']);
+          expectPlain(guide.slice(0, guide.indexOf('———— Full reference guide')));
+          expectPlain(await scan(dir, server.endpoint, { PATCHSTACK_ENVIRONMENT: 'production' }));
+        } finally {
+          await server.close();
+          rmSync(dir, { recursive: true, force: true });
+        }
+      });
+
+      it('brings the detail back with --verbose', async () => {
+        const server = await acceptingServer();
+        const dir = freshProject();
+        try {
+          const scanned = await scan(dir, server.endpoint, {}, ['--verbose']);
+          expect(scanned).toContain('Environment: local');
+          expect(scanned).toContain('Endpoint override:');
+          expect(scanned).toContain(`Created site ${SITE}`);
+          expect(scanned).toContain('Stored manifest #7 (checksum abc)');
+
+          const setup = await run(dir, server.endpoint, ['setup', '--verbose']);
+          expect(setup).toContain('patchstack protect:');
+          expect(setup).toContain('Build hooks:');
+
+          const guide = await run(dir, server.endpoint, ['guide', '--verbose']);
+          expect(guide).toContain(`Site UUID: ${SITE}`);
+          expect(guide).toContain('Endpoint override:');
+        } finally {
+          await server.close();
+          rmSync(dir, { recursive: true, force: true });
+        }
+      });
+
+      it('keeps a build-hook scan to two lines', async () => {
+        const server = await acceptingServer();
+        const dir = freshProject();
+        try {
+          const stdout = await scan(dir, server.endpoint, { npm_lifecycle_event: 'prebuild', npm_lifecycle_script: 'patchstack-connect scan' });
+          const lines = stdout.trim().split('\n');
+
+          expect(lines).toHaveLength(2);
+          expect(lines[0]).toMatch(/^Patchstack: checked \d+ packages?/);
+          expect(lines[1]).toMatch(/^Patchstack next step: connect this project to your Patchstack account\. Open /);
+          expectPlain(stdout.replace(/Open \S+/, ''));
+        } finally {
+          await server.close();
+          rmSync(dir, { recursive: true, force: true });
+        }
+      });
+
+      it('says a network failure plainly, with the code for support', async () => {
+        const dir = freshProject();
+        try {
+          const result = spawnSync(process.execPath, [bin, 'scan'], {
+            cwd: dir,
+            encoding: 'utf8',
+            env: { PATH: process.env.PATH, HOME: process.env.HOME, PATCHSTACK_ENDPOINT: 'http://127.0.0.1:1/monitor/pulse/manifest' },
+          });
+
+          expect(result.status).toBe(1);
+          expect(result.stderr.trim()).toBe(
+            'Could not reach Patchstack. Check your internet connection and try again. (NETWORK_ERROR)',
+          );
+        } finally {
+          rmSync(dir, { recursive: true, force: true });
+        }
+      });
     });
   });
 });

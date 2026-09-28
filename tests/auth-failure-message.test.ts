@@ -125,6 +125,6 @@ describe('a removed site is still reported as removed', () => {
     const outcome = await postPackageRemoved(WITH_CREDENTIAL);
 
     expect(outcome.result).toBe('failed');
-    expect((outcome as { message: string }).message).toMatch(/credential/i);
+    expect((outcome as { message: string }).message).toMatch(/API key/i);
   });
 });

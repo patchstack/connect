@@ -21,6 +21,9 @@ import {
 } from './mark-build.js';
 import { detectStack } from './stack.js';
 import { buildWidgetTag } from './widget.js';
+import { type NextStepContext, type Progress } from './progress.js';
+import { renderStatus, type MissingItem } from './report.js';
+import type { Environment, EnvironmentSource } from './types.js';
 
 /** Global the widget reads to decide it is running on a published build. */
 const PROD_MARKER_NEEDLE = '__PATCHSTACK_PROD__';
@@ -41,6 +44,9 @@ export interface GuideState {
   claimUrl: string | null;
   /** Non-default API endpoint in effect (rc file, env, or flag), else null. */
   endpointOverride: string | null;
+  /** Where a scan from here reports from, and what decided it. Null when the config is unreadable. */
+  environment: Environment | null;
+  environmentSource: EnvironmentSource | null;
   hasBuildScript: boolean;
   installScanWired: boolean;
   prebuildWired: boolean;
@@ -328,8 +334,12 @@ export async function collectGuideState(cwd: string): Promise<GuideState> {
   let claimUrl: string | null = null;
   let endpointOverride: string | null = null;
   let widgetOptOut = false;
+  let environment: Environment | null = null;
+  let environmentSource: EnvironmentSource | null = null;
   try {
     const config = await resolveConfig({ cwd });
+    environment = config.environment;
+    environmentSource = config.environmentSource ?? null;
     siteUuid = config.siteUuid;
     if (siteUuid !== null && config.endpointTrusted !== false) {
       claimUrl = buildClaimUrl(config.endpoint, siteUuid);
@@ -362,6 +372,8 @@ export async function collectGuideState(cwd: string): Promise<GuideState> {
     siteUuid,
     claimUrl,
     endpointOverride,
+    environment,
+    environmentSource,
     hasBuildScript: Boolean(pkg?.scripts?.build?.trim()),
     installScanWired: (pkg?.scripts?.postinstall ?? '').includes('patchstack-connect scan'),
     // The scan has to run first: a later prebuild command may upload and stamp the map that the bundle
@@ -394,7 +406,6 @@ const ANSI = {
   cyan: '\u001B[36m',
 };
 
-/** Setup steps still missing — 0 means the checklist is fully green. */
 /**
  * True when the site's root shell is code rather than an HTML file. Those roots
  * are server-rendered, so no built HTML file carries the marker to production and
@@ -421,6 +432,7 @@ export function widgetTagInPlace(state: GuideState): boolean {
   );
 }
 
+/** Technical setup steps still missing; 0 means nothing is owed in the working tree. */
 export function countRemainingSteps(state: GuideState): number {
   return [
     state.installed?.section === 'dependencies',
@@ -433,264 +445,190 @@ export function countRemainingSteps(state: GuideState): number {
   ].filter((step) => !step).length;
 }
 
-export function renderGuideChecklist(state: GuideState, useColor: boolean): string {
+/** The four progress steps as far as the working tree can tell. */
+export function guideProgress(state: GuideState, known: Partial<Progress> = {}): Progress {
+  return {
+    installed: state.installed !== null,
+    // Claim state lives on the server and nothing on disk records it, so only a caller that has just
+    // heard from the server (a scan's claim outcome) can mark it done.
+    connected: false,
+    // `.patchstackrc.json` only gains a site UUID from a manifest the server stored.
+    synced: state.siteUuid !== null,
+    // Only the dashboard can see the live site, so nothing the CLI runs marks this done.
+    deployed: false,
+    ...known,
+  };
+}
+
+export function guideNextStepContext(state: GuideState): NextStepContext {
+  return {
+    installCommand: installCommand(state.packageManager),
+    siteUuid: state.siteUuid,
+    claimUrl: state.claimUrl,
+    environment: state.environment,
+    environmentSource: state.environmentSource,
+  };
+}
+
+/**
+ * An unconnected project can be connected by whoever loads it first, so the warning goes wherever the
+ * project is shown as not connected. `why` leads when a claim token was tried and did not connect it.
+ */
+export function notConnectedItem(why: string[] = []): MissingItem {
+  return {
+    text: 'Not connected to your Patchstack account',
+    hint: [...why, 'Until it is, anyone who opens your app can connect it to their own account.'],
+  };
+}
+
+/** The build-script lines `setup` adds, for someone adding them by hand. */
+function buildScriptLines(state: GuideState): string[] {
+  const lines: string[] = [];
+  if (!state.installScanWired) lines.push('"postinstall": "patchstack-connect scan"');
+  if (state.hasBuildScript && !(state.prebuildWired && state.postbuildWired)) {
+    if (state.packageManager === 'bun') {
+      // bun run skips npm-style pre/post scripts, so the hooks chain inside the build script.
+      lines.push('"build": "patchstack-connect scan && <existing build command> && patchstack-connect mark-build"');
+    } else {
+      if (!state.prebuildWired) lines.push('"prebuild": "patchstack-connect scan"');
+      if (!state.postbuildWired) lines.push('"postbuild": "patchstack-connect mark-build"');
+    }
+  }
+  return lines;
+}
+
+/**
+ * What the working tree is still missing, each with the one thing to do about it. Until the site exists
+ * only a dev-only install is listed: before that, `setup` is the next step and applies the rest.
+ *
+ * `connected` is whether the caller heard from Patchstack that the project has an owner. Nothing on disk
+ * records it, so without that answer the project is treated as not connected.
+ */
+export function guideMissing(state: GuideState, known: Partial<Progress> = {}): MissingItem[] {
+  const missing: MissingItem[] = [];
+
+  if (state.installed?.section === 'devDependencies') {
+    missing.push({
+      text: 'Patchstack is installed as a development tool only, so your live app cannot load it',
+      hint: [`Run: ${installCommand(state.packageManager)}`],
+    });
+  }
+  if (state.siteUuid === null) return missing;
+
+  if (!state.widgetOptOut && state.widgetInstalled && state.widgetTokenMatches === false) {
+    missing.push({
+      text: 'The Patchstack widget on your page belongs to a different project',
+      hint: [`Set data-site-uuid to '${state.siteUuid}' on the widget tag.`],
+    });
+  } else if (!state.widgetOptOut && !state.widgetInstalled) {
+    missing.push({
+      text: 'The Patchstack widget is not on your page yet',
+      hint: [
+        state.widgetFileHint !== null
+          ? `Add this to ${state.widgetFileHint}, just before </body>:`
+          : 'Add this to your main page layout, just before </body>:',
+        `  ${buildWidgetTag(state.siteUuid)}`,
+      ],
+    });
+  }
+
+  if (state.protectionApplicable && !state.protectionWired) {
+    const failing = state.protectionChecks.filter((item) => !item.ok && item.group !== 'reporting');
+    const generic = state.protectionStack === 'generic';
+    missing.push({
+      key: 'runtime-protection',
+      text: generic
+        ? 'Runtime protection: not added to your server yet'
+        : `Runtime protection: not finished for ${state.protectionStack}`,
+      hint: generic
+        ? ['Add Patchstack where requests enter your app. Run npx @patchstack/connect protect for the steps.']
+        : ['Run: npx @patchstack/connect protect, then npx @patchstack/connect protect --check'],
+      detail: failing.map((check) => `${check.label}${check.hint ? ` — ${check.hint}` : ''}`),
+    });
+  }
+
+  const scripts = buildScriptLines(state);
+  if (scripts.length > 0) {
+    missing.push({
+      text: 'Patchstack does not check your packages on install and build yet',
+      hint: ['Run: npx @patchstack/connect setup (it adds the build steps to package.json)'],
+      detail: [
+        state.packageManager === 'bun' ? 'Add to package.json scripts:' : 'Add to package.json scripts (chain with && if one exists):',
+        ...scripts.map((line) => `  ${line}`),
+      ],
+    });
+  }
+
+  // A server-rendered root has no built HTML page for `mark-build` to flag as the live site.
+  if (needsSourceProductionMarker(state) && !state.productionMarkerWired) {
+    const gate = productionGate(state.framework);
+    missing.push(
+      hasJsxShell(state.framework)
+        ? {
+            text: 'Your live app does not tell Patchstack it is live yet',
+            hint: [`Run: npx @patchstack/connect scan (it edits ${state.widgetFileHint})`],
+            detail: [`Or add inside <head>:`, ...buildSourceMarkerSnippet(state.framework).split('\n').map((line) => `  ${line}`)],
+          }
+        : {
+            text: 'Your live app does not tell Patchstack it is live yet',
+            hint: [
+              `Add this inside <head> in ${state.widgetFileHint}, only when ${gate}:`,
+              '  <script>window.__PATCHSTACK_PROD__=true;</script>',
+            ],
+          },
+    );
+  }
+
+  if (known.connected !== true) missing.push(notConnectedItem());
+
+  return missing;
+}
+
+export interface RenderGuideOptions {
+  verbose?: boolean;
+}
+
+export function renderGuideChecklist(
+  state: GuideState,
+  useColor: boolean,
+  known: Partial<Progress> = {},
+  options: RenderGuideOptions = {},
+): string {
   const paint = (code: string, text: string): string =>
     useColor ? `${code}${text}${ANSI.reset}` : text;
-  const done = (text: string): string => ` ${paint(ANSI.green, '✔')} ${text}`;
-  const todo = (text: string): string => ` ${paint(ANSI.yellow, '✖')} ${paint(ANSI.bold, text)}`;
-  const detail = (text: string): string => `     ${paint(ANSI.dim, text)}`;
-  const lines: string[] = [];
-
-  const headerParts = [state.framework, state.packageManager].filter(
-    (part): part is string => part !== null,
-  );
   const name = state.projectName ?? path.basename(process.cwd());
-  lines.push(paint(ANSI.bold, `Patchstack setup status — ${name} (${headerParts.join(' · ')})`));
-  if (state.endpointOverride !== null) {
-    lines.push(
-      detail(
-        `endpoint override in effect: ${state.endpointOverride} (set via .patchstackrc.json, PATCHSTACK_ENDPOINT, or --endpoint)`,
-      ),
-    );
-  }
-  lines.push('');
+  const title = `Patchstack status for ${name}`;
 
   if (!state.hasPackageJson) {
-    lines.push(todo('No package.json found in this directory.'));
-    lines.push(detail('For a JS/Node app, run the guide from its package directory; check that package.json is readable and valid.'));
-    lines.push(detail('For a standalone HTML/CSS/browser-JavaScript site, use the Patchstack Connector directly.'));
-    lines.push(detail('Do not create a Node project, build hooks, or a server just to install the widget.'));
-    lines.push(detail('Use the correct site UUID or widget snippet from the Patchstack dashboard; never invent one.'));
-    lines.push(detail('See "Plain HTML sites" in AGENT-INSTALL.md. Widget-only setup provides no dependency scan or runtime protection.'));
-    return lines.join('\n');
+    return [
+      paint(ANSI.bold, title),
+      '',
+      paint(ANSI.bold, 'Missing'),
+      ` ${paint(ANSI.yellow, '✘')} No package.json here.`,
+      '   For a JS/Node app, run this from its package directory.',
+      '   For a plain HTML site, follow "Plain HTML sites" in AGENT-INSTALL.md. It gets the widget only: no dependency scan or runtime protection.',
+      '   Do not create a Node project just to add the widget.',
+      '   Use the site UUID or widget snippet from the Patchstack dashboard. Never invent one.',
+    ].join('\n');
   }
 
-  // The person watching this run usually did not write the project. The install
-  // is the longest silence in their first hour with Patchstack, so the guide
-  // asks the agent to fill it — a request, never something the setup relies on.
-  if (countRemainingSteps(state) > 0) {
-    lines.push(` ${paint(ANSI.cyan, '➜')} ${paint(ANSI.bold, 'Tell the user what you are doing as you go.')}`);
-    lines.push('   Installs here take minutes and they are watching output they cannot read.');
-    lines.push('   Say it in plain words: their site is built out of hundreds of ready-made');
-    lines.push('   pieces of code, Patchstack keeps track of which ones it uses and warns them');
-    lines.push('   when one turns out to be unsafe, and nothing their visitors see changes.');
-    lines.push('   Avoid lockfile / dependency / manifest / npm / UUID when speaking to them.');
-    lines.push('');
-  }
+  const lines = renderStatus(
+    title,
+    { done: [], missing: guideMissing(state, known) },
+    guideProgress(state, known),
+    guideNextStepContext(state),
+    { useColor, verbose: options.verbose },
+  );
 
-  // Until the first scan, `setup` covers every step listed below in one bounded command, so the
-  // checklist names it first rather than leaving the agent to assemble the steps by hand.
-  if (state.siteUuid === null) {
-    lines.push(` ${paint(ANSI.cyan, '➜')} ${paint(ANSI.bold, 'Nothing is set up yet — two commands cover the steps below:')}`);
-    if (state.installed?.section !== 'dependencies') {
-      lines.push(`   ${installCommand(state.packageManager)}`);
-    }
-    lines.push('   npx @patchstack/connect setup');
-    lines.push('   setup provisions the site, adds the widget, installs and verifies runtime protection,');
-    lines.push('   and wires the install and build scans, then prints this checklist again. Anything');
-    lines.push('   still listed there is a step setup could not apply safely, and is yours to finish.');
-    lines.push('');
-  }
-
-  // 1. Install
-  if (state.installed?.section === 'dependencies') {
-    lines.push(done(`@patchstack/connect installed (${state.installed.version}, ${state.installed.section})`));
-  } else if (state.installed !== null) {
-    lines.push(todo(`Move @patchstack/connect to runtime dependencies (currently ${state.installed.section})`));
-    lines.push(detail(`Run → ${installCommand(state.packageManager)}`));
-    lines.push(detail('The generated guard imports @patchstack/connect/protect at runtime.'));
-  } else {
-    lines.push(todo('Install @patchstack/connect as a runtime dependency'));
-    lines.push(detail(`Run → ${installCommand(state.packageManager)}`));
-    if (state.packageManager === 'bun') {
-      lines.push(detail(`(if bun isn't available here, ${INSTALL_COMMANDS.npm} works too)`));
-    }
-  }
-
-  // 2. Provision (first scan)
-  if (state.siteUuid !== null) {
-    lines.push(done(`Site provisioned (${state.siteUuid})`));
-  } else {
-    lines.push(todo('Provision the site — run the first scan'));
-    lines.push(detail('Run → npx @patchstack/connect scan'));
-    lines.push(detail('Reads the lockfile, registers the project, writes .patchstackrc.json,'));
-    lines.push(detail('and prints a dashboard link. The CLI prints the link but never opens it.'));
-    lines.push(detail('If your tool refuses to run this command, hand it to the person instead of working'));
-    lines.push(detail('around it — see "When your tool will not run this CLI" in the reference guide.'));
-  }
-
-  // 3. Dependency-change scan
-  if (state.installScanWired) {
-    lines.push(done('Dependency-install scan wired (postinstall)'));
-  } else {
-    lines.push(todo('Scan again whenever dependencies are installed'));
-    lines.push(detail('Edit package.json → "postinstall": "patchstack-connect scan"'));
-  }
-
-  // 4. Build hooks
-  if (!state.hasBuildScript) {
-    lines.push(done('No build script to integrate (postinstall covers dependency changes)'));
-  } else if (state.prebuildWired && state.postbuildWired) {
-    lines.push(done('Build hooks wired (scan before builds, mark-build after)'));
-  } else if (state.packageManager === 'bun') {
-    // bun run skips npm-style pre/post scripts, so chain inside the build script.
-    lines.push(todo('Wire the build hooks yourself — edit package.json (bun skips pre/post hooks, so chain inside "build")'));
-    lines.push(detail('Edit package.json → "build": "patchstack-connect scan && <existing build command> && patchstack-connect mark-build"'));
-  } else {
-    lines.push(todo('Wire the build hooks yourself — edit package.json "scripts" (chain with && if a hook already exists)'));
-    if (!state.prebuildWired) {
-      lines.push(detail('Edit package.json → "prebuild": "patchstack-connect scan"'));
-    }
-    if (!state.postbuildWired) {
-      lines.push(detail('Edit package.json → "postbuild": "patchstack-connect mark-build"'));
-    }
-  }
-
-  // 5. Patchstack Connector
-  const widgetOk = state.widgetInstalled && state.widgetTokenMatches !== false;
-  if (state.widgetOptOut && !widgetOk) {
-    lines.push(done('Patchstack Connector disabled by config ("widget": false in .patchstackrc.json)'));
-  } else if (widgetOk) {
-    lines.push(done('Patchstack Connector installed'));
-  } else if (state.widgetInstalled) {
-    lines.push(todo("Fix the Patchstack Connector yourself — its site UUID doesn't match this project's"));
-    lines.push(detail(`Edit the widget tag → set data-site-uuid (or userToken) to '${state.siteUuid}' (a wrong UUID makes the widget silently no-op)`));
-  } else if (state.siteUuid === null) {
-    lines.push(todo('Add the Patchstack Connector — the first scan does this for you'));
-    lines.push(detail('Run → npx @patchstack/connect scan  (provisions the site and adds the widget tag'));
-    lines.push(detail('  to the root HTML shell: index.html / public/index.html / src/app.html)'));
-  } else {
-    lines.push(todo('Add the Patchstack Connector yourself — this root is code, not a plain HTML shell'));
-    lines.push(detail('Note → a normal `scan` adds this tag to a plain HTML shell automatically; add it by hand here:'));
-    const placement =
-      state.widgetFileHint !== null
-        ? `Edit ${state.widgetFileHint} → put it just before </body>:`
-        : "Edit your root layout → put it just before </body> (the framework's HTML/layout mechanism, never a JS entry point):";
-    lines.push(detail(placement));
-    lines.push(detail(`  ${buildWidgetTag(state.siteUuid)}`));
-    lines.push(detail('The site UUID is public by design — it ships in client-side HTML.'));
-  }
-
-  // 5b. Production marker on server-rendered roots. A code root never emits a
-  // static HTML file, so `mark-build` has nothing to stamp and the marker only
-  // reaches production if it ships in the shell alongside the widget tag.
-  if (needsSourceProductionMarker(state)) {
-    if (state.productionMarkerWired) {
-      lines.push(done('Production marker wired (widget switches to report mode on the published site)'));
-    } else {
-      lines.push(todo('Add the production marker — this root is server-rendered, so mark-build cannot stamp it'));
-      lines.push(
-        detail(
-          'Without it the widget treats the published site as build mode and shows the claim flow to visitors.',
-        ),
-      );
-      const gate = productionGate(state.framework);
-      if (hasJsxShell(state.framework)) {
-        lines.push(detail(`Run → npx @patchstack/connect scan  (adds it to ${state.widgetFileHint} automatically)`));
-        lines.push(detail('Or add it by hand, in <head> above the widget tag:'));
-        for (const snippetLine of buildSourceMarkerSnippet(state.framework).split('\n')) {
-          lines.push(detail(`  ${snippetLine}`));
-        }
-      } else {
-        lines.push(
-          detail(
-            `Edit ${state.widgetFileHint} → using the framework's head mechanism, emit an inline`,
-          ),
-        );
-        lines.push(detail(`  <script>window.__PATCHSTACK_PROD__=true;</script> only when ${gate}.`));
-      }
-      lines.push(detail(`The ${gate} guard is required — an ungated marker also hides the claim flow in preview.`))
-    }
-  }
-
-  // 6. Runtime protection
-  if (!state.protectionApplicable) {
-    // Not a green tick for a step that was done, and not a red one for a step still owed. A guard screens
-    // requests, and a project that only emits files never receives one, so the honest line says the
-    // capability does not apply here — and says what does, since "no runtime protection" read alone
-    // sounds like a gap rather than a shape.
-    lines.push(done('Runtime protection: not applicable — this project has no request path'));
-    for (const check of state.protectionChecks.filter((item) => item.hint !== undefined && item.group !== 'reporting')) {
-      lines.push(detail(check.hint ?? ''));
-    }
-  } else if (state.protectionWired) {
-    lines.push(done(`Runtime protection wired (${state.protectionStack})`));
-  } else {
-    lines.push(todo(`Finish runtime protection (${state.protectionStack})`));
-    for (const check of state.protectionChecks.filter((item) => !item.ok)) {
-      lines.push(detail(`${check.label}${check.hint ? ` — ${check.hint}` : ''}`));
-    }
-    lines.push(detail('Verify → npx @patchstack/connect protect --check'));
-    // Named here rather than run: `guide` is read-only and must never start the application.
-    lines.push(detail('Prove a request reaches the guard (starts your app) → npx @patchstack/connect protect --check --runtime'));
-  }
-
-  // 7. Attaching the site to an account. Three routes reach the same place, and the widget's own
-  // panel leads because it is already on the page the person is looking at. The link and `claim`
-  // are for a project with no preview open, or none carrying the widget.
-  lines.push('');
-  if (state.claimUrl !== null) {
-    lines.push(` ${paint(ANSI.cyan, '➜')} ${paint(ANSI.bold, 'Connect this site to your Patchstack account:')}`);
-    let route = 1;
-    if (widgetTagInPlace(state)) {
-      lines.push(`   ${route++}. In the preview — while the site is unclaimed the widget shows a`);
-      lines.push('      "Connect this website" panel. Signing in there attaches the site.');
-    }
-    lines.push(`   ${route++}. In a browser — open the dashboard link (the CLI never opens it):`);
-    lines.push(`      ${paint(ANSI.cyan, state.claimUrl)}`);
-    lines.push(`   ${route}. From this terminal → npx @patchstack/connect claim`);
-    lines.push('      (prints a link to sign in with, then attaches the site to that account)');
-    lines.push(detail('Reports have no owner to reach until one of these completes. The site UUID ships'));
-    lines.push(detail('in the page and claiming is first-come, so an unclaimed site stays claimable by'));
-    lines.push(detail('anyone who loads it.'));
-    if (state.endpointOverride !== null) {
-      lines.push(detail('(this URL inherits the endpoint override above)'));
-    }
-  } else {
-    lines.push(detail('The dashboard link appears after the first scan (re-print any time with `status`).'));
-  }
-
-  // 8. Preview refresh. The tag is in the source, but a page that was already open
-  // loaded before it existed and renders nothing until it reloads. Which control appears
-  // then depends on claim state: the widget serves the connect panel until the site has an
-  // owner, and the report button only after.
-  if (widgetTagInPlace(state)) {
-    lines.push('');
-    lines.push(` ${paint(ANSI.cyan, '➜')} ${paint(ANSI.bold, 'Refresh the preview to see the widget:')}`);
-    lines.push('   The widget loads with the page, so a preview that was already open still shows');
-    lines.push('   the HTML from before this change. Builders that hot reload refresh it themselves;');
-    lines.push('   if nothing appears, refresh the preview once.');
-    lines.push('   Unclaimed, the widget shows the "Connect this website" panel; the public');
-    lines.push('   "Report a vulnerability" button takes its place once the site is claimed.');
-  }
-
-  // 9. Deploy. Everything above is a source change, so the running production site keeps
-  // serving its previous build — including one with no widget and no production marker.
-  if (state.siteUuid !== null) {
-    lines.push('');
-    lines.push(` ${paint(ANSI.cyan, '➜')} ${paint(ANSI.bold, 'Deploy to put this on your live site:')}`);
-    lines.push('   These are source changes. Your deployed site keeps serving its previous build,');
-    lines.push('   so visitors only get the widget after you deploy (or hit Publish) again.');
-  }
-
-  const remaining = countRemainingSteps(state);
-  lines.push('');
-  if (remaining === 0) {
-    lines.push(
-      done(
-        paint(
-          ANSI.bold,
-          'Ready to deploy. Everything above is in the working tree only: commit .patchstackrc.json, package.json, the runtime guard changes, and the file carrying the widget snippet; add PATCHSTACK_API_KEY to the hosting platform; then deploy. Never commit .patchstackrc.local.json — it holds the API key, and setup has already added it to .gitignore.',
-        ),
-      ),
-    );
-    if (state.claimUrl !== null) {
-      lines.push(detail('Until the site is attached to an account (dashboard link above, or `claim`), nobody can see its reports.'));
-    }
-  } else {
-    lines.push(
-      ` ${paint(ANSI.yellow, String(remaining))} step(s) remaining — details in the reference guide below.`,
-    );
+  if (options.verbose === true) {
+    const verbose = [
+      `Project: ${[state.framework, state.packageManager].filter((part) => part !== null).join(' · ')}`,
+      ...(state.siteUuid !== null ? [`Site UUID: ${state.siteUuid}`] : []),
+      ...(state.environment !== null ? [`Environment: ${state.environment}${state.environmentSource !== null ? ` (${state.environmentSource})` : ''}`] : []),
+      ...(state.endpointOverride !== null ? [`Endpoint override: ${state.endpointOverride}`] : []),
+      ...(state.widgetOptOut ? ['Widget is off ("widget": false in .patchstackrc.json).'] : []),
+    ];
+    lines.splice(1, 0, ...verbose.map((line) => paint(ANSI.dim, line)));
   }
 
   return lines.join('\n');

@@ -3,6 +3,7 @@ import path from 'node:path';
 
 import type { PackageManager } from './guide.js';
 import { runProtect, runVerify } from './protect/install/index.js';
+import { collectProtectLog } from './protect/install/util.js';
 import type { ProtectResult, VerifyReport } from './protect/install/types.js';
 import { writeProjectFileSync } from './safe-file.js';
 
@@ -23,6 +24,8 @@ export interface WireBuildScriptsResult {
 export interface SetupProtectionResult {
   install: ProtectResult;
   verification: VerifyReport;
+  /** What the installer said while it ran, for `--verbose`. */
+  log: string[];
 }
 
 /**
@@ -32,9 +35,9 @@ export interface SetupProtectionResult {
  * when an existing framework seam cannot safely be overwritten.
  */
 export function setupProtection(cwd: string): SetupProtectionResult {
-  const install = runProtect(cwd);
+  const { result: install, lines: log } = collectProtectLog(() => runProtect(cwd));
   const verification = runVerify(cwd);
-  return { install, verification };
+  return { install, verification, log };
 }
 
 /** Add `command` after an existing lifecycle hook without duplicating it. */

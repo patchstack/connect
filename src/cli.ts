@@ -11,7 +11,7 @@ import { computeManifestChecksum } from './checksum.js';
 import {
   postInputMap,
   buildManifestBody,
-  claimOutcomeLines,
+  claimOutcome,
   DEFAULT_ENDPOINT,
   buildClaimUrl,
   fetchSiteStatus,
@@ -59,11 +59,16 @@ import {
   collectGuideState,
   countRemainingSteps,
   detectPackageManager,
+  guideMissing,
+  guideNextStepContext,
+  notConnectedItem,
+  guideProgress,
   installCommand,
   renderGuideChecklist,
   resolveWidgetFileHint,
-  widgetTagInPlace,
 } from './guide.js';
+import { type NextStepContext, type Progress } from './progress.js';
+import { emptyReport, renderHookSummary, renderStatus, type StatusReport } from './report.js';
 import { login, readPendingLogin, redeemIfApproved, startLogin, waitForApproval } from './login.js';
 import {
   claim,
@@ -79,7 +84,6 @@ import { runMap } from './map-command.js';
 import { getStringFlag } from './flags.js';
 import { isCanonicalUuid } from './endpoint-policy.js';
 import { setupProtection, wireBuildScripts } from './setup.js';
-import type { SetupProtectionResult, WireBuildScriptsResult } from './setup.js';
 import { isInstallOrBuildHook, isPreBundleBuildHook, undeliveredReportLines } from './build-hook.js';
 import { applyBuildStamp } from './build-stamp.js';
 import { detectStack, type StackDescriptor } from './stack.js';
@@ -202,6 +206,8 @@ Usage:
 Global:
   --version               Print the installed version of this package and exit
   --help                  Print this help and exit
+  --verbose               Also print the technical detail: site ID, endpoint, checksum,
+                          environment and why, files written, installer steps
 
 Options (for scan, setup, status, and uninstall):
   --site-uuid <uuid>      Override the configured site UUID
@@ -258,6 +264,17 @@ Examples:
 `;
 
 const VALUE_FLAGS = new Set(['site-uuid', 'endpoint', 'dir', 'url', 'out', 'claim-token']);
+
+/** Set from `--verbose`. The default output is a plain status report; this adds the technical lines. */
+let verbose = false;
+
+function detail(line: string): void {
+  if (verbose) console.log(line);
+}
+
+function useColor(): boolean {
+  return process.stdout.isTTY === true && process.env.NO_COLOR === undefined;
+}
 
 interface ParsedArgs {
   command: string | null;
@@ -346,7 +363,7 @@ async function runInit(args: ParsedArgs): Promise<number> {
   const target = await writeConfigFile(process.cwd(), { siteUuid: uuid });
   console.log(`Wrote ${target}`);
   console.log('');
-  console.log('Next: run `npx @patchstack/connect scan` to send your first manifest.');
+  console.log('Next: run `npx @patchstack/connect scan`.');
   return 0;
 }
 
@@ -373,7 +390,7 @@ async function runClaim(args: ParsedArgs): Promise<number> {
     if (result.credentialSaved === true) {
       const ignore = await secretFileIgnored(process.cwd());
       // The value itself is never printed — only that it landed, and only that it is ignored when it is.
-      console.log(`    A credential for this site was issued and saved to ${SECRET_CONFIG_FILENAME}.`);
+      console.log(`    Saved a new credential to ${SECRET_CONFIG_FILENAME}.`);
       console.log(gitignoreOutcomeLine(ignore));
     }
     console.log('');
@@ -383,8 +400,7 @@ async function runClaim(args: ParsedArgs): Promise<number> {
   const prompt = (userCode: string, verificationUri: string) => {
     console.log(`\n  Your code:  ${userCode}`);
     console.log(`  Claim at:   ${verificationUri}\n`);
-    console.log('  Open that link and sign in to Patchstack — or create an account — to attach');
-    console.log("  this site to it. Whoever approves becomes the site's owner.\n");
+    console.log('  Open the link and sign in (or sign up) to connect this site. Whoever approves owns it.\n');
   };
 
   if (args.flags.has('wait')) {
@@ -438,8 +454,7 @@ async function runClaim(args: ParsedArgs): Promise<number> {
     }
 
     prompt(started.pending.userCode, started.pending.verificationUri);
-    console.log('  Give that link to the user. When they confirm they have claimed the site, run');
-    console.log('  this same command again (or `claim --wait` to block until they do).\n');
+    console.log('  Give the link to the user. Once they approve, run this command again (or `claim --wait`).\n');
 
     return 0;
   }
@@ -477,8 +492,7 @@ async function runLogin(args: ParsedArgs): Promise<number> {
     // The value itself is never printed — only that it landed, and only that it is ignored when it is.
     console.log(`\n  ✓ Credential restored and saved to ${SECRET_CONFIG_FILENAME}.`);
     console.log(gitignoreOutcomeLine(ignore));
-    console.log('    The previous credential no longer works. Update it anywhere else it was set:');
-    console.log('    CI secrets, hosting env vars, preview environments, other checkouts.\n');
+    console.log('    The old credential no longer works. Update it in CI, hosting and other checkouts.\n');
     return 0;
   };
 
@@ -503,9 +517,8 @@ async function runLogin(args: ParsedArgs): Promise<number> {
     console.log(`  Approve at: ${verificationUri}\n`);
     // Said before approval, not after: the person deciding needs to know it is
     // a rotation, and an assistant relaying this has to pass the warning on.
-    console.log("  Open that link and approve it as the site's owner. Approving issues a new");
-    console.log('  credential and stops the current one working — CI, deploys and any other');
-    console.log('  machine using it will need the new value.\n');
+    console.log("  Open the link and approve as the site's owner. This replaces the current credential,");
+    console.log('  so CI, deploys and other machines will need the new one.\n');
   };
 
   // Nobody is watching this stream. Blocking here would hide the link until the
@@ -541,8 +554,7 @@ async function runLogin(args: ParsedArgs): Promise<number> {
     }
 
     prompt(started.pending.userCode, started.pending.verificationUri);
-    console.log('  Give that link to the user. When they confirm they have approved it, run');
-    console.log('  this same command again (or `login --wait` to block until they do).\n');
+    console.log('  Give the link to the user. Once they approve, run this command again (or `login --wait`).\n');
 
     return 0;
   }
@@ -574,11 +586,11 @@ const MAX_RETRY_TIMEOUT_MS = 180_000;
  * person left it.
  */
 /**
- * Post the manifest under the label the server accepts, and say so when that was not the label asked for.
+ * Post the manifest under the label the server accepts, and say so (with --verbose) when that was not
+ * the label asked for.
  *
  * A server that predates the `local` label refuses it; the report then goes as `sandbox`, the nearest
- * label that server has for "not the live site". Said out loud, because the dashboard will show the
- * scan under that name.
+ * label that server has for "not the live site".
  */
 async function postManifestAccepted(
   config: Config,
@@ -586,8 +598,8 @@ async function postManifestAccepted(
 ): Promise<StoreManifestResponse> {
   const { response, environmentUsed } = await postManifestWithEnvironmentFallback(config, payload);
   if (environmentUsed !== config.environment) {
-    console.warn(
-      `patchstack: this Patchstack API does not know the ${config.environment} label yet; the report was accepted as ${environmentUsed}, which also keeps it apart from production.`,
+    detail(
+      `This Patchstack API does not know the ${config.environment} label yet; the report was accepted as ${environmentUsed}, which also keeps it apart from production.`,
     );
   }
   return response;
@@ -614,28 +626,41 @@ async function postManifestWithPatience(
     const timeoutMs = Math.min(config.timeoutMs * RETRY_TIMEOUT_FACTOR, MAX_RETRY_TIMEOUT_MS);
     if (timeoutMs <= config.timeoutMs) throw err;
 
-    console.warn(
-      `patchstack: the report timed out after ${config.timeoutMs}ms; trying once more with ${timeoutMs}ms.`,
-    );
+    console.warn('Patchstack is slow to answer. Trying once more…');
+    detail(`The report timed out after ${config.timeoutMs}ms; trying once more with ${timeoutMs}ms.`);
     const response = await postManifestAccepted({ ...config, timeoutMs }, payload);
 
     try {
       const target = await persistTimeout(process.cwd(), timeoutMs);
-      console.log(`Saved a ${timeoutMs}ms request timeout to ${target}, so builds inherit it.`);
+      detail(`Saved a ${timeoutMs}ms request timeout to ${target}, so builds inherit it.`);
     } catch {
-      console.warn(
-        `patchstack: could not save the timeout; set PATCHSTACK_TIMEOUT_MS=${timeoutMs} where builds run.`,
-      );
+      console.warn(`Could not save the longer wait. Set PATCHSTACK_TIMEOUT_MS=${timeoutMs} where your builds run.`);
     }
     return response;
   }
 }
 
+function plural(count: number, one: string, many: string): string {
+  return `${count} ${count === 1 ? one : many}`;
+}
+
 async function runScan(
   args: ParsedArgs,
-  options: { showRemainingSetup?: boolean } = {},
+  options: {
+    /** Collect this run's results here instead of printing them, for a caller that prints its own report. */
+    report?: StatusReport;
+    /** False prints only what this run did, without the checklist. */
+    showRemainingSetup?: boolean;
+    /** What the report established, for a caller that prints its own checklist. */
+    onReported?: (outcome: Omit<Progress, 'installed'>) => void;
+  } = {},
 ): Promise<number> {
   const dryRun = args.flags.get('dry-run') === true;
+  // A preview exists to check what would be sent, so it shows every detail.
+  const say = (line: string): void => {
+    if (verbose || dryRun) console.log(line);
+  };
+  const report = options.report ?? emptyReport();
   const config = await resolveCliConfig(args, {
     cliClaimToken: getStringFlag(args.flags, 'claim-token'),
     // The one command that reports them, so the one command that resolves them.
@@ -643,63 +668,56 @@ async function runScan(
   });
   const manifest = await scanLockfile(process.cwd());
   for (const warning of manifest.warnings ?? []) {
-    console.warn(`patchstack: ${warning}`);
+    if (dryRun) console.warn(`patchstack: ${warning}`);
+    else report.missing.push({ text: warning });
   }
   // Off unless asked for: locations widen what leaves the machine, so the upload that carries them is an
   // explicit choice rather than something an upgrade turns on.
   const installPaths = args.flags.get('install-paths') === true;
   const { payload, stats } = buildWirePayload(manifest, { installPaths });
 
-  console.log(
-    `Found ${payload.packages.length} unique package versions across ${stats.uniqueNames} package names (${manifest.ecosystem} ecosystem).`,
-  );
+  say(`Found ${payload.packages.length} package versions across ${stats.uniqueNames} packages (${manifest.ecosystem}).`);
   if (installPaths) {
     const located = payload.packages.filter((pkg) => pkg.paths !== undefined).length;
     console.log(
       payload.installPathsComplete
-        ? `Including each package's install location in the dependency tree (--install-paths), for all ${located}.`
-        : `Including install locations (--install-paths), for ${located} of ${payload.packages.length} — this lockfile format does not record them for the rest, which will be reported as "not recorded" rather than "not installed there".`,
+        ? `Including install locations (--install-paths) for all ${located}.`
+        : `Including install locations (--install-paths) for ${located} of ${payload.packages.length}. This lockfile does not record the rest; they are sent as "not recorded".`,
     );
   }
   // The label decides how the dashboard reads this report — a production build is contact with a live
-  // site, a local one is inventory — so the line says which, and what decided it, every time.
+  // site, a local one is inventory — so the detail says which, and what decided it.
   if (config.environment === 'local') {
-    console.log(
-      'Reporting from this machine as the local environment: the dashboard will show the app as configured, not deployed. A build on a platform this recognises reports production or sandbox on its own; on a platform it does not know, set PATCHSTACK_ENVIRONMENT=production for the build that goes live.',
-    );
+    say('Environment: local (this machine). Set PATCHSTACK_ENVIRONMENT=production on a live build your host does not identify.');
   } else {
     const because = (config.environmentEvidence ?? []).length > 0
       ? ` (${config.environmentEvidence!.join('; ')})`
       : '';
-    console.log(`Reporting under the ${config.environment} environment${because}. Override with PATCHSTACK_ENVIRONMENT.`);
+    say(`Environment: ${config.environment}${because}.`);
   }
   if (config.endpoint !== DEFAULT_ENDPOINT) {
-    console.log(
-      `Using endpoint override: ${config.endpoint} (set via --endpoint, PATCHSTACK_ENDPOINT, or .patchstackrc.json).`,
-    );
+    say(`Endpoint override: ${config.endpoint}`);
   }
   if (stats.duplicateNames.length > 0) {
     const sample = stats.duplicateNames.slice(0, 10).join(', ');
     const more =
       stats.duplicateNames.length > 10 ? `, +${stats.duplicateNames.length - 10} more` : '';
-    console.log(
-      `${stats.duplicateNames.length} package(s) appear at multiple versions: ${sample}${more}`,
-    );
+    say(`${stats.duplicateNames.length} package(s) at more than one version: ${sample}${more}`);
   }
 
   // Ahead of the --dry-run return, so a preview says what a real run would report. This is the part of
   // the payload someone might disagree with, and it is easier to disagree with here than in the dashboard.
   const body = buildManifestBody(config, payload);
   if (typeof body.url === 'string') {
-    console.log(`Reporting this app's address as ${body.url}.`);
+    say(`Reporting app address: ${body.url}`);
   }
   if (typeof body.name === 'string') {
-    console.log(`Reporting this app's name as "${body.name}".`);
+    say(`Reporting app name: "${body.name}"`);
   }
   // Named but never printed: the token is a credential for the person's account, and it travels as a
   // header rather than in the body so that the payload preview below stays the whole body.
   if (typeof config.claimToken === 'string' && config.claimToken !== '') {
-    console.log('A claim token is set: the site will be connected to the Patchstack account that issued it.');
+    say('Claim token set. The site will join the Patchstack account that issued it.');
   }
 
   if (dryRun) {
@@ -723,7 +741,7 @@ async function runScan(
   // from carrying a previous build's assertion into its artifact.
   if (isPreBundleBuildHook()) {
     const cleared = applyBuildStamp(process.cwd(), null);
-    if (cleared.kind === 'cleared') console.log(`Removed the previous map binding from ${cleared.file}.`);
+    if (cleared.kind === 'cleared') say(`Removed the previous map binding from ${cleared.file}.`);
   }
 
   // Ahead of the post deliberately. The marker carries no site UUID and needs no
@@ -735,12 +753,12 @@ async function runScan(
     // The checksum of the manifest this run is posting — on a pre-build hook that is the build about
     // to be compiled. Without it a server-rendered app's page says it is live but not which build is,
     // which is the question the dashboard grades on.
-    reportSourceMarker(shellFramework, computeManifestChecksum(payload.packages));
+    reportSourceMarker(shellFramework, computeManifestChecksum(payload.packages), report);
   }
 
   const provisioning = config.siteUuid === null;
   if (provisioning) {
-    console.log('No site UUID configured — provisioning a new Patchstack site from this manifest…');
+    say('No site yet. Creating one on Patchstack…');
   }
 
   // Hooked into an install or build, the report is this command's concern and the build is not: the
@@ -754,11 +772,26 @@ async function runScan(
     return 0;
   }
 
+  const checked = `Checked ${plural(stats.uniqueNames, 'package', 'packages')}`;
+  if (response.stored) {
+    report.done.unshift(checked);
+    say(`Stored manifest #${response.manifest_id} (checksum ${response.checksum}).`);
+  } else if (response.reason === 'duplicate') {
+    report.done.unshift(checked, 'No changes since the last check');
+  } else {
+    report.missing.push({
+      text: 'Patchstack did not save this check',
+      hint: [response.message ?? 'Run this again in a few minutes.'],
+      detail: [`Server response: ${JSON.stringify(response)}`],
+    });
+  }
+
   // The server always returns the UUID. If we didn't have one, persist it so
   // every subsequent scan targets the same site.
   if (provisioning && response.uuid !== undefined && response.uuid.length > 0) {
     const target = await persistSiteUuid(process.cwd(), response.uuid);
-    console.log(`Provisioned site ${response.uuid}. Saved UUID to ${target}.`);
+    report.done.push('Added this project to Patchstack');
+    say(`Created site ${response.uuid}. Saved to ${target}.`);
   }
   if (typeof response.api_key === 'string' && response.api_key.length > 0) {
     // One credential for both paths: Pulse resolution falls back to apiKey, so
@@ -766,108 +799,135 @@ async function runScan(
     // the two in step. Never printed — only the path it landed in.
     const hadCredentialInConfig = await credentialInCommittedConfig(process.cwd());
     const saved = await persistApiKey(process.cwd(), response.api_key);
-    console.log(`Saved API key to ${saved.path}. Do not commit it.`);
-    // Only claimed when the ignore file was read back and really covers it. An assurance that turns out to
-    // be false is worse than none: it is the reason somebody stops checking.
-    console.log(
-      saved.ignored
-        ? '  Added to .gitignore.'
-        : `  NOT ignored by git — ${saved.reason ?? 'unknown reason'}. Add \`${SECRET_CONFIG_FILENAME}\` to .gitignore yourself before committing.`,
-    );
+    // "Never commit" is said either way. Git-ignored only when the ignore file was read back and really
+    // covers it: an assurance that turns out to be false is the reason somebody stops checking.
+    if (saved.ignored) {
+      report.done.push(`Saved the project's API key in ${SECRET_CONFIG_FILENAME}. Never commit this file`);
+      say(`Saved API key to ${saved.path} (git-ignored).`);
+    } else {
+      report.missing.push({
+        text: `${SECRET_CONFIG_FILENAME} holds your API key, and git does not ignore it`,
+        hint: [`Add ${SECRET_CONFIG_FILENAME} to .gitignore before you commit. Never commit this file.`],
+        detail: [`Saved to ${saved.path}. Not ignored: ${saved.reason ?? 'unknown reason'}.`],
+      });
+    }
     if (hadCredentialInConfig) {
-      // Said out loud, because moving the file does not undo a commit: if it was ever pushed, the value is
-      // in the history and only a new credential ends that.
-      console.log(
-        'A credential was also present in .patchstackrc.json and has been removed from it. If that file was ever committed, rotate the credential from the dashboard.',
-      );
+      // Moving the file does not undo a commit: if it was ever pushed, only a new credential ends that.
+      report.missing.push({
+        text: 'Your API key was in .patchstackrc.json',
+        hint: [
+          `It is now in ${SECRET_CONFIG_FILENAME}. If .patchstackrc.json was ever committed, replace the key in the Patchstack dashboard.`,
+        ],
+      });
     }
   }
 
-  if (response.stored) {
-    console.log(`Stored manifest #${response.manifest_id} (checksum ${response.checksum}).`);
-  } else if (response.reason === 'duplicate') {
-    console.log('Manifest unchanged since last scan — nothing to store.');
-  } else {
-    console.log(`Server response: ${response.message ?? JSON.stringify(response)}`);
-  }
-
-  // What became of the claim token, in the person's terms. Printed whenever one was passed — including
-  // when the server said nothing about it — so a token that did not connect the site is never mistaken
-  // for one that did.
-  const claimLines = claimOutcomeLines(response.claim, config);
-  if (claimLines.length > 0) {
-    console.log('');
-    for (const line of claimLines) console.log(line);
+  // What became of the claim token, in the person's terms. Said whenever one was passed — including
+  // when the server said nothing about it — so a token that did not connect the project is never
+  // mistaken for one that did.
+  const claim = claimOutcome(response.claim, config);
+  if (claim !== null && claim.connected) {
+    report.done.push(claim.dashboardUrl !== null ? `${claim.summary}: ${claim.dashboardUrl}` : claim.summary);
+  } else if (claim !== null) {
+    report.missing.push(notConnectedItem([`${claim.summary}.`, ...claim.hint]));
   }
   const connected = response.claim?.state === 'claimed' || response.claim?.state === 'owned-by-you';
 
-  // With a UUID in hand (existing or freshly provisioned), ensure the
-  // Patchstack Connector's managed tag in the source HTML shell so the very next
-  // preview reload shows the "Report a vulnerability" button. Best-effort and
-  // opt-out-able; a failed post never reaches this point, and --dry-run
-  // returned above.
+  // With a UUID in hand (existing or freshly provisioned), ensure the Patchstack widget's managed tag in
+  // the source HTML shell so the next preview reload shows it. Best-effort; a failed post never reaches
+  // this point, and --dry-run returned above.
   const effectiveUuid = config.siteUuid ?? response.uuid ?? null;
   if (config.widget && effectiveUuid !== null && effectiveUuid.length > 0) {
-    reportSourceWidget(effectiveUuid, shellFramework);
+    reportSourceWidget(effectiveUuid, shellFramework, report);
   }
 
-  // On the first scan (provisioning), surface the dashboard URL so the user can
-  // attach this site to their Patchstack account. `npx @patchstack/connect status`
-  // re-displays it any time. A site the claim token just connected needs no such
-  // step, and its dashboard was named above; a token that did not connect it makes
-  // this link the way in even on a re-scan.
-  const linkUuid = response.uuid ?? config.siteUuid;
-  if (!connected && (provisioning || claimLines.length > 0) && linkUuid !== null && linkUuid !== undefined && linkUuid.length > 0) {
-    console.log('');
-    console.log('Connect this site to your Patchstack account — any one of these:');
-    // The widget's own panel is the shortest route and is already rendered on the preview, so it
-    // leads. The link and `claim` follow for a project with no preview open: in a terminal the
-    // link is output nobody is looking at, which is why the command is named too.
-    if (config.widget) {
-      console.log('  1. In the preview — the widget shows a "Connect this website" panel while the');
-      console.log('     site is unclaimed. Signing in there attaches it.');
-      console.log('  2. Open this dashboard link in a browser:');
-      console.log(`     ${buildClaimUrl(config.endpoint, linkUuid)}`);
-      console.log('  3. From this terminal: npx @patchstack/connect claim');
-    } else {
-      console.log('  1. Open this dashboard link in a browser:');
-      console.log(`     ${buildClaimUrl(config.endpoint, linkUuid)}`);
-      console.log('  2. From this terminal: npx @patchstack/connect claim');
-    }
-    if (config.endpoint !== DEFAULT_ENDPOINT) {
-      console.log('  (this URL inherits the endpoint override above)');
-    }
-  }
+  const synced =
+    effectiveUuid !== null && effectiveUuid.length > 0 && (response.stored || response.reason === 'duplicate');
+  const outcome: Omit<Progress, 'installed'> = {
+    connected,
+    synced,
+    // Only the dashboard can see the live site; a production scan is reported, not confirmed.
+    deployed: false,
+  };
+  options.onReported?.(outcome);
 
-  // A scan can't wire the build hooks itself — an agent that runs `scan` but not
-  // `guide` (a common shortcut) otherwise sees the widget + claim URL and assumes
-  // setup is finished. Surface whatever is still missing so the loop actually closes.
-  if (options.showRemainingSetup !== false) {
+  if (options.report === undefined) {
     try {
-      const state = await collectGuideState(process.cwd());
-      const remaining = countRemainingSteps(state);
-      if (remaining > 0) {
-        const hooksMissing = !(state.prebuildWired && state.postbuildWired);
-        console.log('');
-        console.log(
-          `Setup not complete — ${remaining} step(s) remaining${hooksMissing ? ", including the package.json build hooks (which scan can't wire)" : ''}.`,
-        );
-        console.log('Run `npx @patchstack/connect guide` for the exact steps to finish for this project.');
-      }
+      await printScanReport(config, effectiveUuid, outcome, report, options.showRemainingSetup !== false);
     } catch {
-      // Best-effort: never turn a successful scan into a failure over this nudge.
+      // Best-effort: never turn a successful scan into a failure over the report.
     }
   }
 
   return 0;
 }
 
+/** An item the run reported replaces the working-tree item with the same key, which says less. */
+function mergeMissing(...lists: StatusReport['missing'][]): StatusReport['missing'] {
+  const merged: StatusReport['missing'] = [];
+  for (const item of lists.flat()) {
+    const key = item.key ?? item.text;
+    if (!merged.some((existing) => (existing.key ?? existing.text) === key)) merged.push(item);
+  }
+  return merged;
+}
+
+/** Where the next step points, from the working tree plus what this run learned. */
+function scanNextStepContext(config: Config, state: GuideState, siteUuid: string | null): NextStepContext {
+  const uuid = siteUuid !== null && siteUuid.length > 0 ? siteUuid : state.siteUuid;
+  return {
+    ...guideNextStepContext(state),
+    environment: config.environment,
+    environmentSource: config.environmentSource,
+    siteUuid: uuid,
+    claimUrl: uuid !== null && config.endpointTrusted !== false ? buildClaimUrl(config.endpoint, uuid) : null,
+  };
+}
+
 /**
- * Run the source-widget pass for `scan` and narrate the outcome. Never throws:
+ * The report a direct `scan` ends on. Inside an install or build it is two lines — what was done and what
+ * to do next — because those logs are long and read by nobody looking for a checklist.
+ */
+async function printScanReport(
+  config: Config,
+  siteUuid: string | null,
+  outcome: Omit<Progress, 'installed'>,
+  report: StatusReport,
+  withProgress: boolean,
+): Promise<void> {
+  const state = await collectGuideState(process.cwd());
+  const context = scanNextStepContext(config, state, siteUuid);
+  const progress = guideProgress(state, outcome);
+
+  if ((isInstallOrBuildHook() || runningInCi()) && !verbose) {
+    for (const item of report.missing) console.warn(`Patchstack: ${[item.text + '.', ...(item.hint ?? [])].join(' ')}`);
+    for (const line of renderHookSummary(report, progress, context)) console.log(line);
+    return;
+  }
+
+  if (verbose) console.log('');
+  const missing = mergeMissing(report.missing, withProgress ? guideMissing(state, outcome) : []);
+  for (const line of renderStatus('Patchstack scan', { done: report.done, missing }, progress, context, {
+    useColor: useColor(),
+    verbose,
+    withoutProgress: !withProgress,
+  })) {
+    console.log(line);
+  }
+}
+
+/**
+ * Run the source-widget pass for `scan` and record the outcome. Never throws:
  * widget management is a convenience layered on top of a successful scan and
  * must not turn one into a failure.
  */
-function reportSourceWidget(siteUuid: string, framework: string | null): void {
+function reportSourceWidget(siteUuid: string, framework: string | null, report: StatusReport): void {
+  const handAdd = (why: string): void => {
+    report.missing.push({
+      text: 'The Patchstack widget is not on your page yet',
+      hint: [why, `  ${buildWidgetTag(siteUuid)}`],
+    });
+  };
   try {
     // A server-rendered project has no HTML shell to edit, so the framework's JSX root stands in for
     // one. Only where a literal tag is known to belong — the same set the marker will write into.
@@ -877,38 +937,32 @@ function reportSourceWidget(siteUuid: string, framework: string | null): void {
     const result = ensureSourceWidget(process.cwd(), siteUuid, jsxShell);
     switch (result.action) {
       case 'added':
-        console.log(`Widget: added the Patchstack Connector tag to ${result.shell}. Reload your preview to see it.`);
-        console.log('  Unclaimed, it shows a "Connect this website" panel; the "Report a vulnerability" button replaces it once the site is claimed.');
+        report.done.push(`Added the Patchstack widget to ${result.shell}`);
         break;
       case 'updated':
-        console.log(`Widget: updated the managed tag in ${result.shell} to site ${siteUuid}.`);
+        report.done.push(`Updated the Patchstack widget in ${result.shell}`);
         break;
       case 'unchanged':
-        console.log(`Widget: already installed in ${result.shell}.`);
+        report.done.push(`The Patchstack widget is already in ${result.shell}`);
         break;
       case 'manual':
-        console.log(`Widget: found an existing (manual) install in ${result.shell} — left untouched.`);
+        report.done.push(`Left your own Patchstack widget in ${result.shell} as it is`);
         break;
       case 'no-body':
-        console.log(`Widget: ${result.shell} has no </body> tag to anchor on. Add this tag to your root layout manually:`);
-        console.log(`  ${buildWidgetTag(siteUuid)}`);
+        handAdd(`${result.shell} has no </body>. Add this to your main page layout, just before </body>:`);
         break;
       case 'no-shell':
-        console.log('Widget: no root shell found to edit (index.html / public/index.html / src/app.html, or a JSX root).');
-        console.log('Add this tag to your root layout before </body> (run `guide` for framework-specific placement):');
-        console.log(`  ${buildWidgetTag(siteUuid)}`);
+        handAdd('Add this to your main page layout, just before </body>:');
         break;
     }
-    if (result.action === 'added' || result.action === 'updated') {
-      console.log('  (opt out any time with "widget": false in .patchstackrc.json)');
-    }
   } catch (err) {
-    console.warn(`Widget: skipped (${(err as Error).message}).`);
+    handAdd('Add this to your main page layout, just before </body>:');
+    detail(`Widget: skipped (${(err as Error).message}).`);
   }
 }
 
 /**
- * Run the production-marker pass for `scan` and narrate the outcome. Never
+ * Run the production-marker pass for `scan` and record the outcome. Never
  * throws, for the same reason the widget pass doesn't: this is a convenience on
  * top of a successful scan and must not turn one into a failure.
  *
@@ -916,7 +970,7 @@ function reportSourceWidget(siteUuid: string, framework: string | null): void {
  * follows. On a server-rendered root that is the only way the marker reaches
  * production — `mark-build` runs after the build and has no HTML to stamp.
  */
-function reportSourceMarker(framework: string | null, checksum: string | null = null): void {
+function reportSourceMarker(framework: string | null, checksum: string | null, report: StatusReport): void {
   try {
     const shell = resolveWidgetFileHint(process.cwd(), framework);
     if (shell === null || shell.toLowerCase().endsWith('.html')) {
@@ -927,30 +981,28 @@ function reportSourceMarker(framework: string | null, checksum: string | null = 
     const result = ensureSourceMarker(process.cwd(), shell, framework, checksum);
     switch (result.action) {
       case 'added':
-        console.log(`Production marker: added to ${shell} (guarded by ${productionGate(framework)}).`);
-        console.log('  This root is server-rendered, so the marker ships in source rather than built HTML.');
+        report.done.push(`Set up ${shell} to tell Patchstack when it runs as your live app`);
+        detail(`Production marker: added to ${shell} (only set when ${productionGate(framework)}).`);
         break;
       case 'manual':
-        console.log(`Production marker: already set in ${shell} — left untouched.`);
+        detail(`Production marker: already in ${shell}.`);
         break;
       case 'no-anchor':
       case 'unsupported':
-        console.log(
-          `Production marker: ${shell} needs it by hand — without it the widget reads the published site as build mode.`,
-        );
-        if (hasJsxShell(framework)) {
-          for (const line of buildSourceMarkerSnippet(framework).split('\n')) {
-            console.log(`  ${line}`);
-          }
-        } else {
-          console.log(
-            `  Emit <script>window.__PATCHSTACK_PROD__=true;</script> only when ${productionGate(framework)}.`,
-          );
-        }
+        // Without it the widget cannot tell the live app from a preview, and shows the setup panel to visitors.
+        report.missing.push({
+          text: 'Your live app does not tell Patchstack it is live yet',
+          hint: hasJsxShell(framework)
+            ? [`Add this inside <head> in ${shell}:`, ...buildSourceMarkerSnippet(framework).split('\n').map((line) => `  ${line}`)]
+            : [
+                `Add this inside <head> in ${shell}, only when ${productionGate(framework)}:`,
+                '  <script>window.__PATCHSTACK_PROD__=true;</script>',
+              ],
+        });
         break;
     }
   } catch (err) {
-    console.warn(`Production marker: skipped (${(err as Error).message}).`);
+    detail(`Production marker: skipped (${(err as Error).message}).`);
   }
 }
 
@@ -1125,8 +1177,7 @@ async function runGuide(args: ParsedArgs): Promise<number> {
   let allDone = false;
   try {
     const state = await collectGuideState(process.cwd());
-    const useColor = process.stdout.isTTY === true && process.env.NO_COLOR === undefined;
-    console.log(renderGuideChecklist(state, useColor));
+    console.log(renderGuideChecklist(state, useColor(), {}, { verbose }));
     allDone = countRemainingSteps(state) === 0;
   } catch {
     // fall through to the static guide
@@ -1153,128 +1204,99 @@ async function runGuide(args: ParsedArgs): Promise<number> {
   return 0;
 }
 
+/** What setup did about runtime protection, as Done or Missing lines. The working tree covers "not wired". */
+function reportProtection(protection: ReturnType<typeof setupProtection>, report: StatusReport): void {
+  for (const line of protection.log) detail(`patchstack protect: ${line}`);
+
+  if (protection.install.status === 'not-applicable') {
+    report.done.push('Runtime protection is not needed: this project has no server');
+    if (protection.install.leftovers.length > 0) {
+      report.missing.push({
+        text: 'Files from an earlier Patchstack protection setup are not used here',
+        hint: [`You can delete: ${protection.install.leftovers.join(', ')}`],
+      });
+    }
+    return;
+  }
+  if (protection.verification.wired) {
+    const changed = protection.install.status === 'wired' && protection.install.changed.length > 0;
+    report.done.push(
+      changed
+        ? `Added runtime protection (${protection.verification.stack})`
+        : `Runtime protection is already set up (${protection.verification.stack})`,
+    );
+    return;
+  }
+  // The generic installer cannot see where requests enter, so it says why rather than which file to edit.
+  if (protection.install.status === 'scaffolded' && protection.install.plan.includes('Could not locate a server entry')) {
+    report.missing.push({
+      key: 'runtime-protection',
+      text: 'Runtime protection: no server file found',
+      hint: ['Add Patchstack where requests enter your app. Run npx @patchstack/connect protect for the steps.'],
+    });
+  }
+}
+
+/** What setup did to package.json's scripts, as one Done line. */
+function buildStepsLine(wired: ReturnType<typeof wireBuildScripts>): string {
+  if (wired.strategy === 'postinstall-only') {
+    return wired.changed
+      ? 'Added a package check after each install to package.json'
+      : 'The package check after each install is already in package.json';
+  }
+  return wired.changed ? 'Added the build steps to package.json' : 'The build steps are already in package.json';
+}
+
 async function runSetup(args: ParsedArgs): Promise<number> {
   if (args.flags.get('dry-run') === true) {
-    console.error('Error: setup does not support --dry-run. Use `scan --dry-run` to preview the manifest.');
+    console.error('Setup cannot run as a preview. To see what would be sent, run: npx @patchstack/connect scan --dry-run');
     return 1;
   }
 
   const before = await collectGuideState(process.cwd());
   if (!before.hasPackageJson) {
-    console.error('Error: no package.json found. Run setup from the project root.');
+    console.error('No package.json here. Run setup from the folder that has your package.json.');
     console.error('For a standalone HTML site, use the widget-only instructions in AGENT-INSTALL.md; do not create a Node project just to run setup.');
     return 1;
   }
   if (before.installed === null) {
     console.error(
-      `Error: @patchstack/connect is not declared in package.json.\nRun: ${installCommand(before.packageManager)}`,
+      `The Patchstack connector is not installed in this project yet.\nRun: ${installCommand(before.packageManager)}`,
     );
     return 1;
   }
 
-  console.log('Patchstack setup — applying bounded project changes');
-  console.log('  1. Scan dependencies, provision/reuse the site, and manage the source widget');
-  const scanCode = await runScan(args, { showRemainingSetup: false });
+  const report = emptyReport();
+  let reported: Partial<Progress> = {};
+  const scanCode = await runScan(args, {
+    report,
+    onReported: (outcome) => {
+      reported = outcome;
+    },
+  });
   if (scanCode !== 0) {
     return scanCode;
   }
 
-  console.log('');
-  console.log('  2. Install and verify runtime protection');
-  const protection = setupProtection(process.cwd());
-  if (protection.install.status === 'not-applicable') {
-    // Nothing was written, and nothing is owed. Said before the checklist so the reader has the shape of
-    // their project before they read a list that no longer mentions protection.
-    console.log('Runtime protection: not applicable to this project — nothing installed.');
-    console.log(`  ${protection.install.reason}`);
-    if (protection.install.leftovers.length > 0) {
-      console.log('  An earlier run scaffolded a guard here before that was established. These files do');
-      console.log('  nothing on this project and can be deleted:');
-      for (const file of protection.install.leftovers) console.log(`    ${file}`);
-    }
-  } else if (protection.verification.wired) {
-    console.log(`Runtime protection: wired (${protection.verification.stack}).`);
-  } else {
-    console.log(`Runtime protection: manual wiring remains (${protection.verification.stack}):`);
-    for (const check of protection.verification.checks) {
-      console.log(`  ${check.ok ? '✓' : '✗'} ${check.label}${!check.ok && check.hint ? ` — ${check.hint}` : ''}`);
-    }
-    console.log('Run `npx @patchstack/connect protect --check` after completing the failed checks.');
-  }
+  reportProtection(setupProtection(process.cwd()), report);
 
-  console.log('');
-  console.log('  3. Wire dependency-install and production-build scans into package.json');
   const wired = wireBuildScripts(process.cwd(), before.packageManager);
-  console.log(`Build integration: ${wired.detail}`);
+  report.done.push(buildStepsLine(wired));
+  detail(`Build hooks: ${wired.detail}`);
 
-  console.log('');
-  console.log('  4. Verify setup status');
+  const config = await resolveCliConfig(args);
   const after = await collectGuideState(process.cwd());
-  const useColor = process.stdout.isTTY === true && process.env.NO_COLOR === undefined;
-  console.log(renderGuideChecklist(after, useColor));
+  const missing = mergeMissing(report.missing, guideMissing(after, reported));
+  const context = scanNextStepContext(config, after, after.siteUuid);
 
-  const remaining = countRemainingSteps(after);
-  if (remaining > 0) {
-    console.log('');
-    console.log(`Setup applied its bounded changes; ${remaining} manual step(s) remain above.`);
+  if (verbose) console.log('');
+  for (const line of renderStatus('Patchstack setup', { done: report.done, missing }, guideProgress(after, reported), context, {
+    useColor: useColor(),
+    verbose,
+  })) {
+    console.log(line);
   }
-
-  // Setup ends on a page the user is already looking at, which loaded before the widget
-  // tag existed, and against a deployed site still serving its previous build. Nothing
-  // here can reach either one, so the agent relaying these is the whole mechanism.
-  //
-  // The outcome is a short, fixed-shape block rather than prose: an agent relays it as
-  // it is, and the words it does NOT contain matter as much as the ones it does. Nothing
-  // here says "connected" or "protected" — the app exists in a working tree, and every
-  // line says only what is true of that.
-  const outcome = setupOutcome(after, protection, wired);
-  console.log('');
-  console.log('Outcome — relay this to the user as it is:');
-  for (const [label, value] of outcome) console.log(`  ${label}: ${value}`);
   return 0;
-}
-
-/**
- * What setup established, as label/value pairs.
- *
- * Every value is a fact about the working tree or a step the person still owns. "Ready to deploy" is
- * the strongest claim setup can make: it has not seen the live site and cannot, so it does not say
- * anything about it.
- */
-function setupOutcome(
-  state: GuideState,
-  protection: SetupProtectionResult,
-  wired: WireBuildScriptsResult,
-): Array<[string, string]> {
-  const remaining = countRemainingSteps(state);
-  const lines: Array<[string, string]> = [];
-
-  lines.push(['Status', remaining === 0 ? 'Ready to deploy (configured locally; nothing is live yet)' : `Configured locally; ${remaining} step(s) still to finish (see the checklist above)`]);
-  lines.push(['Monitoring', 'starts with the first build that runs on your hosting platform']);
-
-  if (protection.install.status === 'not-applicable') {
-    lines.push(['Runtime protection', 'not applicable — this project has no request path (static build)']);
-  } else if (protection.verification.wired) {
-    lines.push(['Runtime protection', `wired (${protection.verification.stack}) — local wiring verified; verify against the live site after deploy with \`protect --check --runtime\``]);
-  } else {
-    lines.push(['Runtime protection', `not wired yet (${protection.verification.stack}) — finish the checks above, then \`npx @patchstack/connect protect --check\``]);
-  }
-
-  lines.push(['Next steps', [
-    'add PATCHSTACK_API_KEY (from .patchstackrc.local.json) to your hosting platform\'s environment variables',
-    'commit .patchstackrc.json, package.json and the widget change (never .patchstackrc.local.json)',
-    'deploy, then check the site in the Patchstack dashboard — it reads "Deployed" once the live site is seen',
-  ].join('; ')]);
-
-  const warnings: string[] = [];
-  if (!wired.changed && wired.strategy === 'postinstall-only') warnings.push('no build script, so only dependency installs are scanned');
-  if (protection.install.status === 'not-applicable' && protection.install.leftovers.length > 0) {
-    warnings.push(`earlier guard scaffold does nothing here and can be deleted: ${protection.install.leftovers.join(', ')}`);
-  }
-  if (state.claimUrl !== null) warnings.push('the site is not attached to an account until someone signs in through the widget\'s "Connect this website" panel, the dashboard link is opened, or `npx @patchstack/connect claim` completes');
-  if (warnings.length > 0) lines.push(['Warnings', warnings.join('; ')]);
-
-  return lines;
 }
 
 async function runStatus(args: ParsedArgs): Promise<number> {
@@ -1287,9 +1309,7 @@ async function runStatus(args: ParsedArgs): Promise<number> {
   console.log(`Environment: ${config.environment}`);
   if (config.siteUuid !== null) {
     console.log(`Dashboard URL: ${buildClaimUrl(config.endpoint, config.siteUuid)}`);
-    console.log('  Not attached to an account yet? Sign in through the widget\'s "Connect this');
-    console.log('  website" panel on the preview, open the link above, or run');
-    console.log('  `npx @patchstack/connect claim`.');
+    console.log('  Not connected yet? Open the link above or run `npx @patchstack/connect claim`.');
 
     switch (await fetchSiteStatus(config)) {
       case 'active':
@@ -1297,15 +1317,7 @@ async function runStatus(args: ParsedArgs): Promise<number> {
         break;
       case 'removed':
         console.log('Site status:   removed from Patchstack');
-        console.log(
-          '  The site record no longer exists (deleted from the dashboard or via the',
-        );
-        console.log(
-          '  widget uninstall flow). The local integration files are still in this',
-        );
-        console.log(
-          '  project — see "Uninstalling" in AGENT-INSTALL.md to remove them.',
-        );
+        console.log('  The local files are still here. See "Uninstalling" in AGENT-INSTALL.md to remove them.');
         break;
       case 'unknown':
         console.log('Site status:   could not be verified (Patchstack unreachable)');
@@ -1345,8 +1357,7 @@ async function runUninstall(args: ParsedArgs): Promise<number> {
   }
 
   console.log('');
-  console.log('This command only signals Patchstack. The local integration files must still be');
-  console.log('removed — follow the "Uninstalling" steps in AGENT-INSTALL.md.');
+  console.log('Local files are not touched. Remove them with the "Uninstalling" steps in AGENT-INSTALL.md.');
   // Never fail the uninstall flow over the signal: local removal must proceed.
   return 0;
 }
@@ -1413,7 +1424,7 @@ async function reportBuildStamp(
     await postManifestWithEnvironmentFallback(bounded, payload, marker);
   } catch (err) {
     console.warn(
-      `mark-build: this build was not reported to Patchstack (${(err as Error).message}). The pages were still marked as described above.`,
+      `mark-build: could not tell Patchstack about this build (${(err as Error).message}). The pages were still marked.`,
     );
   }
 }
@@ -1508,12 +1519,7 @@ async function runMarkBuild(args: ParsedArgs): Promise<number> {
     // the marker only reaches production if it ships in the source shell. Silence
     // here reads as success, and the widget then treats the live site as a build.
     console.warn(`mark-build: found ${dir} but no HTML files in it.`);
-    console.warn(
-      'mark-build: this build looks server-rendered, so the production flag has nothing to stamp.',
-    );
-    console.warn(
-      'mark-build: add the marker to your root shell instead — run `patchstack-connect guide` for the snippet.',
-    );
+    console.warn('mark-build: this looks like a server-rendered app. Run `npx @patchstack/connect guide` to see what your main layout needs.');
     await reportBuildStamp(reported, wirePayload, 'no-pages');
     return 0;
   }
@@ -1524,10 +1530,7 @@ async function runMarkBuild(args: ParsedArgs): Promise<number> {
   const staleBy = staleBuildAge(files, startedAt);
   if (staleBy !== null) {
     console.warn(
-      `mark-build: nothing in ${dir} has been written in the last ${Math.round(staleBy / 60000)} minute(s), so this looks like output from an earlier build.`,
-    );
-    console.warn(
-      'mark-build: run it as a postbuild hook (or straight after the build) so what is stamped is what was just produced.',
+      `mark-build: nothing in ${dir} changed in the last ${Math.round(staleBy / 60000)} minute(s). Run it right after the build (as postbuild).`,
     );
   }
 
@@ -1559,7 +1562,8 @@ async function runMarkBuild(args: ParsedArgs): Promise<number> {
   const stackSummary = stack !== null ? describeStack(stack) : null;
 
   if (published) {
-    console.log(
+    console.log(`Patchstack: marked ${plural(files.length, 'page', 'pages')} as your live app.`);
+    detail(
       `mark-build: marked ${marked} HTML file(s) in ${dir}` +
         `${checksum !== null ? ` (build ${checksum})` : ''}` +
         `${widgetTouched > 0 ? `, widget tag ensured in ${widgetTouched}` : ''}` +
@@ -1574,15 +1578,12 @@ async function runMarkBuild(args: ParsedArgs): Promise<number> {
   // came to be reported as a live, connected site in the first place.
   const because = environmentEvidence.length > 0 ? ` (${environmentEvidence.join('; ')})` : '';
   console.log(
-    `mark-build: ${environment} build${because} — production marker withheld from ${files.length} HTML file(s) in ${dir}` +
+    `Patchstack: ${environment} build, so ${plural(files.length, 'page is', 'pages are')} not marked as your live app. Publishing this folder by hand? Run again with --production.`,
+  );
+  detail(
+    `mark-build: ${environment} build${because}, so no production marker in ${files.length} HTML file(s) in ${dir}` +
       `${widgetTouched > 0 ? `, widget tag ensured in ${widgetTouched}` : ''}` +
       `${stackSummary !== null ? ` [${stackSummary}]` : ''}.`,
-  );
-  console.log(
-    'mark-build: the marker tells Patchstack a page is the live site, so only the build that deploys carries it. Your hosting platform\'s build stamps it automatically.',
-  );
-  console.log(
-    'mark-build: publishing this directory by hand? Re-run with --production (or set PATCHSTACK_ENVIRONMENT=production) so the deployed pages carry it.',
   );
   await reportBuildStamp(reported, wirePayload, 'withheld');
   return 0;
@@ -1609,8 +1610,33 @@ function packageVersion(): string {
   }
 }
 
+/**
+ * What went wrong and what to do, for the errors whose own message is about the machinery (an address, a
+ * file format) rather than the fix. Null keeps the error's own message, which already names the fix.
+ */
+function plainErrorMessage(err: PatchstackError): string | null {
+  switch (err.code) {
+    case 'NETWORK_ERROR':
+      return 'Could not reach Patchstack. Check your internet connection and try again.';
+    case 'NETWORK_TIMEOUT':
+      return 'Patchstack took too long to answer. Try again in a minute.';
+    case 'SERVER_ERROR':
+      return 'Patchstack could not handle the request right now. Try again in a few minutes.';
+    case 'LOCKFILE_NOT_FOUND':
+      return 'Could not find the list of installed packages. Install your packages first (for example npm install), then try again.';
+    case 'LOCKFILE_PARSE_ERROR':
+    case 'LOCKFILE_UNSUPPORTED':
+      return 'Could not read the list of installed packages. Reinstall your packages (for example npm install), then try again.';
+    case 'CONFIG_MISSING':
+      return 'This project is not set up with Patchstack yet. Run npx @patchstack/connect setup first.';
+    default:
+      return null;
+  }
+}
+
 async function main(): Promise<number> {
   const args = parseArgs(process.argv);
+  verbose = args.flags.get('verbose') === true;
 
   // Before help, and before any command: `--version` is what a bug report is asked for, so it must work
   // even when the rest of the arguments are wrong.
@@ -1662,7 +1688,9 @@ main()
   .then((code) => process.exit(code))
   .catch((err: unknown) => {
     if (err instanceof PatchstackError) {
-      console.error(`Error (${err.code}): ${err.message}`);
+      const plain = plainErrorMessage(err);
+      console.error(`${plain ?? err.message} (${err.code})`);
+      if (plain !== null && verbose) console.error(`Detail: ${err.message}`);
       process.exit(1);
     }
     console.error('Unexpected error:', err);

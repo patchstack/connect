@@ -227,7 +227,7 @@ describe('choosing between sources that disagree', () => {
     const manifest = await scanLockfile(cwd);
 
     expect(manifest.packages.find((entry) => entry.name === 'lodash')?.version).toBe('4.17.21');
-    expect(manifest.warnings?.join(' ')).toMatch(/disagree about installed versions/);
+    expect(manifest.warnings?.join(' ')).toMatch(/give different versions/);
   });
 
   it('says nothing when the sources agree', async () => {

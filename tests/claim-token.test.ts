@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { mkdtemp, readFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
-import { CLAIM_TOKEN_HEADER, claimOutcomeLines, claimTokenHeader, postManifest } from '../src/client.js';
+import { CLAIM_TOKEN_HEADER, claimOutcome, claimTokenHeader, postManifest } from '../src/client.js';
 import { persistApiKey, persistSiteUuid, resolveConfig } from '../src/config.js';
 import type { Config, ManifestClaimOutcome } from '../src/types.js';
 
@@ -110,21 +110,22 @@ describe('the claim token on the wire', () => {
 
 describe('what the person is told about the claim token', () => {
   it('says nothing when none was passed', () => {
-    expect(claimOutcomeLines({ state: 'claimed' }, config())).toEqual([]);
-    expect(claimOutcomeLines(undefined, config())).toEqual([]);
+    expect(claimOutcome({ state: 'claimed' }, config())).toBeNull();
+    expect(claimOutcome(undefined, config())).toBeNull();
   });
 
-  it('names the dashboard when the site landed in the account, and tells a re-run apart', () => {
-    const claimed = claimOutcomeLines(
+  it('names the dashboard when the project landed in the account, and tells a re-run apart', () => {
+    const claimed = claimOutcome(
       { state: 'claimed', site_id: 7, dashboard_url: 'https://app.example.com/site/7/monitoring' },
       config({ claimToken: 'tok' }),
     );
-    expect(claimed[0]).toMatch(/connected to your patchstack account/i);
-    expect(claimed).toContain('Dashboard: https://app.example.com/site/7/monitoring');
-    expect(claimOutcomeLines({ state: 'owned-by-you' }, config({ claimToken: 'tok' }))[0]).toMatch(/already connected/i);
+    expect(claimed?.connected).toBe(true);
+    expect(claimed?.summary).toMatch(/connected to your patchstack account/i);
+    expect(claimed?.dashboardUrl).toBe('https://app.example.com/site/7/monitoring');
+    expect(claimOutcome({ state: 'owned-by-you' }, config({ claimToken: 'tok' }))?.summary).toMatch(/already connected/i);
   });
 
-  it('says why the site is not connected, and points at the link — even when the server said nothing', () => {
+  it('says why the project is not connected, and points at the link — even when the server said nothing', () => {
     const cases: [ManifestClaimOutcome | undefined, RegExp][] = [
       [{ state: 'owned-by-other' }, /different patchstack account/i],
       [{ state: 'rejected', reason: 'expired' }, /expired/i],
@@ -132,10 +133,11 @@ describe('what the person is told about the claim token', () => {
       [undefined, /did not act/i],
     ];
     for (const [claim, why] of cases) {
-      const lines = claimOutcomeLines(claim, config({ claimToken: 'tok' }));
-      expect(lines[0]).toMatch(/^Not connected to your account/);
-      expect(lines[0]).toMatch(why);
-      expect(lines.join(' ')).toMatch(/dashboard link/i);
+      const outcome = claimOutcome(claim, config({ claimToken: 'tok' }));
+      expect(outcome?.connected).toBe(false);
+      expect(outcome?.summary).toMatch(/^Not connected to your account/);
+      expect(outcome?.summary).toMatch(why);
+      expect(outcome?.hint.join(' ')).toMatch(/dashboard link/i);
     }
   });
 });

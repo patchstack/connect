@@ -38,8 +38,7 @@ export function unreadableWarning(filename: string, report: ParseReport): string
   const one = report.unreadable === 1;
 
   return (
-    `${filename}: ${report.unreadable} entr${one ? 'y was' : 'ies were'} not in a form this scanner reads ` +
-    `(${shown}${report.unreadable > report.samples.length ? ', …' : ''}), so ${one ? 'it is' : 'they are'} absent from ` +
-    `this manifest. Anything installed only through ${one ? 'that entry' : 'those entries'} is not being checked.`
+    `${filename}: ${report.unreadable} entr${one ? 'y' : 'ies'} could not be read ` +
+    `(${shown}${report.unreadable > report.samples.length ? ', …' : ''}), so ${one ? 'that package is' : 'those packages are'} not being checked.`
   );
 }

@@ -160,8 +160,8 @@ export async function scanLockfile(cwd: string): Promise<Manifest> {
     }
     warnings.push(
       walkWasCandidate
-        ? 'Reporting node_modules/, which is what the build loads.'
-        : 'Scanned node_modules/ instead. Delete the stale lockfile to silence this warning.',
+        ? 'Checked the installed packages in node_modules/, which is what the build loads.'
+        : 'Checked the installed packages in node_modules/ instead. Delete the out-of-date package list file to stop this warning.',
     );
 
     return manifestWith(walked, warnings);
@@ -176,7 +176,7 @@ export async function scanLockfile(cwd: string): Promise<Manifest> {
   }
 
   warnings.push(
-    `No fully-consistent source found; reporting ${firstParsed.filename}. The manifest may understate the real dependency set.`,
+    `No package list matches package.json; checked ${firstParsed.filename}, so some packages may be missing. Reinstall your packages to fix this.`,
   );
 
   return manifestWith(firstParsed.packages, warnings);
@@ -209,16 +209,24 @@ function conflictWarning(
     .join('; ');
 
   return (
-    `${filename} and another lockfile disagree about installed versions (${shown}` +
+    `${filename} and another package list file give different versions (${shown}` +
     `${conflicts.length > 3 ? `, +${conflicts.length - 3} more` : ''}). ` +
-    'Scanned node_modules/ instead. Remove whichever lockfile your package manager does not maintain.'
+    'Checked node_modules/ instead. Delete the file your package manager does not use.'
   );
 }
+
+const INSTALL_BY_SOURCE: Record<string, string> = {
+  'package-lock.json': 'npm install',
+  'bun.lock': 'bun install',
+  'bun.lockb': 'bun install',
+  'pnpm-lock.yaml': 'pnpm install',
+  'yarn.lock': 'yarn install',
+};
 
 function staleWarning(source: string, missing: string[]): string {
   const sample = missing.slice(0, 3).join(', ');
   const suffix = missing.length > 3 ? `, +${missing.length - 3} more` : '';
-  return `${source} looks stale: package.json declares ${missing.length} dependenc${missing.length === 1 ? 'y' : 'ies'} it does not contain (${sample}${suffix}).`;
+  return `${source} is out of date: it is missing ${missing.length} package${missing.length === 1 ? '' : 's'} listed in package.json (${sample}${suffix}). Run ${INSTALL_BY_SOURCE[source] ?? 'your install command'} to update it.`;
 }
 
 async function presentLockfiles(cwd: string): Promise<DetectedLockfile[]> {
