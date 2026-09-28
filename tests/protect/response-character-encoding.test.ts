@@ -49,6 +49,17 @@ async function guard(extra: Record<string, unknown> = {}) {
 
 const bytesOf = async (response: Response) => Buffer.from(await response.arrayBuffer());
 const latin1 = (text: string) => Buffer.from(text, 'latin1');
+const BOM = Buffer.from([0xef, 0xbb, 0xbf]);
+const HEADER_VALUE = 'SAMPLE-TOKEN-0123456789';
+const headerRule = (action: string) => ({
+  id: `header-${action}`,
+  phase: 'response',
+  category: 'secret-exposure',
+  action,
+  rule_v2: [{ parameter: 'response.header.x-sample', match: { type: 'regex', value: '/SAMPLE-TOKEN-\\d+/' } }],
+});
+const UTF16 = Buffer.from(`{"k":"${SAMPLE}"}`, 'utf16le');
+const BOM_TYPES = ['text/plain; charset=utf-16', 'text/plain; charset=iso-8859-1', 'text/plain'];
 
 describe('a body in another character encoding (fetch)', () => {
   it.each([
@@ -88,6 +99,44 @@ describe('a body in another character encoding (fetch)', () => {
 
     expect(await out.text()).toBe('key [REDACTED]');
     expect(skips).toHaveLength(0);
+  });
+
+  it.each(BOM_TYPES)('keeps a UTF-8 byte-order mark on a rewritten body under %s', async (type) => {
+    const { protection } = await guard();
+    const body = Buffer.concat([BOM, Buffer.from(`caf\u00e9 key ${SAMPLE}`)]);
+    const out = await protection.screenResponse(new Response(body, { headers: { 'content-type': type } }));
+    const sent = await bytesOf(out);
+
+    expect(out.headers.get('content-type')).toBe(type);
+    expect(sent.subarray(0, 3).equals(BOM)).toBe(true);
+    expect(sent.subarray(3).toString('utf8')).toBe('caf\u00e9 key [REDACTED]');
+  });
+
+  it('screens a JSON body behind a UTF-8 byte-order mark as JSON', async () => {
+    const { protection } = await guard();
+    const body = Buffer.concat([BOM, Buffer.from('{"k":"\\u0041KIAIOSFODNN7EXAMPLE","n":"caf\u00e9"}')]);
+    const out = await protection.screenResponse(new Response(body, { headers: { 'content-type': 'application/json' } }));
+    const sent = await bytesOf(out);
+
+    expect(sent.subarray(0, 3).equals(BOM)).toBe(true);
+    expect(JSON.parse(sent.subarray(3).toString('utf8'))).toEqual({ k: '[REDACTED]', n: 'caf\u00e9' });
+  });
+
+  it('masks a matched header on a body it cannot read', async () => {
+    const { protection, skips } = await guard({ responseRules: [headerRule('redact')] });
+    const out = await protection.screenResponse(new Response(UTF16, { headers: { 'content-type': 'application/json; charset=utf-16le', 'x-sample': HEADER_VALUE } }));
+
+    expect(out.headers.get('x-sample')).toBe('[REDACTED]');
+    expect((await bytesOf(out)).equals(UTF16)).toBe(true);
+    expect(skips.map((s: any) => s.reason)).toContain('unsupported-charset');
+  });
+
+  it('withholds on a matched header block for a body it cannot read', async () => {
+    const { protection } = await guard({ responseRules: [headerRule('block')] });
+    const out = await protection.screenResponse(new Response(UTF16, { headers: { 'content-type': 'application/json; charset=utf-16le', 'x-sample': HEADER_VALUE } }));
+
+    expect(out.status).toBe(500);
+    expect(out.headers.get('x-sample')).toBeNull();
   });
 
   it('withholds a rewrite that would put non-ASCII into a legacy charset', async () => {
@@ -229,5 +278,57 @@ describe('character encodings on the Node path', () => {
     const { got } = await serve('application/json', '{"k":"\\u0041KIAIOSFODNN7EXAMPLE","h":"\\u003cb\\u003e"}');
 
     expect(got.body.toString()).toBe('{"k":"[REDACTED]","h":"\\u003cb\\u003e"}');
+  });
+
+  it.each(BOM_TYPES)('keeps a UTF-8 byte-order mark on a rewritten body under %s', async (type) => {
+    for (const viaWriteHead of [false, true]) {
+      const { got } = await serve(type, Buffer.concat([BOM, Buffer.from(`caf\u00e9 key ${SAMPLE}`)]), viaWriteHead);
+
+      expect(got.headers['content-type']).toBe(type);
+      expect(got.body.subarray(0, 3).equals(BOM)).toBe(true);
+      expect(got.body.subarray(3).toString('utf8')).toBe('caf\u00e9 key [REDACTED]');
+      await close?.();
+      close = null;
+    }
+  });
+
+  it('screens a JSON body behind a UTF-8 byte-order mark as JSON', async () => {
+    const { got } = await serve('application/json', Buffer.concat([BOM, Buffer.from('{"k":"\\u0041KIAIOSFODNN7EXAMPLE","n":"caf\u00e9"}')]));
+
+    expect(got.body.subarray(0, 3).equals(BOM)).toBe(true);
+    expect(JSON.parse(got.body.subarray(3).toString('utf8'))).toEqual({ k: '[REDACTED]', n: 'caf\u00e9' });
+  });
+
+  async function serveWithHeader(action: string, viaWriteHead: boolean) {
+    const g = await guard({ responseRules: [headerRule(action)] });
+    const node = g.protection.node({ screenResponses: true });
+    const headers = { 'content-type': 'application/json; charset=utf-16le', 'x-sample': HEADER_VALUE };
+    const url = await listen((req, res) =>
+      node(req, res, () => {
+        if (viaWriteHead) res.writeHead(200, headers);
+        else for (const [name, value] of Object.entries(headers)) res.setHeader(name, value);
+        res.end(UTF16);
+      }),
+    );
+
+    return { ...g, got: await rawGet(url) };
+  }
+
+  it.each([false, true])('masks a matched header on a body it cannot read (writeHead: %s)', async (viaWriteHead) => {
+    const { got, skips, detections } = await serveWithHeader('redact', viaWriteHead);
+
+    expect(got.headers['x-sample']).toBe('[REDACTED]');
+    expect(got.body.equals(UTF16)).toBe(true);
+    expect(detections).toHaveLength(1);
+    expect(skips.map((s: any) => s.reason)).toContain('unsupported-charset');
+  });
+
+  it.each([false, true])('withholds on a matched header block for a body it cannot read (writeHead: %s)', async (viaWriteHead) => {
+    const { got, detections } = await serveWithHeader('block', viaWriteHead);
+
+    expect(got.status).toBe(500);
+    expect(got.headers['x-sample']).toBeUndefined();
+    expect(JSON.parse(got.body.toString())).toHaveProperty('error');
+    expect(detections).toHaveLength(1);
   });
 });

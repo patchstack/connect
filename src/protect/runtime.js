@@ -917,7 +917,7 @@ export async function createProtection(options = {}) {
     const text = readJsonEscapes(read.text);
     const r = screenText(text, { status: response.status, headers: headerObject(response.headers) }, reqCtx);
     if (r.verdict === 'block' || (r.verdict === 'redact' && outgrowsCharset(read.ascii, r.body))) return leakResponse();
-    if (r.verdict === 'redact') return rebuildResponse(response, r.body, r.headers);
+    if (r.verdict === 'redact') return rebuildResponse(response, withBom(read.bom, r.body), r.headers);
     return response;
   };
 
@@ -1508,9 +1508,9 @@ export async function createProtection(options = {}) {
       if (reading.skip) {
         recordSkip('response', 'unsupported-charset', { charset: reading.skip });
 
-        return passThrough();
+        return passThrough(screenUnreadHead());
       }
-      const text = readJsonEscapes(buffer.toString('utf8'));
+      const text = readJsonEscapes(buffer.toString('utf8', reading.bom ? 3 : 0));
       let r;
       try {
         r = screenText(text, head, reqCtx, notYetAnswered);
@@ -1520,6 +1520,7 @@ export async function createProtection(options = {}) {
         return passThrough();
       }
       if (r.verdict === 'redact' && outgrowsCharset(reading.ascii, r.body)) r = { verdict: 'block' };
+      if (r.verdict === 'redact') r = { ...r, body: withBom(reading.bom, r.body) };
       if (r.verdict !== 'block' && r.verdict !== 'redact') return passThrough();
 
       // The body is about to change, so the head must describe the new one. If the head has already
@@ -2146,13 +2147,15 @@ function declaredCharset(ct) {
 /**
  * How a body's bytes read for screening, which reads text as UTF-8.
  *
- * A byte-order mark decides first, as it does for a client. Otherwise the declared charset does: a UTF-8
+ * A byte-order mark decides first, as it does for a client. A UTF-8 one is left out of the text screened
+ * and put back in front of a rewritten body (`bom`), so the client keeps reading it as UTF-8 whatever the
+ * declared charset says. Otherwise the declared charset does: a UTF-8
  * label, or none, reads as UTF-8. Any other label reads identically only over plain ASCII bytes — no
  * byte above 0x7F, no NUL, and no ESC, which switches a stateful encoding — and a rewrite of it must then
  * stay ASCII. Anything else cannot be read here: `{ skip: <charset> }`.
  */
 function charsetReading(ct, bytes) {
-  if (bytes.length >= 3 && bytes[0] === 0xef && bytes[1] === 0xbb && bytes[2] === 0xbf) return { ascii: false };
+  if (bytes.length >= 3 && bytes[0] === 0xef && bytes[1] === 0xbb && bytes[2] === 0xbf) return { ascii: false, bom: true };
   if (bytes.length >= 2 && bytes[0] === 0xff && bytes[1] === 0xfe) return { skip: 'utf-16le' };
   if (bytes.length >= 2 && bytes[0] === 0xfe && bytes[1] === 0xff) return { skip: 'utf-16be' };
   const charset = declaredCharset(ct);
@@ -2166,12 +2169,18 @@ function charsetReading(ct, bytes) {
   return { ascii: true };
 }
 
-/** `{ text, ascii }` to screen, or an `unsupported-charset` skip naming the charset. */
+/** `{ text, ascii, bom }` to screen, or an `unsupported-charset` skip naming the charset. */
 function decodeForScreening(ct, bytes) {
   const reading = charsetReading(ct, bytes);
   if (reading.skip) return { skip: 'unsupported-charset', charset: reading.skip };
 
-  return { text: new TextDecoder().decode(bytes), ascii: reading.ascii };
+  // The decoder drops a UTF-8 byte-order mark, which `bom` records.
+  return { text: new TextDecoder().decode(bytes), ascii: reading.ascii, bom: reading.bom === true };
+}
+
+/** A rewritten body with the UTF-8 byte-order mark its original carried. */
+function withBom(bom, body) {
+  return bom ? '\uFEFF' + body : body;
 }
 
 /** A rewrite that cannot be sent in the charset of the body it replaces: non-ASCII into an ASCII-only one. */
