@@ -99,6 +99,47 @@ export function startRecovery(tick, { onError } = {}) {
   };
 }
 
+/**
+ * One refresh at a time, whichever trigger asked.
+ *
+ * The poll loop, recovery, a manual `refresh()` and a push each run the same tick, and two of them
+ * running at once let the one that FINISHES last decide the rules — which is not the one that started
+ * last. A slow tick holding an older response would then undo a push that had just delivered a new
+ * rule, and write that older response's ETag over the newer one.
+ *
+ * So a tick never overlaps another. A call made while one is running gets one that starts after it —
+ * shared by every call made in the meantime, so a burst of triggers costs one extra tick, not one each.
+ */
+export function serialise(tick) {
+  let running = null;
+  let next = null;
+
+  const run = () => {
+    if (!running) {
+      running = Promise.resolve()
+        .then(() => tick())
+        .finally(() => {
+          running = null;
+        });
+
+      return running;
+    }
+    if (!next) {
+      next = running
+        .catch(() => {})
+        .then(() => {
+          next = null;
+
+          return run();
+        });
+    }
+
+    return next;
+  };
+
+  return run;
+}
+
 export function makeRefreshHandler(tick, secret) {
   let inflight = null;
 

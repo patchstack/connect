@@ -33,7 +33,7 @@ import { renderBlockPage } from './block-page.js';
 // composing the engine + guards and running the three screening phases.
 import { makeStore } from './rules/store.js';
 import { resolveRules } from './rules/source.js';
-import { startRefresh, startRecovery, makeRefreshHandler } from './rules/refresh.js';
+import { startRefresh, startRecovery, makeRefreshHandler, serialise } from './rules/refresh.js';
 import { createDetectionReporter } from './detections.js';
 import { reportingState } from './reporting-state.js';
 import { hardensWithoutBody } from './response-hardening.js';
@@ -1646,16 +1646,19 @@ export async function createProtection(options = {}) {
     return next.source ?? { ok: true };
   };
 
+  // Every trigger below goes through this, so no two refreshes ever run at once.
+  const refreshTick = serialise(runRefreshTick);
+
   if (live) {
     // Manual one-shot refresh (also the primitive the loop + push endpoint run).
-    protection.refresh = () => runRefreshTick();
+    protection.refresh = () => refreshTick();
     // Authenticated push endpoint — the platform/SaaS hits it for an immediate refresh. No secret
     // configured → the handler 404s (never an open refresh trigger).
-    protection.refreshHandler = () => makeRefreshHandler(runRefreshTick, refreshSecret);
+    protection.refreshHandler = () => makeRefreshHandler(refreshTick, refreshSecret);
   }
 
   const loop = options.refreshMs > 0 && live
-    ? startRefresh(runRefreshTick, { refreshMs: options.refreshMs, onError })
+    ? startRefresh(refreshTick, { refreshMs: options.refreshMs, onError })
     : null;
   // No loop to try again later, and the first resolution was not clean: retry until it is, rather than
   // serving stale or fallback rules for the life of the process. Only with a credential to ask with: the
@@ -1663,7 +1666,7 @@ export async function createProtection(options = {}) {
   // boot, and asking again every ten minutes forever would change nothing. The boot warning above
   // already says what is missing.
   const canAsk = Boolean(options.token || pulseAuth);
-  recovery = live && canAsk && !loop && ruleSource.ok === false ? startRecovery(runRefreshTick, { onError }) : null;
+  recovery = live && canAsk && !loop && ruleSource.ok === false ? startRecovery(refreshTick, { onError }) : null;
 
   // One method, always present, that reaches everything holding a timer or a buffer: the refresh loop,
   // the block log, the detection reporter. Always present because a lifecycle method that exists only
