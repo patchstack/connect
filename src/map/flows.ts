@@ -29,6 +29,11 @@ interface Root {
    * of reachability but never of an exact, untransformed value.
    */
   reassigned?: boolean;
+  /**
+   * The binding is a URL of the request (`new URL(request.url)`, `request.nextUrl`, an event's `url`).
+   * Its members are not request fields: only its `searchParams` read the query string.
+   */
+  url?: boolean;
 }
 
 /**
@@ -162,9 +167,9 @@ function linkFlows(
   const rootPath = new Roots(ts);
   // A binding assigned again after its declaration may no longer hold what it was declared with.
   const reassigned = reassignedDeclarations(bodyNode, ts);
-  const addRoot = (declaration: any, path: string, space?: AddressSpace, accessor = false, request = false, inherited = false) => {
+  const addRoot = (declaration: any, path: string, space?: AddressSpace, accessor = false, request = false, inherited = false, url = false) => {
     const changed = inherited || reassigned.has(declaration);
-    rootPath.add(declaration, { path, space, ...(accessor ? { accessor } : {}), ...(request ? { request } : {}), ...(changed ? { reassigned: true } : {}) });
+    rootPath.add(declaration, { path, space, ...(accessor ? { accessor } : {}), ...(request ? { request } : {}), ...(changed ? { reassigned: true } : {}), ...(url ? { url } : {}) });
   };
   for (const [index, p] of (params ?? []).entries()) {
     if (!p?.name) continue;
@@ -174,6 +179,9 @@ function linkFlows(
       for (const el of p.name.elements) {
         if (!ts.isBindingElement(el) || !ts.isIdentifier(el.name)) continue;
         const key = bindingKey(el, ts);
+        // A request event (SvelteKit, Astro) carries the request and its URL: `({ request, url })`.
+        if (index === 0 && key === 'request') { addRoot(el.name, '', undefined, false, true); continue; }
+        if (index === 0 && key === 'url') { addRoot(el.name, '', undefined, false, false, false, true); continue; }
         // A destructured request source (`{ body }`) is a container: its members ARE the paths.
         const container = key !== undefined && CONTAINER_KEYS.has(key);
         addRoot(el.name, container ? '' : key ?? el.name.text, container ? spaceOfKey(key) : undefined, container && ACCESSOR_NAMESPACES.has(key!));
@@ -188,6 +196,8 @@ function linkFlows(
     let cur = init;
     while (cur && (ts.isAwaitExpression(cur) || ts.isParenthesizedExpression(cur) || ts.isAsExpression(cur) || ts.isNonNullExpression(cur))) cur = cur.expression;
     if (!cur) return undefined;
+    if (isSearchParams(cur, ts, rootPath)) return { path: '', space: 'get', accessor: true };
+    if (isRequestUrl(cur, ts, rootPath)) return { path: '', url: true };
     if (ts.isCallExpression(cur) && ts.isPropertyAccessExpression(cur.expression)) {
       const m = cur.expression.name.text;
       if (['json', 'formData', 'text'].includes(m)) {
@@ -212,11 +222,16 @@ function linkFlows(
     if (ts.isVariableDeclaration(n) && n.initializer) {
       const base = requestReadPath(n.initializer);
       if (base !== undefined) {
-        if (ts.isIdentifier(n.name)) addRoot(n.name, base.path, base.space, base.accessor === true, false, base.reassigned === true);
+        if (ts.isIdentifier(n.name)) addRoot(n.name, base.path, base.space, base.accessor === true, base.request === true, base.reassigned === true, base.url === true);
         else if (ts.isObjectBindingPattern(n.name)) {
           for (const el of n.name.elements) {
             if (!ts.isBindingElement(el) || !ts.isIdentifier(el.name)) continue;
             const key = bindingKey(el, ts);
+            // Off a URL of the request, only `searchParams` is request data.
+            if (base.url === true) {
+              if (key === 'searchParams') addRoot(el.name, '', 'get', true, false, base.reassigned === true);
+              continue;
+            }
             // A request namespace (`query`, `headers`, …) only when destructured from the request itself:
             // off a parsed body the same key is an ordinary field, and its members are paths under it.
             const namespace = base.request === true && key !== undefined && REQ_SOURCES.includes(key);
@@ -572,10 +587,56 @@ function accessorRead(node: any, ts: TsModule, rootPath: Roots): Root | undefine
   while (cur && (ts.isAwaitExpression(cur) || ts.isParenthesizedExpression(cur) || ts.isNonNullExpression(cur))) cur = cur.expression;
   if (!cur || !ts.isCallExpression(cur) || !ts.isPropertyAccessExpression(cur.expression)) return undefined;
   const [name] = cur.arguments;
-  if (cur.expression.name.text !== 'get' || cur.arguments.length !== 1 || !name || !ts.isStringLiteralLike(name)) return undefined;
-  if (!isAccessor(cur.expression.expression, ts, rootPath)) return undefined;
+  if (cur.arguments.length !== 1 || !name || !ts.isStringLiteralLike(name)) return undefined;
+  const method = cur.expression.name.text;
+  const receiver = cur.expression.expression;
+  // Hono: `c.req.query('q')`, `c.req.param('id')`, `c.req.header('x-token')` on the handler's context.
+  const hono = HONO_ACCESSOR_SPACES[method];
+  if (hono && ts.isPropertyAccessExpression(receiver) && receiver.name.text === 'req' && ts.isIdentifier(receiver.expression)
+      && rootPath.get(receiver.expression)?.request === true) {
+    return { path: normalizePath(name.text), space: hono };
+  }
+  if (method !== 'get') return undefined;
+  // `new URL(request.url).searchParams.get('q')`: the query-string field `q`.
+  if (isSearchParams(receiver, ts, rootPath) && !ts.isIdentifier(receiver)) return { path: normalizePath(name.text), space: 'get' };
+  if (!isAccessor(receiver, ts, rootPath)) return undefined;
 
-  return pathFromTainted(cur.expression.expression, ts, rootPath, [name.text]);
+  return pathFromTainted(receiver, ts, rootPath, [name.text]);
+}
+
+/** Hono request accessors and the address space each one reads. */
+const HONO_ACCESSOR_SPACES: Record<string, AddressSpace> = { query: 'get', param: 'route-param', header: 'server' };
+
+/**
+ * Whether `node` is a URL of the request: `new URL(request.url)` (also on a Hono context's `req`),
+ * `request.nextUrl`, or a binding that holds one.
+ */
+function isRequestUrl(node: any, ts: TsModule, rootPath: Roots): boolean {
+  let cur = node;
+  while (cur && (ts.isParenthesizedExpression(cur) || ts.isNonNullExpression(cur) || ts.isAwaitExpression(cur))) cur = cur.expression;
+  if (!cur) return false;
+  if (ts.isIdentifier(cur)) return rootPath.get(cur)?.url === true;
+  const isRequest = (e: any) => ts.isIdentifier(e) && rootPath.get(e)?.request === true;
+  if (ts.isPropertyAccessExpression(cur) && cur.name.text === 'nextUrl') return isRequest(cur.expression);
+  if (ts.isNewExpression(cur) && ts.isIdentifier(cur.expression) && cur.expression.text === 'URL') {
+    const [href] = cur.arguments ?? [];
+    if (!href || !ts.isPropertyAccessExpression(href) || href.name.text !== 'url') return false;
+    const owner = href.expression;
+    return isRequest(owner) || (ts.isPropertyAccessExpression(owner) && owner.name.text === 'req' && isRequest(owner.expression));
+  }
+  return false;
+}
+
+/** Whether `node` is the `searchParams` of a request URL, or a binding that holds them. */
+function isSearchParams(node: any, ts: TsModule, rootPath: Roots): boolean {
+  let cur = node;
+  while (cur && (ts.isParenthesizedExpression(cur) || ts.isNonNullExpression(cur))) cur = cur.expression;
+  if (!cur) return false;
+  if (ts.isIdentifier(cur)) {
+    const root = rootPath.get(cur);
+    return root?.accessor === true && root.space === 'get';
+  }
+  return ts.isPropertyAccessExpression(cur) && cur.name.text === 'searchParams' && isRequestUrl(cur.expression, ts, rootPath);
 }
 
 /**
@@ -614,7 +675,7 @@ function pathFromTainted(node: any, ts: TsModule, rootPath: Roots, trailing: str
   }
   if (!cur || !ts.isIdentifier(cur)) return undefined;
   const base = rootPath.get(cur);
-  if (base === undefined) return undefined;
+  if (base === undefined || base.url === true) return undefined;
   segs.push(...trailing);
   let space = base.space;
   // Drop a leading NAMESPACE segment (`req.body.webhookUrl` → `webhookUrl`). Input names — and the
@@ -624,14 +685,19 @@ function pathFromTainted(node: any, ts: TsModule, rootPath: Roots, trailing: str
   // proven.
   // The dropped segment is exactly what names the address space, so capture it before discarding it —
   // losing it is what made `req.query.id` and `req.body.id` the same read.
-  if (base.request === true && base.path === '' && segs.length > 1 && REQ_SOURCES.includes(segs[0]!)) {
-    space = spaceOfKey(segs[0]!) ?? space;
+  // A bare namespace (`const b = req.body`) is that namespace's container: its members are the fields.
+  let namespace: string | undefined;
+  if (base.request === true && base.path === '' && segs.length > 0 && REQ_SOURCES.includes(segs[0]!)) {
+    namespace = segs[0]!;
+    space = spaceOfKey(namespace) ?? space;
     segs.shift();
   }
   // Read bare, the request is still the request — which is what lets `const { headers } = request`
   // destructure a namespace, and `const { headers } = await request.json()` not.
-  const request = base.request === true && segs.length === 0 ? { request: true } : {};
+  const request = base.request === true && namespace === undefined && segs.length === 0 ? { request: true } : {};
+  // `const headers = request.headers` holds an accessor, so `headers.get('x')` reads the header `x`.
+  const accessor = namespace !== undefined && segs.length === 0 && ACCESSOR_NAMESPACES.has(namespace) ? { accessor: true } : {};
   const reassigned = base.reassigned === true ? { reassigned: true } : {};
 
-  return { path: normalizePath([base.path, ...segs].filter(Boolean).join('.')), space, ...request, ...reassigned };
+  return { path: normalizePath([base.path, ...segs].filter(Boolean).join('.')), space, ...request, ...accessor, ...reassigned };
 }

@@ -185,6 +185,17 @@ export function sinksFrom(arrowOrNode: any, ts: TsModule, localSinks: LocalSinks
   return dedupeSinks(sinks, ctx?.owner ?? '');
 }
 
+/** `c.req` where `c` is a function parameter: a request handler's context, not a database client. */
+function isContextRequest(node: any, ts: TsModule): boolean {
+  if (!ts.isPropertyAccessExpression(node) || node.name.text !== 'req' || !ts.isIdentifier(node.expression)) return false;
+  const declaration = declarationOf(node.expression, ts);
+  for (let cur = declaration?.parent; cur; cur = cur.parent) {
+    if (ts.isParameter(cur)) return true;
+    if (!ts.isBindingElement(cur) && !ts.isObjectBindingPattern(cur) && !ts.isArrayBindingPattern(cur)) return false;
+  }
+  return false;
+}
+
 /**
  * Whether a declaring identifier is bound at module level (an import, a top-level `require`), which is
  * where module bindings resolve names. A parameter or a function-local of the same name is not.
@@ -306,7 +317,8 @@ function directSinks(node: any, ts: TsModule, bindings: Bindings, ctx?: SinkCont
           }
           // db: raw `.query(` / `.execute(`. Any object can have a `.query` method, so an untraceable
           // receiver stays in the inventory with NO attribution — visible to a human, never auto-ruled.
-          if (method === 'query' || method === 'execute') {
+          // A handler context's request accessor (Hono's `c.req.query('q')`) reads the query string.
+          if ((method === 'query' || method === 'execute') && !isContextRequest(callee.expression, ts)) {
             const pkg = b.pkg ?? infer('db');
             const attribution = attributionOf(b, pkg);
             push({ kind: 'db', ...dbApi(pkg, attribution), package: pkg, op: method, attribution, ...spanOf(n) });
