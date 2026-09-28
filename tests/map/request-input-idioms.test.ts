@@ -238,3 +238,98 @@ describe('a schema declared outside the handler', () => {
     expect(endpoint.inputsResolved).toBeUndefined();
   });
 });
+
+describe('a reassigned binding behind a recognised read', () => {
+  // Reachability may still hold, but the value is no longer exactly the request field.
+  const notExact = (f: any) => {
+    expect(f).toBeDefined();
+    expect(f.confidence).not.toBe('exact-local');
+  };
+
+  it.each([
+    ['a URL binding', "  let url = new URL(request.url);\n  url = new URL('https://example.test/?q=ls');\n  exec(url.searchParams.get('q'));"],
+    ['a searchParams binding', "  let params = new URL(request.url).searchParams;\n  params = new URLSearchParams('q=ls');\n  exec(params.get('q'));"],
+    ['destructured searchParams', "  let { searchParams } = new URL(request.url);\n  searchParams = new URLSearchParams('q=ls');\n  exec(searchParams.get('q'));"],
+    ['the request, read through its URL', "  request = new Request('https://example.test/?q=ls');\n  exec(new URL(request.url).searchParams.get('q'));"],
+    ['the request, read through nextUrl', "  request = {} as any;\n  exec(request.nextUrl.searchParams.get('q'));"],
+    ['the request, bound to searchParams', "  request = new Request('https://example.test/?q=ls');\n  const params = new URL(request.url).searchParams;\n  exec(params.get('q'));"],
+    ['the request, bound to a URL', "  request = new Request('https://example.test/?q=ls');\n  const url = new URL(request.url);\n  exec(url.searchParams.get('q'));"],
+  ])('does not prove an exact query field through %s', async (_label, body) => {
+    notExact(flow(await routeHandler(body), 'q'));
+  });
+
+  it("does not prove an exact query field through a request event's reassigned url", async () => {
+    const map = await mapOf({ 'src/routes/api/run/+server.ts': `${EXEC}export async function GET({ url }) {\n  url = new URL('https://example.test/?q=ls');\n  exec(url.searchParams.get('q'));\n  return new Response('ok');\n}\n` }, { '@sveltejs/kit': '2' });
+
+    notExact(flow(map.endpoints[0], 'q'));
+  });
+
+  it("does not prove an exact header through a request event's reassigned request", async () => {
+    const map = await mapOf({ 'src/routes/api/run/+server.ts': `${EXEC}export async function POST({ request }) {\n  request = new Request('https://example.test/');\n  exec(request.headers.get('x-cmd'));\n  return new Response('ok');\n}\n` }, { '@sveltejs/kit': '2' });
+
+    notExact(flow(map.endpoints[0], 'x-cmd'));
+  });
+
+  it.each([
+    ['an alias of the request', "  let r = req;\n  r = { body: { cmd: 'ls' } };\n  exec(r.body.cmd);"],
+    ['an alias of the body', "  let b = req.body;\n  b = { cmd: 'ls' };\n  exec(b.cmd);"],
+    ['the request behind an alias', "  req = { body: { cmd: 'ls' } } as any;\n  const r = req;\n  exec(r.body.cmd);"],
+  ])('does not prove an exact body field through %s', async (_label, body) => {
+    notExact(flow(await expressHandler(body), 'cmd'));
+  });
+
+  it("does not prove an exact route param through a reassigned route context's params", async () => {
+    const map = await mapOf({ 'app/api/run/[id]/route.ts': `${EXEC}export async function GET(request: Request, { params }: { params: { id: string } }) {\n  params = { id: 'fixed' };\n  exec(params.id);\n  return new Response('ok');\n}\n` }, NEXT);
+
+    notExact(flow(map.endpoints[0], 'id'));
+  });
+
+  it('does not prove an exact Hono accessor read on a reassigned context', async () => {
+    const map = await mapOf({
+      'src/index.ts': `${EXEC}import { Hono } from 'hono';\nconst app = new Hono();\napp.get('/run', (c: any) => {\n  c = { req: { query: () => 'ls' } };\n  exec(c.req.query('q'));\n  return new Response('ok');\n});\n`,
+    }, { hono: '4' });
+
+    notExact(flow(map.endpoints[0], 'q'));
+  });
+
+  it('does not prove an exact Hono body field on a reassigned context', async () => {
+    const map = await mapOf({
+      'src/index.ts': `${EXEC}import { Hono } from 'hono';\nconst app = new Hono();\napp.post('/run', async (c: any) => {\n  c = { req: { json: async () => ({ cmd: 'ls' }) } };\n  const body = await c.req.json();\n  exec(body.cmd);\n  return new Response('ok');\n});\n`,
+    }, { hono: '4' });
+
+    notExact(flow(map.endpoints[0], 'cmd'));
+  });
+});
+
+describe('the URL constructor is the global one', () => {
+  it.each([
+    ['a local class', 'class URL { searchParams = new Map([["q", "ls"]]); constructor(_: string) {} }\n'],
+    ['a local function', 'function URL(_: string): any { return { searchParams: new Map([["q", "ls"]]) }; }\n'],
+    ['an import', "import { URL } from './fake-url';\n"],
+  ])('does not read the query string through %s named URL', async (_label, head) => {
+    const endpoint = await routeHandler("  exec(new URL(request.url).searchParams.get('q'));", head);
+
+    expect(inputs(endpoint)).toEqual([]);
+    expect(flow(endpoint, 'q')).toBeUndefined();
+  });
+
+  it('does not read the query string through a URL binding built by a local URL', async () => {
+    const endpoint = await routeHandler("  const url = new URL(request.url);\n  exec(url.searchParams.get('q'));", 'class URL { searchParams = new Map(); constructor(_: string) {} }\n');
+
+    expect(inputs(endpoint)).toEqual([]);
+    expect(flow(endpoint, 'q')).toBeUndefined();
+  });
+
+  it('reads the query string through globalThis.URL', async () => {
+    const endpoint = await routeHandler("  exec(new globalThis.URL(request.url).searchParams.get('q'));");
+
+    expect(inputs(endpoint)).toEqual(['query:q']);
+    expect(flow(endpoint, 'q')?.confidence).toBe('exact-local');
+  });
+
+  it('does not read globalThis.URL when globalThis is shadowed', async () => {
+    const endpoint = await routeHandler("  const globalThis = { URL: class { searchParams = new Map(); constructor(_: string) {} } };\n  exec(new globalThis.URL(request.url).searchParams.get('q'));");
+
+    expect(inputs(endpoint)).toEqual([]);
+  });
+});

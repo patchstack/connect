@@ -1,6 +1,6 @@
 import type { AddressSpace, ApiInvocation, ArgumentRole, DependencyInputFlow, Flow, InputField, Limitation, Sink, TsModule } from './types.js';
 import { bindingKey, calleeName, isValueRead, lineOf, rootIdentifierNode } from './ast.js';
-import { declarationOf } from './scope.js';
+import { declarationOf, isGlobal } from './scope.js';
 import { REQ_SOURCES } from './inputs.js';
 import { addressSpaceOf } from './coordinates.js';
 import { argumentRoleOf, CANDIDATE_FAMILIES } from './sinks.js';
@@ -196,16 +196,19 @@ function linkFlows(
     let cur = init;
     while (cur && (ts.isAwaitExpression(cur) || ts.isParenthesizedExpression(cur) || ts.isAsExpression(cur) || ts.isNonNullExpression(cur))) cur = cur.expression;
     if (!cur) return undefined;
-    if (isSearchParams(cur, ts, rootPath)) return { path: '', space: 'get', accessor: true };
-    if (isRequestUrl(cur, ts, rootPath)) return { path: '', url: true };
+    const params = searchParamsOrigin(cur, ts, rootPath);
+    if (params) return { path: '', space: 'get', accessor: true, ...carried(params) };
+    const url = requestUrlOrigin(cur, ts, rootPath);
+    if (url) return { path: '', url: true, ...carried(url) };
     if (ts.isCallExpression(cur) && ts.isPropertyAccessExpression(cur.expression)) {
       const m = cur.expression.name.text;
       if (['json', 'formData', 'text'].includes(m)) {
         const root = rootIdentifierNode(cur.expression.expression, ts);
+        const owner = root ? rootPath.get(root) : undefined;
         // A body read: whatever the field names turn out to be, they are addressed in `post`.
-        if (!root || !rootPath.get(root)) return undefined;
+        if (!owner) return undefined;
 
-        return m === 'formData' ? { path: '', space: 'post', accessor: true } : { path: '', space: 'post' };
+        return m === 'formData' ? { path: '', space: 'post', accessor: true, ...carried(owner) } : { path: '', space: 'post', ...carried(owner) };
       }
       if (['parse', 'safeParse', 'validate', 'cast'].includes(m)) {
         for (const a of cur.arguments) {
@@ -592,13 +595,14 @@ function accessorRead(node: any, ts: TsModule, rootPath: Roots): Root | undefine
   const receiver = cur.expression.expression;
   // Hono: `c.req.query('q')`, `c.req.param('id')`, `c.req.header('x-token')` on the handler's context.
   const hono = HONO_ACCESSOR_SPACES[method];
-  if (hono && ts.isPropertyAccessExpression(receiver) && receiver.name.text === 'req' && ts.isIdentifier(receiver.expression)
-      && rootPath.get(receiver.expression)?.request === true) {
-    return { path: normalizePath(name.text), space: hono };
+  if (hono && ts.isPropertyAccessExpression(receiver) && receiver.name.text === 'req' && ts.isIdentifier(receiver.expression)) {
+    const context = rootPath.get(receiver.expression);
+    if (context?.request === true) return { path: normalizePath(name.text), space: hono, ...carried(context) };
   }
   if (method !== 'get') return undefined;
   // `new URL(request.url).searchParams.get('q')`: the query-string field `q`.
-  if (isSearchParams(receiver, ts, rootPath) && !ts.isIdentifier(receiver)) return { path: normalizePath(name.text), space: 'get' };
+  const params = ts.isIdentifier(receiver) ? undefined : searchParamsOrigin(receiver, ts, rootPath);
+  if (params) return { path: normalizePath(name.text), space: 'get', ...carried(params) };
   if (!isAccessor(receiver, ts, rootPath)) return undefined;
 
   return pathFromTainted(receiver, ts, rootPath, [name.text]);
@@ -607,36 +611,53 @@ function accessorRead(node: any, ts: TsModule, rootPath: Roots): Root | undefine
 /** Hono request accessors and the address space each one reads. */
 const HONO_ACCESSOR_SPACES: Record<string, AddressSpace> = { query: 'get', param: 'route-param', header: 'server' };
 
-/**
- * Whether `node` is a URL of the request: `new URL(request.url)` (also on a Hono context's `req`),
- * `request.nextUrl`, or a binding that holds one.
- */
-function isRequestUrl(node: any, ts: TsModule, rootPath: Roots): boolean {
-  let cur = node;
-  while (cur && (ts.isParenthesizedExpression(cur) || ts.isNonNullExpression(cur) || ts.isAwaitExpression(cur))) cur = cur.expression;
-  if (!cur) return false;
-  if (ts.isIdentifier(cur)) return rootPath.get(cur)?.url === true;
-  const isRequest = (e: any) => ts.isIdentifier(e) && rootPath.get(e)?.request === true;
-  if (ts.isPropertyAccessExpression(cur) && cur.name.text === 'nextUrl') return isRequest(cur.expression);
-  if (ts.isNewExpression(cur) && ts.isIdentifier(cur.expression) && cur.expression.text === 'URL') {
-    const [href] = cur.arguments ?? [];
-    if (!href || !ts.isPropertyAccessExpression(href) || href.name.text !== 'url') return false;
-    const owner = href.expression;
-    return isRequest(owner) || (ts.isPropertyAccessExpression(owner) && owner.name.text === 'req' && isRequest(owner.expression));
-  }
-  return false;
+/** The reassignment marker of the binding a read derives from, to carry onto the read. */
+function carried(origin: Root): { reassigned?: true } {
+  return origin.reassigned === true ? { reassigned: true } : {};
 }
 
-/** Whether `node` is the `searchParams` of a request URL, or a binding that holds them. */
-function isSearchParams(node: any, ts: TsModule, rootPath: Roots): boolean {
+/**
+ * When `node` is a URL of the request — `new URL(request.url)` (also on a Hono context's `req`),
+ * `request.nextUrl`, or a binding that holds one — the binding it derives from. `URL` must be the
+ * global constructor: a local or imported `URL` can return anything.
+ */
+function requestUrlOrigin(node: any, ts: TsModule, rootPath: Roots): Root | undefined {
   let cur = node;
-  while (cur && (ts.isParenthesizedExpression(cur) || ts.isNonNullExpression(cur))) cur = cur.expression;
-  if (!cur) return false;
+  while (cur && (ts.isParenthesizedExpression(cur) || ts.isNonNullExpression(cur) || ts.isAwaitExpression(cur) || ts.isAsExpression(cur))) cur = cur.expression;
+  if (!cur) return undefined;
   if (ts.isIdentifier(cur)) {
     const root = rootPath.get(cur);
-    return root?.accessor === true && root.space === 'get';
+    return root?.url === true ? root : undefined;
   }
-  return ts.isPropertyAccessExpression(cur) && cur.name.text === 'searchParams' && isRequestUrl(cur.expression, ts, rootPath);
+  const request = (e: any): Root | undefined => {
+    let inner = e;
+    while (inner && (ts.isParenthesizedExpression(inner) || ts.isNonNullExpression(inner) || ts.isAsExpression(inner))) inner = inner.expression;
+    if (!inner || !ts.isIdentifier(inner)) return undefined;
+    const root = rootPath.get(inner);
+    return root?.request === true ? root : undefined;
+  };
+  if (ts.isPropertyAccessExpression(cur) && cur.name.text === 'nextUrl') return request(cur.expression);
+  if (ts.isNewExpression(cur) && isGlobal(cur.expression, 'URL', ts)) {
+    const [href] = cur.arguments ?? [];
+    if (!href || !ts.isPropertyAccessExpression(href) || href.name.text !== 'url') return undefined;
+    const owner = href.expression;
+    if (ts.isPropertyAccessExpression(owner) && owner.name.text === 'req') return request(owner.expression) ?? request(owner);
+    return request(owner);
+  }
+  return undefined;
+}
+
+/** When `node` is the `searchParams` of a request URL, or a binding that holds them, the binding they derive from. */
+function searchParamsOrigin(node: any, ts: TsModule, rootPath: Roots): Root | undefined {
+  let cur = node;
+  while (cur && (ts.isParenthesizedExpression(cur) || ts.isNonNullExpression(cur) || ts.isAsExpression(cur))) cur = cur.expression;
+  if (!cur) return undefined;
+  if (ts.isIdentifier(cur)) {
+    const root = rootPath.get(cur);
+    return root?.accessor === true && root.space === 'get' ? root : undefined;
+  }
+  if (!ts.isPropertyAccessExpression(cur) || cur.name.text !== 'searchParams') return undefined;
+  return requestUrlOrigin(cur.expression, ts, rootPath);
 }
 
 /**

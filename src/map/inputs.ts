@@ -1,6 +1,6 @@
 import type { FieldShape, InputField, InputSource, TsModule } from './types.js';
 import { bindingKey, rootIdentifier, rootIdentifierNode } from './ast.js';
-import { declarationOf } from './scope.js';
+import { declarationOf, isGlobal } from './scope.js';
 import { npmPackageOf, type Bindings } from './bindings.js';
 import { addressSpaceOf, inputIdOf, runtimeCoordinate } from './coordinates.js';
 
@@ -274,7 +274,7 @@ function requestMemberAccesses(
     if (!cur) return false;
     if (ts.isIdentifier(cur)) return urlDecls.has(declarationOf(cur, ts));
     if (ts.isPropertyAccessExpression(cur) && cur.name.text === 'nextUrl') return isRequest(cur.expression);
-    if (ts.isNewExpression(cur) && ts.isIdentifier(cur.expression) && cur.expression.text === 'URL') {
+    if (ts.isNewExpression(cur) && isGlobal(cur.expression, 'URL', ts)) {
       const [href] = cur.arguments ?? [];
       return Boolean(href && ts.isPropertyAccessExpression(href) && href.name.text === 'url' && isRequestObject(href.expression));
     }

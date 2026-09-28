@@ -29,6 +29,13 @@ export function refersTo(id: any, declaration: any, ts: TsModule): boolean {
   return declaration !== undefined && declarationOf(id, ts) === declaration;
 }
 
+/** Whether `node` names the global `name` (`URL`, `globalThis.URL`) rather than a binding of that name. */
+export function isGlobal(node: any, name: string, ts: TsModule): boolean {
+  if (ts.isIdentifier(node)) return node.text === name && declarationOf(node, ts) === undefined;
+  return ts.isPropertyAccessExpression(node) && node.name.text === name && ts.isIdentifier(node.expression)
+    && node.expression.text === 'globalThis' && declarationOf(node.expression, ts) === undefined;
+}
+
 /** The identifier nodes a binding name (`x`, `{ a, b: c }`, `[d, ...e]`) declares. */
 export function boundIdentifiers(name: any, ts: TsModule): any[] {
   if (!name) return [];
