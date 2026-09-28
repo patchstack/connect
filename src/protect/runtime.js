@@ -410,13 +410,15 @@ export async function createProtection(options = {}) {
         engine: new RuleEngine({ firewall: [rule], onError }),
         redactors,
         mutatedSpan,
-        // A redaction that reads response headers only, and masks spans in them, is decided and carried
-        // out without the body — so it still applies to a response whose body was not screened.
+        // A redaction that reads response headers only, and masks spans in them, and an explicit block
+        // that reads response headers only, are decided and carried out without the body — so they still
+        // apply to a response whose body was not screened.
         redactsHeaders:
           rule.action === 'redact' &&
           !mutatedSpan &&
           (redactors ?? []).some((r) => !r.jsonPath) &&
           readsOnlyResponseHeaders(rule),
+        blocksOnHeaders: rule.action === 'block' && readsOnlyResponseHeaders(rule),
         // Optional cheap pre-filter: literal anchor(s) that MUST appear for the (expensive) regex to
         // have any chance of matching. Lets screenText skip the full scan on responses with no candidate
         // — the common case — cutting CPU/latency and shrinking the regex/ReDoS surface.
@@ -546,10 +548,11 @@ export async function createProtection(options = {}) {
     return effectiveMode === 'block' ? block() : allow();
   };
 
-  // The rules a response whose body was not read can still be screened against: header hardening, and
-  // redactions of header values. Neither reads the body, and neither needs one to act on.
-  const decidedWithoutBody = (rule, entry) => hardensWithoutBody(rule) || Boolean(entry?.redactsHeaders);
-  const redactsHeaders = (_rule, entry) => Boolean(entry?.redactsHeaders);
+  // The rules a response whose body was not read can still be screened against: header hardening,
+  // redactions of header values, and blocks decided on headers. None reads the body, and none needs one
+  // to act on.
+  const decidedByHeaders = (_rule, entry) => Boolean(entry?.redactsHeaders || entry?.blocksOnHeaders);
+  const decidedWithoutBody = (rule, entry) => hardensWithoutBody(rule) || decidedByHeaders(rule, entry);
 
   // Response phase core: screen a text body → { verdict: 'pass'|'block'|'redact', body? }.
   // redact masks matched spans; block withholds; block wins over redact. Enforcement only in
@@ -1000,8 +1003,7 @@ export async function createProtection(options = {}) {
     try {
       const meta = { status: response.status, headers: headerObject(response.headers) };
       const r = screenText('', meta, reqCtx, decidedWithoutBody);
-      // `block` cannot arise: only header actions, and redactions that have a header span to mask,
-      // were eligible.
+      if (r.verdict === 'block') return leakResponse();
       if (r.verdict !== 'redact' || !r.headers) return response;
 
       // A matched rule is not a changed header. `harden-cookie` on a response that sets no cookie,
@@ -1040,6 +1042,7 @@ export async function createProtection(options = {}) {
     const chunks = [];
     let size = 0;
     let overflow = false;
+    let withheld = false;
     const MAX = screenCap;
 
     /**
@@ -1269,17 +1272,24 @@ export async function createProtection(options = {}) {
     };
 
     /**
-     * Redactions of header values, for a response whose body will not be screened.
+     * The rules decided on headers alone — redactions of header values, and blocks — for a response whose
+     * body will not be screened.
      *
-     * Such a rule reads headers only, so it is decided the same way whether or not the body is read — it
-     * is run here instead of at `end`, never as well, so it reports once. Returns the changes for
-     * `sendHead`, or undefined when there are none. A head that has already gone cannot take them, which
-     * is recorded, as it is for a screened body.
+     * Such a rule is decided the same way whether or not the body is read, so it is run here instead of at
+     * `end`, never as well, and reports once. Returns `{ withhold: true }` for a block, the header changes
+     * for `sendHead`, or undefined when there are none. A head that has already gone can take neither,
+     * which is recorded, as it is for a screened body.
      */
-    const redactUnreadHeaders = () => {
+    const screenUnreadHead = () => {
       try {
         const head = effectiveHead();
-        const r = screenText('', head, reqCtx, redactsHeaders);
+        const r = screenText('', head, reqCtx, decidedByHeaders);
+        if (r.verdict === 'block') {
+          if (!reallySent()) return { withhold: true };
+          recordSkip('response', 'headers-sent', { action: 'block' });
+
+          return undefined;
+        }
         if (r.verdict !== 'redact' || !r.headers) return undefined;
         const changed = new Map();
         for (const [name, value] of Object.entries(r.headers)) {
@@ -1331,6 +1341,26 @@ export async function createProtection(options = {}) {
       origWriteHead(...args);
     };
 
+    /**
+     * Send the generic withheld response in place of the application's, before its head has gone.
+     *
+     * Only its own framing goes out. Every header the application set is dropped: they described a
+     * response that is not the one sent, and a header can be what the verdict was about. Anything the
+     * application writes afterwards is discarded.
+     */
+    const sendWithheld = (cb) => {
+      const body = JSON.stringify({ error: 'Response withheld by Patchstack (sensitive data detected)' });
+      const headers = new Map();
+      for (const name of Object.keys(effectiveHead().headers)) headers.set(name.toLowerCase(), null);
+      headers.set('content-type', 'application/json');
+      headers.set('content-length', String(Buffer.byteLength(body)));
+      headers.set('transfer-encoding', null);
+      withheld = true;
+      sendHead({ status: 500, headers });
+
+      return origEnd(body, cb);
+    };
+
     /** Header changes onto the response's own header state, for the head Node writes implicitly. */
     const applyToResponse = (changes) => {
       if (changes.status !== undefined) res.statusCode = changes.status;
@@ -1352,7 +1382,13 @@ export async function createProtection(options = {}) {
         // Too big to screen — abandon buffering, but FLUSH what we already captured (the head) plus
         // this chunk before switching to pass-through, so the client gets a complete body (not a
         // truncated one missing everything before the cap was hit).
-        sendHead(redactUnreadHeaders());
+        const unread = screenUnreadHead();
+        if (unread?.withhold) {
+          sendWithheld();
+
+          return;
+        }
+        sendHead(unread);
         for (const c of chunks) origWrite(c);
         chunks.length = 0;
         origWrite(buf);
@@ -1363,6 +1399,12 @@ export async function createProtection(options = {}) {
       chunks.push(buf);
     };
     res.write = function (chunk, enc, cb) {
+      if (withheld) {
+        if (typeof enc === 'function') enc();
+        else if (typeof cb === 'function') cb();
+
+        return true;
+      }
       if (overflow) return origWrite(chunk, enc, cb);
       collect(chunk, enc);
       if (typeof enc === 'function') enc();
@@ -1372,12 +1414,23 @@ export async function createProtection(options = {}) {
     res.end = function (chunk, enc, cb) {
       if (typeof chunk === 'function') { cb = chunk; chunk = undefined; enc = undefined; }
       else if (typeof enc === 'function') { cb = enc; enc = undefined; }
+      if (withheld) {
+        if (typeof cb === 'function') cb();
+
+        return res;
+      }
       if (overflow) { if (chunk != null) origWrite(chunk, enc); return origEnd(cb); }
       collect(chunk, enc);
+      if (withheld) {
+        if (typeof cb === 'function') cb();
+
+        return res;
+      }
       if (overflow) return origEnd(cb); // collect just flushed head + final chunk on overflow
       hardenOnce();
 
       const passThrough = (changes) => {
+        if (changes?.withhold) return sendWithheld(cb);
         sendHead(changes);
         for (const c of chunks) origWrite(c);
 
@@ -1393,7 +1446,7 @@ export async function createProtection(options = {}) {
       if (kind === 'skip' || (kind === 'sniff' && looksBinary(buffer))) {
         recordSkip('response', kind === 'skip' ? (baseContentType(ct) === 'text/event-stream' ? 'live-stream' : 'non-text-content-type') : 'binary-body');
 
-        return passThrough(redactUnreadHeaders());
+        return passThrough(screenUnreadHead());
       }
       // Encoded bytes cannot be screened as text: sent exactly as they are, under their own coding. The
       // coding is read from the head that will be sent, which includes a held `writeHead`'s own headers.
@@ -1401,7 +1454,7 @@ export async function createProtection(options = {}) {
       if (codings.length > 0 && stillEncoded(buffer)) {
         recordSkip('response', 'encoded-body', { encoding: codings.join(', ') });
 
-        return passThrough(redactUnreadHeaders());
+        return passThrough(screenUnreadHead());
       }
       const text = buffer.toString('utf8');
       let r;
@@ -1426,7 +1479,6 @@ export async function createProtection(options = {}) {
       }
 
       if (r.verdict === 'block') {
-        const body = JSON.stringify({ error: 'Response withheld by Patchstack (sensitive data detected)' });
         if (reallySent()) {
           // Chunked, so the body can still change, but the status already went out as the application's.
           res.destroy?.();
@@ -1435,16 +1487,7 @@ export async function createProtection(options = {}) {
         }
         // One framing: the length describes this body, so any transfer coding the application chose
         // for its own goes with it.
-        sendHead({
-          status: 500,
-          headers: new Map([
-            ['content-type', 'application/json'],
-            ['content-length', String(Buffer.byteLength(body))],
-            ['transfer-encoding', null],
-          ]),
-        });
-
-        return origEnd(body, cb);
+        return sendWithheld(cb);
       }
 
       // Redact: the rule's header values, and a length for the rewritten body. A length is always
