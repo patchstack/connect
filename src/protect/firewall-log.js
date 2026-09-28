@@ -115,6 +115,18 @@ export function createFirewallLogReporter(opts) {
   let delivered = 0;
   let failed = 0;
   let dropped = 0;
+  /** The batch being sent, until its outcome is counted. A shutdown that gives up counts it as dropped. */
+  /** @type {{ size: number, counted: boolean } | null} */
+  let activeBatch = null;
+  /** Count a batch's outcome once: whichever of the send and a shutdown decides first. */
+  const settle = (sent, outcome) => {
+    if (sent.counted) return;
+    sent.counted = true;
+    if (outcome === 'delivered') delivered += sent.size;
+    else if (outcome === 'failed') failed += sent.size;
+    else dropped += sent.size;
+    if (activeBatch === sent) activeBatch = null;
+  };
 
   /** @type {{ token: string, expiresAt: number } | null} */
   let cachedToken = null;
@@ -182,15 +194,15 @@ export function createFirewallLogReporter(opts) {
     // whether it succeeded.
     /** @type {Promise<void>} */
     let entry;
-    let settled = false;
+    const sent = { size: batch.length, counted: false };
+    activeBatch = sent;
     entry = (async () => {
       try {
         const token = await fetchAccessToken(controller?.signal);
         // Not after a shutdown gave up: it has already reported itself finished.
         if (ended) return;
         if (!token) {
-          failed += batch.length;
-          settled = true;
+          settle(sent, 'failed');
 
           return;
         }
@@ -213,18 +225,13 @@ export function createFirewallLogReporter(opts) {
           ...(controller ? { signal: controller.signal } : {}),
         });
         const res = p && typeof p.then === 'function' ? await p.catch(() => null) : p;
-        if (ended) return;
-        if (res && res.ok) delivered += batch.length;
-        else failed += batch.length;
-        settled = true;
+        settle(sent, res && res.ok ? 'delivered' : 'failed');
       } catch {
         /* A delivery problem is never worth disturbing the app over. */
       } finally {
-        // Anything not accounted for above was abandoned by a shutdown, or failed before a verdict.
-        if (!settled) {
-          if (ended) dropped += batch.length;
-          else failed += batch.length;
-        }
+        // Anything not counted above failed before a verdict. A shutdown that gave up has already counted
+        // this batch as dropped, so an answer arriving later changes nothing.
+        settle(sent, 'failed');
         clearTimeout(attemptTimer);
         if (activeController === controller) activeController = null;
         if (inFlight === entry) inFlight = null;
@@ -314,6 +321,8 @@ export function createFirewallLogReporter(opts) {
         ended = true;
         activeController?.abort();
         activeController = null;
+        // The batch in flight may never settle: a transport can ignore its abort signal.
+        if (activeBatch) settle(activeBatch, 'dropped');
         dropped += queue.length;
         queue = [];
         inFlight = null;

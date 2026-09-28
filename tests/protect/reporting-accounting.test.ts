@@ -153,6 +153,17 @@ describe('block-log accounting', () => {
     expect(reporter.health()).toMatchObject({ recorded: 2, delivered: 0, failed: 2, dropped: 0 });
   });
 
+  it('counts records as failed when the transport throws', async () => {
+    const fetchImpl = vi.fn((url: string) => {
+      if (String(url).includes('/oauth/token')) return Promise.resolve(tokenResponse());
+      throw new Error('sample transport failure');
+    });
+    const reporter: any = createFirewallLogReporter({ apiKey: API_KEY, apiBase: 'https://api.example.test', fetchImpl, flushMs: 10 });
+    record(reporter, 2);
+    await vi.advanceTimersByTimeAsync(50);
+    expect(reporter.health()).toMatchObject({ recorded: 2, delivered: 0, failed: 2, dropped: 0, queued: 0 });
+  });
+
   it('counts records turned away by a full queue', async () => {
     const reporter: any = reporterWith('hang');
     record(reporter, 600);
@@ -169,6 +180,60 @@ describe('block-log accounting', () => {
     await vi.advanceTimersByTimeAsync(10_000);
     await stopped;
     expect(reporter.health()).toEqual({ recorded: 120, delivered: 0, failed: 0, dropped: 120, queued: 0 });
+  });
+
+  describe('with a transport that ignores cancellation', () => {
+    const balanced = (h: any) => h.recorded === h.delivered + h.failed + h.dropped + h.queued;
+
+    // The post never settles on its own and does not listen to the abort signal; `release` settles it later.
+    const ignoringReporter = () => {
+      let release: (response: Response) => void = () => {};
+      const fetchImpl = vi.fn(async (url: string) => {
+        if (String(url).includes('/oauth/token')) return tokenResponse();
+        return new Promise<Response>((resolve) => { release = resolve; });
+      });
+      const reporter: any = createFirewallLogReporter({ apiKey: API_KEY, apiBase: 'https://api.example.test', fetchImpl, flushMs: 10 });
+      return { reporter, release: (response: Response) => release(response) };
+    };
+
+    it('accounts for the batch in flight when the shutdown budget runs out', async () => {
+      const { reporter } = ignoringReporter();
+      record(reporter, 80);
+      await vi.advanceTimersByTimeAsync(0);
+      const stopped = reporter.stop();
+      await vi.advanceTimersByTimeAsync(10_000);
+      await stopped;
+      const health = reporter.health();
+      expect(health).toEqual({ recorded: 80, delivered: 0, failed: 0, dropped: 80, queued: 0 });
+      expect(balanced(health)).toBe(true);
+    });
+
+    it('does not count the batch again when the transport answers after shutdown', async () => {
+      const { reporter, release } = ignoringReporter();
+      record(reporter, 80);
+      await vi.advanceTimersByTimeAsync(0);
+      const stopped = reporter.stop();
+      await vi.advanceTimersByTimeAsync(10_000);
+      await stopped;
+      release(new Response('{}', { status: 200 }));
+      await vi.advanceTimersByTimeAsync(20_000);
+      const health = reporter.health();
+      expect(health).toEqual({ recorded: 80, delivered: 0, failed: 0, dropped: 80, queued: 0 });
+      expect(balanced(health)).toBe(true);
+    });
+
+    it('keeps the counts balanced when the answer arrives before the budget runs out', async () => {
+      const { reporter, release } = ignoringReporter();
+      record(reporter, 80);
+      await vi.advanceTimersByTimeAsync(0);
+      const stopped = reporter.stop();
+      release(new Response('{}', { status: 200 }));
+      await vi.advanceTimersByTimeAsync(10_000);
+      await stopped;
+      const health = reporter.health();
+      expect(health.delivered).toBeGreaterThanOrEqual(50);
+      expect(balanced(health)).toBe(true);
+    });
   });
 
   it('is exposed on the protection object only when the block log is on', async () => {
