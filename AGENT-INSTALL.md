@@ -574,8 +574,10 @@ carries no detections and would otherwise read as one. Those counts stay in your
 sent to report them.
 
 `protection.stop()` stops everything the guard has running in the background — the rule-refresh loop, the
-block-log reporter, the detection reporter — and flushes what is buffered. `protection.stopRefresh()` is
-the same method under its older name. Call it on shutdown; it is safe to call twice.
+block-log reporter, the detection reporter — and flushes what is buffered. With `egress: true` it also
+removes this guard's outbound-request screening; once no guard in the process is screening, `fetch` and
+`node:http`/`node:https` are restored. `protection.stopRefresh()` is the same method under its older name.
+Call it on shutdown; it is safe to call twice.
 
 Two more endpoints the package can call, for completeness:
 

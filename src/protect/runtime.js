@@ -1685,10 +1685,11 @@ export async function createProtection(options = {}) {
   const canAsk = Boolean(options.token || pulseAuth);
   recovery = live && canAsk && !loop && ruleSource.ok === false ? startRecovery(refreshTick, { onError }) : null;
 
-  // One method, always present, that reaches everything holding a timer or a buffer: the refresh loop,
-  // the block log, the detection reporter. Always present because a lifecycle method that exists only
-  // for some configurations is one a caller cannot rely on — and each of these components can be the
-  // only one installed, so any of them can be the one left running.
+  // One method, always present, that reaches everything holding a timer, a buffer or a process-wide
+  // hook: the refresh loop, the block log, the detection reporter, the outbound screen. Always present
+  // because a lifecycle method that exists only for some configurations is one a caller cannot rely on
+  // — and each of these components can be the only one installed, so any of them can be the one left
+  // running.
   //
   // Returns a promise that settles when the reporter has finished draining, so a host shutting down can
   // await it rather than racing the last batch against process exit. Bounded and best-effort — a runtime
@@ -1696,6 +1697,8 @@ export async function createProtection(options = {}) {
   protection.stop = () => {
     loop?.stop();
     recovery?.stop();
+    // This protection's outbound screen leaves the shared guard; other protections keep theirs.
+    protection.uninstallEgress?.();
     // Both reporters, because the promise says every buffer this reaches is finished with. Waiting only
     // for one would resolve while the other still had records outstanding — and resolve immediately in a
     // configuration where the one being waited for was never built.

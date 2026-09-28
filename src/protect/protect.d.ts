@@ -29,7 +29,9 @@ export interface Protection {
   screenResponse(response: Response, request?: Request): Promise<Response>;
   express(options?: { screenResponses?: boolean }): (req: unknown, res: unknown, next: () => void) => void;
   node(options?: { maxBodyBytes?: number; screenResponses?: boolean }): (req: unknown, res: unknown, next: () => void) => void;
-  /** Present when `egress: true` — restores the original global fetch. */
+  /** Present when `egress: true` — removes this protection's outbound screen. Outbound calls are
+   *  screened by every protection that has one registered; when the last one leaves, the original
+   *  `fetch` and `node:http`/`node:https` functions are restored. `stop()` calls this too. */
   uninstallEgress?: () => void;
   /** Present with a live source — re-fetch + hot-swap the rules once (used by the loop + push).
    *  Resolves with the outcome of the attempt: `ok: false` means the rules in force came from the
@@ -46,7 +48,8 @@ export interface Protection {
    *  the configured refresh secret (a push/zero-day trigger). No secret set → the handler 404s. */
   refreshHandler?: () => (request: Request) => Promise<Response>;
   /** Stops everything with a timer or a buffer behind it: the refresh loop, the block log, the
-   *  detection reporter (flushing what it holds). Always present, and safe to call twice. */
+   *  detection reporter (flushing what it holds), and this protection's outbound screen. Always
+   *  present, and safe to call twice. */
   /**
    * Stop everything holding a timer or a buffer.
    *
