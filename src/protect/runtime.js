@@ -184,6 +184,10 @@ export async function createProtection(options = {}) {
     );
   };
 
+  // Node's own HTTP module where there is one, so a held `writeHead` can be judged by Node itself. Loaded
+  // here rather than imported: this module also runs on runtimes that have no `node:http`.
+  const nodeHttp = await import('node:http').then((m) => m.default ?? m, () => null);
+
   // One tiered store (memory → filesystem/pluggable) shared by the initial load and every refresh.
   const store = makeStore(options);
   // Startup must not hang on the network: hosted platforms (Replit et al.) fail a deploy whose health
@@ -885,6 +889,16 @@ export async function createProtection(options = {}) {
   const wrapNodeResponse = (res, reqCtx) => {
     const origWrite = res.write.bind(res);
     const origEnd = res.end.bind(res);
+    // The response's own header operations, for this wrapper's use. While a `writeHead` is held the
+    // application sees them throw, as they would once a head was sent — but this wrapper still has to
+    // put the hardened and rewritten values in place before the real `writeHead` runs.
+    const setHeaderNow = typeof res.setHeader === 'function' ? res.setHeader.bind(res) : null;
+    const removeHeaderNow = typeof res.removeHeader === 'function' ? res.removeHeader.bind(res) : null;
+    // Whether a head has REALLY gone. `headersSent` is redefined below to include a held one, so the
+    // original is kept: a getter on a real ServerResponse, a plain value on a response-like object.
+    const sentAccessor = accessorOf(res, 'headersSent');
+    let sentValue = sentAccessor ? undefined : res.headersSent;
+    const reallySent = () => Boolean(sentAccessor ? sentAccessor.call(res) : sentValue);
     const chunks = [];
     let size = 0;
     let overflow = false;
@@ -914,7 +928,7 @@ export async function createProtection(options = {}) {
       try {
         // Nothing can be changed once the headers are on the wire, and saying so is better than
         // throwing from inside a write.
-        if (res.headersSent || typeof res.setHeader !== 'function') return null;
+        if (reallySent() || !setHeaderNow) return null;
 
         const set = typeof res.getHeaders === 'function' ? res.getHeaders() : {};
         // What the client will actually receive. `writeHead` supplies its own status and its own
@@ -937,8 +951,8 @@ export async function createProtection(options = {}) {
 
           changed.set(name.toLowerCase(), value);
           try {
-            if (value === null || value === undefined) res.removeHeader?.(name);
-            else res.setHeader(name, value);
+            if (value === null || value === undefined) removeHeaderNow?.(name);
+            else setHeaderNow(name, value);
           } catch {
             // An unusable header name from a rule is skipped, like everywhere else on this path.
           }
@@ -956,29 +970,211 @@ export async function createProtection(options = {}) {
     // body-reading hardening rule is still honoured at `end`.
     const stillToAnswer = (rule) => !hardensWithoutBody(rule);
 
-    // Every way the first byte can leave. `writeHead` is included because an application may call it
-    // itself, and it carries both the status the response goes out with and headers that beat anything
-    // set beforehand — so its argument is what a rule is shown, and what the hardened values go back
-    // into. Set with `setHeader` alone, a header the application also passes here would be overwritten
-    // on the way out.
-    if (typeof res.writeHead === 'function') {
-      const origWriteHead = res.writeHead.bind(res);
+    /**
+     * `writeHead`, held until the first byte actually leaves.
+     *
+     * Calling it sends the status line and headers, `Content-Length` included — and the body this path
+     * screens is not known until `end`, so a head sent early may not describe the body that follows.
+     * So the call is recorded, `res` is returned so a chained
+     * `.end()` still works, and the real `writeHead` runs when the body is written: with the
+     * application's own arguments, the hardened header values put back into them, and — when the body
+     * changed — the status and length that describe the body actually sent.
+     *
+     * Its arguments are what a rule is shown, because they carry the status the response goes out with
+     * and headers that beat anything set beforehand. Set with `setHeader` alone, a header the
+     * application also passes here would be overwritten on the way out.
+     */
+    let pendingHead = null;
+    // Set once this wrapper starts sending. Node writes an implicit head through `res.writeHead` too,
+    // and from then on every call is the real one.
+    let sending = false;
+    const origWriteHead = typeof res.writeHead === 'function' ? res.writeHead.bind(res) : null;
+    if (origWriteHead) {
       res.writeHead = function (...args) {
-        const at = writeHeadHeaderIndex(args);
-        const given = at === -1 ? null : args[at];
-        const changed = hardenBeforeFlush({
-          status: typeof args[0] === 'number' ? args[0] : undefined,
-          headers: given ? writeHeadHeaderObject(given) : null,
-        });
+        if (sending || reallySent()) return origWriteHead(...args); // Node's own behaviour, and its error
+        // A head is already held: to the application it has been sent, and a second one is refused the
+        // way Node refuses it.
+        if (pendingHead) throw headersSentError('write');
+        // Node judges the call now, as it would have: an invalid status or header throws its own error
+        // here rather than when the body is written, and the status and reason phrase it settles on are
+        // the ones a handler reading them afterwards should see.
+        const judged = judgeWriteHead(args);
+        if (judged) {
+          res.statusCode = judged.statusCode;
+          res.statusMessage = judged.statusMessage;
+          // The header state Node would have left behind, applied while the head is still unheld so the
+          // response's own setters accept it.
+          mirrorHeaders(judged.headers);
+          pendingHead = args;
+        } else {
+          pendingHead = args;
+          if (typeof args[0] === 'number') res.statusCode = args[0];
+          if (typeof args[1] === 'string') res.statusMessage = args[1];
+        }
 
-        if (!changed || !given) return origWriteHead(...args);
-
-        const rewritten = [...args];
-        rewritten[at] = rewriteWriteHeadHeaders(given, changed);
-
-        return origWriteHead(...rewritten);
+        return res;
       };
     }
+
+    /**
+     * Node's `writeHead`, run on a detached copy of this response: throws Node's own error, or returns the
+     * status, reason phrase and header state Node settled on.
+     *
+     * A copy rather than a fresh response, because what `writeHead` does depends on the state it finds —
+     * a reason phrase already set is kept, and headers already set are merged with the ones it is given,
+     * by rules that differ between Node versions. Replaying them on a copy lets Node decide, rather than
+     * this wrapper guessing.
+     */
+    function judgeWriteHead(args) {
+      const ServerResponse = nodeHttp?.ServerResponse;
+      if (typeof ServerResponse !== 'function') return null;
+      const detached = new ServerResponse({ method: res.req?.method ?? 'GET', httpVersionMajor: 1, httpVersionMinor: 1, headers: {} });
+      if (res.statusMessage !== undefined) detached.statusMessage = res.statusMessage;
+      for (const [name, value] of headerEntries(res)) detached.setHeader(name, value);
+      detached.writeHead(...args);
+
+      return { statusCode: detached.statusCode, statusMessage: detached.statusMessage, headers: headerEntries(detached) };
+    }
+
+    /** A response's headers under the names they were set with. */
+    function headerEntries(target) {
+      const names = typeof target.getRawHeaderNames === 'function'
+        ? target.getRawHeaderNames()
+        : typeof target.getHeaderNames === 'function' ? target.getHeaderNames() : [];
+
+      return names.map((name) => [name, target.getHeader(name)]);
+    }
+
+    /**
+     * Bring this response's header state to `entries`, touching only the names that differ. `writeHead`
+     * only ever adds or replaces headers in that state, so nothing here needs removing.
+     */
+    function mirrorHeaders(entries) {
+      if (!setHeaderNow) return;
+      for (const [name, value] of entries) {
+        const current = res.getHeader?.(name);
+        if (current === undefined || headerValueChanged(current, value)) setHeaderNow(name, value);
+      }
+    }
+
+    // Everything else the application can observe answers as it would once a head had been sent.
+    Object.defineProperty(res, 'headersSent', {
+      configurable: true,
+      enumerable: true,
+      get: () => pendingHead !== null || reallySent(),
+      // A response-like object that tracks the flag itself keeps doing so.
+      set: (value) => {
+        if (!sentAccessor) sentValue = value;
+      },
+    });
+    for (const [method, verb] of [['setHeader', 'set'], ['removeHeader', 'remove'], ['appendHeader', 'append']]) {
+      const original = typeof res[method] === 'function' ? res[method].bind(res) : null;
+      if (!original) continue;
+      res[method] = function (...args) {
+        if (pendingHead) throw headersSentError(verb);
+
+        return original(...args);
+      };
+    }
+    // An explicit flush asks for the head now, so it goes now, hardened. The body that follows can then
+    // only change where no length was promised, which `end` already accounts for.
+    if (typeof res.flushHeaders === 'function') {
+      const origFlushHeaders = res.flushHeaders.bind(res);
+      res.flushHeaders = function () {
+        sendHead();
+
+        return origFlushHeaders();
+      };
+    }
+
+    /**
+     * The hardening that needs no body, run once: before the body is screened, so the pass at `end`
+     * leaves out the rules it already answered, and its header values reused when the head is sent.
+     */
+    let hardenDone = false;
+    let hardenedValues = null;
+    const hardenOnce = () => {
+      if (hardenDone) return hardenedValues;
+      hardenDone = true;
+      if (!pendingHead) {
+        hardenedValues = hardenBeforeFlush();
+
+        return hardenedValues;
+      }
+      const at = writeHeadHeaderIndex(pendingHead);
+      hardenedValues = hardenBeforeFlush({
+        status: typeof pendingHead[0] === 'number' ? pendingHead[0] : undefined,
+        headers: at === -1 ? null : writeHeadHeaderObject(pendingHead[at]),
+      });
+
+      return hardenedValues;
+    };
+
+    /** The status and headers the client will receive: the held `writeHead` over what was set. */
+    const effectiveHead = () => {
+      const set = typeof res.getHeaders === 'function' ? { ...res.getHeaders() } : {};
+      // A response-like object with `getHeader` but not `getHeaders` still answers the two names the
+      // decision below depends on.
+      if (typeof res.getHeaders !== 'function' && typeof res.getHeader === 'function') {
+        for (const name of ['content-type', 'content-length']) {
+          const value = res.getHeader(name);
+          if (value !== undefined) set[name] = value;
+        }
+      }
+      if (!pendingHead) return { status: res.statusCode, headers: set };
+      const at = writeHeadHeaderIndex(pendingHead);
+
+      return {
+        status: typeof pendingHead[0] === 'number' ? pendingHead[0] : res.statusCode,
+        headers: at === -1 ? set : { ...set, ...writeHeadHeaderObject(pendingHead[at]) },
+      };
+    };
+
+    /**
+     * Send the head, if the application asked for one explicitly. `changes` is what the screen at `end`
+     * decided: a new status, and header values keyed by lower-cased name (null removes one). Applied to
+     * both places a header can live — the held arguments and the response's own header state — because
+     * whichever holds a name is the one that is sent.
+     */
+    const sendHead = (changes) => {
+      if (sending) return;
+      const hardened = hardenOnce();
+      sending = true;
+      if (!pendingHead) {
+        if (changes) applyToResponse(changes);
+
+        return;
+      }
+      const args = [...pendingHead];
+      pendingHead = null;
+      const merged = new Map(hardened ?? []);
+      for (const [name, value] of changes?.headers ?? []) merged.set(name, value);
+      if (changes?.status !== undefined) {
+        args[0] = changes.status;
+        // A status message belongs to the status it came with.
+        if (typeof args[1] === 'string') args.splice(1, 1);
+      }
+      // Both places a header can live: the held arguments, which beat anything set, and the response's
+      // own headers, which Node merges with them — so a name the arguments do not carry still goes out.
+      const headerAt = writeHeadHeaderIndex(args);
+      if (headerAt !== -1 && merged.size) args[headerAt] = rewriteWriteHeadHeaders(args[headerAt], merged);
+      applyToResponse({ headers: merged });
+      origWriteHead(...args);
+    };
+
+    /** Header changes onto the response's own header state, for the head Node writes implicitly. */
+    const applyToResponse = (changes) => {
+      if (changes.status !== undefined) res.statusCode = changes.status;
+      for (const [name, value] of changes.headers ?? []) {
+        try {
+          if (value === null || value === undefined) removeHeaderNow?.(name);
+          else setHeaderNow?.(name, value);
+        } catch {
+          // An unusable header name from a rule is skipped, like everywhere else on this path.
+        }
+      }
+    };
+
     const collect = (chunk, enc) => {
       if (chunk == null) return;
       const buf = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk, typeof enc === 'string' ? enc : 'utf8');
@@ -987,6 +1183,7 @@ export async function createProtection(options = {}) {
         // Too big to screen — abandon buffering, but FLUSH what we already captured (the head) plus
         // this chunk before switching to pass-through, so the client gets a complete body (not a
         // truncated one missing everything before the cap was hit).
+        sendHead();
         for (const c of chunks) origWrite(c);
         chunks.length = 0;
         origWrite(buf);
@@ -997,7 +1194,6 @@ export async function createProtection(options = {}) {
       chunks.push(buf);
     };
     res.write = function (chunk, enc, cb) {
-      hardenBeforeFlush();
       if (overflow) return origWrite(chunk, enc, cb);
       collect(chunk, enc);
       if (typeof enc === 'function') enc();
@@ -1005,62 +1201,102 @@ export async function createProtection(options = {}) {
       return true;
     };
     res.end = function (chunk, enc, cb) {
-      hardenBeforeFlush();
       if (typeof chunk === 'function') { cb = chunk; chunk = undefined; enc = undefined; }
       else if (typeof enc === 'function') { cb = enc; enc = undefined; }
       if (overflow) { if (chunk != null) origWrite(chunk, enc); return origEnd(cb); }
       collect(chunk, enc);
       if (overflow) return origEnd(cb); // collect just flushed head + final chunk on overflow
+      hardenOnce();
+
+      const passThrough = () => {
+        sendHead();
+        for (const c of chunks) origWrite(c);
+
+        return origEnd(cb);
+      };
+
       const buffer = Buffer.concat(chunks);
-      let ct = res.getHeader ? res.getHeader('content-type') : undefined;
+      const head = effectiveHead();
+      let ct = head.headers['content-type'];
       if (Array.isArray(ct)) ct = ct[0];
       const kind = screenableContentType(ct);
       // Skip live streams / binary bodies (incl. an octet-stream that sniffs as binary) — untouched.
       if (kind === 'skip' || (kind === 'sniff' && looksBinary(buffer))) {
         recordSkip('response', kind === 'skip' ? (baseContentType(ct) === 'text/event-stream' ? 'live-stream' : 'non-text-content-type') : 'binary-body');
-        for (const c of chunks) origWrite(c);
-        return origEnd(cb);
+
+        return passThrough();
       }
       const text = buffer.toString('utf8');
       let r;
       try {
-        r = screenText(
-          text,
-          { status: res.statusCode, headers: res.getHeaders ? res.getHeaders() : {} },
-          reqCtx,
-          answeredWithoutBody ? stillToAnswer : undefined,
-        );
+        r = screenText(text, head, reqCtx, answeredWithoutBody ? stillToAnswer : undefined);
       } catch (err) {
         notify(onError, err, 'onError');
-        for (const c of chunks) origWrite(c);
-        return origEnd(cb);
+
+        return passThrough();
       }
+      if (r.verdict !== 'block' && r.verdict !== 'redact') return passThrough();
+
+      // The body is about to change, so the head must describe the new one. If the head has already
+      // gone — by a route this wrapper does not hold — a changed body can only be sent safely when the
+      // response is chunked, since then no length was promised. Anything else is cut off rather than
+      // sent under a length it does not have, or sent as the original the verdict was about.
+      if (reallySent() && res.chunkedEncoding !== true) {
+        notify(onError, new Error('Patchstack: response withheld — its headers were sent before the body could be screened'), 'onError');
+        res.destroy?.();
+
+        return res;
+      }
+
       if (r.verdict === 'block') {
-        res.statusCode = 500;
-        try { res.setHeader('content-type', 'application/json'); } catch { /* headers sent */ }
-        return origEnd(JSON.stringify({ error: 'Response withheld by Patchstack (sensitive data detected)' }), cb);
-      }
-      if (r.verdict === 'redact') {
-        try { res.removeHeader && res.removeHeader('content-length'); } catch { /* ignore */ }
-        if (r.headers && res.setHeader) {
-          const current = res.getHeaders ? res.getHeaders() : {};
-          for (const [name, value] of Object.entries(r.headers)) {
-            // content-length was just removed (the redacted body has a new length); never re-set a
-            // stale one here or the response truncates/hangs.
-            if (name.toLowerCase() === 'content-length') continue;
-            if (value === null || value === undefined) {
-              try { res.removeHeader && res.removeHeader(name); } catch { /* ignore */ } // header-mutation removal
-            } else if (Array.isArray(value)) {
-              try { res.setHeader(name, value); } catch { /* ignore invalid header */ } // Set-Cookie array
-            } else if (typeof value === 'string' && current[name] !== value) {
-              try { res.setHeader(name, value); } catch { /* ignore invalid header */ }
-            }
-          }
+        const body = JSON.stringify({ error: 'Response withheld by Patchstack (sensitive data detected)' });
+        if (reallySent()) {
+          // Chunked, so the body can still change, but the status already went out as the application's.
+          res.destroy?.();
+
+          return res;
         }
-        return origEnd(r.body, cb);
+        // One framing: the length describes this body, so any transfer coding the application chose
+        // for its own goes with it.
+        sendHead({
+          status: 500,
+          headers: new Map([
+            ['content-type', 'application/json'],
+            ['content-length', String(Buffer.byteLength(body))],
+            ['transfer-encoding', null],
+          ]),
+        });
+
+        return origEnd(body, cb);
       }
-      for (const c of chunks) origWrite(c);
-      return origEnd(cb);
+
+      // Redact: the rule's header values, and a length for the rewritten body. A length is always
+      // replaced rather than left behind, because the one the application set described the original.
+      const changed = new Map();
+      if (r.headers) {
+        for (const [name, value] of Object.entries(r.headers)) {
+          if (name.toLowerCase() === 'content-length') continue;
+          if (!headerValueChanged(head.headers[name], value)) continue;
+          changed.set(name.toLowerCase(), value);
+        }
+      }
+      if (!reallySent()) {
+        // The rewritten body keeps the application's framing: a declared length is replaced by the new
+        // one (and nothing else frames it), and a response without one is left to its transfer coding.
+        const declared = head.headers['content-length'];
+        if (declared === undefined) {
+          changed.set('content-length', null);
+        } else {
+          changed.set('content-length', String(Buffer.byteLength(r.body)));
+          changed.set('transfer-encoding', null);
+        }
+        sendHead({ headers: changed });
+      } else if (changed.size) {
+        // The body is still redacted, but header values cannot follow a head that has gone.
+        recordSkip('response', 'headers-sent', { headers: [...changed.keys()] });
+      }
+
+      return origEnd(r.body, cb);
     };
   };
 
@@ -1426,6 +1662,20 @@ export async function createProtection(options = {}) {
   });
 
   return protection;
+}
+
+/** The accessor behind `name` on `obj` or its prototype chain, or null when it is a plain value. */
+function accessorOf(obj, name) {
+  for (let o = obj; o; o = Object.getPrototypeOf(o)) {
+    const d = Object.getOwnPropertyDescriptor(o, name);
+    if (d) return typeof d.get === 'function' ? d.get : null;
+  }
+  return null;
+}
+
+/** The error Node raises for a header operation once the head has gone. */
+function headersSentError(verb) {
+  return Object.assign(new Error(`Cannot ${verb} headers after they are sent to the client`), { code: 'ERR_HTTP_HEADERS_SENT' });
 }
 
 /**
