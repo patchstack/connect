@@ -183,9 +183,14 @@ function requestMemberAccesses(
       ['json', 'formData'].includes(inner.expression.name.text) &&
       ts.isIdentifier(inner.expression.expression) && inner.expression.expression.text === reqName);
   };
+  // `request.headers.get` in `request.headers.get('x')` is a METHOD of the namespace, not a field of it.
+  // Recording it would invent an input named `get` — a coordinate no request carries.
+  const isCallee = (n: any): boolean =>
+    Boolean(n.parent && (ts.isCallExpression(n.parent) || ts.isNewExpression(n.parent)) && n.parent.expression === n);
+  const ACCESSOR_SOURCES = new Set<InputSource>(['header', 'cookie', 'form-body']);
   const visit = (n: any) => {
     // <source>.<field>
-    if (ts.isPropertyAccessExpression(n) && isReqSourceExpr(n.expression)) {
+    if (ts.isPropertyAccessExpression(n) && isReqSourceExpr(n.expression) && !isCallee(n)) {
       record(n.name.text, sourceOfExpr(n.expression));
     }
     // <source>['<field>'] — the form a header read almost always takes, because a header name carries
@@ -197,9 +202,12 @@ function requestMemberAccesses(
     }
     // `request.headers.get('x-token')` / `request.cookies.get('sid')` — the fetch-style twin of the two
     // above. The namespace is one hop further out because `.get()` is a method on it.
+    // Only on an object whose `.get()` is a field accessor — a `Headers`, a cookie store, a `FormData`.
+    // On `req.body` or `req.query` it is an application method, and its argument names no input.
     if (ts.isCallExpression(n) && ts.isPropertyAccessExpression(n.expression)
         && n.expression.name.text === 'get' && isReqSourceExpr(n.expression.expression)
-        && n.arguments.length === 1 && n.arguments[0] && ts.isStringLiteral(n.arguments[0])) {
+        && n.arguments.length === 1 && n.arguments[0] && ts.isStringLiteral(n.arguments[0])
+        && ACCESSOR_SOURCES.has(sourceOfExpr(n.expression.expression))) {
       record((n.arguments[0] as any).text, sourceOfExpr(n.expression.expression));
     }
     if (ts.isVariableDeclaration(n) && n.initializer) {
