@@ -1532,7 +1532,8 @@ export async function createProtection(options = {}) {
             return;
           }
           if (read.overflow) recordSkip('request', 'body-cap', { bytes: read.size, limit: maxBytes });
-          screenNodeRequest(req, res, next, read.text, undefined, read.overflow);
+          if (read.failed) recordSkip('request', 'read-failed', { bytes: read.size });
+          screenNodeRequest(req, res, next, read.text, undefined, read.overflow || read.failed);
         });
       };
 

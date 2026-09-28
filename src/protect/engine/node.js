@@ -18,22 +18,61 @@ import { appendOwn, setOwn } from './own.js';
  * The whole stream is consumed; bytes past the cap are counted and dropped rather than retained. `done`
  * receives `(error)` or `(null, { text, overflow, size })`, where `text` is the retained prefix — the
  * part that is screened, as on the Fetch path — and `overflow` says the body was longer than it.
+ *
+ * The cap and `size` are in bytes. A stream something upstream switched to text (`setEncoding`) delivers
+ * strings, which are measured and retained as the bytes they encode. A prefix that ends partway through a
+ * UTF-8 character ends before that character instead. `done` is called once.
+ *
+ * `error` is the stream's own error. A chunk this reader cannot use is not one: the body is then read to
+ * its end unscreened, and reported as `{ text: '', failed: true }` so the caller can fail open.
  */
 export function readBodyPrefix(req, maxBytes, done) {
   const chunks = [];
   let retained = 0;
   let size = 0;
+  let failed = false;
+  let finished = false;
+  const finish = (error, read) => {
+    if (finished) return;
+    finished = true;
+    done(error, read);
+  };
   req.on('data', (chunk) => {
-    size += chunk.length;
-    const take = Math.min(chunk.length, maxBytes - retained);
-    if (take <= 0) return;
-    chunks.push(take === chunk.length ? chunk : chunk.subarray(0, take));
-    retained += take;
+    if (failed) return;
+    try {
+      const bytes = typeof chunk === 'string' ? Buffer.from(chunk, req.readableEncoding || 'utf8') : chunk;
+      size += bytes.length;
+      const take = Math.min(bytes.length, maxBytes - retained);
+      if (take <= 0) return;
+      chunks.push(take === bytes.length ? bytes : bytes.subarray(0, take));
+      retained += take;
+    } catch {
+      failed = true;
+      chunks.length = 0;
+    }
   });
-  req.on('error', (err) => done(err));
+  req.on('error', (error) => finish(error));
   req.on('end', () => {
-    done(null, { text: Buffer.concat(chunks).toString('utf8'), overflow: size > maxBytes, size });
+    if (failed) {
+      finish(null, { text: '', overflow: false, size, failed: true });
+      return;
+    }
+    const prefix = Buffer.concat(chunks);
+    const overflow = size > maxBytes;
+    const text = (overflow ? prefix.subarray(0, completeUtf8Length(prefix)) : prefix).toString('utf8');
+    finish(null, { text, overflow, size, failed: false });
   });
+}
+
+// The length of `bytes` without a UTF-8 sequence left incomplete at its end.
+function completeUtf8Length(bytes) {
+  let start = bytes.length - 1;
+  // Back over at most three continuation bytes (10xxxxxx) to the byte that begins the last sequence.
+  while (start >= 0 && bytes.length - start <= 3 && (bytes[start] & 0xc0) === 0x80) start--;
+  if (start < 0) return bytes.length;
+  const lead = bytes[start];
+  const needed = lead >= 0xf0 ? 4 : lead >= 0xe0 ? 3 : lead >= 0xc0 ? 2 : 1;
+  return bytes.length - start < needed ? start : bytes.length;
 }
 
 // Build the engine's request shape from a Node IncomingMessage + its raw body text.
@@ -150,6 +189,7 @@ export function createNodeMiddleware(rulesData, options = {}) {
         // even where its caller declared a trusted front end.
         shaped = fromNodeRequest(req, read.text, { trustedProxy: options.trustedProxy }); // never crash
         if (read.overflow) notify(options.onSkip, { phase: 'request', reason: 'body-cap' }, 'onSkip');
+        if (read.failed) notify(options.onSkip, { phase: 'request', reason: 'read-failed' }, 'onSkip');
         result = engine.evaluate(shaped);
       } catch (err) {
         notify(options.onError, err, 'onError');
@@ -169,7 +209,7 @@ export function createNodeMiddleware(rulesData, options = {}) {
 
       // Expose the parsed body downstream so a body-parser isn't also required — unless the body was
       // longer than the cap, when what was parsed is only its beginning and is not handed on as the body.
-      if (!read.overflow) req.body = shaped.body;
+      if (!read.overflow && !read.failed) req.body = shaped.body;
       next();
     });
   };
