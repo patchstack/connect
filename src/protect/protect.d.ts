@@ -275,6 +275,14 @@ export interface CreateProtectionOptions {
     write(envelope: unknown): unknown | Promise<unknown>;
   };
   /**
+   * The transport peer of a Fetch request, for runtimes where the host knows it and the `Request` does
+   * not — e.g. `(req, info) => info.remoteAddr.hostname` on Deno, `(req, server) => server.requestIP(req)?.address`
+   * on Bun. Called with the request the host served and the arguments its handler received (passed through
+   * `fetch(handler)` and `fetchGuard()(request, ...args)`). The result counts as the peer for client address
+   * resolution, including `trustedProxy`. A throw, or a result that is not an address, supplies no peer.
+   */
+  peerAddress?: (request: Request, ...hostArgs: unknown[]) => string | null | undefined;
+  /**
    * Declare which peers are this deployment's own reverse proxies, so a forwarded header can be believed.
    *
    * With no policy, the client address is whatever the transport observed — the socket peer on Node, the
@@ -307,14 +315,6 @@ export interface CreateProtectionOptions {
     header?: string;
     isTrusted?: (ip: string) => boolean;
   };
-  /**
-   * The transport peer of a Fetch request, for runtimes where the host knows it and the `Request` does
-   * not — e.g. `(req, info) => info.remoteAddr.hostname` on Deno, `(req, server) => server.requestIP(req)?.address`
-   * on Bun. Called with the request the host served and the arguments its handler received (passed through
-   * `fetch(handler)` and `fetchGuard()(request, ...args)`). The result counts as the peer for client address
-   * resolution, including `trustedProxy`. A throw or a non-string result supplies no peer.
-   */
-  peerAddress?: (request: Request, ...hostArgs: unknown[]) => string | null | undefined;
   /** Override the default response-phase (secret-leak) rule set. */
   responseRules?: unknown[];
   /** Override the default egress-phase (SSRF) rule set. */
