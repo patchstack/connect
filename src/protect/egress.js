@@ -253,22 +253,44 @@ export async function installEgressGuard({ shouldBlock, onBlock, onSkip, dnsScre
   }
 
   // node:http / node:https — best-effort; absent on Workers/Deno-without-node (import throws).
+  //
+  // The module object is what `require` returns and what a default import is, but a NAMED import
+  // (`import { request } from 'node:http'`) and a namespace import are bindings to its exports, which
+  // Node refreshes only when told to. So after patching, and again after restoring, the builtin ESM
+  // exports are synced — which updates those bindings wherever they were imported, including before
+  // this ran.
+  let syncBuiltins = () => {};
+  try {
+    const { syncBuiltinESMExports } = await import('node:module');
+    if (typeof syncBuiltinESMExports === 'function') syncBuiltins = syncBuiltinESMExports;
+  } catch {
+    /* no node:module on this runtime — nothing to sync */
+  }
+  let patchedAny = false;
   for (const moduleName of ['node:http', 'node:https']) {
     try {
       const mod = await import(moduleName);
       const restore = patchHttpModule(mod.default ?? mod, block, screen, skip);
-      if (restore) restores.push(restore);
+      if (restore) {
+        patchedAny = true;
+        restores.push(() => {
+          restore();
+          syncBuiltins();
+        });
+      }
     } catch {
       /* module not available on this runtime — skip */
     }
   }
+  if (patchedAny) syncBuiltins();
 
   // WebSocket egress is intentionally NOT screened. The WebSocket constructor is synchronous, so
-  // the only check possible inline is a textual hostname match — which can't offer the
-  // DNS-resolution guarantee the fetch and node:http/https paths give (a name that resolves to an
-  // internal address would pass). A connection-pinning dispatcher could close that, but the
-  // server-side, attacker-controlled-WebSocket sink is rare, and a partial hostname-only check
-  // over-promises the control. Outbound SSRF screening covers fetch + node:http/https.
+  // the only check possible inline is a textual hostname match — which cannot screen what a name
+  // resolves to (a name that resolves to an internal address would pass). The fetch path screens the
+  // resolution, and the node:http/https path also pins the connection to the screened address when
+  // the connection resolves through it. The server-side, attacker-controlled-WebSocket sink is rare,
+  // and a hostname-only check would over-promise the control. Outbound screening covers fetch and
+  // node:http/https.
 
   return () => {
     for (const restore of restores) {
@@ -281,31 +303,39 @@ export async function installEgressGuard({ shouldBlock, onBlock, onSkip, dnsScre
   };
 }
 
-// Wrap http(s).request/get so a blocked destination throws before the socket opens.
+// Wrap http(s).request/get — and, on node:http, the ClientRequest constructor they build — so a
+// blocked destination throws before the socket opens.
 function patchHttpModule(http, block, screen, skip) {
   if (!http || typeof http.request !== 'function' || http.__patchstackGuarded) return null;
   const originalRequest = http.request;
   const originalGet = http.get;
+  const OriginalClientRequest = typeof http.ClientRequest === 'function' ? http.ClientRequest : null;
+
+  // The arguments to hand on, after screening them. Throws when the destination is refused.
+  const guardArgs = (args) => {
+    const target = extractHttpTarget(args);
+    if (target && block(target.url, target.host, target.method)) {
+      throw new Error(`Patchstack blocked an outbound request to a disallowed address: ${target.host ?? target.url}`);
+    }
+    // DNS screen: only for real hostnames (a literal IP was already covered by the check above),
+    // and skip an explicitly allowlisted host (the operator trusts it — don't second-guess its DNS).
+    if (target && screen && target.host && screen.isIP(target.host) === 0 && !screen.isExempt(target.host)) {
+      try {
+        return withScreeningLookup(args, target, block, screen.lookup, skip);
+      } catch {
+        // The call goes on with the arguments it came with. Nothing is counted as a fail-open bypass:
+        // the only thing here that can throw is reading the caller's options, and Node copies that
+        // object itself before doing anything — so options this cannot read are options Node refuses
+        // too, and no traffic was served unscreened to report.
+      }
+    }
+
+    return args;
+  };
 
   const wrap = (original) =>
     function (...args) {
-      const target = extractHttpTarget(args);
-      if (target && block(target.url, target.host, target.method)) {
-        throw new Error(`Patchstack blocked an outbound request to a disallowed address: ${target.host ?? target.url}`);
-      }
-      // DNS screen: only for real hostnames (a literal IP was already covered by the check above),
-      // and skip an explicitly allowlisted host (the operator trusts it — don't second-guess its DNS).
-      if (target && screen && target.host && screen.isIP(target.host) === 0 && !screen.isExempt(target.host)) {
-        try {
-          args = withScreeningLookup(args, target, block, screen.lookup, skip);
-        } catch {
-          // The call goes on with the arguments it came with. Nothing is counted as a fail-open bypass:
-          // the only thing here that can throw is reading the caller's options, and Node copies that
-          // object itself before doing anything — so options this cannot read are options Node refuses
-          // too, and no traffic was served unscreened to report.
-        }
-      }
-      return original.apply(this, args);
+      return original.apply(this, guardArgs(args));
     };
 
   const guardedRequest = wrap(originalRequest);
@@ -315,6 +345,24 @@ function patchHttpModule(http, block, screen, skip) {
     guardedGet = wrap(originalGet);
     http.get = guardedGet;
   }
+
+  // `request` and `get` build their ClientRequest from Node's own internal reference, so wrapping the
+  // exported constructor screens only a request an application constructs itself — never one twice.
+  // It shares the original's prototype, so `instanceof http.ClientRequest` still holds for every
+  // request, and a subclass still gets its own prototype through `new.target`.
+  let GuardedClientRequest;
+  if (OriginalClientRequest) {
+    GuardedClientRequest = function ClientRequest(...args) {
+      const screened = guardArgs(args);
+
+      return new.target
+        ? Reflect.construct(OriginalClientRequest, screened, new.target)
+        : Reflect.construct(OriginalClientRequest, screened);
+    };
+    GuardedClientRequest.prototype = OriginalClientRequest.prototype;
+    Object.setPrototypeOf(GuardedClientRequest, OriginalClientRequest);
+    http.ClientRequest = GuardedClientRequest;
+  }
   http.__patchstackGuarded = true;
 
   return () => {
@@ -322,31 +370,51 @@ function patchHttpModule(http, block, screen, skip) {
     // (an APM agent, etc.) layered on top of us after install.
     if (http.request === guardedRequest) http.request = originalRequest;
     if (guardedGet && http.get === guardedGet) http.get = originalGet;
+    if (GuardedClientRequest && http.ClientRequest === GuardedClientRequest) http.ClientRequest = OriginalClientRequest;
     delete http.__patchstackGuarded;
   };
 }
 
-// http.request accepts (url), (url, options), or (options) — with an optional trailing callback.
+/**
+ * The destination a `request(url[, options][, cb])` / `request(options[, cb])` call connects to.
+ *
+ * Resolved the way Node resolves it: the URL's fields first, then every field the options object
+ * carries on top — so an `options.hostname` or `port` beats the URL's. `hostname` beats `host`, and an
+ * absent host is `localhost`.
+ */
 function extractHttpTarget(args) {
   const first = args[0];
   try {
     if (typeof first === 'string' || first instanceof URL) {
       const url = new URL(String(first));
       const opts = args.find((a) => a && typeof a === 'object' && !(a instanceof URL));
-      return { url: url.href, host: url.hostname, method: (opts && opts.method) || 'GET' };
+
+      return targetOf({ ...optionsFromUrl(url), ...(opts ?? {}) });
     }
-    if (first && typeof first === 'object') {
-      // Node defaults an absent host to localhost — reflect that so the block/screen see a real target.
-      const host = normalizeHost(first.hostname || first.host) || 'localhost';
-      const protocol = first.protocol || 'http:';
-      const port = first.port ? `:${first.port}` : '';
-      const path = first.path || '/';
-      return { url: `${protocol}//${host}${port}${path}`, host, method: first.method || 'GET' };
-    }
+    if (first && typeof first === 'object') return targetOf(first);
   } catch {
     /* fall through */
   }
   return null;
+}
+
+/** A URL's fields as the options Node derives from it. */
+function optionsFromUrl(url) {
+  const hostname = url.hostname.startsWith('[') ? url.hostname.slice(1, -1) : url.hostname;
+  const options = { protocol: url.protocol, hostname, path: `${url.pathname || '/'}${url.search}` };
+  if (url.port !== '') options.port = Number(url.port);
+
+  return options;
+}
+
+function targetOf(options) {
+  const host = normalizeHost(options.hostname || options.host) || 'localhost';
+  const protocol = options.protocol || 'http:';
+  const port = options.port ? `:${options.port}` : '';
+  const path = options.path || '/';
+  const authority = host.includes(':') ? `[${host}]` : host;
+
+  return { url: `${protocol}//${authority}${port}${path}`, host, method: options.method || 'GET' };
 }
 
 // Extract the bare host from a node http(s) options `host`/`hostname`, WITHOUT mangling IPv6.
