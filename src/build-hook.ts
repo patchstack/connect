@@ -69,7 +69,7 @@ export function isPreBundleBuildHook(env: NodeJS.ProcessEnv = process.env): bool
  * the only place that can settle it.
  */
 export function undeliveredReportLines(err: PatchstackError, config: Config, cwd: string): string[] {
-  const lines = [`patchstack: manifest not reported — ${err.message}`];
+  const lines = [`patchstack: could not send the package list to Patchstack — ${err.message}`];
 
   if (err.code === 'UNAUTHORIZED') {
     const hasCredential = typeof config.pulseAuth === 'string' && config.pulseAuth.length > 0;
@@ -86,7 +86,7 @@ export function undeliveredReportLines(err: PatchstackError, config: Config, cwd
   }
 
   lines.push(
-    'patchstack: continuing the build. Patchstack keeps the last manifest it accepted for this site until a scan that can report.',
+    'patchstack: continuing the build. Patchstack keeps the last package list it received until a check gets through.',
   );
 
   return lines;

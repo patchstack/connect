@@ -6,7 +6,24 @@ import { fileURLToPath } from 'node:url';
 import { writeProjectFileSync } from '../../safe-file.js';
 
 export const read = (p: string): string => readFileSync(p, 'utf8');
-export const log = (msg: string): void => console.log(`patchstack protect: ${msg}`);
+let logSink: ((msg: string) => void) | null = null;
+
+export const log = (msg: string): void => {
+  if (logSink !== null) logSink(msg);
+  else console.log(`patchstack protect: ${msg}`);
+};
+
+/** Run `fn` with the installer's log lines collected instead of printed, so a caller can summarise them. */
+export function collectProtectLog<T>(fn: () => T): { result: T; lines: string[] } {
+  const lines: string[] = [];
+  const previous = logSink;
+  logSink = (msg) => lines.push(...msg.split('\n'));
+  try {
+    return { result: fn(), lines };
+  } finally {
+    logSink = previous;
+  }
+}
 
 /** True when `name` is in the project's dependencies or devDependencies. */
 export function hasDependency(cwd: string, name: string): boolean {

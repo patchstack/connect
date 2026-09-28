@@ -19,8 +19,6 @@ export interface NextStepContext {
   installCommand: string;
   siteUuid: string | null;
   claimUrl: string | null;
-  /** The widget tag is on the page, so its connect panel is one way to connect. */
-  widgetInPlace: boolean;
   /** Where a scan from here reports from. Names the sync step and decides what the deploy step says. */
   environment?: Environment | null;
   environmentSource?: EnvironmentSource | null;
@@ -46,8 +44,6 @@ export function deployNote(context: NextStepContext): string | null {
 
 export interface RenderProgressOptions {
   useColor: boolean;
-  /** Short lines printed under a step, for the parts of it that are still missing. */
-  details?: Partial<Record<ProgressStep, string[]>>;
 }
 
 const ANSI = {
@@ -63,6 +59,22 @@ export function nextProgressStep(progress: Progress): ProgressStep | null {
   return PROGRESS_STEPS.find(({ step }) => !progress[step])?.step ?? null;
 }
 
+/** The next step as an action, for the `Next:` line. */
+export function nextStepTitle(step: ProgressStep, context: NextStepContext): string {
+  switch (step) {
+    case 'installed':
+      return 'install the Patchstack connector';
+    case 'connected':
+      return 'connect this project to your Patchstack account';
+    case 'synced':
+      return 'sync this project with Patchstack';
+    case 'deployed':
+      return context.environment === 'production'
+        ? 'open your live app so Patchstack can see it'
+        : 'deploy your project to protect the live app';
+  }
+}
+
 /** What to do for one step: the command or link first, one line each. */
 export function nextStepLines(
   step: ProgressStep,
@@ -75,14 +87,12 @@ export function nextStepLines(
       if (context.siteUuid === null) {
         return [
           'Run: npx @patchstack/connect setup',
-          'It creates the site and prints the link to connect it.',
-          'If your tool will not run it, give the command to the user (see "When your tool will not run this CLI" in AGENT-INSTALL.md).',
+          'It adds this project to Patchstack and prints the link to connect it.',
+          'Cannot run commands here? See "When your tool will not run this CLI" in AGENT-INSTALL.md.',
         ];
       }
       return [
-        ...(context.claimUrl !== null ? [`Open: ${context.claimUrl}`] : []),
-        `${context.claimUrl !== null ? 'Or run' : 'Run'}: npx @patchstack/connect claim`,
-        ...(context.widgetInPlace ? ['Or sign in on the Patchstack widget in the preview.'] : []),
+        context.claimUrl !== null ? `Open ${context.claimUrl}` : 'Run: npx @patchstack/connect claim',
         // A production run is the deploy itself, so there is nothing further to point at.
         ...(context.environment === 'production'
           ? []
@@ -97,7 +107,7 @@ export function nextStepLines(
       return [
         'Commit your changes. Never commit .patchstackrc.local.json.',
         'Set PATCHSTACK_API_KEY (from .patchstackrc.local.json) on your hosting platform.',
-        'Deploy or publish. The live site keeps its old build until you do.',
+        'Deploy or publish. The live site keeps its old version until you do.',
       ];
   }
 }
@@ -115,9 +125,7 @@ export function renderProgress(
     const label = stepLabel(step, context.environment);
     lines.push(progress[step] ? ` ${paint(ANSI.green, '✔')} ${label}` : ` ${paint(ANSI.yellow, '✘')} ${label}`);
     const note = step === 'deployed' && !progress.deployed ? deployNote(context) : null;
-    for (const detail of [...(note !== null ? [note] : []), ...(options.details?.[step] ?? [])]) {
-      lines.push(`     ${paint(ANSI.dim, detail)}`);
-    }
+    if (note !== null) lines.push(`     ${paint(ANSI.dim, note)}`);
   }
 
   const next = nextProgressStep(progress);
@@ -126,8 +134,7 @@ export function renderProgress(
     lines.push(paint(ANSI.bold, 'All done.'));
     return lines;
   }
-  const label = stepLabel(next, context.environment);
-  lines.push(`${paint(ANSI.cyan, '➜')} ${paint(ANSI.bold, `Next: ${label}`)}`);
+  lines.push(`${paint(ANSI.cyan, '➜')} ${paint(ANSI.bold, `Next: ${nextStepTitle(next, context)}`)}`);
   for (const line of nextStepLines(next, context)) {
     lines.push(`  ${line}`);
   }

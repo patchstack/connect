@@ -34,40 +34,52 @@ export function claimTokenHeader(config: Config): Record<string, string> {
     : {};
 }
 
+export interface ClaimOutcome {
+  connected: boolean;
+  /** One line saying what happened. */
+  summary: string;
+  /** Where the connected project lives in the dashboard, when Patchstack said. */
+  dashboardUrl: string | null;
+  /** What to do when the token did not connect the project. */
+  hint: string[];
+}
+
 /**
  * What to tell the person about the claim token they passed, once Patchstack has answered.
  *
- * Empty when no token was configured: nothing was asked, so there is nothing to report. Every other
+ * Null when no token was configured: nothing was asked, so there is nothing to report. Every other
  * case says something — including a server that did not answer the question at all — so a token that
- * did not connect the site is never mistaken for one that did.
+ * did not connect the project is never mistaken for one that did.
  */
-export function claimOutcomeLines(claim: ManifestClaimOutcome | undefined, config: Config): string[] {
-  if (typeof config.claimToken !== 'string' || config.claimToken === '') return [];
+export function claimOutcome(claim: ManifestClaimOutcome | undefined, config: Config): ClaimOutcome | null {
+  if (typeof config.claimToken !== 'string' || config.claimToken === '') return null;
 
   if (claim?.state === 'claimed' || claim?.state === 'owned-by-you') {
-    const dashboardUrl = safeRemoteUrl(claim.dashboard_url);
-    const dashboard = dashboardUrl === null ? [] : [`Dashboard: ${dashboardUrl}`];
-    return [
-      claim.state === 'claimed'
-        ? 'Connected to your Patchstack account.'
-        : 'This site is already connected to your Patchstack account.',
-      ...dashboard,
-    ];
+    return {
+      connected: true,
+      summary:
+        claim.state === 'claimed'
+          ? 'Connected to your Patchstack account'
+          : 'This project is already connected to your Patchstack account',
+      dashboardUrl: safeRemoteUrl(claim.dashboard_url),
+      hint: [],
+    };
   }
 
-  const why =
-    claim === undefined
-      ? 'Patchstack did not act on the claim token'
-      : claim.state === 'owned-by-other'
-        ? 'this site belongs to a different Patchstack account'
-        : claim.reason === 'expired'
-          ? 'the claim token has expired'
-          : 'Patchstack did not recognise the claim token';
+  const why = claimFailureReason(claim);
+  return {
+    connected: false,
+    summary: `Not connected to your account: ${why}`,
+    dashboardUrl: null,
+    hint: ['Open the dashboard link below to connect it, or copy a fresh prompt from the dashboard.'],
+  };
+}
 
-  return [
-    `Not connected to your account: ${why}.`,
-    'Open the dashboard link below to connect it, or copy a fresh prompt from the dashboard.',
-  ];
+/** Why a claim token did not connect the project, in the person's terms. */
+export function claimFailureReason(claim: ManifestClaimOutcome | undefined): string {
+  if (claim === undefined) return 'Patchstack did not act on the claim token';
+  if (claim.state === 'owned-by-other') return 'this project belongs to a different Patchstack account';
+  return claim.reason === 'expired' ? 'the claim token has expired' : 'Patchstack did not recognise the claim token';
 }
 
 export function buildEndpointUrl(base: string, siteUuid?: string | null): string {
@@ -96,13 +108,13 @@ export function authFailureMessage(status: number, config: Config): string | nul
   const hasCredential = typeof config.pulseAuth === 'string' && config.pulseAuth.length > 0;
 
   if (status === 401 && !hasCredential) {
-    return 'Patchstack requires an API credential for this site and none is configured. Run `npx patchstack-connect login`, or set PATCHSTACK_API_KEY.';
+    return "Patchstack needs this project's API key, and none is set here. Run npx @patchstack/connect login, or set PATCHSTACK_API_KEY.";
   }
   if (status === 401) {
-    return 'Patchstack rejected this API credential. It may have expired, been revoked, or the site may no longer exist. Run `npx patchstack-connect login` to issue a new one.';
+    return "Patchstack did not accept this project's API key: it may have expired or been revoked, or the project may no longer exist. Run npx @patchstack/connect login to get a new one.";
   }
   if (status === 403) {
-    return 'This API credential is not permitted to act on this site. Check that siteUuid in .patchstackrc.json matches the credential (a credential is issued for one site).';
+    return 'This API key belongs to a different project. Check that siteUuid in .patchstackrc.json is the project the key was made for.';
   }
 
   return null;

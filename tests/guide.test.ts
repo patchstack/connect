@@ -143,9 +143,7 @@ describe('guide', () => {
       const state = await collectGuideState(cwd);
 
       expect(state.prebuildWired).toBe(false);
-      expect(renderGuideChecklist(state, false)).toContain(
-        '✘ Add to package.json: "prebuild": "patchstack-connect scan"',
-      );
+      expect(renderGuideChecklist(state, false, {}, { verbose: true })).toContain('"prebuild": "patchstack-connect scan"');
     });
 
     it('survives a project with no package.json', async () => {
@@ -162,8 +160,8 @@ describe('guide', () => {
       expect(state.endpointOverride).toBe('http://127.0.0.1:4870/monitor/pulse/manifest');
       expect(state.siteUuid).toBeNull();
 
-      const output = renderGuideChecklist(state, false);
-      expect(output).toContain('Endpoint override: http://127.0.0.1:4870');
+      expect(renderGuideChecklist(state, false)).not.toContain('Endpoint override');
+      expect(renderGuideChecklist(state, false, {}, { verbose: true })).toContain('Endpoint override: http://127.0.0.1:4870');
     });
 
     it('reports no override on the default endpoint', async () => {
@@ -265,7 +263,7 @@ describe('guide', () => {
 
       const output = renderGuideChecklist(await collectGuideState(cwd), false);
 
-      expect(output).toContain('Next: Install the Patchstack connector');
+      expect(output).toContain('Next: install the Patchstack connector');
       expect(output).toContain(`Run: ${installCommand('bun')}\n  Then run: npx @patchstack/connect setup`);
       expect(output).not.toContain('\u001B[');
     });
@@ -275,7 +273,7 @@ describe('guide', () => {
       writeJson('.patchstackrc.json', { siteUuid: VALID_UUID });
       writeFileSync(path.join(cwd, 'bun.lock'), '');
 
-      const output = renderGuideChecklist(await collectGuideState(cwd), false);
+      const output = renderGuideChecklist(await collectGuideState(cwd), false, {}, { verbose: true });
 
       expect(output).toContain(
         '"build": "patchstack-connect scan && <existing build command> && patchstack-connect mark-build"',
@@ -287,7 +285,10 @@ describe('guide', () => {
       writeJson('package.json', { name: 'npm-app', scripts: { build: 'vite build' } });
       writeJson('.patchstackrc.json', { siteUuid: VALID_UUID });
 
-      const output = renderGuideChecklist(await collectGuideState(cwd), false);
+      expect(renderGuideChecklist(await collectGuideState(cwd), false)).toContain(
+        'Run: npx @patchstack/connect setup (it adds the build steps to package.json)',
+      );
+      const output = renderGuideChecklist(await collectGuideState(cwd), false, {}, { verbose: true });
 
       expect(output).toContain('"prebuild": "patchstack-connect scan"');
       expect(output).toContain('"postbuild": "patchstack-connect mark-build"');
@@ -304,8 +305,8 @@ describe('guide', () => {
 
       expect(state.installed?.section).toBe('devDependencies');
       expect(output).toContain('✔ Install the Patchstack connector');
-      expect(output).toContain('Move @patchstack/connect to dependencies');
-      expect(output).toContain('the guard loads it at runtime');
+      expect(output).toContain('installed as a development tool only, so your live app cannot load it');
+      expect(output).toContain(`Run: ${installCommand('npm')}`);
     });
 
     it('counts a chained build script as wired (the bun pattern)', async () => {
@@ -340,10 +341,10 @@ describe('guide', () => {
       expect(output).toContain('✔ Install the Patchstack connector');
       expect(output).toContain('✘ Connect project to Patchstack account');
       expect(output).toContain('✔ Sync and monitor in local environment');
-      expect(output).toContain('Next: Connect project to Patchstack account');
-      expect(output).toContain(`Open: http`);
+      expect(output).toContain('Next: connect this project to your Patchstack account');
+      expect(output).toContain(`Open http`);
       expect(output).toContain(`/monitor/claim?site=${VALID_UUID}`);
-      expect(output).toContain('Or run: npx @patchstack/connect claim');
+      expect(output).toContain('anyone who opens your app can connect it to their own account');
       // Nothing on disk says the site has an owner, so the checklist never marks it connected.
       expect(output).not.toContain('✔ Connect');
       expect(output).not.toMatch(/^ {5}✘/m);
@@ -355,8 +356,9 @@ describe('guide', () => {
       const output = renderGuideChecklist(await collectGuideState(cwd), false, { connected: true });
 
       expect(output).toContain('✔ Connect project to Patchstack account');
-      expect(output).toContain('Next: Deploy project to protect live app');
+      expect(output).toContain('Next: deploy your project to protect the live app');
       expect(output).toContain('Never commit .patchstackrc.local.json');
+      expect(output).not.toContain('anyone who opens your app');
       expect(output).toContain('PATCHSTACK_API_KEY');
       expect(output).not.toContain('/monitor/claim?site=');
     });
@@ -386,7 +388,7 @@ describe('guide', () => {
       expect(state.widgetTokenMatches).toBe(false);
 
       const output = renderGuideChecklist(state, false);
-      expect(output).toContain('Widget has the wrong site UUID');
+      expect(output).toContain('The Patchstack widget on your page belongs to a different project');
       expect(output).toContain(VALID_UUID);
     });
 
@@ -408,9 +410,10 @@ describe('guide', () => {
       expect(countRemainingSteps(state)).toBe(0);
 
       const output = renderGuideChecklist(state, false);
-      expect(output).toContain('Widget is off ("widget": false in .patchstackrc.json)');
-      expect(output).not.toMatch(/^ {5}✘/m);
-      expect(output).not.toContain('sign in on the Patchstack widget');
+      expect(output).not.toContain('widget is not on your page');
+      expect(renderGuideChecklist(state, false, {}, { verbose: true })).toContain(
+        'Widget is off ("widget": false in .patchstackrc.json)',
+      );
     });
 
     it('lists no technical sub-steps before the first scan, because setup applies them', async () => {
@@ -418,9 +421,9 @@ describe('guide', () => {
 
       const output = renderGuideChecklist(await collectGuideState(cwd), false);
 
-      expect(output).toContain('Next: Connect project to Patchstack account\n  Run: npx @patchstack/connect setup');
+      expect(output).toContain('Next: connect this project to your Patchstack account\n  Run: npx @patchstack/connect setup');
       expect(output).not.toContain(installCommand('npm'));
-      expect(output).not.toMatch(/^ {5}✘/m);
+      expect(output).not.toContain('Missing');
     });
 
     it('drops the setup command once the site is provisioned', async () => {
@@ -429,7 +432,7 @@ describe('guide', () => {
 
       const output = renderGuideChecklist(await collectGuideState(cwd), false);
 
-      expect(output).not.toContain('Run: npx @patchstack/connect setup');
+      expect(output).not.toContain('Run: npx @patchstack/connect setup\n');
     });
 
     it('points at the project root when package.json is missing', async () => {
@@ -446,7 +449,7 @@ describe('guide', () => {
       const output = renderGuideChecklist(await collectGuideState(cwd), false);
       const heading = 'When your tool will not run this CLI';
 
-      expect(output).toMatch(/give the command to the user/);
+      expect(output).toMatch(/Cannot run commands here\?/);
       expect(output).toContain(heading);
       expect(readFileSync(new URL('../AGENT-INSTALL.md', import.meta.url), 'utf8')).toContain(`## ${heading}`);
     });
@@ -472,7 +475,7 @@ describe('guide', () => {
       expect(output).toContain('site UUID or widget snippet from the Patchstack dashboard');
       expect(output).toContain('no dependency scan or runtime protection');
       expect(output).not.toContain('npm install');
-      expect(output).not.toContain('Finish runtime protection');
+      expect(output).not.toContain('Runtime protection');
       expect(output).not.toContain('prebuild');
     });
 
@@ -499,9 +502,7 @@ describe('guide', () => {
       expect(widgetTagInPlace(state)).toBe(true);
 
       const output = renderGuideChecklist(state, false);
-      // Not an unconditional "reload now": a builder that hot reloads has already done it.
-      expect(output).toContain('Widget added. Reload the preview if it is not showing.');
-      expect(output).toContain('Or sign in on the Patchstack widget in the preview.');
+      expect(output).not.toContain('widget is not on your page');
     });
 
     it('stays quiet while the tag is still missing', async () => {
@@ -559,8 +560,8 @@ describe('guide', () => {
       const output = renderGuideChecklist(await collectGuideState(cwd), false, { connected: true });
 
       expect(output).not.toContain('Reload the preview');
-      expect(output).toContain('Next: Deploy project to protect live app');
-      expect(output).toContain('The live site keeps its old build until you do.');
+      expect(output).toContain('Next: deploy your project to protect the live app');
+      expect(output).toContain('The live site keeps its old version until you do.');
     });
 
     it('stays quiet before the first scan, when nothing has been wired yet', async () => {
@@ -592,9 +593,9 @@ describe('guide', () => {
       expect(needsSourceProductionMarker(state)).toBe(true);
       expect(state.productionMarkerWired).toBe(false);
 
-      const output = renderGuideChecklist(state, false);
-      expect(output).toContain('Add the production marker');
-      expect(output).toContain('run npx @patchstack/connect scan');
+      expect(renderGuideChecklist(state, false)).toContain('Your live app does not tell Patchstack it is live yet');
+      const output = renderGuideChecklist(state, false, {}, { verbose: true });
+      expect(output).toContain('Run: npx @patchstack/connect scan');
       expect(output).toContain('import.meta.env.PROD &&');
       expect(output).toContain('window.__PATCHSTACK_PROD__=true;');
     });
@@ -618,7 +619,7 @@ describe('guide', () => {
       const state = await collectGuideState(cwd);
 
       expect(state.productionMarkerWired).toBe(true);
-      expect(renderGuideChecklist(state, false)).not.toContain('Add the production marker');
+      expect(renderGuideChecklist(state, false)).not.toContain('does not tell Patchstack it is live');
     });
 
     it('stays silent for a plain HTML shell, where mark-build stamps the marker', async () => {
@@ -628,7 +629,7 @@ describe('guide', () => {
 
       const state = await collectGuideState(cwd);
       expect(needsSourceProductionMarker(state)).toBe(false);
-      expect(renderGuideChecklist(state, false)).not.toContain('Add the production marker');
+      expect(renderGuideChecklist(state, false)).not.toContain('does not tell Patchstack it is live');
     });
   });
 });
@@ -671,8 +672,7 @@ describe('guide on a project with no request path', () => {
     expect(state.protectionApplicable).toBe(false);
     expect(state.protectionWired).toBe(false);
     expect(countRemainingSteps(state)).toBe(0);
-    expect(rendered).not.toContain('Finish runtime protection');
-    expect(rendered).not.toMatch(/^ {5}✘/m);
+    expect(rendered).not.toContain('Runtime protection');
     expect(rendered).not.toContain('✔ Connect');
   });
 });
