@@ -140,6 +140,62 @@ describe('Fetch peer address', () => {
     await protection.stop();
   });
 
+  describe('response screening on its own', () => {
+    const responseGuard = async (options: Record<string, unknown>) => {
+      const detections: any[] = [];
+      const protection: any = await createProtection({
+        rules: { firewall: [], whitelists: [], whitelist_keys: {} },
+        mode: 'dry-run',
+        onDetect: (event: any) => detections.push(event),
+        responseRules: [{
+          id: 'response-under-test', phase: 'response', action: 'redact',
+          rule_v2: [{ parameter: 'response.body', match: { type: 'contains', value: 'SAMPLE_VALUE' } }],
+        }],
+        ...options,
+      });
+      return { protection, detections };
+    };
+
+    it('asks the callback when the request was not screened first', async () => {
+      const { protection, detections } = await responseGuard({ peerAddress: () => '198.51.100.50' });
+      await protection.screenResponse(new Response('SAMPLE_VALUE'), request());
+      expect(detections).toHaveLength(1);
+      expect(detections[0]).toMatchObject({ ip: '198.51.100.50', clientIpSource: 'runtime' });
+      await protection.stop();
+    });
+
+    it('passes the host arguments on and applies a declared proxy policy', async () => {
+      const peerAddress = vi.fn((_req: Request, server: any) => server.peer);
+      const { protection, detections } = await responseGuard({ peerAddress, trustedProxy: { peers: ['10.0.0.0/8'] } });
+      const served = request({ 'x-forwarded-for': '198.51.100.51' });
+      await protection.screenResponse(new Response('SAMPLE_VALUE'), served, { peer: '10.0.0.9' });
+      expect(peerAddress).toHaveBeenCalledWith(served, { peer: '10.0.0.9' });
+      expect(detections[0]).toMatchObject({ ip: '198.51.100.51', clientIpSource: 'trusted-proxy' });
+      await protection.stop();
+    });
+
+    it('warns once when a policy is set and no peer is supplied', async () => {
+      const errors: unknown[] = [];
+      const { protection } = await responseGuard({ trustedProxy: { peers: ['10.0.0.0/8'] }, onError: (e: unknown) => errors.push(e) });
+      await protection.screenResponse(new Response('SAMPLE_VALUE'), request());
+      await protection.screenResponse(new Response('SAMPLE_VALUE'), request());
+      expect(errors).toHaveLength(1);
+      await protection.stop();
+    });
+
+    it('reuses the request-phase address rather than asking again', async () => {
+      const peers = ['198.51.100.60', '198.51.100.61'];
+      const peerAddress = vi.fn(() => peers.shift());
+      const { protection, detections } = await responseGuard({ peerAddress });
+      const served = request();
+      await protection.fetchGuard()(served);
+      await protection.screenResponse(new Response('SAMPLE_VALUE'), served);
+      expect(peerAddress).toHaveBeenCalledTimes(1);
+      expect(detections[0]).toMatchObject({ ip: '198.51.100.60' });
+      await protection.stop();
+    });
+  });
+
   it('reads the peer from the served request through the Supabase tunnel', async () => {
     const supabase = 'https://project.supabase.example';
     const served = new Request('https://app.example.test' + GUARD_PATH, {

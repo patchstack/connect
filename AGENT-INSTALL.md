@@ -489,9 +489,10 @@ Two consequences if you are upgrading:
   such a runtime was matching a client-supplied value. Where your runtime does know the peer, pass
   `peerAddress: (request, ...handlerArgs) => string` — for example `(req, info) => info.remoteAddr.hostname`
   on Deno, or `(req, server) => server.requestIP(req)?.address` on Bun. It receives the request and the
-  arguments your handler was called with (`fetchGuard()(request, ...args)` passes them on), and that
-  address then counts as the transport peer, including for `trustedProxy`. With `trustedProxy` set and no
-  peer supplied, the guard warns once, because the policy can never apply.
+  arguments your handler was called with (`fetchGuard()(request, ...args)` and
+  `screenResponse(response, request, ...args)` pass them on), and that address then counts as the
+  transport peer, including for `trustedProxy`. With `trustedProxy` set and no peer supplied, the guard
+  warns once, because the policy can never apply.
 
 `trustedProxy` is the only way to make a forwarded header count. It takes the proxies you actually run —
 `{ peers: ['10.0.0.0/8'] }`, or `{ hops: 1 }` to trust that many hops in from the peer, plus optional

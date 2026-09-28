@@ -722,6 +722,20 @@ export async function createProtection(options = {}) {
   // The address resolved for each screened Fetch request, so a later response screen for the same request
   // names the same client rather than resolving again without the host's arguments.
   const clientByRequest = new WeakMap();
+  // The client for a response screened on its own: the request phase's answer when there was one,
+  // otherwise resolved here the same way the request phase would have.
+  const clientForResponse = (request, hostArgs) => {
+    const known = clientByRequest.get(request);
+    if (known) return known;
+    const client = resolveClientIp({
+      peer: peerOf(request, hostArgs),
+      headers: headerObject(request.headers),
+      trustedProxy: options.trustedProxy,
+    });
+    if (options.trustedProxy !== undefined && client.source === 'unavailable') warnNoPeer();
+
+    return client;
+  };
 
   /**
    * Screen a fetch request once, and hand back both the decision and the address it resolved.
@@ -1483,17 +1497,8 @@ export async function createProtection(options = {}) {
     // .fetch(), and by the Supabase guard on its forwarded upstream response.
     // A standalone response screen with no request phase of its own — the Supabase guard's forwarded
     // upstream response. It resolves once here, which is the only resolution for this call.
-    screenResponse: (response, request) =>
-      screenResp(
-        response,
-        request
-          ? reqContextFromFetch(
-              request,
-              clientByRequest.get(request) ??
-                resolveClientIp({ headers: headerObject(request.headers), trustedProxy: options.trustedProxy }),
-            )
-          : undefined,
-      ),
+    screenResponse: (response, request, ...hostArgs) =>
+      screenResp(response, request ? reqContextFromFetch(request, clientForResponse(request, hostArgs)) : undefined),
 
     // (request) => Response | null   (null = allow, caller proceeds). Request phase only.
     fetchGuard() {

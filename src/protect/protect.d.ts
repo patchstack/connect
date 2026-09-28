@@ -26,8 +26,11 @@ export interface Protection {
    * Pass the originating `request` wherever it is available. A response rule can be scoped to a route or a
    * method (`when`), and that scope can only be applied if the engine is given the request the response
    * belongs to — without it, a scoped response rule is delivered, counted as protection, and never matches.
+   *
+   * The client address is the one resolved when this guard screened that request, if it did; otherwise it
+   * is resolved here, and any further arguments are passed to `peerAddress` as the host's handler arguments.
    */
-  screenResponse(response: Response, request?: Request): Promise<Response>;
+  screenResponse(response: Response, request?: Request, ...hostArgs: unknown[]): Promise<Response>;
   express(options?: { screenResponses?: boolean }): (req: unknown, res: unknown, next: () => void) => void;
   node(options?: { maxBodyBytes?: number; screenResponses?: boolean }): (req: unknown, res: unknown, next: () => void) => void;
   /** Present when `egress: true` — restores the original global fetch. */
@@ -278,8 +281,8 @@ export interface CreateProtectionOptions {
    * The transport peer of a Fetch request, for runtimes where the host knows it and the `Request` does
    * not — e.g. `(req, info) => info.remoteAddr.hostname` on Deno, `(req, server) => server.requestIP(req)?.address`
    * on Bun. Called with the request the host served and the arguments its handler received (passed through
-   * `fetch(handler)` and `fetchGuard()(request, ...args)`). The result counts as the peer for client address
-   * resolution, including `trustedProxy`. A throw, or a result that is not an address, supplies no peer.
+   * `fetch(handler)`, `fetchGuard()(request, ...args)` and `screenResponse(response, request, ...args)`).
+   * The result counts as the peer for client address resolution, including `trustedProxy`. A throw, or a result that is not an address, supplies no peer.
    */
   peerAddress?: (request: Request, ...hostArgs: unknown[]) => string | null | undefined;
   /**
