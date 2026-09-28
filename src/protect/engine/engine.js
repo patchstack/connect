@@ -562,7 +562,8 @@ function warnUnsupportedMatchType(type) {
 // match type. It CANONICALIZES the host before classifying —
 // a textual/prefix check is bypassable by alternate encodings (decimal/hex/octal IPv4, expanded or
 // IPv4-mapped IPv6), which is a classic SSRF evasion. Handles localhost / *.local / GCP metadata
-// names, every IPv4 spelling inet_aton accepts, and IPv6 loopback/link-local/unique-local/mapped.
+// names, every IPv4 spelling inet_aton accepts, and IPv6 loopback/link-local/site-local/unique-local/
+// multicast plus the transition forms that carry a v4 destination (mapped, NAT64, 6to4).
 /**
  * The host to classify out of a rule parameter's value.
  *
@@ -626,11 +627,22 @@ function isInternalHost(hostname) {
     const allZeroHi = g[0] === 0 && g[1] === 0 && g[2] === 0 && g[3] === 0 && g[4] === 0;
     if (allZeroHi && g[5] === 0 && g[6] === 0 && (g[7] === 0 || g[7] === 1)) return true; // ::, ::1 loopback
     if ((g[0] & 0xffc0) === 0xfe80) return true; // link-local fe80::/10
+    if ((g[0] & 0xffc0) === 0xfec0) return true; // site-local fec0::/10 (deprecated, still routed locally)
     if ((g[0] & 0xfe00) === 0xfc00) return true; // unique-local fc00::/7
+    if ((g[0] & 0xff00) === 0xff00) return true; // multicast ff00::/8
+    const low32 = (((g[6] << 16) >>> 0) | g[7]) >>> 0;
     if (allZeroHi && (g[5] === 0xffff || g[5] === 0)) {
       // IPv4-mapped (::ffff:a.b.c.d) / IPv4-compatible (::a.b.c.d) — classify the embedded v4.
-      return isPrivateV4Int((((g[6] << 16) >>> 0) | g[7]) >>> 0);
+      return isPrivateV4Int(low32);
     }
+    // NAT64 well-known prefix 64:ff9b::/96 — a translator forwards to the embedded v4, so classify that.
+    if (g[0] === 0x64 && g[1] === 0xff9b && g[2] === 0 && g[3] === 0 && g[4] === 0 && g[5] === 0) {
+      return isPrivateV4Int(low32);
+    }
+    // NAT64 local-use prefix 64:ff9b:1::/48 — operator-defined translation, never a public destination.
+    if (g[0] === 0x64 && g[1] === 0xff9b && g[2] === 1) return true;
+    // 6to4 2002::/16 — the relay forwards to the v4 address in the next 32 bits.
+    if (g[0] === 0x2002) return isPrivateV4Int((((g[1] << 16) >>> 0) | g[2]) >>> 0);
     return false;
   }
 
@@ -640,10 +652,15 @@ function isInternalHost(hostname) {
   return false;
 }
 
-// Private / loopback / link-local / this-host / CGNAT test on a 32-bit IPv4 integer.
+// Non-public test on a 32-bit IPv4 integer: private, loopback, link-local, this-host, CGNAT, the IETF
+// protocol block, benchmarking, multicast, and reserved space (incl. limited broadcast).
 function isPrivateV4Int(n) {
   const a = (n >>> 24) & 0xff;
   const b = (n >>> 16) & 0xff;
+  const c = (n >>> 8) & 0xff;
+  if (a >= 224) return true; // 224.0.0.0/4 multicast, 240.0.0.0/4 reserved, 255.255.255.255 broadcast
+  if (a === 192 && b === 0 && c === 0) return true; // 192.0.0.0/24 IETF protocol assignments
+  if (a === 198 && (b === 18 || b === 19)) return true; // 198.18.0.0/15 benchmarking
   if (a === 127 || a === 10 || a === 0) return true; // loopback / private / this-host
   if (a === 169 && b === 254) return true; // link-local incl. 169.254.169.254 metadata
   if (a === 172 && b >= 16 && b <= 31) return true; // 172.16.0.0/12
