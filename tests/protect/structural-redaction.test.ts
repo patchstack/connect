@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { createProtection } from '../../src/protect/runtime.js';
 
 // Structural response masking: an `array_key_value` redact rule masks the VALUE at a JSON path,
@@ -25,6 +25,32 @@ async function screen(rule: object, response: Response, opts: Record<string, unk
 const body = async (r: Response) => JSON.parse(await r.text());
 
 describe('structural response redaction (array_key_value → mask)', () => {
+  it('validates the complete document before scanning number tokens', async () => {
+    const document = '{"value":4000000000000000}';
+    const calls: string[] = [];
+    const parse = JSON.parse;
+    const matchAll = String.prototype.matchAll;
+    const parseSpy = vi.spyOn(JSON, 'parse').mockImplementation((...args) => {
+      if (args[0] === document) calls.push('validate');
+      return parse(...args);
+    });
+    const scanSpy = vi.spyOn(String.prototype, 'matchAll').mockImplementation(function (regexp) {
+      if (String(this) === document) calls.push('scan');
+      return matchAll.call(this, regexp);
+    });
+    try {
+      const out = await screen(maskRule('value'), new Response(document), {
+        onDetect: () => { calls.length = 0; },
+      });
+      expect(calls.indexOf('validate')).toBeGreaterThanOrEqual(0);
+      expect(calls.indexOf('scan')).toBeGreaterThan(calls.indexOf('validate'));
+      expect(await body(out)).toEqual({ value: '[REDACTED]' });
+    } finally {
+      scanSpy.mockRestore();
+      parseSpy.mockRestore();
+    }
+  });
+
   it.each(['4111111111111111', '41111111111111110', '-4111111111111111'])(
     'matches a numeric leaf %s while preserving unrelated integers', async (value) => {
       const doc = `{"items":[{"value":${value}},{"value":12}],"id":12345678901234567890}`;

@@ -606,7 +606,11 @@ export async function createProtection(options = {}) {
       const spanRedactors = redactors.filter((r) => !r.jsonPath);
       if (pathRedactors.length) body = applyPathRedactors(body, pathRedactors, mask, screenCap, transform);
       if (!spanRedactors.length) continue;
+      const beforeSpan = body;
       body = applyRedactors(body, spanRedactors, mask, transform);
+      // Span rewrites may change JSON string values, but not keys, containers or other values.
+      // Check each result before it becomes input to another transformation.
+      if (body !== beforeSpan && !preservesJsonStructure(beforeSpan, body)) return { verdict: 'block' };
       if (transform) continue; // encoding is a body/output concern — headers aren't HTML
       for (const name of Object.keys(headers)) {
         const value = headers[name];
@@ -2063,6 +2067,35 @@ function isJson(text) {
   }
 }
 
+function preservesJsonStructure(before, after) {
+  if (!isJson(before)) return true;
+  if (!isJson(after)) return false;
+  const expected = jsonStructure(before);
+  const actual = jsonStructure(after);
+  for (;;) {
+    const left = expected.next();
+    const right = actual.next();
+    if (left.done || right.done) return left.done === right.done;
+    if (left.value !== right.value) return false;
+  }
+}
+
+// Called only for validated JSON. String values are the only interchangeable tokens; key names,
+// punctuation and non-string tokens remain exact, including number spellings and repeated keys.
+function* jsonStructure(text) {
+  const tokens = /"(?:[^"\\]|\\[\s\S])*"|-?(?:0|[1-9]\d*)(?:\.\d+)?(?:[eE][+-]?\d+)?|[^\s]/g;
+  for (const match of text.matchAll(tokens)) {
+    const token = match[0];
+    if (token[0] !== '"') {
+      yield 'token:' + token;
+      continue;
+    }
+    let next = match.index + token.length;
+    while (text[next] === ' ' || text[next] === '\t' || text[next] === '\r' || text[next] === '\n') next++;
+    yield text[next] === ':' ? 'key:' + JSON.parse(token) : 'string';
+  }
+}
+
 // `transform` (optional): map a matched span to its replacement (the `encode` action passes
 // htmlEscape). Without it, matches are replaced by the `mask` string (the `redact` action).
 function applyRedactors(body, redactors, mask, transform) {
@@ -2136,6 +2169,8 @@ function applyPathRedactors(text, pathRedactors, mask, cap, transform) {
   let preserved;
   let obj;
   try {
+    // Only valid JSON reaches tokenization; malformed intermediate text is not a token source.
+    JSON.parse(text);
     preserved = preserveBigInts(text, mask);
     obj = JSON.parse(preserved.text);
   } catch {
