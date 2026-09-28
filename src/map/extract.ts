@@ -114,7 +114,9 @@ export async function extractInputMap(cwd: string, ts: TsModule, options: Extrac
           const fn = functionNameFromPath(relFile);
           if (fn) ep.route = '/' + fn; // how the platform invokes it (…/functions/v1/<name>)
         }
-        if (ep.route === undefined && (ep.entryKind === 'route-handler' || ep.entryKind === 'server-action')) {
+        // A server action has no URL of its own: it is posted to whichever page renders it, so its file
+        // location names no route, and a route scope derived from it would never match its traffic.
+        if (ep.route === undefined && ep.entryKind === 'route-handler') {
           const derived = routeFromFilePath(relFile);
           if (derived.route) {
             ep.route = derived.route;

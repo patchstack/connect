@@ -45,9 +45,12 @@ export function routeFromFilePath(relFile: string): { route?: string; dynamic?: 
     segs = dirs.slice(at('routes') + 1); // SvelteKit
   } else if (at('pages') !== -1) {
     segs = [...dirs.slice(at('pages') + 1), ...(base === 'index' ? [] : [base])]; // Next Pages Router
-  } else if (at('server') !== -1) {
-    // Nuxt server routes; a `.post`/`.get` suffix encodes the method, not a path segment.
-    segs = [...dirs.slice(at('server') + 1), ...(base === 'index' ? [] : [base.replace(/\.(get|post|put|patch|delete|head|options)$/i, '')])];
+  } else if (nuxtRoot(dirs) !== undefined) {
+    // Nuxt server routes; a `.post`/`.get` suffix encodes the method, not a path segment. Only
+    // `server/api` (served under `/api`) and `server/routes` (served from the root) are routes: the rest of
+    // `server/` is middleware, plugins and utilities, which have no URL.
+    const root = nuxtRoot(dirs)!;
+    segs = [...root, ...(base === 'index' ? [] : [base.replace(/\.(get|post|put|patch|delete|head|options)$/i, '')])];
   }
   if (!segs) return {};
 
@@ -65,6 +68,24 @@ export function routeFromFilePath(relFile: string): { route?: string; dynamic?: 
   });
   const route = '/' + mapped.join('/');
   return { route: route.length > 1 ? route.replace(/\/+$/, '') : '/', dynamic };
+}
+
+/** Where a Nuxt server route's URL starts, from its directories; undefined outside `server/api` / `server/routes`. */
+function nuxtRoot(dirs: string[]): string[] | undefined {
+  const i = dirs.lastIndexOf('server');
+  if (i === -1) return undefined;
+  if (dirs[i + 1] === 'api') return dirs.slice(i + 1);
+  if (dirs[i + 1] === 'routes') return dirs.slice(i + 2);
+  return undefined;
+}
+
+/**
+ * Whether a registration's first argument is a URL path pattern. Router methods share their names with
+ * ordinary methods (`cache.get('user', load)`, `emitter.use('plugin', fn)`); a route path starts with
+ * `/`, or is the catch-all `*`.
+ */
+export function isRoutePath(route: string): boolean {
+  return route.startsWith('/') || route === '*';
 }
 
 // Unwind `router.route('/x').get(h).post(h2)` down to the `.route('/x')` call to recover the path.

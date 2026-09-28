@@ -1,17 +1,17 @@
 import type { Endpoint, Sink, TsModule } from './types.js';
 import { hasExport, isFnLike, methodFromObjectArg, spanOf, unwindChain } from './ast.js';
 import type { Bindings } from './bindings.js';
-import { functionNameFromPath, ROUTE_REGISTER, routeFromChain, routeObject } from './routes.js';
+import { functionNameFromPath, isRoutePath, ROUTE_REGISTER, routeFromChain, routeObject } from './routes.js';
 import { withCoordinates } from './coordinates.js';
 import { inputsFromHandler, inputsFromValidator } from './inputs.js';
-import { sinksFrom, type SinkContext } from './sinks.js';
+import { sinksFrom, type LocalSinks, type SinkContext } from './sinks.js';
 import { linkedFlows } from './flows.js';
 import { collectInvocations } from './invocations.js';
 
 const HTTP_METHODS = new Set(['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'HEAD', 'OPTIONS']);
 
 // --- entry-point recognizers -----------------------------------------------
-export function extractFromFile(sf: any, ts: TsModule, localSinks: Map<string, Sink[]>, bindings: Bindings, ctx: SinkContext): Omit<Endpoint, 'file'>[] {
+export function extractFromFile(sf: any, ts: TsModule, localSinks: LocalSinks, bindings: Bindings, ctx: SinkContext): Omit<Endpoint, 'file'>[] {
   const out: Omit<Endpoint, 'file'>[] = [];
   const isServerActionsFile = fileHasUseServer(sf, ts);
 
@@ -88,7 +88,7 @@ export function extractFromFile(sf: any, ts: TsModule, localSinks: Map<string, S
         const first = args[0];
         const route = first && ts.isStringLiteralLike(first) ? first.text : routeFromChain(node.expression.expression, ts);
         const handler = args[args.length - 1];
-        if (route !== undefined && handler && isFnLike(handler, ts)) {
+        if (route !== undefined && isRoutePath(route) && handler && isFnLike(handler, ts)) {
           out.push(handlerEntry(route, 'route-registration', handler.parameters, handler.body, ts, localSinks, bindings, ctx, {
             // `use`/`all` register handlers but are not HTTP methods — leave method undefined.
             method: HTTP_METHODS.has(mname.toUpperCase()) ? mname.toUpperCase() : undefined,
@@ -102,7 +102,7 @@ export function extractFromFile(sf: any, ts: TsModule, localSinks: Map<string, S
         const arg = node.arguments[0];
         if (arg && ts.isObjectLiteralExpression(arg)) {
           const reg = routeObject(arg, ts);
-          if (reg.url && reg.handler) {
+          if (reg.url && isRoutePath(reg.url) && reg.handler) {
             for (const m of reg.methods.length ? reg.methods : [undefined]) {
               out.push(handlerEntry(reg.url, 'route-registration', reg.handler.parameters, reg.handler.body, ts, localSinks, bindings, ctx, { method: m, route: reg.url, ...spanOf(node) }));
             }
@@ -138,7 +138,7 @@ function handlerEntry(
   params: any,
   body: any,
   ts: TsModule,
-  localSinks: Map<string, Sink[]>,
+  localSinks: LocalSinks,
   bindings: Bindings,
   ctx: SinkContext,
   extra: { method?: string; route?: string; line?: number; start?: number; end?: number } = {},
