@@ -57,9 +57,10 @@ const MAX_MAPPED_DEPTH = 1000;
 
 /**
  * A copy of `root` with `fn` applied to every string leaf. Iterative and bounded, so an oversized or
- * deeply nested value cannot overflow the stack; a shared or cyclic node is copied once.
+ * deeply nested value cannot overflow the stack; a shared or cyclic node is copied once. `onLimit` is
+ * called when a node past the bounds is kept as it is, with `fn` not applied inside it.
  */
-function mapStringLeaves(root, fn) {
+function mapStringLeaves(root, fn, onLimit) {
   const copies = new Map();
   const copyOf = (node) => {
     const copy = Array.isArray(node) ? [] : {};
@@ -82,6 +83,7 @@ function mapStringLeaves(root, fn) {
         setOwn(copy, key, copies.get(child));
       } else if (depth + 1 >= MAX_MAPPED_DEPTH || visited + stack.length >= MAX_MAPPED_NODES) {
         setOwn(copy, key, child);
+        onLimit();
       } else {
         const childCopy = copyOf(child);
         setOwn(copy, key, childCopy);
@@ -219,7 +221,8 @@ export class RequestResolver {
     // A text decoder applied to a structured value decodes each string inside it and keeps the structure,
     // so the matcher still sees every leaf.
     if (typeof value === 'object' && TEXT_MUTATIONS.has(mutation)) {
-      return mapStringLeaves(value, (leaf) => this.#applyMutation(mutation, leaf));
+      // Past the walk's bounds the value is still matched, undecoded; that is reported like the leaf walk's.
+      return mapStringLeaves(value, (leaf) => this.#applyMutation(mutation, leaf), () => this.noteSkip('container-cap'));
     }
 
     switch (mutation) {

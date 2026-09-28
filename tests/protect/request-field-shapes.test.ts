@@ -230,6 +230,46 @@ describe('a structured value larger than the leaf walk', () => {
     expect(protection.coverage().skipped['response:container-cap']).toBe(1);
   });
 
+  describe('when a decoding mutation reaches it', () => {
+    // A whole-value matcher reads the decoded structure directly, without the leaf walk, so the decoding
+    // walk's own bound is the only one this value meets.
+    const decodedRule = (list: unknown[]) => ({
+      rules: {
+        firewall: [{
+          id: 1,
+          title: 'decoded field',
+          rule_v2: [{
+            parameter: 'post.data',
+            mutations: ['base64_decode'],
+            match: { type: 'array_key_value', key: 'list.v', match: { type: 'contains', value: MARKER } },
+          }],
+        }],
+        whitelists: [],
+        whitelist_keys: {},
+      },
+      body: JSON.stringify({ data: { list } }),
+    });
+    const listOf = (padding: number) => {
+      const list: unknown[] = Array.from({ length: padding }, () => ({}));
+      list.push({ v: Buffer.from(MARKER).toString('base64') });
+      return list;
+    };
+
+    it('reports that the decoding bound was reached', async () => {
+      const { rules, body } = decodedRule(listOf(20_500));
+      const protection: any = await createProtection({ mode: 'block', rules });
+      await protection.fetchGuard()(post(body));
+      expect(protection.coverage().skipped['request:container-cap']).toBe(1);
+    });
+
+    it('decodes and matches a value within it, reporting nothing', async () => {
+      const { rules, body } = decodedRule(listOf(100));
+      const protection: any = await createProtection({ mode: 'block', rules });
+      expect((await protection.fetchGuard()(post(body)))?.status).toBe(403);
+      expect(protection.coverage().skipped['request:container-cap']).toBeUndefined();
+    });
+  });
+
   it('reports nothing for a value within the bound', async () => {
     const skips: any[] = [];
     const protection: any = await createProtection({
