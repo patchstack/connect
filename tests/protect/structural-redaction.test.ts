@@ -25,6 +25,46 @@ async function screen(rule: object, response: Response, opts: Record<string, unk
 const body = async (r: Response) => JSON.parse(await r.text());
 
 describe('structural response redaction (array_key_value → mask)', () => {
+  it.each(['4111111111111111', '41111111111111110', '-4111111111111111'])(
+    'matches a numeric leaf %s while preserving unrelated integers', async (value) => {
+      const doc = `{"items":[{"value":${value}},{"value":12}],"id":12345678901234567890}`;
+      const out = await screen(maskRule('items.value', { type: 'regex', value: '/^-?4\\d{15,16}$/' }),
+        new Response(doc, { headers: { 'content-type': 'application/json' } }));
+      const text = await out.text();
+      expect(out.status).toBe(200);
+      expect(JSON.parse(text).items).toEqual([{ value: '[REDACTED]' }, { value: 12 }]);
+      expect(text).toContain('"id":12345678901234567890');
+    },
+  );
+
+  it('keeps numeric predicates type-consistent with detection', async () => {
+    const doc = '{"value":4000000000000000}';
+    const out = await screen(maskRule('value', { type: 'equals_strict', value: '4000000000000000' }),
+      new Response(doc, { headers: { 'content-type': 'application/json' } }));
+    expect(await body(out)).toEqual({ value: '[REDACTED]' });
+  });
+
+  it('preserves literal marker-like strings and decimal values during masking', async () => {
+    const doc = '{"email":"sample@example.test","literal":"__PSBIGINT_9c2f__12345678901234567890__DNEGIB__","escaped":"\\u005f_PSNUMBER_0__","decimal":0.1234567890123456789,"id":12345678901234567890}';
+    const out = await screen(maskRule('email'), new Response(doc));
+    const text = await out.text();
+    expect(JSON.parse(text)).toMatchObject({
+      email: '[REDACTED]',
+      literal: '__PSBIGINT_9c2f__12345678901234567890__DNEGIB__',
+      escaped: '__PSNUMBER_0__',
+      decimal: JSON.parse(doc).decimal,
+    });
+    expect(text).toContain('"id":12345678901234567890');
+  });
+
+  it('does not interpret a custom mask as a preserved number', async () => {
+    const doc = '{"value":4000000000000000,"id":12345678901234567890}';
+    const out = await screen(maskRule('value'), new Response(doc), { maskWith: '__PSNUMBER_0__' });
+    const text = await out.text();
+    expect(JSON.parse(text).value).toBe('__PSNUMBER_0__');
+    expect(text).toContain('"id":12345678901234567890');
+  });
+
   it('masks a field across every element of nested arrays (arbitrary length)', async () => {
     const doc = {
       orders: [

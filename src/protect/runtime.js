@@ -622,6 +622,9 @@ export async function createProtection(options = {}) {
         }
       }
     }
+    // A rewritten JSON document must still be consumable as JSON. Text-span transformations can
+    // cross its escaping or delimiters; withhold that result rather than emit an invalid document.
+    if (body !== text && isJson(text) && !isJson(body)) return { verdict: 'block' };
     for (const rule of headerMutations) applyHeaderMutation(headers, rule);
     return { verdict: 'redact', body, headers };
   };
@@ -2051,6 +2054,15 @@ function htmlEscape(str) {
   return String(str).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]);
 }
 
+function isJson(text) {
+  try {
+    JSON.parse(text);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 // `transform` (optional): map a matched span to its replacement (the `encode` action passes
 // htmlEscape). Without it, matches are replaced by the `mask` string (the `redact` action).
 function applyRedactors(body, redactors, mask, transform) {
@@ -2121,10 +2133,11 @@ function applyPathRedactors(text, pathRedactors, mask, cap, transform) {
   // Preserve out-of-safe-range integers across the parse→stringify round-trip: JSON.parse would
   // round e.g. a 20-digit id. We quote such number tokens to a sentinel string before parsing and
   // unquote them after stringifying, so untouched big ints survive losslessly.
-  const preserved = preserveBigInts(text);
+  let preserved;
   let obj;
   try {
-    obj = JSON.parse(preserved);
+    preserved = preserveBigInts(text, mask);
+    obj = JSON.parse(preserved.text);
   } catch {
     return text;
   }
@@ -2133,9 +2146,12 @@ function applyPathRedactors(text, pathRedactors, mask, cap, transform) {
     const pred = conditionPredicate(r.condition);
     walkLeaves(obj, r.jsonPath, (loc) => {
       try {
-        if (pred(loc.value)) {
+        const number = preserved.numbers.get(loc.value);
+        // Detection uses JSON.parse's numeric value. Match that same value, while retaining the
+        // original token for any untouched leaf and for string transformations.
+        if (pred(number === undefined ? loc.value : Number(number))) {
           // `encode`: escape the leaf's own value in place; `redact`: replace it with the mask.
-          loc.parent[loc.key] = transform ? transform(String(loc.value)) : mask;
+          setOwn(loc.parent, loc.key, transform ? transform(number ?? String(loc.value)) : mask);
           changed = true;
         }
       } catch {
@@ -2143,51 +2159,37 @@ function applyPathRedactors(text, pathRedactors, mask, cap, transform) {
       }
     });
   }
-  return changed ? restoreBigInts(JSON.stringify(obj)) : text;
+  return changed ? restoreBigInts(JSON.stringify(obj), preserved.numbers) : text;
 }
 
-const BIGINT_OPEN = '__PSBIGINT_9c2f__';
-const BIGINT_CLOSE = '__DNEGIB__';
-
-// Quote every out-of-safe-range integer *value* (a bare number token outside a string) into a
-// sentinel string, so JSON.parse keeps it verbatim. String-aware scan (respects \ escapes) so a
-// number inside a string value is never touched. Plain-ASCII sentinel → survives JSON.stringify.
-function preserveBigInts(text) {
-  let out = '';
-  let inStr = false;
-  for (let i = 0; i < text.length; ) {
-    const ch = text[i];
-    if (inStr) {
-      out += ch;
-      if (ch === '\\') { out += text[i + 1] ?? ''; i += 2; continue; }
-      if (ch === '"') inStr = false;
-      i++;
-      continue;
-    }
-    if (ch === '"') { inStr = true; out += ch; i++; continue; }
-    if (ch === '-' || (ch >= '0' && ch <= '9')) {
-      let j = ch === '-' ? i + 1 : i;
-      let digits = 0;
-      while (j < text.length && text[j] >= '0' && text[j] <= '9') { digits++; j++; }
-      const next = text[j];
-      const isIntToken = digits > 0 && next !== '.' && next !== 'e' && next !== 'E';
-      if (isIntToken && digits >= 16) {
-        out += `"${BIGINT_OPEN}${text.slice(i, j)}${BIGINT_CLOSE}"`;
-      } else {
-        out += text.slice(i, j || i + 1);
-      }
-      i = j > i ? j : i + 1;
-      continue;
-    }
-    out += ch;
-    i++;
+// Preserve whole integer tokens, never a digit sequence inside a string, fraction or exponent.
+// The placeholders are unique to this document and cannot alias a literal string or the mask.
+function preserveBigInts(text, mask) {
+  const occupied = new Set([mask]);
+  const integers = [];
+  const tokens = /"(?:[^"\\]|\\[\s\S])*"|-?(?:0|[1-9]\d*)(?:\.\d+)?(?:[eE][+-]?\d+)?/g;
+  for (const match of text.matchAll(tokens)) {
+    const token = match[0];
+    if (token[0] === '"') occupied.add(JSON.parse(token));
+    else if (/^-?\d{16,}$/.test(token)) integers.push({ start: match.index, token });
   }
-  return out;
+  const numbers = new Map();
+  const chunks = [];
+  let offset = 0;
+  let index = 0;
+  for (const { start, token } of integers) {
+    let marker;
+    do { marker = '__PSNUMBER_' + index++ + '__'; } while (occupied.has(marker));
+    numbers.set(marker, token);
+    chunks.push(text.slice(offset, start), JSON.stringify(marker));
+    offset = start + token.length;
+  }
+  chunks.push(text.slice(offset));
+  return { text: chunks.join(''), numbers };
 }
 
-function restoreBigInts(text) {
-  if (!text.includes(BIGINT_OPEN)) return text;
-  return text.replace(new RegExp(`"${BIGINT_OPEN}(-?\\d+)${BIGINT_CLOSE}"`, 'g'), '$1');
+function restoreBigInts(text, numbers) {
+  return text.replace(/"(__PSNUMBER_\d+__)"/g, (token, marker) => numbers.get(marker) ?? token);
 }
 
 // Response-hardening actions. Mutate the (lowercase-keyed) headers object in place; a `null` value
