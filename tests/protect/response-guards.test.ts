@@ -74,6 +74,41 @@ describe('supabase guard — response screening', () => {
     const body = await (await handle(guardReq())).text();
     expect(body.includes(AWS)).toBe(true);
   });
+
+  it.each([
+    ['matching route and method', '/rest/v1/tasks', 'POST', 'block', true],
+    ['another route', '/rest/v1/notes', 'POST', 'block', false],
+    ['another method', '/rest/v1/tasks', 'PATCH', 'block', false],
+    ['dry-run', '/rest/v1/tasks', 'POST', 'dry-run', false],
+  ])('uses the forwarded request for %s', async (_label, path, method, mode, masked) => {
+    const detections: any[] = [];
+    const protection = await createProtection({
+      mode,
+      rules: { firewall: [], whitelists: [], whitelist_keys: {} },
+      onDetect: (event: any) => detections.push(event),
+      responseRules: [{
+        id: 'result-value', phase: 'response', action: 'redact',
+        when: { path: '/rest/v1/tasks', method: ['POST'] },
+        rule_v2: [{ parameter: 'response.body', match: { type: 'contains', value: 'SAMPLE_VALUE' } }],
+      }],
+    });
+    let forwardedBody: string | undefined;
+    const upstream = (async (_url: string, init: RequestInit) => {
+      forwardedBody = await new Response(init.body).text();
+      return new Response('SAMPLE_VALUE', { headers: { 'content-type': 'text/plain' } });
+    }) as any;
+    const handle = createSupabaseGuard({ protection, supabaseUrl: SUPA, fetchImpl: upstream });
+    const request = new Request('https://app.example.test' + GUARD_PATH, {
+      method, headers: { 'content-type': 'application/json', 'x-ps-target': SUPA + path },
+      body: '{"title":"sample"}',
+    });
+    const response = await handle(request);
+    expect(await response.text()).toBe(masked ? '[REDACTED]' : 'SAMPLE_VALUE');
+    expect(forwardedBody).toBe('{"title":"sample"}');
+    const scoped = path === '/rest/v1/tasks' && method === 'POST';
+    expect(detections).toHaveLength(scoped ? 1 : 0);
+    if (scoped) expect(detections[0]).toMatchObject({ phase: 'response', method: 'POST', path: '/rest/v1/tasks' });
+  });
 });
 
 // --- Node adapter: opt-in wrapNodeResponse ---

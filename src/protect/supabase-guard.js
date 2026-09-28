@@ -176,6 +176,6 @@ export function createSupabaseGuard({
 
     // Response phase: screen what Supabase returned (query results can leak secrets/PII) —
     // redact the offending spans / withhold, per the response rules. Fail-open if unavailable.
-    return protection.screenResponse ? protection.screenResponse(forwarded) : forwarded;
+    return protection.screenResponse ? protection.screenResponse(forwarded, evalReq) : forwarded;
   };
 }
