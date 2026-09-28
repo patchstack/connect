@@ -7,7 +7,25 @@ import { argumentRoleOf, CANDIDATE_FAMILIES } from './sinks.js';
 const MAX_DEPENDENCY_INPUT_FLOWS_PER_ENDPOINT = 100;
 
 /** A tainted binding: the path prefix it stands for, and the request region it came from if known. */
-interface Root { path: string; space?: AddressSpace }
+/**
+ * `accessor`: the binding is an object whose `.get('<name>')` returns a request field — a `Headers`, a
+ * cookie store, or a `FormData`. Only such an object makes `.get('<name>')` a read of `<name>`; on
+ * anything else it is an application method, and its argument names nothing.
+ */
+interface Root {
+  path: string;
+  space?: AddressSpace;
+  accessor?: boolean;
+  /**
+   * The binding is the request object itself. Only on the request are `headers`, `cookies`, `query`,
+   * `body` and `params` namespaces: on a parsed body or any other value they are ordinary field names,
+   * and reading them as namespaces would move a body field into another address space.
+   */
+  request?: boolean;
+}
+
+/** Request namespaces whose `.get('<name>')` reads the field `<name>`. */
+const ACCESSOR_NAMESPACES = new Set(['headers', 'cookies']);
 
 /** The address space a request-namespace binding key implies (`query` → get, `params` → route-param). */
 function spaceOfKey(key: string | undefined): AddressSpace | undefined {
@@ -70,19 +88,20 @@ function linkFlows(
   // in `get` for good. Without this the space was dropped along with the namespace segment, so a read of
   // `query.id` was indistinguishable from a read of `body.id` and could match either input.
   const rootPath = new Map<string, Root>();
-  const addRoot = (name: string, path: string, space?: AddressSpace) => {
-    if (!rootPath.has(name)) rootPath.set(name, { path, space });
+  const addRoot = (name: string, path: string, space?: AddressSpace, accessor = false, request = false) => {
+    if (!rootPath.has(name)) rootPath.set(name, { path, space, ...(accessor ? { accessor } : {}), ...(request ? { request } : {}) });
   };
-  for (const p of params ?? []) {
+  for (const [index, p] of (params ?? []).entries()) {
     if (!p?.name) continue;
-    if (ts.isIdentifier(p.name)) addRoot(p.name.text, '');
+    // The handler's first parameter is its request; later ones (`res`, a route context) are not.
+    if (ts.isIdentifier(p.name)) addRoot(p.name.text, '', undefined, false, index === 0);
     else if (ts.isObjectBindingPattern(p.name)) {
       for (const el of p.name.elements) {
         if (!ts.isBindingElement(el) || !ts.isIdentifier(el.name)) continue;
         const key = bindingKey(el, ts);
         // A destructured request source (`{ body }`) is a container: its members ARE the paths.
         const container = key !== undefined && CONTAINER_KEYS.has(key);
-        addRoot(el.name.text, container ? '' : key ?? el.name.text, container ? spaceOfKey(key) : undefined);
+        addRoot(el.name.text, container ? '' : key ?? el.name.text, container ? spaceOfKey(key) : undefined, container && ACCESSOR_NAMESPACES.has(key!));
       }
     }
   }
@@ -99,7 +118,9 @@ function linkFlows(
       if (['json', 'formData', 'text'].includes(m)) {
         const root = rootIdentifier(cur.expression.expression, ts);
         // A body read: whatever the field names turn out to be, they are addressed in `post`.
-        return root && rootPath.has(root) ? { path: '', space: 'post' } : undefined;
+        if (!root || !rootPath.has(root)) return undefined;
+
+        return m === 'formData' ? { path: '', space: 'post', accessor: true } : { path: '', space: 'post' };
       }
       if (['parse', 'safeParse', 'validate', 'cast'].includes(m)) {
         for (const a of cur.arguments) {
@@ -109,23 +130,25 @@ function linkFlows(
         return undefined;
       }
     }
-    const p = pathFromTainted(cur, ts, rootPath);
-    return p;
+    return pathFromTainted(cur, ts, rootPath) ?? accessorRead(cur, ts, rootPath);
   };
 
   const aliasVisit = (n: any) => {
     if (ts.isVariableDeclaration(n) && n.initializer) {
       const base = requestReadPath(n.initializer);
       if (base !== undefined) {
-        if (ts.isIdentifier(n.name)) addRoot(n.name.text, base.path, base.space);
+        if (ts.isIdentifier(n.name)) addRoot(n.name.text, base.path, base.space, base.accessor === true);
         else if (ts.isObjectBindingPattern(n.name)) {
           for (const el of n.name.elements) {
             if (!ts.isBindingElement(el) || !ts.isIdentifier(el.name)) continue;
             const key = bindingKey(el, ts);
+            // A request namespace (`query`, `headers`, …) only when destructured from the request itself:
+            // off a parsed body the same key is an ordinary field, and its members are paths under it.
+            const namespace = base.request === true && key !== undefined && REQ_SOURCES.includes(key);
+            const container = base.path === '' && key !== undefined && CONTAINER_KEYS.has(key) && (namespace || !REQ_SOURCES.includes(key));
             // `const { query: q } = req` — the binding KEY names the space when the base has none yet.
-            const space = base.space ?? (base.path === '' ? spaceOfKey(key) : undefined);
-            const container = base.path === '' && key !== undefined && CONTAINER_KEYS.has(key);
-            addRoot(el.name.text, container ? '' : join2(base.path, key ?? el.name.text), space);
+            const space = base.space ?? (namespace ? spaceOfKey(key) : undefined);
+            addRoot(el.name.text, container ? '' : join2(base.path, key ?? el.name.text), space, namespace && ACCESSOR_NAMESPACES.has(key!));
           }
         }
       }
@@ -174,7 +197,7 @@ function linkFlows(
           // larger expression (`readFileSync('/tmp/' + req.body.p)`)? Both mean the value arrives in the
           // same parameter, but only the first says what reaches the sink is exactly what arrived — the
           // distinction a server needs before promoting a rule to blocking without a human.
-          const whole = pathFromTainted(args[i], ts, rootPath);
+          const whole = pathFromTainted(args[i], ts, rootPath) ?? accessorRead(args[i], ts, rootPath);
           for (const read of taintedReadPaths(args[i], ts, rootPath)) {
             const key = `${read.space ?? '*'}:${read.path}`;
             const exact = whole !== undefined && whole.path === read.path && whole.space === read.space;
@@ -396,6 +419,17 @@ function taintedReadPaths(node: any, ts: TsModule, rootPath: Map<string, Root>, 
   const visit = (n: any) => {
     if (!n) return;
     if (!includeDeferredBodies && (ts.isArrowFunction(n) || ts.isFunctionExpression(n) || ts.isFunctionDeclaration(n))) return;
+    if (ts.isCallExpression(n)) {
+      const accessed = accessorRead(n, ts, rootPath);
+      if (accessed !== undefined) { add(accessed); return; }
+      // A method called on a value (`req.body.cmd.trim()`) reads the value it is called on. Its name is
+      // not a field of it, so the callee is not read as a path.
+      if (ts.isPropertyAccessExpression(n.expression)) {
+        visit(n.expression.expression);
+        for (const arg of n.arguments ?? []) visit(arg);
+        return;
+      }
+    }
     if (ts.isPropertyAccessExpression(n) || ts.isElementAccessExpression(n)) {
       const read = pathFromTainted(n, ts, rootPath);
       if (read !== undefined) { add(read); return; } // the inner nodes are the path, not separate reads
@@ -450,8 +484,46 @@ function sinkArgumentLimitations(node: any, ts: TsModule, rootPath: Map<string, 
   return out;
 }
 
-/** Canonical path of a member/element access rooted in a tainted binding, or undefined if not tainted. */
-function pathFromTainted(node: any, ts: TsModule, rootPath: Map<string, Root>): Root | undefined {
+/**
+ * `<accessor>.get('<name>')`: the value named `<name>`, read exactly as it arrived.
+ *
+ * `request.headers.get('x-cmd')`, `request.cookies.get('sid')` and `form.get('cmd')` are accessors of a
+ * request namespace, so the read is of `x-cmd` / `sid` / `cmd` — not of a field called `get`, and not a
+ * transformation of anything. Only a string-literal name is a read of a known field, and only on an
+ * accessor: `req.body.account.get('name')` is an application method whose result can be anything.
+ */
+function accessorRead(node: any, ts: TsModule, rootPath: Map<string, Root>): Root | undefined {
+  let cur = node;
+  while (cur && (ts.isAwaitExpression(cur) || ts.isParenthesizedExpression(cur) || ts.isNonNullExpression(cur))) cur = cur.expression;
+  if (!cur || !ts.isCallExpression(cur) || !ts.isPropertyAccessExpression(cur.expression)) return undefined;
+  const [name] = cur.arguments;
+  if (cur.expression.name.text !== 'get' || cur.arguments.length !== 1 || !name || !ts.isStringLiteralLike(name)) return undefined;
+  if (!isAccessor(cur.expression.expression, ts, rootPath)) return undefined;
+
+  return pathFromTainted(cur.expression.expression, ts, rootPath, [name.text]);
+}
+
+/**
+ * Whether `node` is an object whose `.get('<name>')` returns a request field: `request.headers` /
+ * `request.cookies` on the request itself, or a binding that holds one (`({ cookies })`, a
+ * `formData()` result).
+ */
+function isAccessor(node: any, ts: TsModule, rootPath: Map<string, Root>): boolean {
+  let cur = node;
+  while (cur && (ts.isParenthesizedExpression(cur) || ts.isNonNullExpression(cur))) cur = cur.expression;
+  if (ts.isIdentifier(cur)) return rootPath.get(cur.text)?.accessor === true;
+  if (ts.isPropertyAccessExpression(cur) && ACCESSOR_NAMESPACES.has(cur.name.text) && ts.isIdentifier(cur.expression)) {
+    return rootPath.get(cur.expression.text)?.request === true;
+  }
+
+  return false;
+}
+
+/**
+ * Canonical path of a member/element access rooted in a tainted binding, or undefined if not tainted.
+ * `trailing` is appended to the segments read off `node` — the field an accessor call names.
+ */
+function pathFromTainted(node: any, ts: TsModule, rootPath: Map<string, Root>, trailing: string[] = []): Root | undefined {
   const segs: string[] = [];
   let cur = node;
   for (;;) {
@@ -468,6 +540,7 @@ function pathFromTainted(node: any, ts: TsModule, rootPath: Map<string, Root>): 
   if (!cur || !ts.isIdentifier(cur)) return undefined;
   const base = rootPath.get(cur.text);
   if (base === undefined) return undefined;
+  segs.push(...trailing);
   let space = base.space;
   // Drop a leading NAMESPACE segment (`req.body.webhookUrl` → `webhookUrl`). Input names — and the
   // runtime coordinates derived from them — are relative to their namespace (`post.webhookUrl`), so
@@ -476,9 +549,13 @@ function pathFromTainted(node: any, ts: TsModule, rootPath: Map<string, Root>): 
   // proven.
   // The dropped segment is exactly what names the address space, so capture it before discarding it —
   // losing it is what made `req.query.id` and `req.body.id` the same read.
-  if (base.path === '' && segs.length > 1 && REQ_SOURCES.includes(segs[0]!)) {
+  if (base.request === true && base.path === '' && segs.length > 1 && REQ_SOURCES.includes(segs[0]!)) {
     space = spaceOfKey(segs[0]!) ?? space;
     segs.shift();
   }
-  return { path: normalizePath([base.path, ...segs].filter(Boolean).join('.')), space };
+  // Read bare, the request is still the request — which is what lets `const { headers } = request`
+  // destructure a namespace, and `const { headers } = await request.json()` not.
+  const request = base.request === true && segs.length === 0 ? { request: true } : {};
+
+  return { path: normalizePath([base.path, ...segs].filter(Boolean).join('.')), space, ...request };
 }
