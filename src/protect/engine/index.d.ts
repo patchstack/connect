@@ -124,6 +124,7 @@ export declare function normalizeRequest(req: any, options?: NormalizeOptions): 
   query: Record<string, any>;
   body: Record<string, any>;
   headers: Record<string, string>;
+  cookies: Record<string, any>;
   url: string;
   originalUrl: string;
   _rawBody: string;

@@ -1,3 +1,4 @@
+import { parseCookieHeader } from './cookies.js';
 import { decodeHtmlEntities, safeUrlDecode } from './normalizer.js';
 import { setOwn } from './own.js';
 
@@ -5,6 +6,30 @@ import { setOwn } from './own.js';
 // the raw data — WHAT counts as a malicious upload (signatures, type-vs-content mismatch) is expressed
 // in rules (see the triage-vpatch-npm skill), not hardcoded here.
 const FILE_ATTRS = new Set(['content', 'filename', 'type']);
+
+const ownValue = (obj, key) =>
+  obj !== null && typeof obj === 'object' && Object.prototype.hasOwnProperty.call(obj, key) ? obj[key] : undefined;
+
+/**
+ * The spellings one field path can arrive under: as written (resolved as a nested path), in bracket
+ * form as a flat key (`a.b` → `a[b]`, `a` → `a[]`), and — for a path written in bracket form — as the
+ * nested path it expands to (`a[b]` → `a.b`, `a[]` → `a`).
+ */
+function fieldSpellings(key) {
+  const spellings = [{ key, nested: true }];
+  if (key.includes('[')) {
+    const dotted = key.replace(/\[\]$/, '').replace(/\[([^\][]*)\]/g, '.$1');
+    if (dotted !== key && dotted !== '' && !dotted.includes('[') && !dotted.includes(']')) {
+      spellings.push({ key: dotted, nested: true });
+    }
+    return spellings;
+  }
+  const [head, ...rest] = key.split('.');
+  const bracketed = head + rest.map((part) => `[${part}]`).join('');
+  if (bracketed !== key) spellings.push({ key: bracketed, nested: false });
+  spellings.push({ key: `${bracketed}[]`, nested: false });
+  return spellings;
+}
 
 // A captured file part is { filename, type, content }; tolerate the legacy bare-filename string.
 const fileFilename = (f) => (f && typeof f === 'object' ? f.filename : f);
@@ -247,8 +272,7 @@ export class RequestResolver {
       return this.#resolveWildcard(query, key);
     }
 
-    const value = this.#getNestedValue(query, key);
-    return value !== undefined ? [value] : [];
+    return this.#lookup(query, key);
   }
 
   #resolvePost(key) {
@@ -258,8 +282,24 @@ export class RequestResolver {
       return this.#resolveWildcard(body, key);
     }
 
-    const value = this.#getNestedValue(body, key);
-    return value !== undefined ? [value] : [];
+    return this.#lookup(body, key);
+  }
+
+  /**
+   * Every value a field path names in `obj`, in either spelling a form or query field can take.
+   *
+   * A parser that expands brackets (`qs`, as Express uses) turns `user[name]=x` into `{ user: { name } }`
+   * and `id[]=x` into `{ id: [x] }`; a flat parser (`URLSearchParams`, as the Fetch and Node adapters use)
+   * keeps `user[name]` and `id[]` as literal keys. The rule names the field once, so both shapes answer
+   * to both spellings: `user.name` and `user[name]`, `id` and `id[]`.
+   */
+  #lookup(obj, key) {
+    const values = [];
+    for (const candidate of fieldSpellings(key)) {
+      const value = candidate.nested ? this.#getNestedValue(obj, candidate.key) : ownValue(obj, candidate.key);
+      if (value !== undefined) values.push(value);
+    }
+    return values;
   }
 
   #resolveRequest(key) {
@@ -275,11 +315,12 @@ export class RequestResolver {
       ];
     }
 
-    const value = this.#getNestedValue(query, key)
-      ?? this.#getNestedValue(body, key)
-      ?? (Object.hasOwn(cookies, key) ? cookies[key] : undefined);
+    const fromQuery = this.#lookup(query, key);
+    if (fromQuery.length > 0) return fromQuery;
+    const fromBody = this.#lookup(body, key);
+    if (fromBody.length > 0) return fromBody;
 
-    return value !== undefined ? [value] : [];
+    return Object.hasOwn(cookies, key) ? [cookies[key]] : [];
   }
 
   #resolveCookie(key) {
@@ -494,25 +535,7 @@ export class RequestResolver {
       return this.#cookies;
     }
 
-    const header = this.#req.headers?.cookie;
-    if (!header) {
-      this.#cookies = {};
-      return this.#cookies;
-    }
-
-    const cookies = {};
-
-    for (const pair of header.split(';')) {
-      const eqIndex = pair.indexOf('=');
-      if (eqIndex === -1) {
-        continue;
-      }
-      const name = pair.substring(0, eqIndex).trim();
-      const value = pair.substring(eqIndex + 1).trim();
-      setOwn(cookies, name, value);
-    }
-
-    this.#cookies = cookies;
+    this.#cookies = parseCookieHeader(this.#req.headers?.cookie);
     return this.#cookies;
   }
 }

@@ -10,6 +10,7 @@ import { resolveClientIp } from '../client-ip.js';
 import { RuleEngine } from './engine.js';
 import { parseBody } from './fetch.js';
 import { notify } from '../notify.js';
+import { parseCookieHeader } from './cookies.js';
 import { appendOwn, setOwn } from './own.js';
 
 // Build the engine's request shape from a Node IncomingMessage + its raw body text.
@@ -70,26 +71,12 @@ export function fromNodeRequest(req, rawBody = '', options = {}) {
     headers,
     ip: client.ip ?? '',
     _clientIp: client,
-    cookies: parseCookies(headers.cookie),
+    cookies: parseCookieHeader(headers.cookie),
     // Verbatim body text: preserves literal keys (e.g. `__proto__`) that JSON.stringify drops.
     _rawBody: rawBody
   };
 }
 
-function parseCookies(header) {
-  const cookies = {};
-  if (!header) {
-    return cookies;
-  }
-  for (const pair of header.split(';')) {
-    const idx = pair.indexOf('=');
-    if (idx === -1) {
-      continue;
-    }
-    setOwn(cookies, pair.slice(0, idx).trim(), pair.slice(idx + 1).trim());
-  }
-  return cookies;
-}
 
 function defaultBlock(res, result) {
   res.statusCode = 403;

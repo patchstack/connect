@@ -514,18 +514,23 @@ const WHOLE_VALUE_MATCH_TYPES = new Set(['isset', 'array_in_array', 'array_key_v
 // Iteratively collect every scalar (non-object) leaf of a structured value. Iterative + bounded
 // (depth and node caps) so a pathologically deep/large attacker payload STOPS at the bound rather
 // than throwing a RangeError that the per-rule catch would swallow into a fail-open bypass.
+// `truncated` says the bound was reached: containers past it contributed no leaves.
 function collectLeafValues(root, nodeCap = 20000, maxDepth = 1000) {
-  const out = [];
+  const leaves = [];
   const stack = [[root, 0]];
   let visited = 0;
+  let truncated = false;
   while (stack.length) {
     const [node, depth] = stack.pop();
     if (node === null || node === undefined) continue;
     if (typeof node !== 'object') {
-      out.push(node);
+      leaves.push(node);
       continue;
     }
-    if (depth >= maxDepth || visited >= nodeCap) continue;
+    if (depth >= maxDepth || visited >= nodeCap) {
+      truncated = true;
+      continue;
+    }
     visited++;
     if (Array.isArray(node)) {
       for (let i = node.length - 1; i >= 0; i--) stack.push([node[i], depth + 1]);
@@ -533,7 +538,7 @@ function collectLeafValues(root, nodeCap = 20000, maxDepth = 1000) {
       for (const k of Object.keys(node)) stack.push([node[k], depth + 1]);
     }
   }
-  return out;
+  return { leaves, truncated };
 }
 
 // The inspection limits one evaluation reached, as `{ skips: [reason, …] }`, or nothing when it
@@ -541,6 +546,16 @@ function collectLeafValues(root, nodeCap = 20000, maxDepth = 1000) {
 function skipsOf(resolver) {
   const skips = resolver?.skips;
   return skips && skips.length > 0 ? { skips } : {};
+}
+
+// The whole value as text, for a container too large to walk leaf by leaf. `undefined` when it has
+// no text form (a cycle, or nesting deeper than the serialiser allows).
+function serialisedValue(value) {
+  try {
+    return JSON.stringify(value);
+  } catch {
+    return undefined;
+  }
 }
 
 // Emit a warning at most once per distinct key (keeps a persistent misconfiguration from spamming).
@@ -585,16 +600,34 @@ function warnUnsupportedMatchType(type) {
  * value that is already a bare host passes through untouched, which is what keeps the egress path and
  * the built-in default rule behaving exactly as before.
  */
+// Schemes a URL parser treats as hierarchical whatever follows the colon: `http:x`, `http:/x` and
+// `http:\\x` all name host `x`.
+const SPECIAL_SCHEMES = new Set(['http', 'https', 'ws', 'wss', 'ftp', 'file']);
+
+// Strip C0 controls and spaces (U+0000–U+0020) from both ends, in linear time.
+function trimControls(text) {
+  let start = 0;
+  let end = text.length;
+  while (start < end && text.charCodeAt(start) <= 0x20) start++;
+  while (end > start && text.charCodeAt(end - 1) <= 0x20) end--;
+  return text.slice(start, end);
+}
+
 function hostFromValue(value) {
-  const raw = String(value ?? '').trim();
+  // A URL parser drops tabs and newlines anywhere, and C0 controls and spaces at either end, before it
+  // reads anything else — so they are dropped here too, or they would hide the scheme.
+  const raw = trimControls(String(value ?? '').replace(/[\t\n\r]/g, '')).trim();
   if (raw === '') return '';
 
-  // A scheme (`http://`, and deliberately any other) or a protocol-relative URL. Parsing rather than
-  // string-slicing is what makes the userinfo evasion (`http://trusted@169.254.169.254/`) resolve to the
-  // host actually contacted, and keeps `http://evil.com#@127.0.0.1` resolving to evil.com.
-  if (/^[a-z][a-z0-9+.-]*:\/\//i.test(raw) || raw.startsWith('//')) {
+  // A scheme (`http://`, and deliberately any other), a special scheme in any of the shorter spellings a
+  // URL parser still resolves to a host, or a protocol-relative URL (either slash direction). Parsing
+  // rather than string-slicing is what makes the userinfo evasion (`http://trusted@169.254.169.254/`)
+  // resolve to the host actually contacted, and keeps `http://evil.com#@127.0.0.1` resolving to evil.com.
+  const scheme = /^([a-z][a-z0-9+.-]*):/i.exec(raw)?.[1]?.toLowerCase();
+  const relative = /^[\\/]{2}/.test(raw);
+  if (relative || /^[a-z][a-z0-9+.-]*:\/\//i.test(raw) || (scheme !== undefined && SPECIAL_SCHEMES.has(scheme))) {
     try {
-      return new URL(raw.startsWith('//') ? `http:${raw}` : raw).hostname;
+      return new URL(relative ? `http:${raw}` : raw).hostname;
     } catch {
       // Unparseable: hand the raw value on, where the host check rejects it rather than guessing.
       return raw;
@@ -1328,8 +1361,16 @@ export class RuleEngine {
         if (WHOLE_VALUE_MATCH_TYPES.has(match.type)) {
           if (matchValue(match.type, value, match.value, match)) return true;
         } else {
-          for (const leaf of collectLeafValues(value)) {
+          const { leaves, truncated } = collectLeafValues(value);
+          for (const leaf of leaves) {
             if (matchValue(match.type, leaf, match.value, match)) return true;
+          }
+          // Past the walk's bound, the rest of the value is matched as its serialised text, and the
+          // bound is reported: the leaves beyond it were not inspected individually.
+          if (truncated) {
+            resolver.noteSkip('container-cap');
+            const text = serialisedValue(value);
+            if (text !== undefined && matchValue(match.type, text, match.value, match)) return true;
           }
         }
         continue;
