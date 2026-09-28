@@ -400,10 +400,35 @@ export async function createProtection(options = {}) {
     // "redact"` masks the offending span(s); anything else withholds the whole response.
     responseRuleSet = responseRules.map((rule) => {
       const unscoped = [];
-      const redactors =
-        rule.action === 'redact' || rule.action === 'encode'
-          ? extractRedactors(rule, (parameter) => unscoped.push(parameter))
-          : null;
+      const rewrites = rule.action === 'redact' || rule.action === 'encode';
+      // What the rule masks, and whether it is decided on headers alone. A rule this cannot read is loaded
+      // and reported rather than failing the whole load: it masks nothing, is not treated as header-only,
+      // and — like any rule with nothing to mask — withholds a response it matches.
+      let derived;
+      try {
+        const redactors = rewrites ? extractRedactors(rule, (parameter) => unscoped.push(parameter)) : null;
+        // A redact/encode condition that carries body-transforming mutations (base64_decode, urldecode,
+        // json_decode, …) detects on the DECODED body but the span redactors run on the RAW body — so
+        // they mask nothing and the secret is served while the log says "redacted". Flag it so screenText
+        // fails such a rule CLOSED (block) instead of serving a no-op redaction.
+        const mutatedSpan = rewrites && hasSpanMutations(rule);
+        derived = {
+          redactors,
+          mutatedSpan,
+          // A redaction that reads response headers only, and masks spans in them, and an explicit block
+          // that reads response headers only, are decided and carried out without the body — so they
+          // still apply to a response whose body was not screened.
+          redactsHeaders:
+            rule.action === 'redact' &&
+            !mutatedSpan &&
+            (redactors ?? []).some((r) => !r.jsonPath) &&
+            readsOnlyResponseHeaders(rule),
+          blocksOnHeaders: rule.action === 'block' && readsOnlyResponseHeaders(rule),
+        };
+      } catch (err) {
+        notify(onError, err, 'onError');
+        derived = { redactors: null, mutatedSpan: false, redactsHeaders: false, blocksOnHeaders: false };
+      }
       if (unscoped.length) {
         notify(
           onError,
@@ -413,26 +438,10 @@ export async function createProtection(options = {}) {
           'onError',
         );
       }
-      // A redact/encode condition that carries body-transforming mutations (base64_decode, urldecode,
-      // json_decode, …) detects on the DECODED body but the span redactors run on the RAW body — so
-      // they mask nothing and the secret is served while the log says "redacted". Flag it so screenText
-      // fails such a rule CLOSED (block) instead of serving a no-op redaction.
-      const mutatedSpan = (rule.action === 'redact' || rule.action === 'encode') && hasSpanMutations(rule);
-
       return {
         rule,
         engine: new RuleEngine({ firewall: [rule], onError }),
-        redactors,
-        mutatedSpan,
-        // A redaction that reads response headers only, and masks spans in them, and an explicit block
-        // that reads response headers only, are decided and carried out without the body — so they still
-        // apply to a response whose body was not screened.
-        redactsHeaders:
-          rule.action === 'redact' &&
-          !mutatedSpan &&
-          (redactors ?? []).some((r) => !r.jsonPath) &&
-          readsOnlyResponseHeaders(rule),
-        blocksOnHeaders: rule.action === 'block' && readsOnlyResponseHeaders(rule),
+        ...derived,
         // Optional cheap pre-filter: literal anchor(s) that MUST appear for the (expensive) regex to
         // have any chance of matching. Lets screenText skip the full scan on responses with no candidate
         // — the common case — cutting CPU/latency and shrinking the regex/ReDoS surface.
@@ -2215,8 +2224,9 @@ function headerObject(headers) {
 function hasSpanMutations(rule) {
   let found = false;
   const walk = (conds) => {
-    for (const c of conds ?? []) {
+    for (const c of Array.isArray(conds) ? conds : []) {
       if (found) return;
+      if (!c || typeof c !== 'object') continue;
       if (Array.isArray(c.rules)) walk(c.rules);
       const isSpan = c.match && (c.match.type === 'regex' || c.match.type === 'contains' || c.match.type === 'stripos');
       if (isSpan && Array.isArray(c.mutations) && c.mutations.length) found = true;
@@ -2249,6 +2259,9 @@ function redactorScope(parameter) {
   if (parameter === undefined || parameter === null || parameterProblem(parameter) !== null) return null;
   const scope = { body: false, allHeaders: false, headers: new Set() };
   for (const name of Array.isArray(parameter) ? parameter : [parameter]) {
+    // Checked here rather than left to the contract, which answers a different question: a member that is
+    // not a parameter name has no place to mask, whatever the validator makes of it.
+    if (typeof name !== 'string' || name === '') return null;
     if (name.startsWith('response.header.')) scope.headers.add(name.slice('response.header.'.length).toLowerCase());
     else if (name === 'response.headers') scope.allHeaders = true;
     else if (name === 'response.body' || name === 'response.status' || BROAD_SCOPE_SOURCES.has(name.split('.')[0])) {
@@ -2281,7 +2294,8 @@ function extractRedactors(rule, onUnscoped) {
     return scope;
   };
   const walk = (conds) => {
-    for (const c of conds ?? []) {
+    for (const c of Array.isArray(conds) ? conds : []) {
+      if (!c || typeof c !== 'object') continue;
       if (Array.isArray(c.rules)) walk(c.rules);
       const m = c.match;
       if (!m) continue;
@@ -2308,6 +2322,8 @@ function extractRedactors(rule, onUnscoped) {
         // used, so what is reported and what is masked cannot diverge.
         const scope = scoped(c);
         if (scope) out.push({ jwtClaim: { claim: m.claim, value: String(m.value ?? '') }, scope });
+      } else if (m.type === 'array_key_value' && m.match && Array.isArray(c.parameter) && !readsBody(c.parameter) && redactorScope(c.parameter) === null) {
+        onUnscoped?.(c.parameter);
       } else if (m.type === 'array_key_value' && m.match && readsBody(c.parameter)) {
         // Structural redaction: mask the value at a JSON path (fanning out over arrays) rather than
         // a text span — e.g. key "orders.customers.email" masks that field in every array element.
@@ -2485,7 +2501,9 @@ function applyRedactors(body, redactors, mask, transform) {
 function readsBody(parameter) {
   if (!Array.isArray(parameter)) return isBodyParam(parameter);
 
-  return parameterProblem(parameter) === null && parameter.some((member) => isBodyParam(member));
+  const names = parameter.every((member) => typeof member === 'string' && member !== '');
+
+  return names && parameterProblem(parameter) === null && parameter.some((member) => isBodyParam(member));
 }
 
 function isBodyParam(parameter) {
