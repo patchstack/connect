@@ -804,7 +804,8 @@ async function runScan(
   const outcome: Omit<Progress, 'installed'> = {
     connected,
     synced,
-    deployed: synced && config.environment === 'production',
+    // Only the dashboard can see the live site; a production scan is reported, not confirmed.
+    deployed: false,
   };
   options.onReported?.(outcome);
 
@@ -829,6 +830,8 @@ async function printScanProgress(
   const uuid = siteUuid !== null && siteUuid.length > 0 ? siteUuid : state.siteUuid;
   const context = {
     ...guideNextStepContext(state),
+    environment: config.environment,
+    environmentSource: config.environmentSource,
     siteUuid: uuid,
     claimUrl: uuid !== null && config.endpointTrusted !== false ? buildClaimUrl(config.endpoint, uuid) : null,
   };

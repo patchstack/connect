@@ -22,6 +22,7 @@ import {
 import { detectStack } from './stack.js';
 import { buildWidgetTag } from './widget.js';
 import { renderProgress, type NextStepContext, type Progress, type ProgressStep } from './progress.js';
+import type { Environment, EnvironmentSource } from './types.js';
 
 /** Global the widget reads to decide it is running on a published build. */
 const PROD_MARKER_NEEDLE = '__PATCHSTACK_PROD__';
@@ -42,6 +43,9 @@ export interface GuideState {
   claimUrl: string | null;
   /** Non-default API endpoint in effect (rc file, env, or flag), else null. */
   endpointOverride: string | null;
+  /** Where a scan from here reports from, and what decided it. Null when the config is unreadable. */
+  environment: Environment | null;
+  environmentSource: EnvironmentSource | null;
   hasBuildScript: boolean;
   installScanWired: boolean;
   prebuildWired: boolean;
@@ -329,8 +333,12 @@ export async function collectGuideState(cwd: string): Promise<GuideState> {
   let claimUrl: string | null = null;
   let endpointOverride: string | null = null;
   let widgetOptOut = false;
+  let environment: Environment | null = null;
+  let environmentSource: EnvironmentSource | null = null;
   try {
     const config = await resolveConfig({ cwd });
+    environment = config.environment;
+    environmentSource = config.environmentSource ?? null;
     siteUuid = config.siteUuid;
     if (siteUuid !== null && config.endpointTrusted !== false) {
       claimUrl = buildClaimUrl(config.endpoint, siteUuid);
@@ -363,6 +371,8 @@ export async function collectGuideState(cwd: string): Promise<GuideState> {
     siteUuid,
     claimUrl,
     endpointOverride,
+    environment,
+    environmentSource,
     hasBuildScript: Boolean(pkg?.scripts?.build?.trim()),
     installScanWired: (pkg?.scripts?.postinstall ?? '').includes('patchstack-connect scan'),
     // The scan has to run first: a later prebuild command may upload and stamp the map that the bundle
@@ -443,7 +453,7 @@ export function guideProgress(state: GuideState, known: Partial<Progress> = {}):
     connected: false,
     // `.patchstackrc.json` only gains a site UUID from a manifest the server stored.
     synced: state.siteUuid !== null,
-    // Only a production build or report is a deploy; a working tree never is.
+    // Only the dashboard can see the live site, so nothing the CLI runs marks this done.
     deployed: false,
     ...known,
   };
@@ -455,6 +465,8 @@ export function guideNextStepContext(state: GuideState): NextStepContext {
     siteUuid: state.siteUuid,
     claimUrl: state.claimUrl,
     widgetInPlace: widgetTagInPlace(state),
+    environment: state.environment,
+    environmentSource: state.environmentSource,
   };
 }
 

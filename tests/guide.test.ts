@@ -244,7 +244,7 @@ describe('guide', () => {
       expect(PROGRESS_STEPS.map(({ label }) => label)).toEqual([
         'Install the Patchstack connector',
         'Connect project to Patchstack account',
-        'Sync and monitor in local environment',
+        'Sync and monitor your project',
         'Deploy project to protect live app',
       ]);
       expect(positions.every((position) => position > -1)).toBe(true);

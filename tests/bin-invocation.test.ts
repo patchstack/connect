@@ -341,13 +341,15 @@ describe.skipIf(!built)('the packaged bin, invoked as npm invokes it', () => {
       }
     });
 
-    it('marks the deploy done only for a production report', async () => {
+    it('reports a production scan without ticking the deploy the dashboard has not seen', async () => {
       const server = await acceptingServer();
       const dir = freshProject();
       try {
         const stdout = await scan(dir, server.endpoint, { PATCHSTACK_ENVIRONMENT: 'production' });
 
-        expect(stdout).toContain(' ✔ Deploy project to protect live app');
+        expect(stdout).toContain(' ✔ Sync and monitor in production environment');
+        expect(stdout).toContain(' ✘ Deploy project to protect live app');
+        expect(stdout).toContain('Patchstack ticks this once it sees the live site.');
       } finally {
         await server.close();
         rmSync(dir, { recursive: true, force: true });
