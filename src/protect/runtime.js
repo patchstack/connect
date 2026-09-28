@@ -765,7 +765,9 @@ export async function createProtection(options = {}) {
     if (read.skip) {
       // Nothing was screened — a leak/PII rule cannot have applied. Record it (a live stream and a
       // binary body are by design; a body-cap or read failure is a coverage hole worth alerting on).
-      if (read.skip !== 'not-a-response') recordSkip('response', read.skip, { status: response?.status });
+      if (read.skip !== 'not-a-response') {
+        recordSkip('response', read.skip, { status: response?.status, ...(read.encoding ? { encoding: read.encoding } : {}) });
+      }
       if (read.skip === 'not-a-response') return response;
 
       // Header hardening still applies: it needs no body, and a header does not become expensive
@@ -1253,6 +1255,14 @@ export async function createProtection(options = {}) {
       // Skip live streams / binary bodies (incl. an octet-stream that sniffs as binary) — untouched.
       if (kind === 'skip' || (kind === 'sniff' && looksBinary(buffer))) {
         recordSkip('response', kind === 'skip' ? (baseContentType(ct) === 'text/event-stream' ? 'live-stream' : 'non-text-content-type') : 'binary-body');
+
+        return passThrough();
+      }
+      // Encoded bytes cannot be screened as text: sent exactly as they are, under their own coding. The
+      // coding is read from the head that will be sent, which includes a held `writeHead`'s own headers.
+      const codings = declaredCodings(head.headers['content-encoding']);
+      if (codings.length > 0 && stillEncoded(buffer)) {
+        recordSkip('response', 'encoded-body', { encoding: codings.join(', ') });
 
         return passThrough();
       }
@@ -1847,6 +1857,31 @@ function looksBinary(bytes) {
   return n > 0 && ctrl / n > 0.1;
 }
 
+/** The content codings a `Content-Encoding` value declares, `identity` left out. Empty: not encoded. */
+function declaredCodings(value) {
+  const raw = Array.isArray(value) ? value.join(',') : String(value ?? '');
+
+  return raw.toLowerCase().split(',').map((c) => c.trim()).filter((c) => c !== '' && c !== 'identity');
+}
+
+/**
+ * Whether a body under a declared content coding is still encoded — not readable as text.
+ *
+ * The header alone does not say: `fetch()` decodes a compressed response and keeps its
+ * `Content-Encoding`, so a proxied response can declare `gzip` and carry plain text. Encoded output is
+ * binary-looking or not valid UTF-8; text that is neither is read as the text it is.
+ */
+function stillEncoded(bytes) {
+  if (looksBinary(bytes)) return true;
+  try {
+    new TextDecoder('utf-8', { fatal: true }).decode(bytes);
+
+    return false;
+  } catch {
+    return true;
+  }
+}
+
 // Returns { text } when the body was fully buffered for screening, or { skip: <reason> } when it was
 // NOT screened — the reason is surfaced to `onSkip`/coverage so a fail-open bypass is observable
 // instead of silent (an unscreened response is a real hole in enforcement).
@@ -1855,6 +1890,8 @@ async function readTextResponse(response, cap = DEFAULT_SCREEN_CAP) {
   const ct = response.headers?.get?.('content-type') || '';
   const kind = screenableContentType(ct);
   if (kind === 'skip') return { skip: baseContentType(ct) === 'text/event-stream' ? 'live-stream' : 'non-text-content-type' };
+  const codings = declaredCodings(response.headers?.get?.('content-encoding'));
+  const encodedSkip = () => ({ skip: 'encoded-body', encoding: codings.join(', ') });
   const sniff = kind === 'sniff';
   const len = Number(response.headers?.get?.('content-length') || 0);
   if (len && len > cap) return { skip: 'body-cap' };
@@ -1898,14 +1935,23 @@ async function readTextResponse(response, cap = DEFAULT_SCREEN_CAP) {
     } finally {
       reader.releaseLock();
     }
+    const bytes = concatBytes(chunks, size);
+    if (codings.length > 0 && stillEncoded(bytes)) return encodedSkip();
     try {
-      return { text: new TextDecoder().decode(concatBytes(chunks, size)) };
+      return { text: new TextDecoder().decode(bytes) };
     } catch {
       return { skip: 'decode-failed' };
     }
   }
 
   try {
+    if (codings.length > 0) {
+      const bytes = new Uint8Array(await clone.arrayBuffer());
+      if (bytes.byteLength > cap) return { skip: 'body-cap' };
+      if (stillEncoded(bytes)) return encodedSkip();
+
+      return { text: new TextDecoder().decode(bytes) };
+    }
     const text = await clone.text();
     if (text.length > cap) return { skip: 'body-cap' };
     if (sniff && looksBinary(new TextEncoder().encode(text.slice(0, 512)))) return { skip: 'binary-body' };
