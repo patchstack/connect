@@ -28,6 +28,12 @@ export interface Protection {
    */
   screenResponse(response: Response, request?: Request): Promise<Response>;
   express(options?: { screenResponses?: boolean }): (req: unknown, res: unknown, next: () => void) => void;
+  /**
+   * Node / Connect middleware that reads the request body itself and exposes it as `req.body`.
+   *
+   * A body longer than `maxBodyBytes` (default 1 MiB) has its first `maxBodyBytes` screened, is counted as
+   * a `body-cap` skip in `coverage()` / `onSkip`, and is not exposed as `req.body`.
+   */
   node(options?: { maxBodyBytes?: number; screenResponses?: boolean }): (req: unknown, res: unknown, next: () => void) => void;
   /** Present when `egress: true` — restores the original global fetch. */
   uninstallEgress?: () => void;

@@ -12,6 +12,30 @@ import { parseBody } from './fetch.js';
 import { notify } from '../notify.js';
 import { appendOwn, setOwn } from './own.js';
 
+/**
+ * Read a Node request body, keeping at most `maxBytes` of it.
+ *
+ * The whole stream is consumed; bytes past the cap are counted and dropped rather than retained. `done`
+ * receives `(error)` or `(null, { text, overflow, size })`, where `text` is the retained prefix — the
+ * part that is screened, as on the Fetch path — and `overflow` says the body was longer than it.
+ */
+export function readBodyPrefix(req, maxBytes, done) {
+  const chunks = [];
+  let retained = 0;
+  let size = 0;
+  req.on('data', (chunk) => {
+    size += chunk.length;
+    const take = Math.min(chunk.length, maxBytes - retained);
+    if (take <= 0) return;
+    chunks.push(take === chunk.length ? chunk : chunk.subarray(0, take));
+    retained += take;
+  });
+  req.on('error', (err) => done(err));
+  req.on('end', () => {
+    done(null, { text: Buffer.concat(chunks).toString('utf8'), overflow: size > maxBytes, size });
+  });
+}
+
 // Build the engine's request shape from a Node IncomingMessage + its raw body text.
 export function fromNodeRequest(req, rawBody = '', options = {}) {
   const method = (req.method || 'GET').toUpperCase();
@@ -106,8 +130,9 @@ function defaultBlock(res, result) {
 /**
  * Connect/Express-style middleware `(req, res, next)` that buffers the body itself.
  * Accepts a `RuleEngine` instance or a `{ firewall, whitelists, whitelist_keys }` bundle.
- * Fails open: an engine error (or oversized body) never blocks the request.
- * Options: `{ maxBodyBytes = 1MiB, onBlock, onError, response }`.
+ * Fails open: an engine error never blocks the request. A body longer than `maxBodyBytes` has its first
+ * `maxBodyBytes` screened, is reported to `onSkip` as `body-cap`, and is not exposed as `req.body`.
+ * Options: `{ maxBodyBytes = 1MiB, onBlock, onError, onSkip, response }`.
  */
 export function createNodeMiddleware(rulesData, options = {}) {
   const engine =
@@ -115,29 +140,16 @@ export function createNodeMiddleware(rulesData, options = {}) {
   const maxBytes = options.maxBodyBytes ?? 1024 * 1024;
 
   return function guard(req, res, next) {
-    const chunks = [];
-    let size = 0;
-    let overflow = false;
+    readBodyPrefix(req, maxBytes, (error, read) => {
+      if (error) return next(error);
 
-    req.on('data', (chunk) => {
-      size += chunk.length;
-      if (size > maxBytes) {
-        overflow = true;
-        return;
-      }
-      chunks.push(chunk);
-    });
-
-    req.on('error', (err) => next(err));
-
-    req.on('end', () => {
       let result;
       let shaped;
       try {
-        const rawBody = overflow ? '' : Buffer.concat(chunks).toString('utf8');
         // The caller's policy reaches the shaping, or this adapter would always report the socket peer
         // even where its caller declared a trusted front end.
-        shaped = fromNodeRequest(req, rawBody, { trustedProxy: options.trustedProxy }); // never crash
+        shaped = fromNodeRequest(req, read.text, { trustedProxy: options.trustedProxy }); // never crash
+        if (read.overflow) notify(options.onSkip, { phase: 'request', reason: 'body-cap' }, 'onSkip');
         result = engine.evaluate(shaped);
       } catch (err) {
         notify(options.onError, err, 'onError');
@@ -155,8 +167,9 @@ export function createNodeMiddleware(rulesData, options = {}) {
         return (options.response || defaultBlock)(res, result);
       }
 
-      // Expose the parsed body downstream so a body-parser isn't also required.
-      req.body = shaped.body;
+      // Expose the parsed body downstream so a body-parser isn't also required — unless the body was
+      // longer than the cap, when what was parsed is only its beginning and is not handed on as the body.
+      if (!read.overflow) req.body = shaped.body;
       next();
     });
   };
