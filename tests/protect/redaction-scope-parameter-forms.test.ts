@@ -24,7 +24,6 @@ const forms: Form[] = [
   { label: 'two headers, as a list', condition: leaf(['response.header.x-sample', 'response.header.X-Extra']), masked: ['x-sample', 'x-extra'], readsBody: false },
   { label: 'all headers, as a string', condition: leaf('response.headers'), masked: ['x-sample', 'x-extra', 'x-other'], readsBody: false },
   { label: 'all headers, as a list', condition: leaf(['response.headers']), masked: ['x-sample', 'x-extra', 'x-other'], readsBody: false },
-  { label: 'a header beside a nested list, which reads nothing', condition: leaf(['response.header.x-sample', ['response.body']]), masked: ['x-sample'], readsBody: false },
   { label: 'a header list in a group', condition: { parameter: 'rules', rules: [leaf(['response.header.x-sample'])] }, masked: ['x-sample'], readsBody: false },
   { label: 'the body, as a one-item list', condition: leaf(['response.body']), masked: ['x-sample', 'x-extra', 'x-other'], readsBody: true },
   { label: 'the body and a header, as a list', condition: leaf(['response.body', 'response.header.x-sample']), masked: ['x-sample', 'x-extra', 'x-other'], readsBody: true },
@@ -136,19 +135,16 @@ describe.each([
   });
 });
 
-describe('a condition that names no place in the response', () => {
+describe('a legacy parameter that names no place in the response', () => {
   it.each([
-    ['no parameter', undefined],
     ['the status', 'response.status'],
     ['a request source', 'get.q'],
-  ])('keeps the widest scope with %s', async (_label, parameter) => {
-    const extra = { ...(parameter === undefined ? {} : { parameter }), match: { type: 'regex', value: '/EXTRA-\\d+/' } };
-    const detections: any[] = [];
+    ['a request source in a list', ['cookie.session', 'server.HTTP_HOST']],
+  ])('keeps its broad mask with %s', async (_label, parameter) => {
     const protection: any = await createProtection({
       rules: emptyBundle,
       mode: 'block',
-      responseRules: [{ ...ruleOf(leaf('response.body')), rule_v2: [leaf('response.body'), extra] }],
-      onDetect: (event: any) => detections.push(event),
+      responseRules: [{ ...ruleOf(leaf('response.body')), rule_v2: [leaf('response.body'), { parameter, match: { type: 'regex', value: '/EXTRA-\\d+/' } }] }],
     });
     const out = await protection.screenResponse(new Response(`{"note":"${SAMPLE}","more":"EXTRA-1"}`, {
       headers: { 'content-type': 'application/json', 'x-other': 'EXTRA-1' },
@@ -156,6 +152,75 @@ describe('a condition that names no place in the response', () => {
 
     expect(JSON.parse(await out.text())).toEqual({ note: '[REDACTED]', more: '[REDACTED]' });
     expect(out.headers.get('x-other')).toBe('[REDACTED]');
+  });
+});
+
+describe('a parameter shape with no place to mask', () => {
+  const unsupported: Array<[string, unknown]> = [
+    ['a nested list', ['response.header.x-extra', ['response.body']]],
+    ['an empty list', []],
+    ['a value that is not a parameter', 42],
+    ['an unknown source', 'nope.value'],
+    ['an unknown response key', 'response.nope'],
+    ['an outbound source', 'egress.url'],
+    ['a keyed source without its key', 'get'],
+    ['a key the source does not answer for', 'server.NOT_A_KEY'],
+    ['no parameter', undefined],
+  ];
+
+  async function withUnsupported(parameter: unknown) {
+    const errors: Error[] = [];
+    const protection: any = await createProtection({
+      rules: emptyBundle,
+      mode: 'block',
+      onError: (error: Error) => errors.push(error),
+      responseRules: [{
+        ...ruleOf(leaf('response.header.x-sample')),
+        rule_v2: [leaf('response.header.x-sample'), { ...(parameter === undefined ? {} : { parameter }), match: PATTERN }],
+      }],
+    });
+
+    return { protection, errors };
+  }
+
+  it.each(unsupported)('does not widen the mask for %s, and reports it', async (_label, parameter) => {
+    const { protection, errors } = await withUnsupported(parameter);
+    const body = `{"note":"${SAMPLE}"}`;
+    const out = await protection.screenResponse(new Response(body, { headers: { 'content-type': 'application/json', ...HEADERS } }));
+
+    expect(out.status).toBe(200);
+    expect(await out.text()).toBe(body);
+    expect(seenHeaders((n) => out.headers.get(n))).toEqual(expectedHeaders(['x-sample']));
+    expect(errors.map((e) => e.message)).toEqual([expect.stringContaining('names no place in the response to mask')]);
+  });
+
+  it('withholds a response whose only condition cannot be masked, rather than report a mask it did not make', async () => {
+    const errors: Error[] = [];
+    const protection: any = await createProtection({
+      rules: emptyBundle,
+      mode: 'block',
+      onError: (error: Error) => errors.push(error),
+      responseRules: [ruleOf(leaf(['response.header.x-sample', ['response.body']]))],
+    });
+    const out = await protection.screenResponse(new Response(`{"note":"${SAMPLE}"}`, { headers: { 'content-type': 'application/json', ...HEADERS } }));
+
+    expect(out.status).toBe(500);
+    expect(errors).toHaveLength(1);
+  });
+
+  it('does not mask a JSON path read through a refused list', async () => {
+    const errors: Error[] = [];
+    const protection: any = await createProtection({
+      rules: emptyBundle,
+      mode: 'block',
+      onError: (error: Error) => errors.push(error),
+      responseRules: [ruleOf({ parameter: ['response.body', ['response.body']], mutations: ['json_decode'], match: { type: 'array_key_value', key: 'note', match: { type: 'isset' } } })],
+    });
+    const body = `{"note":"${SAMPLE}","other":1}`;
+    const out = await protection.screenResponse(new Response(body, { headers: { 'content-type': 'application/json' } }));
+
+    expect(out.status).toBe(500);
+    expect(await out.text()).not.toContain(SAMPLE);
   });
 });
 

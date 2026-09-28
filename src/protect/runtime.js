@@ -31,6 +31,7 @@ import { DEFAULT_RESPONSE_RULES, DEFAULT_EGRESS_RULES } from './defaults.js';
 import { renderBlockPage } from './block-page.js';
 // Rule lifecycle (source / tiered store / refresh) lives in ./rules/ — this file stays focused on
 // composing the engine + guards and running the three screening phases.
+import { parameterProblem } from './rules/contract.js';
 import { makeStore } from './rules/store.js';
 import { resolveRules } from './rules/source.js';
 import { startRefresh, startRecovery, makeRefreshHandler, serialise } from './rules/refresh.js';
@@ -398,7 +399,20 @@ export async function createProtection(options = {}) {
     // One engine per response rule so we can find ALL matches (to redact each). `action:
     // "redact"` masks the offending span(s); anything else withholds the whole response.
     responseRuleSet = responseRules.map((rule) => {
-      const redactors = rule.action === 'redact' || rule.action === 'encode' ? extractRedactors(rule) : null;
+      const unscoped = [];
+      const redactors =
+        rule.action === 'redact' || rule.action === 'encode'
+          ? extractRedactors(rule, (parameter) => unscoped.push(parameter))
+          : null;
+      if (unscoped.length) {
+        notify(
+          onError,
+          new Error(
+            `Patchstack: response rule ${JSON.stringify(rule.id ?? null)} has a condition whose parameter names no place in the response to mask (${unscoped.map((p) => JSON.stringify(p ?? null)).join(', ')}); its matches are not masked`,
+          ),
+          'onError',
+        );
+      }
       // A redact/encode condition that carries body-transforming mutations (base64_decode, urldecode,
       // json_decode, …) detects on the DECODED body but the span redactors run on the RAW body — so
       // they mask nothing and the secret is served while the log says "redacted". Flag it so screenText
@@ -2214,41 +2228,40 @@ function hasSpanMutations(rule) {
 
 /**
  * Where a span redactor masks, from the parameter its condition read: `{ body, allHeaders, headers }`,
- * `headers` being a set of lower-cased names.
+ * `headers` being a set of lower-cased names — or null when the parameter names nowhere to mask.
  *
  * - `response.header.<name>` masks that header; `response.headers` masks every header. Neither is the
  *   body, and a rule that read no body does not rewrite it.
  * - `response.body` masks the body and the same text in every header, so a secret found in the body is not
  *   left behind where it was echoed into a header.
- * - A list of parameters — the engine reads each member — masks the union of its members' scopes. A
- *   member that is not a string resolves to nothing in the engine, and adds nothing here.
- * - Anything else names no place in the response to mask: the status, a request source, a missing
- *   parameter, or one outside the contract. Such a condition keeps the widest scope, the body and every
- *   header, so its redaction still acts on the response rather than reporting a mask that changed nothing.
+ * - `response.status` and the request sources (`BROAD_SCOPE_SOURCES`) name no place in the response. A
+ *   response rule reading them has always masked its match in the body and every header, and still does.
+ * - A list masks the union of its members' scopes.
+ * - Anything else is null: a shape the contract refuses (an empty or nested list, an unknown source or
+ *   key, a value that is not a parameter), a valid parameter with no response location (`egress.*`), or no
+ *   parameter at all. Such a condition masks nothing, and the rule that carries it is reported when the
+ *   rules load.
  *
  * A group (`parameter: "rules"`) is not a scope of its own: the engine evaluates each of its conditions
  * with that condition's parameter, and each yields its own redactor with its own scope.
  */
 function redactorScope(parameter) {
+  if (parameter === undefined || parameter === null || parameterProblem(parameter) !== null) return null;
   const scope = { body: false, allHeaders: false, headers: new Set() };
-  const add = (name) => {
-    if (typeof name !== 'string') return;
+  for (const name of Array.isArray(parameter) ? parameter : [parameter]) {
     if (name.startsWith('response.header.')) scope.headers.add(name.slice('response.header.'.length).toLowerCase());
     else if (name === 'response.headers') scope.allHeaders = true;
-    else {
+    else if (name === 'response.body' || name === 'response.status' || BROAD_SCOPE_SOURCES.has(name.split('.')[0])) {
       scope.body = true;
       scope.allHeaders = true;
-    }
-  };
-  if (Array.isArray(parameter)) for (const member of parameter) add(member);
-  else if (typeof parameter === 'string') add(parameter);
-  else {
-    scope.body = true;
-    scope.allHeaders = true;
+    } else return null;
   }
 
   return scope;
 }
+
+// Request sources, whose conditions in a response rule mask their match in the body and every header.
+const BROAD_SCOPE_SOURCES = new Set(['get', 'post', 'request', 'cookie', 'files', 'server', 'raw', 'all']);
 
 /** Does a span redactor apply to this header? `name` is lower-cased, as every screened header name is. */
 function masksHeader(redactor, name) {
@@ -2258,8 +2271,15 @@ function masksHeader(redactor, name) {
 // Derive redaction targets from a rule's own conditions: regex → mask every match;
 // contains/stripos → mask the literal. (Other match types can't identify a span → the
 // rule falls back to block.)
-function extractRedactors(rule) {
+function extractRedactors(rule, onUnscoped) {
   const out = [];
+  // A span redactor needs a place to mask. One whose parameter names none is left out and reported.
+  const scoped = (c) => {
+    const scope = redactorScope(c.parameter);
+    if (scope === null) onUnscoped?.(c.parameter);
+
+    return scope;
+  };
   const walk = (conds) => {
     for (const c of conds ?? []) {
       if (Array.isArray(c.rules)) walk(c.rules);
@@ -2271,20 +2291,23 @@ function extractRedactors(rule) {
         const safe = safeRegExp(m.value);
         if (safe) {
           const flags = safe.flags.includes('g') ? safe.flags : safe.flags + 'g';
+          const scope = scoped(c);
           try {
-            out.push({ re: new RegExp(safe.source, flags), scope: redactorScope(c.parameter) });
+            if (scope) out.push({ re: new RegExp(safe.source, flags), scope });
           } catch {
             /* skip invalid */
           }
         }
       } else if ((m.type === 'contains' || m.type === 'stripos') && m.value != null) {
-        out.push({ literal: String(m.value), scope: redactorScope(c.parameter) });
+        const scope = scoped(c);
+        if (scope) out.push({ literal: String(m.value), scope });
       } else if (m.type === 'jwt_claim_equals' && typeof m.claim === 'string') {
         // A span-producing target, not a predicate. A boolean-only matcher would leave `redact` with
         // no span to mask, so the rule would fall back to withholding the WHOLE response — turning a
         // one-token leak into an outage. The spans come from the same `jwtClaimSpans` the matcher
         // used, so what is reported and what is masked cannot diverge.
-        out.push({ jwtClaim: { claim: m.claim, value: String(m.value ?? '') }, scope: redactorScope(c.parameter) });
+        const scope = scoped(c);
+        if (scope) out.push({ jwtClaim: { claim: m.claim, value: String(m.value ?? '') }, scope });
       } else if (m.type === 'array_key_value' && m.match && readsBody(c.parameter)) {
         // Structural redaction: mask the value at a JSON path (fanning out over arrays) rather than
         // a text span — e.g. key "orders.customers.email" masks that field in every array element.
@@ -2458,9 +2481,11 @@ function applyRedactors(body, redactors, mask, transform) {
 
 // A response-body redaction target (array_key_value masks the JSON body). A bare condition with no
 // parameter also defaults to the body.
-/** Does a condition read the body, alone or as a member of its parameter list? */
+/** Does a condition read the body, alone or as a member of a parameter list the contract accepts? */
 function readsBody(parameter) {
-  return Array.isArray(parameter) ? parameter.some((member) => typeof member === 'string' && isBodyParam(member)) : isBodyParam(parameter);
+  if (!Array.isArray(parameter)) return isBodyParam(parameter);
+
+  return parameterProblem(parameter) === null && parameter.some((member) => isBodyParam(member));
 }
 
 function isBodyParam(parameter) {
