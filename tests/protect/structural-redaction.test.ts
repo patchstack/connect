@@ -78,9 +78,31 @@ describe('structural response redaction (array_key_value → mask)', () => {
       email: '[REDACTED]',
       literal: '__PSBIGINT_9c2f__12345678901234567890__DNEGIB__',
       escaped: '__PSNUMBER_0__',
-      decimal: JSON.parse(doc).decimal,
     });
+    expect(text).toContain('"decimal":0.1234567890123456789');
     expect(text).toContain('"id":12345678901234567890');
+  });
+
+  it('keeps the exact spelling of every number it does not mask', async () => {
+    const numbers = '"huge":1e400,"negativeZero":-0,"exponent":1E2,"decimal":0.1234567890123456789,'
+      + '"scaled":12345678901234567890e0,"trailing":1.50,"small":-3';
+    const doc = `{"email":"sample@example.test",${numbers},"list":[1e400,-0.0,2.50]}`;
+    const out = await screen(maskRule('email'), new Response(doc));
+    const text = await out.text();
+    expect(JSON.parse(text).email).toBe('[REDACTED]');
+    expect(text).toBe(`{"email":"[REDACTED]",${numbers},"list":[1e400,-0.0,2.50]}`);
+  });
+
+  it('matches a number by its parsed value and encodes it from its own spelling', async () => {
+    const rule = (action: string) => ({
+      ...maskRule('price', { type: 'equals_strict', value: '100' }),
+      action,
+    });
+    const doc = '{"price":1E2,"other":1E2}';
+    const masked = await (await screen(rule('redact'), new Response(doc))).text();
+    expect(masked).toBe('{"price":"[REDACTED]","other":1E2}');
+    const encoded = await (await screen(rule('encode'), new Response(doc))).text();
+    expect(encoded).toBe('{"price":"1E2","other":1E2}');
   });
 
   it('does not interpret a custom mask as a preserved number', async () => {
