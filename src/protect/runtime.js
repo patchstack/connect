@@ -2213,24 +2213,46 @@ function hasSpanMutations(rule) {
 }
 
 /**
- * Where a span redactor masks, from the parameter its condition read.
+ * Where a span redactor masks, from the parameter its condition read: `{ body, allHeaders, headers }`,
+ * `headers` being a set of lower-cased names.
  *
- * A single response header — `response.header.<name>` — masks that header only, and `response.headers`
- * masks the headers only: a rule that read no body does not rewrite it. Any other parameter, the body
- * among them, masks the body and the same text in every header, so a secret found in the body is not left
- * behind where it was echoed into a header.
+ * - `response.header.<name>` masks that header; `response.headers` masks every header. Neither is the
+ *   body, and a rule that read no body does not rewrite it.
+ * - `response.body` masks the body and the same text in every header, so a secret found in the body is not
+ *   left behind where it was echoed into a header.
+ * - A list of parameters — the engine reads each member — masks the union of its members' scopes. A
+ *   member that is not a string resolves to nothing in the engine, and adds nothing here.
+ * - Anything else names no place in the response to mask: the status, a request source, a missing
+ *   parameter, or one outside the contract. Such a condition keeps the widest scope, the body and every
+ *   header, so its redaction still acts on the response rather than reporting a mask that changed nothing.
+ *
+ * A group (`parameter: "rules"`) is not a scope of its own: the engine evaluates each of its conditions
+ * with that condition's parameter, and each yields its own redactor with its own scope.
  */
 function redactorScope(parameter) {
-  const name = typeof parameter === 'string' ? parameter : '';
-  if (name.startsWith('response.header.')) return { header: name.slice('response.header.'.length).toLowerCase() };
-  if (name === 'response.headers') return { headers: true };
+  const scope = { body: false, allHeaders: false, headers: new Set() };
+  const add = (name) => {
+    if (typeof name !== 'string') return;
+    if (name.startsWith('response.header.')) scope.headers.add(name.slice('response.header.'.length).toLowerCase());
+    else if (name === 'response.headers') scope.allHeaders = true;
+    else {
+      scope.body = true;
+      scope.allHeaders = true;
+    }
+  };
+  if (Array.isArray(parameter)) for (const member of parameter) add(member);
+  else if (typeof parameter === 'string') add(parameter);
+  else {
+    scope.body = true;
+    scope.allHeaders = true;
+  }
 
-  return { body: true, headers: true };
+  return scope;
 }
 
 /** Does a span redactor apply to this header? `name` is lower-cased, as every screened header name is. */
 function masksHeader(redactor, name) {
-  return redactor.scope.headers === true || redactor.scope.header === name;
+  return redactor.scope.allHeaders || redactor.scope.headers.has(name);
 }
 
 // Derive redaction targets from a rule's own conditions: regex → mask every match;
@@ -2263,7 +2285,7 @@ function extractRedactors(rule) {
         // one-token leak into an outage. The spans come from the same `jwtClaimSpans` the matcher
         // used, so what is reported and what is masked cannot diverge.
         out.push({ jwtClaim: { claim: m.claim, value: String(m.value ?? '') }, scope: redactorScope(c.parameter) });
-      } else if (m.type === 'array_key_value' && m.match && isBodyParam(c.parameter)) {
+      } else if (m.type === 'array_key_value' && m.match && readsBody(c.parameter)) {
         // Structural redaction: mask the value at a JSON path (fanning out over arrays) rather than
         // a text span — e.g. key "orders.customers.email" masks that field in every array element.
         const keys = Array.isArray(m.key) ? m.key : [m.key];
@@ -2436,6 +2458,11 @@ function applyRedactors(body, redactors, mask, transform) {
 
 // A response-body redaction target (array_key_value masks the JSON body). A bare condition with no
 // parameter also defaults to the body.
+/** Does a condition read the body, alone or as a member of its parameter list? */
+function readsBody(parameter) {
+  return Array.isArray(parameter) ? parameter.some((member) => typeof member === 'string' && isBodyParam(member)) : isBodyParam(parameter);
+}
+
 function isBodyParam(parameter) {
   return parameter == null || parameter === 'response.body' || parameter === 'raw' || parameter === 'response.raw';
 }
