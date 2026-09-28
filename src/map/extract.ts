@@ -4,10 +4,11 @@ import { relative } from 'node:path';
 import type { SiteInputMap, Endpoint, TsModule } from './types.js';
 import { guessScriptKind } from './ast.js';
 import { buildModuleBindings } from './bindings.js';
-import { collectSources, detectDeploymentShapes, detectFramework, hasEntrySignal, type WalkStats } from './sources.js';
+import { collectSources, componentScript, detectDeploymentShapes, detectFramework, hasEntrySignal, isComponentFile, type WalkStats } from './sources.js';
 import { classifyServerSurface, surfaceNote } from './surface.js';
 import { functionNameFromPath, routeFromFilePath } from './routes.js';
 import { collectLocalSinks } from './sinks.js';
+import { boundUnprovenFlows } from './flows.js';
 import { createModuleGraph } from './module-graph.js';
 import { isProvenFlow } from './coordinates.js';
 import { extractFromFile } from './entries.js';
@@ -15,6 +16,8 @@ import { collectFileImports, countUnresolvableImports, createImportInventory, re
 import { collectInvocations, createInvocationInventory } from './invocations.js';
 
 const MAX_DEPENDENCY_INPUT_FLOWS_PER_MAP = 500;
+// Unproven flows across the whole map; see `boundUnprovenFlows`.
+const MAX_UNPROVEN_FLOWS_PER_MAP = 1000;
 
 // Framework-AGNOSTIC input-flow extractor. It doesn't gate on a specific stack — it walks any JS/TS
 // source and applies recognizer tables for (1) entry points, (2) inputs, (3) sinks, so it generalizes
@@ -46,9 +49,11 @@ export async function extractInputMap(cwd: string, ts: TsModule, options: Extrac
   const imports = createImportInventory(readPathAliases(cwd));
   const invocations = createInvocationInventory();
   let dependencyInputFlowCount = 0;
+  let unprovenFlowCount = 0;
   let parsed = 0;
   let preFiltered = 0;
   let importScanFailures = 0;
+  let componentFiles = 0;
   let unresolvableImports = 0;
   let sourceBytes = 0;
   const calls = { total: 0, dependency: 0, local: 0, ambiguous: 0 };
@@ -62,6 +67,17 @@ export async function extractInputMap(cwd: string, ts: TsModule, options: Extrac
       const text = readFileSync(file, 'utf8');
       const relFile = relative(cwd, file);
       sourceBytes += text.length;
+      // A single-file component contributes its imports, not endpoints: only its script is JavaScript.
+      if (isComponentFile(file)) {
+        componentFiles++;
+        preFiltered++;
+        const script = componentScript(text, file);
+        const scanned = script === null ? null : scanFileImports(script, ts);
+        if (scanned === null) importScanFailures++;
+        else imports.add(relFile, scanned, false);
+        if (script !== null) unresolvableImports += countUnresolvableImports(script, ts);
+        continue;
+      }
       // Imports are collected from EVERY file, entry point or not: the data layer of an AI-built app
       // usually lives in a file with no handler in it, so a pre-filtered file is exactly where the
       // interesting dependency is imported.
@@ -108,6 +124,12 @@ export async function extractInputMap(cwd: string, ts: TsModule, options: Extrac
           ep.dependencyInputFlowsTruncated = true;
         }
         dependencyInputFlowCount += ep.dependencyInputFlows?.length ?? 0;
+        const bounded = boundUnprovenFlows(ep.flows, Math.max(0, MAX_UNPROVEN_FLOWS_PER_MAP - unprovenFlowCount));
+        if (bounded.truncated) {
+          ep.flows = bounded.flows;
+          ep.flowsTruncated = true;
+        }
+        unprovenFlowCount += ep.flows.filter((f) => !isProvenFlow(f.confidence)).length;
         // A FILE-BASED route handler carries its URL path in its location, not in the code, so derive
         // it here — without this a rule can only be param-pinned, never route-scoped (`when.path`).
         if (ep.route === undefined && ep.entryKind === 'edge-function') {
@@ -184,12 +206,19 @@ export async function extractInputMap(cwd: string, ts: TsModule, options: Extrac
   if (truncatedDependencyFlows > 0) {
     notes.push(`${truncatedDependencyFlows} endpoint(s) had more dependency-input links than the bounded map carries; those endpoint records are marked dependencyInputFlowsTruncated.`);
   }
+  const truncatedFlows = endpoints.filter((e) => e.flowsTruncated).length;
+  if (truncatedFlows > 0) {
+    notes.push(`${truncatedFlows} endpoint(s) had more unproven flows than the bounded map carries; those endpoint records are marked flowsTruncated. Every proven flow is kept.`);
+  }
   if (unresolved > 0) {
     notes.push(`${unresolved} endpoint(s) declare an input validator that could not be statically parsed — their inputs are UNKNOWN, not empty (marked inputsResolved: false).`);
   }
   const heuristicOnly = endpoints.filter((e) => e.sinks.length > 0 && e.inputs.length > 0 && !e.flows.some((f) => isProvenFlow(f.confidence))).length;
   if (heuristicOnly > 0) {
     notes.push(`${heuristicOnly} endpoint(s) have inputs and sinks but no proven data link — their flows say "may reach", not "does reach" (see each flow's confidence).`);
+  }
+  if (componentFiles > 0) {
+    notes.push(`${componentFiles} single-file component(s) (.vue, .svelte, .astro) were scanned for imports only. Code in their script blocks and Astro frontmatter can run on the server, but it is not analyzed for endpoints, inputs or sinks.`);
   }
   if (endpoints.length === 0) notes.push('No recognized server-side entry points found under the analyzed roots.');
 

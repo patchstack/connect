@@ -175,6 +175,11 @@ export interface Endpoint {
    * consumer should use to pin a rule to a parameter. Empty when no link could be established.
    */
   flows: Flow[];
+  /**
+   * More unproven flows (not `exact-local` / `transformed-local`) existed than the bounded map carries,
+   * and some were left out. Proven flows are never left out.
+   */
+  flowsTruncated?: true;
   /** Request inputs observed in arguments of dependency API calls. Positive evidence only: the call
    * is not a modeled dangerous sink, and this field alone never authorizes an enforcing rule. */
   dependencyInputFlows?: DependencyInputFlow[];

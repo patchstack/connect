@@ -37,7 +37,46 @@ export function detectFramework(cwd: string): string {
   return 'unknown';
 }
 
-const isSourceFile = (name: string) => /\.(ts|tsx|mts|cts|js|jsx|mjs|cjs)$/.test(name) && !name.endsWith('.d.ts');
+// Single-file components are source too: their script blocks import packages, and Astro frontmatter and
+// SvelteKit/Nuxt component scripts can run on the server. They are scanned for imports only.
+const isSourceFile = (name: string) => (/\.(ts|tsx|mts|cts|js|jsx|mjs|cjs)$/.test(name) && !name.endsWith('.d.ts')) || isComponentFile(name);
+
+/** A `.vue`, `.svelte` or `.astro` single-file component. */
+export const isComponentFile = (name: string) => /\.(vue|svelte|astro)$/.test(name);
+
+/**
+ * The script of a single-file component, with everything else blanked to spaces so offsets and line
+ * numbers still point into the original file: every `<script>` block, plus an Astro file's `---`
+ * frontmatter. Null when the component cannot be read reliably — an unterminated `<script>` or
+ * frontmatter fence — because its imports are then unknown rather than absent.
+ */
+export function componentScript(text: string, file: string): string | null {
+  const keep: Array<[number, number]> = [];
+  if (file.endsWith('.astro')) {
+    const open = /^﻿?\s*---[^\S\r\n]*\r?\n/.exec(text);
+    if (open) {
+      const start = open[0].length;
+      const close = /\r?\n---[^\S\r\n]*(\r?\n|$)/g;
+      close.lastIndex = start - 1;
+      const end = close.exec(text);
+      if (!end) return null;
+      if (end.index > start) keep.push([start, end.index]);
+    }
+  }
+  const opening = /<script\b[^>]*>/gi;
+  for (let m = opening.exec(text); m; m = opening.exec(text)) {
+    const start = m.index + m[0].length;
+    const closing = /<\/script\s*>/gi;
+    closing.lastIndex = start;
+    const end = closing.exec(text);
+    if (!end) return null;
+    keep.push([start, end.index]);
+    opening.lastIndex = end.index + end[0].length;
+  }
+  let out = text.replace(/[^\r\n]/g, ' ');
+  for (const [start, end] of keep) out = out.slice(0, start) + text.slice(start, end) + out.slice(end);
+  return out;
+}
 
 // Directories that never hold app source, so walking the whole project stays cheap. (We walk the whole
 // project rather than `src` only: server entrypoints, route dirs and platform function dirs commonly

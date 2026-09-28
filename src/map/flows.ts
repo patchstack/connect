@@ -1,10 +1,36 @@
 import type { AddressSpace, ApiInvocation, ArgumentRole, DependencyInputFlow, Flow, InputField, Limitation, Sink, TsModule } from './types.js';
 import { bindingKey, calleeName, isValueRead, lineOf, rootIdentifier } from './ast.js';
 import { REQ_SOURCES } from './inputs.js';
-import { addressSpaceOf } from './coordinates.js';
+import { addressSpaceOf, isProvenFlow } from './coordinates.js';
 import { argumentRoleOf, CANDIDATE_FAMILIES } from './sinks.js';
 
 const MAX_DEPENDENCY_INPUT_FLOWS_PER_ENDPOINT = 100;
+/**
+ * Unproven flows are an inputs × sinks cross-product, so an endpoint with many fields and many sinks
+ * produces a map too large to ingest. Proven flows are not bounded: they are the evidence rules are
+ * built from, and each one stands for a read the code actually makes.
+ */
+const MAX_UNPROVEN_FLOWS_PER_ENDPOINT = 200;
+
+/**
+ * Keep every proven flow and at most `limit` unproven ones, in their original order. `truncated` says
+ * whether any unproven flow was left out.
+ */
+export function boundUnprovenFlows(flows: Flow[], limit: number): { flows: Flow[]; truncated: boolean } {
+  let unproven = 0;
+  let truncated = false;
+  const kept = flows.filter((f) => {
+    if (isProvenFlow(f.confidence)) return true;
+    if (unproven >= limit) {
+      truncated = true;
+      return false;
+    }
+    unproven++;
+    return true;
+  });
+
+  return { flows: kept, truncated };
+}
 
 /** A tainted binding: the path prefix it stands for, and the request region it came from if known. */
 /**
@@ -54,10 +80,12 @@ function spaceOfKey(key: string | undefined): AddressSpace | undefined {
 // the rest as "may reach". Matching is per (address space, path): a read of `query.id` is not evidence
 // about the body field `id`.
 // Spread onto an endpoint: `flows`, plus `limitations` only when there are any (keeps the common case clean).
-export function linkedFlows(body: any, params: any, inputs: InputField[], sinks: Sink[], ts: TsModule, invocations: ApiInvocation[] = []): { flows: Flow[]; limitations?: Limitation[]; dependencyInputFlows?: DependencyInputFlow[]; dependencyInputFlowsTruncated?: true } {
-  const { flows, limitations, dependencyInputFlows, dependencyInputFlowsTruncated } = linkFlows(body, params, inputs, sinks, ts, invocations);
+export function linkedFlows(body: any, params: any, inputs: InputField[], sinks: Sink[], ts: TsModule, invocations: ApiInvocation[] = []): { flows: Flow[]; flowsTruncated?: true; limitations?: Limitation[]; dependencyInputFlows?: DependencyInputFlow[]; dependencyInputFlowsTruncated?: true } {
+  const { flows: linked, limitations, dependencyInputFlows, dependencyInputFlowsTruncated } = linkFlows(body, params, inputs, sinks, ts, invocations);
+  const { flows, truncated } = boundUnprovenFlows(linked, MAX_UNPROVEN_FLOWS_PER_ENDPOINT);
   return {
     flows,
+    ...(truncated ? { flowsTruncated: true as const } : {}),
     ...(limitations.length > 0 ? { limitations } : {}),
     ...(dependencyInputFlows.length > 0 ? { dependencyInputFlows } : {}),
     ...(dependencyInputFlowsTruncated ? { dependencyInputFlowsTruncated: true as const } : {}),
