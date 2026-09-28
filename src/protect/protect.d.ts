@@ -69,6 +69,19 @@ export interface Protection {
   stop: () => Promise<void>;
   /** Alias of `stop`, under the name callers already have. */
   stopRefresh: () => Promise<void>;
+  /**
+   * Where the rules in force came from, and whether the most recent resolution was clean — the same
+   * shape `refresh()` resolves with, kept current by boot, every refresh, and recovery.
+   *
+   * With a live source, `ok: false` means the guard is not running the rules the source would give it
+   * now: `origin` says what it is running instead. When no `refreshMs` loop is configured and the first
+   * resolution was not clean, the guard retries on a lengthening schedule until one is.
+   */
+  readonly ruleSource: {
+    ok: boolean;
+    origin: "api" | "cache" | "bundled" | "empty";
+    reason?: string;
+  };
   /** Whether this guard reports security events, and if not, why not.
    *
    *  Reporting is on for a site enrolled in Patchstack-managed mitigation that is running managed rules
@@ -335,6 +348,11 @@ export interface CreateProtectionOptions {
   screenDns?: boolean;
   /** Redaction mask (string or per-category function). Default "[REDACTED]". */
   maskWith?: string | ((category?: string) => string);
+  /**
+   * Operational problems the guard handled without failing a request. Without it, rules that are not
+   * current — a failed fetch, a rejected update, held build-scoped rules — are written to the console
+   * once per cause instead.
+   */
   onError?: (err: unknown) => void;
   onEgressBlock?: (info: { url: string; host: string | null; method: string }) => void;
   onDetect?: (detection: {

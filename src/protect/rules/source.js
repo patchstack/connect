@@ -148,13 +148,21 @@ export function withScopedDryRun(bundle, confirmed, reason, options = {}) {
     ...(unusable > 0 ? [`${unusable} rule(s) carry an unusable ${BUILD_SCOPE_PROPERTY}`] : []),
     ...(held > unusable ? [reason] : []),
   ];
-  notify(
-    options.onError,
-    new Error(`${held} build-scoped rule(s) are detecting only, not blocking: ${explanations.join('; ')}`),
-    'onError',
-  );
+  const message = `${held} build-scoped rule(s) are detecting only, not blocking: ${explanations.join('; ')}`;
+  if (typeof options.onError === 'function') notify(options.onError, new Error(message), 'onError');
+  else warnHeldOnce(message);
 
   return { ...bundle, firewall };
+}
+
+// Rules that detect where they were delivered to block are a protection gap the application may not
+// know it has, so without an `onError` to receive it the reason goes to the console — once per distinct
+// reason, since the same bundle is re-resolved on every refresh.
+const warnedHeld = new Set();
+function warnHeldOnce(message) {
+  if (warnedHeld.has(message)) return;
+  warnedHeld.add(message);
+  console.warn(`[patchstack] ${message}. Pass { onError } to handle this yourself.`);
 }
 
 /**
