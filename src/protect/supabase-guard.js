@@ -88,6 +88,9 @@ function responseHeaders(input) {
   return output;
 }
 
+/** Marks a request rebuilt from another with the request the host served. */
+export const SOURCE_REQUEST = Symbol.for('@patchstack/connect.sourceRequest');
+
 /**
  * @param {object} opts
  * @param {{ fetchGuard: () => (req: Request) => Promise<Response|null> }} opts.protection  a createProtection() result
@@ -95,7 +98,7 @@ function responseHeaders(input) {
  * @param {typeof fetch} [opts.fetchImpl]  injectable fetch (tests)
  * @param {number} [opts.maxBodyBytes]  maximum tunneled request body size
  * @param {number} [opts.timeoutMs]  maximum upstream request duration
- * @returns {(request: Request) => Promise<Response>}
+ * @returns {(request: Request, ...hostArgs: unknown[]) => Promise<Response>}
  */
 export function createSupabaseGuard({
   protection,
@@ -109,7 +112,7 @@ export function createSupabaseGuard({
   const bodyLimit = Number.isFinite(maxBodyBytes) && maxBodyBytes > 0 ? maxBodyBytes : DEFAULT_MAX_BODY_BYTES;
   const upstreamTimeout = Number.isFinite(timeoutMs) && timeoutMs > 0 ? timeoutMs : DEFAULT_TIMEOUT_MS;
 
-  return async function handleGuardRequest(request) {
+  return async function handleGuardRequest(request, ...hostArgs) {
     const target = request.headers.get('x-ps-target');
     if (!target) return new Response('patchstack: missing x-ps-target', { status: 400 });
 
@@ -148,7 +151,9 @@ export function createSupabaseGuard({
       headers: request.headers,
       body,
     });
-    const blocked = await guard(evalReq);
+    // The rebuilt request stands for the one the host served, so the peer is read from that one.
+    Object.defineProperty(evalReq, SOURCE_REQUEST, { value: request });
+    const blocked = await guard(evalReq, ...hostArgs);
     if (blocked) return blocked;
 
     // Allowed → forward to Supabase, server-side.

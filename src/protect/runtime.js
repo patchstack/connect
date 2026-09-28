@@ -38,6 +38,7 @@ import { createDetectionReporter } from './detections.js';
 import { reportingState } from './reporting-state.js';
 import { hardensWithoutBody } from './response-hardening.js';
 import { notify } from './notify.js';
+import { SOURCE_REQUEST } from './supabase-guard.js';
 import { createFirewallLogReporter, resolveApiBase, telemetryEnabled } from './firewall-log.js';
 
 // Supabase-tunnel guard for AI-builder apps (Lovable / TanStack Start + Supabase).
@@ -688,19 +689,59 @@ export async function createProtection(options = {}) {
   };
 
   /**
+   * The transport peer for a Fetch request, from the host's `peerAddress` callback.
+   *
+   * A WHATWG Request carries no peer, so on a Fetch runtime the address is only known to the host (Deno's
+   * handler info, Bun's server, a Node adapter's socket). The callback gets the request the host served —
+   * for a request rebuilt from another, the original — and the host's own handler arguments. What it
+   * returns is validated as an address by the resolver; a callback that throws supplies no peer.
+   */
+  const peerOf = (request, hostArgs) => {
+    if (typeof options.peerAddress !== 'function') return undefined;
+    try {
+      return options.peerAddress(request?.[SOURCE_REQUEST] ?? request, ...hostArgs);
+    } catch (err) {
+      notify(onError, err, 'onError');
+
+      return undefined;
+    }
+  };
+  // A trust policy names the peers a forwarded header may be believed from, so without a usable peer it
+  // can never apply and every address reads `unavailable`. Said once per guard, because it holds for
+  // every request.
+  let warnedNoPeer = false;
+  const warnNoPeer = () => {
+    if (warnedNoPeer) return;
+    warnedNoPeer = true;
+    const message =
+      '[patchstack] trustedProxy is set, but this Fetch runtime supplied no peer address, so forwarded ' +
+      'headers are not used and client addresses read as unavailable. Pass { peerAddress } to supply one.';
+    if (typeof onError === 'function') notify(onError, new Error(message), 'onError');
+    else console.warn(message);
+  };
+  // The address resolved for each screened Fetch request, so a later response screen for the same request
+  // names the same client rather than resolving again without the host's arguments.
+  const clientByRequest = new WeakMap();
+
+  /**
    * Screen a fetch request once, and hand back both the decision and the address it resolved.
    *
    * Shared by `fetchGuard()` and `fetch(handler)` so the response phase can reuse the request phase's
    * resolution instead of making its own.
    */
-  const screenFetchRequest = async (request) => {
+  const screenFetchRequest = async (request, hostArgs = []) => {
     let result;
     let shaped;
     try {
       shaped = await fromFetchRequest(request, {
+        peer: peerOf(request, hostArgs),
         trustedProxy: options.trustedProxy,
         maxBodyBytes: options.maxBodyBytes,
       });
+      if (shaped?._clientIp) {
+        clientByRequest.set(request, shaped._clientIp);
+        if (options.trustedProxy !== undefined && shaped._clientIp.source === 'unavailable') warnNoPeer();
+      }
       if (shaped?._bodyInspectionSkip) {
         recordSkip('request', shaped._bodyInspectionSkip, { limit: options.maxBodyBytes ?? 1024 * 1024 });
       }
@@ -1448,14 +1489,15 @@ export async function createProtection(options = {}) {
         request
           ? reqContextFromFetch(
               request,
-              resolveClientIp({ headers: headerObject(request.headers), trustedProxy: options.trustedProxy }),
+              clientByRequest.get(request) ??
+                resolveClientIp({ headers: headerObject(request.headers), trustedProxy: options.trustedProxy }),
             )
           : undefined,
       ),
 
     // (request) => Response | null   (null = allow, caller proceeds). Request phase only.
     fetchGuard() {
-      return async (request) => (await screenFetchRequest(request)).blocked;
+      return async (request, ...hostArgs) => (await screenFetchRequest(request, hostArgs)).blocked;
     },
 
     // Wrap a fetch handler: screens the request, then the response (redact/block).
@@ -1465,7 +1507,7 @@ export async function createProtection(options = {}) {
         // screening making a second one. Two resolutions for one request can disagree, and a response
         // detection naming a different address than the request detection describes two clients that do
         // not exist.
-        const { blocked, client } = await screenFetchRequest(request);
+        const { blocked, client } = await screenFetchRequest(request, rest);
         if (blocked) return blocked;
         const response = await handler(request, ...rest);
 
