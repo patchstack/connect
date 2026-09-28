@@ -184,24 +184,92 @@ export function parseMultipart(rawBody, boundary) {
     const sep = /\r?\n\r?\n/.exec(part);
     if (!sep) continue;
     const rawHeaders = part.slice(0, sep.index);
-    const disposition = /content-disposition:[^\r\n]*/i.exec(rawHeaders)?.[0];
-    if (!disposition) continue;
-    const name = /name="([^"]*)"/i.exec(disposition)?.[1];
-    if (name == null) continue;
+    const disposition = /content-disposition:([^\r\n]*)/i.exec(rawHeaders)?.[1];
+    if (disposition === undefined) continue;
+    const { names, filename } = dispositionFields(disposition);
+    if (names.length === 0) continue;
     const content = part.slice(sep.index + sep[0].length).replace(/\r?\n$/, '');
-    const filename = /filename="([^"]*)"/i.exec(disposition)?.[1];
-    if (filename !== undefined) {
-      // Capture the part's declared content-type and CONTENT (not just the filename), so rules can
-      // inspect an upload's bytes (files.<name>.content) and detect a declared-vs-actual type
-      // mismatch (files.<name>.mismatch). The content rides inside the already-capped rawBody.
-      const partType = /content-type:\s*([^\r\n;]+)/i.exec(rawHeaders)?.[1]?.trim() || '';
-      const file = { filename, type: partType, content };
-      appendOwn(files, name, file);
-    } else {
-      appendOwn(body, name, content);
+    // Capture the part's declared content-type and CONTENT (not just the filename), so rules can
+    // inspect an upload's bytes (files.<name>.content) and detect a declared-vs-actual type mismatch
+    // (files.<name>.mismatch). The content rides inside the already-capped rawBody. Read once per part:
+    // the part is the same whichever of its names it is filed under.
+    const file =
+      filename === undefined
+        ? undefined
+        : { filename, type: /content-type:\s*([^\r\n;]+)/i.exec(rawHeaders)?.[1]?.trim() || '', content };
+    // A part is recorded under every name its header could be read as: parsers disagree on a repeated
+    // `name` (some keep the first, some the last), and a rule addressed to either must see the value.
+    for (const name of names) {
+      if (file) appendOwn(files, name, file);
+      else appendOwn(body, name, content);
     }
   }
   return { body, files };
+}
+
+/**
+ * The field name(s) and filename a multipart part's Content-Disposition value declares.
+ *
+ * Parsed as parameters, not searched for: `name=` also occurs inside `filename=`, parameters come in
+ * any order, a value may be quoted — holding `;`, `=` or an escaped `"` — or bare, and parameter names
+ * are case-insensitive. Read the way the most permissive real parsers read it, so a value the
+ * application's own parser accepts is never filed under a different name here. `filename*` (RFC 5987)
+ * takes precedence over `filename`, as it does for those parsers.
+ *
+ * Every parameter is read, however many there are: stopping early would let a name placed after enough
+ * padding go unread. The work is linear in the length of the value, which the body cap already bounds.
+ */
+export function dispositionFields(value) {
+  const text = String(value);
+  const names = new Set();
+  let filename;
+  let extendedFilename;
+  let i = text.indexOf(';');
+  while (i !== -1 && i < text.length) {
+    i++; // past ';'
+    while (text[i] === ' ' || text[i] === '\t') i++;
+    let key = '';
+    while (i < text.length && text[i] !== '=' && text[i] !== ';') key += text[i++];
+    key = key.trim().toLowerCase();
+    let val = null;
+    if (text[i] === '=') {
+      i++;
+      while (text[i] === ' ' || text[i] === '\t') i++;
+      if (text[i] === '"') {
+        i++;
+        val = '';
+        while (i < text.length && text[i] !== '"') {
+          if (text[i] === '\\' && i + 1 < text.length) i++;
+          val += text[i++];
+        }
+        i++; // past the closing quote
+        while (i < text.length && text[i] !== ';') i++;
+      } else {
+        let bare = '';
+        while (i < text.length && text[i] !== ';') bare += text[i++];
+        val = bare.trim();
+      }
+    }
+    if (val !== null) {
+      if (key === 'name') names.add(val);
+      else if (key === 'filename') filename = val;
+      else if (key === 'filename*') extendedFilename = decodeExtendedValue(val);
+    }
+    i = i < text.length && text[i] === ';' ? i : -1;
+  }
+
+  return { names: [...names], filename: extendedFilename ?? filename };
+}
+
+/** An RFC 5987 `charset'language'percent-encoded` value, decoded; the raw text if it is not one. */
+function decodeExtendedValue(value) {
+  const match = /^([^']*)'[^']*'(.*)$/.exec(value);
+  if (!match) return value;
+  try {
+    return decodeURIComponent(match[2]);
+  } catch {
+    return match[2];
+  }
 }
 
 function parseCookies(header) {
