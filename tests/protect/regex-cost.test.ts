@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import { readFileSync } from 'node:fs';
 import { DEFAULT_EGRESS_RULES, DEFAULT_RESPONSE_RULES } from '../../src/protect/defaults.js';
 import { LIMITS } from '../../src/protect/rules/contract.js';
 import {
@@ -11,8 +12,10 @@ import {
 /**
  * What a compiled pattern costs to REJECT a body, at a size it may really be run at.
  *
- * Regression coverage for the rules this package compiles in, and nothing wider. It does not screen a
- * rule delivered from the rules service, and does not stand between an authored rule and being served.
+ * Regression coverage for the rules this package ships — the ones it compiles in and the rule sets the
+ * installer scaffolds into an app (`rules.json`, and `demo-rules.json` for `protect --demo`) — and nothing
+ * wider. It does not screen a rule delivered from the rules service, and does not stand between an
+ * authored rule and being served.
  *
  * `safeRegExp()` refuses exponential shapes and adjacent unbounded atoms. The measurement remains a
  * corpus gate for more subtle polynomial interactions that a structural check cannot classify without
@@ -63,9 +66,46 @@ const WORST_CASE: Record<string, WorstCase> = {
   'resp-stack-trace::rule_v2[0].match': { lead: ' at f (', fill: 'a:1:1' },
   'resp-sql-error::rule_v2[0].match': 'SQLSTATE[',
   'resp-exception-trace::rule_v2[0].match': 'at a.b(c.java:1',
+
+  // The scaffolded starter and demo sets. Each fill is a near-miss of one alternative, repeated.
+  'ps-fallback-ssrf-internal::rule_v2[0].match': 'localhos ',
+  'ps-fallback-xss::rule_v2[0].match': 'onerror ',
+  'demo-sqli::rule_v2[0].match': 'union or 1 ',
+  'demo-xss::rule_v2[0].match': 'onerror ',
+  'demo-command-injection::rule_v2[0].match': 'a',
+  'demo-nosql-injection::rule_v2[0].match': '"$ne" ',
+  // Declarations that never reach the keyword, each one a new place for the pattern to start.
+  'demo-xxe::rule_v2[0].match': '<!DOCTYPE a ',
+  'demo-ssrf-request::rule_v2[0].match': 'localhos ',
+  // A local part, then dot-separated one-letter labels: never a two-letter final label.
+  'demo-resp-pii-email::rule_v2[0].match': { lead: 'a@', fill: 'b.' },
+  // Twelve digits with separators, one short of the shortest match.
+  'demo-resp-credit-card::rule_v2[0].match': '1-1-1-1-1-1-1-1-1-1-1-1-a',
 };
 
-const compiled = [...DEFAULT_RESPONSE_RULES, ...DEFAULT_EGRESS_RULES] as any[];
+/**
+ * Clauses whose DERIVED candidate matches the pattern, so it measures a match rather than a rejection.
+ * Their declared worst case carries the screening alone. Checked below: every entry's derived candidate
+ * really does match, so this cannot switch off a derivation that would have measured something.
+ */
+const DERIVED_MATCHES = new Set([
+  'ps-fallback-xss::rule_v2[0].match',
+  'demo-xss::rule_v2[0].match',
+  'demo-xxe::rule_v2[0].match',
+  'demo-resp-credit-card::rule_v2[0].match',
+]);
+
+const scaffolded = (name: string) =>
+  JSON.parse(readFileSync(new URL(`../../src/protect/templates/${name}`, import.meta.url), 'utf8')).firewall;
+
+// Every rule the package ships. The example bundle is not read separately: `demo-rules.test.ts` holds it
+// in lockstep with the scaffolded demo set.
+const compiled = [
+  ...DEFAULT_RESPONSE_RULES,
+  ...DEFAULT_EGRESS_RULES,
+  ...scaffolded('rules.json'),
+  ...scaffolded('demo-rules.json'),
+] as any[];
 const keyOf = (clause: { ruleId: string | null; path: string }) => `${clause.ruleId}::${clause.path}`;
 const clauses = compiled.flatMap((rule) => regexClausesOf(rule));
 
@@ -155,6 +195,23 @@ describe('the measurement itself', () => {
     }
   });
 
+  it('measures the declared candidate alone when derivation is switched off', async () => {
+    // The derived candidate for this pattern matches it, which would invalidate the screening.
+    const pattern = '/(?:\\d[ -]?){13,16}/';
+    const withDerived = await screenPatternCost(pattern, { candidate: '1-1-a', bytes: 4096, budgetMs: BUDGET_MS });
+    const declaredOnly = await screenPatternCost(pattern, { candidate: '1-1-a', bytes: 4096, budgetMs: BUDGET_MS, derive: false });
+
+    expect(withDerived.screened).toBe(false);
+    expect(declaredOnly.screened, declaredOnly.reason).toBe(true);
+    expect(declaredOnly.measurements.map((m: any) => m.source)).toEqual(['declared']);
+  }, 30_000);
+
+  it('refuses to switch off derivation without a declared candidate', async () => {
+    const result = await screenPatternCost('/abc/', { derive: false });
+    expect(result.screened).toBe(false);
+    expect(result.reason).toContain('declared candidate');
+  });
+
   it('reports a pattern it cannot compile rather than passing it', async () => {
     expect((await screenPatternCost('not a pattern')).screened).toBe(false);
     expect((await screenPatternCost('/[/')).screened).toBe(false);
@@ -226,7 +283,7 @@ describe('finding the patterns a rule carries', () => {
   });
 });
 
-describe('every regex the compiled rules carry, at the size it may be screened at', () => {
+describe('every regex the shipped rules carry, at the size it may be screened at', () => {
   // The budget is generous — orders above what a linear pattern spends here — so this fails on a shape
   // change rather than on timing noise.
   it.each(clauses.map((clause) => [keyOf(clause), clause] as const))('%s', async (key, clause) => {
@@ -234,6 +291,7 @@ describe('every regex the compiled rules carry, at the size it may be screened a
       candidate: WORST_CASE[key],
       bytes: CAP,
       budgetMs: BUDGET_MS,
+      derive: !DERIVED_MATCHES.has(key),
     });
 
     expect(result.screened, result.reason).toBe(true);
@@ -243,7 +301,7 @@ describe('every regex the compiled rules carry, at the size it may be screened a
     ).toBe(true);
   }, 30_000);
 
-  it('screens at least one regex from every compiled rule that carries any', () => {
+  it('screens at least one regex from every shipped rule that carries any', () => {
     // The set, not just the members: a rule whose patterns all went missing from the walk would leave
     // the cases above passing over a shorter list.
     const carrying = compiled.filter((rule) => regexClausesOf(rule).length > 0).map((rule) => rule.id);
@@ -260,11 +318,23 @@ describe('every regex the compiled rules carry, at the size it may be screened a
     expect(missing, 'these compiled regex clauses have no declared worst case').toEqual([]);
   });
 
-  it('declares a worst case for nothing that is not compiled in', () => {
+  it('declares a worst case for nothing that is not shipped', () => {
     // The other direction: a stale entry leaves a real clause uncovered while the count looks right.
     const live = new Set(clauses.map(keyOf));
     const stale = Object.keys(WORST_CASE).filter((key) => !live.has(key));
 
     expect(stale, 'these worst cases name no compiled regex clause').toEqual([]);
   });
+
+  it('screens without the derived candidate only where it matches', async () => {
+    const live = new Set(clauses.map(keyOf));
+    for (const key of DERIVED_MATCHES) {
+      expect(live.has(key), `${key} names no shipped regex clause`).toBe(true);
+      const clause = clauses.find((c) => keyOf(c) === key)!;
+      const derived = deriveCandidate(clause.pattern, 4096);
+      expect(derived, `${key} derives no candidate at all`).not.toBeNull();
+      const measured = (await measurePatternCost(clause.pattern, derived!, { timeoutMs: BUDGET_MS })) as any;
+      expect(measured.matched, `${key}'s derived candidate does not match, so it should be measured`).toBe(true);
+    }
+  }, 30_000);
 });
