@@ -1043,6 +1043,8 @@ export async function createProtection(options = {}) {
     let size = 0;
     let overflow = false;
     let withheld = false;
+    // Whether the rules decided on headers alone have already been run for this response.
+    let headScreened = false;
     const MAX = screenCap;
 
     /**
@@ -1110,6 +1112,10 @@ export async function createProtection(options = {}) {
     // The rules the pass above did not answer: the ones that read the body, which is why a
     // body-reading hardening rule is still honoured at `end`.
     const stillToAnswer = (rule) => !hardensWithoutBody(rule);
+    // What is left for the screen at `end`: neither the hardening answered before the head, nor the rules
+    // decided on headers alone once they have run.
+    const notYetAnswered = (rule, entry) =>
+      (!answeredWithoutBody || stillToAnswer(rule)) && !(headScreened && decidedByHeaders(rule, entry));
 
     /**
      * `writeHead`, held until the first byte actually leaves.
@@ -1217,12 +1223,19 @@ export async function createProtection(options = {}) {
         return original(...args);
       };
     }
-    // An explicit flush asks for the head now, so it goes now, hardened. The body that follows can then
-    // only change where no length was promised, which `end` already accounts for.
+    // An explicit flush asks for the head now, so it goes now — hardened, and screened by the rules
+    // decided on headers alone, which is the last point at which they can still change it. The body that
+    // follows can then only change where no length was promised, which `end` already accounts for.
     if (typeof res.flushHeaders === 'function') {
       const origFlushHeaders = res.flushHeaders.bind(res);
       res.flushHeaders = function () {
-        sendHead();
+        const unread = screenUnreadHead();
+        if (unread?.withhold) {
+          sendWithheld();
+
+          return undefined;
+        }
+        sendHead(unread);
 
         return origFlushHeaders();
       };
@@ -1275,12 +1288,15 @@ export async function createProtection(options = {}) {
      * The rules decided on headers alone — redactions of header values, and blocks — for a response whose
      * body will not be screened.
      *
-     * Such a rule is decided the same way whether or not the body is read, so it is run here instead of at
-     * `end`, never as well, and reports once. Returns `{ withhold: true }` for a block, the header changes
-     * for `sendHead`, or undefined when there are none. A head that has already gone can take neither,
-     * which is recorded, as it is for a screened body.
+     * Such a rule is decided the same way whether or not the body is read, so it runs once per response —
+     * at an explicit flush, or on a branch that does not screen the body — and is left out of the screen at
+     * `end`. Returns `{ withhold: true }` for a block, the header changes for `sendHead`, or undefined when
+     * there are none. A head that had already gone can take neither, which is recorded, as it is for a
+     * screened body.
      */
     const screenUnreadHead = () => {
+      if (headScreened) return undefined;
+      headScreened = true;
       try {
         const head = effectiveHead();
         const r = screenText('', head, reqCtx, decidedByHeaders);
@@ -1459,7 +1475,7 @@ export async function createProtection(options = {}) {
       const text = buffer.toString('utf8');
       let r;
       try {
-        r = screenText(text, head, reqCtx, answeredWithoutBody ? stillToAnswer : undefined);
+        r = screenText(text, head, reqCtx, notYetAnswered);
       } catch (err) {
         notify(onError, err, 'onError');
 

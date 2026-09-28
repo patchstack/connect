@@ -207,23 +207,65 @@ describe('a header block when the body is not screened (Node)', () => {
     expect(errors).toEqual([]);
   });
 
-  it('reports a match whose head had already gone, and records that it could not be enforced', async () => {
+  it('reports a match whose head went out before the guard saw it, and records that it could not be enforced', async () => {
     const { protection, detections, skips } = await guard([blockRule()]);
     const node = protection.node({ screenResponses: true });
-    const url = await listen((req, res) =>
-      node(req, res, () => {
-        res.setHeader('content-type', 'image/png');
-        res.setHeader('x-sample', SAMPLE);
-        res.flushHeaders();
-        res.end(Buffer.from(BINARY));
-      }),
-    );
+    const url = await listen((req, res) => {
+      res.setHeader('content-type', 'image/png');
+      res.setHeader('x-sample', SAMPLE);
+      res.flushHeaders();
+      node(req, res, () => res.end(Buffer.from(BINARY)));
+    });
 
     const got = await rawGet(url);
     expect(got.status).toBe(200);
     expect(got.body.equals(Buffer.from(BINARY))).toBe(true);
     expect(detections).toHaveLength(1);
     expect(skips).toContainEqual(expect.objectContaining({ reason: 'headers-sent', detail: { action: 'block' } }));
+  });
+
+  it.each([
+    ['a streamed text body', 'text/plain', ['first ', 'second ', 'third']],
+    ['a streamed binary body', 'application/octet-stream', [Buffer.from(BINARY), Buffer.from(BINARY)]],
+  ])('withholds on flushHeaders before %s', async (_label, type, parts) => {
+    for (const viaWriteHead of [false, true]) {
+      const { protection, detections, skips } = await guard([blockRule()]);
+      const node = protection.node({ screenResponses: true });
+      const url = await listen((req, res) =>
+        node(req, res, () => {
+          if (viaWriteHead) res.writeHead(200, { 'content-type': type, 'x-sample': SAMPLE });
+          else {
+            res.setHeader('content-type', type);
+            res.setHeader('x-sample', SAMPLE);
+          }
+          res.flushHeaders();
+          for (const part of parts.slice(0, -1)) res.write(part);
+          res.end(parts[parts.length - 1]);
+        }),
+      );
+
+      expectWithheld(await rawGet(url));
+      expect(detections).toHaveLength(1);
+      expect(skips.map((s: any) => s.reason)).not.toContain('headers-sent');
+      await close?.();
+      close = null;
+    }
+  });
+
+  it('withholds a body written before the application ends it, with no explicit head', async () => {
+    const { protection, detections } = await guard([blockRule()]);
+    const node = protection.node({ screenResponses: true });
+    const url = await listen((req, res) =>
+      node(req, res, () => {
+        res.setHeader('content-type', 'application/octet-stream');
+        res.setHeader('x-sample', SAMPLE);
+        res.write(Buffer.from(BINARY));
+        res.end(Buffer.from(BINARY));
+      }),
+    );
+
+    expectWithheld(await rawGet(url));
+    expect(detections).toHaveLength(1);
   });
 
   it('leaves the response alone in dry-run', async () => {

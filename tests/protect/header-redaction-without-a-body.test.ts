@@ -175,17 +175,65 @@ describe('a header redaction when the body is not screened (Node)', () => {
     expect(detections).toHaveLength(1);
   });
 
-  it('reports a match whose header had already gone, and records that it could not be masked', async () => {
-    const { protection, detections, skips } = await guard([headerRule()]);
+  it.each([
+    ['a streamed text body', 'text/plain', ['first ', 'second ', 'third']],
+    ['a streamed binary body', 'image/png', [Buffer.from(BINARY), Buffer.from(BINARY)]],
+  ])('masks the header on flushHeaders before %s', async (_label, type, parts) => {
+    for (const viaWriteHead of [false, true]) {
+      const { protection, detections, skips } = await guard([headerRule()]);
+      const node = protection.node({ screenResponses: true });
+      const url = await listen((req, res) =>
+        node(req, res, () => {
+          if (viaWriteHead) res.writeHead(200, { 'content-type': type, 'x-sample': SAMPLE });
+          else {
+            res.setHeader('content-type', type);
+            res.setHeader('x-sample', SAMPLE);
+          }
+          res.flushHeaders();
+          for (const part of parts.slice(0, -1)) res.write(part);
+          res.end(parts[parts.length - 1]);
+        }),
+      );
+
+      const got = await rawGet(url);
+      expect(got.headers['x-sample']).toBe('[REDACTED]');
+      expect(got.body.equals(Buffer.concat(parts.map((p) => Buffer.from(p))))).toBe(true);
+      expect(detections).toHaveLength(1);
+      expect(skips.map((s: any) => s.reason)).not.toContain('headers-sent');
+      await close?.();
+      close = null;
+    }
+  });
+
+  it.each([
+    ['a text body', 'text/plain', 'plain text'],
+    ['a binary body', 'image/png', Buffer.from(BINARY)],
+  ])('reports a match once in dry-run when flushHeaders comes before %s', async (_label, type, body) => {
+    const { protection, detections } = await guard([headerRule()], 'dry-run');
     const node = protection.node({ screenResponses: true });
     const url = await listen((req, res) =>
       node(req, res, () => {
-        res.setHeader('content-type', 'image/png');
+        res.setHeader('content-type', type);
         res.setHeader('x-sample', SAMPLE);
         res.flushHeaders();
-        res.end(Buffer.from(BINARY));
+        res.end(body);
       }),
     );
+
+    const got = await rawGet(url);
+    expect(got.headers['x-sample']).toBe(SAMPLE);
+    expect(detections).toHaveLength(1);
+  });
+
+  it('reports a match whose header went out before the guard saw it, and records that it could not be masked', async () => {
+    const { protection, detections, skips } = await guard([headerRule()]);
+    const node = protection.node({ screenResponses: true });
+    const url = await listen((req, res) => {
+      res.setHeader('content-type', 'image/png');
+      res.setHeader('x-sample', SAMPLE);
+      res.flushHeaders();
+      node(req, res, () => res.end(Buffer.from(BINARY)));
+    });
 
     const got = await rawGet(url);
     expect(got.headers['x-sample']).toBe(SAMPLE);
