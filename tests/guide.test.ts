@@ -229,6 +229,8 @@ describe('guide', () => {
     };
 
     it('prints the four progress steps in order, with the agreed wording', async () => {
+      // A developer's machine. Without this, a CI runner's own variables name the environment.
+      process.env.PATCHSTACK_ENVIRONMENT = 'local';
       writeJson('package.json', { name: 'fresh-app' });
 
       const output = renderGuideChecklist(await collectGuideState(cwd), false);
@@ -334,6 +336,8 @@ describe('guide', () => {
     });
 
     it('makes connecting the next step on a wired project, with the claim link', async () => {
+      // A developer's machine. Without this, a CI runner's own variables name the environment.
+      process.env.PATCHSTACK_ENVIRONMENT = 'local';
       wiredProject();
 
       const output = renderGuideChecklist(await collectGuideState(cwd), false);
