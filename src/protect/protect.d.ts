@@ -30,8 +30,10 @@ export interface Protection {
   express(options?: { screenResponses?: boolean }): (req: unknown, res: unknown, next: () => void) => void;
   node(options?: { maxBodyBytes?: number; screenResponses?: boolean }): (req: unknown, res: unknown, next: () => void) => void;
   /** Present when `egress: true` — removes this protection's outbound screen. Outbound calls are
-   *  screened by every protection that has one registered; when the last one leaves, the original
-   *  `fetch` and `node:http`/`node:https` functions are restored. `stop()` calls this too. */
+   *  screened by every protection that has one registered, and any one of them can refuse a call:
+   *  a host in one protection's `allowHosts` is still refused when another protection refuses it.
+   *  When the last one leaves, the original `fetch` and `node:http`/`node:https` functions are
+   *  restored. `stop()` calls this too; `stopRefresh()` does not. */
   uninstallEgress?: () => void;
   /** Present with a live source — re-fetch + hot-swap the rules once (used by the loop + push).
    *  Resolves with the outcome of the attempt: `ok: false` means the rules in force came from the
@@ -70,7 +72,8 @@ export interface Protection {
    * to a failed token exchange, a failed post, or a shutdown that ran out of time is reported nowhere.
    */
   stop: () => Promise<void>;
-  /** Alias of `stop`, under the name callers already have. */
+  /** Stops the rule refresh only — the poll loop and its recovery retries. The reporters and this
+   *  protection's outbound screening keep running; use `stop()` to end those too. */
   stopRefresh: () => Promise<void>;
   /**
    * Where the rules in force came from, and whether the most recent resolution was clean — the same

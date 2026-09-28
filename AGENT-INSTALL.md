@@ -576,8 +576,13 @@ sent to report them.
 `protection.stop()` stops everything the guard has running in the background — the rule-refresh loop, the
 block-log reporter, the detection reporter — and flushes what is buffered. With `egress: true` it also
 removes this guard's outbound-request screening; once no guard in the process is screening, `fetch` and
-`node:http`/`node:https` are restored. `protection.stopRefresh()` is the same method under its older name.
-Call it on shutdown; it is safe to call twice.
+`node:http`/`node:https` are restored. Call it on shutdown; it is safe to call twice.
+`protection.stopRefresh()` stops only the rule refresh: the reporters and outbound-request screening keep
+running.
+
+When more than one guard in a process has `egress: true`, an outbound call is checked by each of them and
+refused if any one refuses it. A host listed in one guard's `allowHosts` is still refused when another guard
+refuses it.
 
 Two more endpoints the package can call, for completeness:
 

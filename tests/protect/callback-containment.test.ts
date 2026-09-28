@@ -114,7 +114,7 @@ describe('a throwing host callback cannot break the guard', () => {
     // poll loop is how a long-lived process dies hours after the mistake was made.
     await expect(p.refresh()).resolves.not.toThrow();
 
-    p.stopRefresh?.();
+    p.stop?.();
   });
 
   it('keeps serving when onSkip throws', async () => {

@@ -153,7 +153,7 @@ describe('createProtection connector log reporting', () => {
       expect(fetchImpl.mock.calls.some(([u]) => String(u).includes('/api/logs/log'))).toBe(true);
     });
 
-    protection.stopRefresh?.();
+    protection.stop?.();
   });
 
   it('does not report without an api key', async () => {
@@ -194,7 +194,7 @@ describe('createProtection connector log reporting', () => {
 
     expect(fetchImpl.mock.calls.filter(([u]) => String(u).includes('/api/logs/log'))).toHaveLength(0);
     expect(fetchImpl.mock.calls.filter(([u]) => String(u).includes('/oauth/token'))).toHaveLength(0);
-    protection.stopRefresh?.();
+    protection.stop?.();
   });
 });
 

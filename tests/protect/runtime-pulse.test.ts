@@ -161,7 +161,7 @@ describe('createProtection Pulse enforcement field', () => {
     expect(protection.mode).toBe('block');
     expect((await createServerFnGuard({ protection })({ title: '<img src=x onerror="steal()">' }))?.rule).toBe('rm-npm-0001');
 
-    protection.stopRefresh?.();
+    protection.stop?.();
     vi.useRealTimers();
   });
 });
@@ -196,7 +196,7 @@ describe('createProtection live rule refresh (refreshMs)', () => {
     expect(protection.rules.request.length).toBeGreaterThan(0);
     expect((await guard({ title: '<img src=x onerror="steal()">' }))?.rule).toBe('rm-npm-0001');
 
-    protection.stopRefresh?.();
+    protection.stop?.();
     vi.useRealTimers();
     vi.restoreAllMocks();
   });

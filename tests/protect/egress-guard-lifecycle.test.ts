@@ -93,6 +93,24 @@ describe('egress guard lifecycle', () => {
     expect(seen).toEqual(['http://third.test/']);
   });
 
+  it("refuses a host one protection allows when another protection refuses it", async () => {
+    const seen = stubFetch();
+    const trusting: any = await createProtection({ egress: true, mode: 'block', allowHosts: ['127.0.0.1'] });
+    active.push(trusting);
+    expect(await (await fetch('http://127.0.0.1/admin')).text()).toBe('stub');
+
+    const strict: any = await createProtection({ egress: true, mode: 'block' });
+    active.push(strict);
+    await expect(fetch('http://127.0.0.1/admin')).rejects.toThrow(/Patchstack blocked/);
+    const http = await nodeHttp();
+    expect(refused(() => http.request('http://127.0.0.1/admin'))).toBe(true);
+
+    await strict.stop();
+    active.splice(active.indexOf(strict), 1);
+    expect(await (await fetch('http://127.0.0.1/admin')).text()).toBe('stub');
+    expect(seen).toEqual(['http://127.0.0.1/admin', 'http://127.0.0.1/admin']);
+  });
+
   it('keeps the remaining screens when one protection leaves', async () => {
     stubFetch();
     const before = globalThis.fetch;

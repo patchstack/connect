@@ -322,7 +322,7 @@ describe('wiring', () => {
     const posted = fetchMock.mock.calls.filter(([url]) => String(url).includes('/detections/'));
     expect(posted.length, 'no detection report without reportDetections: true').toBe(0);
 
-    p.stopRefresh?.();
+    p.stop?.();
   });
 });
 
@@ -369,7 +369,7 @@ describe('declaring the capability', () => {
     // The first fetch of a site with no cached bundle honestly reports that it holds no managed rules
     // yet; the state that follows the resolution is asserted separately below.
     expect(p.detectionReporting).toBe('on');
-    p.stopRefresh?.();
+    p.stop?.();
   });
 
   it('says nothing when reporting is off', async () => {
@@ -388,7 +388,7 @@ describe('declaring the capability', () => {
     const p: any = await createProtection({ siteUuid: 'site-1', pulseRulesUrl: 'https://x.test/monitor/pulse' });
 
     expect(seen.every((h) => h['X-Patchstack-Detections'] === undefined)).toBe(true);
-    p.stopRefresh?.();
+    p.stop?.();
   });
 });
 
@@ -427,7 +427,7 @@ describe('the wiring actually runs', () => {
     });
 
     await p.fetchGuard()(new Request('https://app.test/api/x?q=boom'));
-    p.stopRefresh?.();
+    p.stop?.();
     await new Promise((resolve) => setTimeout(resolve, 5));
 
     expect(posted.some((url) => url.includes('/detections/site-1'))).toBe(true);
@@ -464,7 +464,7 @@ describe('the capability claim is only made when it carries weight', () => {
         .toBeUndefined();
     }
 
-    p.stopRefresh?.();
+    p.stop?.();
   });
 });
 

@@ -1708,8 +1708,14 @@ export async function createProtection(options = {}) {
 
     return Promise.all(outstanding).then(() => undefined);
   };
-  // The name callers already have, kept as an alias for it.
-  protection.stopRefresh = protection.stop;
+  // The rule refresh only: the poll loop and the recovery retries. The reporters and this protection's
+  // outbound screen keep running; `stop()` ends those as well.
+  protection.stopRefresh = () => {
+    loop?.stop();
+    recovery?.stop();
+
+    return Promise.resolve();
+  };
   // Which of the three states reporting is in: requested and running, requested but undeliverable, or
   // not requested. A boolean would collapse the middle one into "off", which is the reassuring reading.
   // A getter, because the state follows refreshes: a property assigned once would report the boot value
