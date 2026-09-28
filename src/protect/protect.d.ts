@@ -32,8 +32,9 @@ export interface Protection {
    *
    * A rule that reads only response headers (`response.header.*`, `response.headers`) redacts or blocks on
    * the headers alone, so it is enforced even when the body cannot be screened. A redaction masks only the
-   * header value it matched; protecting the body takes a rule on `response.body`. A withheld response
-   * carries only its own `content-type` and `content-length`.
+   * header value it matched; protecting the body takes a rule on `response.body`, which masks the body and
+   * the same text wherever it appears in a header. A withheld response carries only its own `content-type`
+   * and `content-length`.
    */
   screenResponse(response: Response, request?: Request, ...hostArgs: unknown[]): Promise<Response>;
   express(options?: { screenResponses?: boolean }): (req: unknown, res: unknown, next: () => void) => void;

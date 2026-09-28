@@ -626,9 +626,9 @@ export async function createProtection(options = {}) {
     if (mode !== 'block' || (!blockRule && !redactions.length && !headerMutations.length)) return { verdict: 'pass' };
     if (blockRule) return { verdict: 'block' };
     let body = text;
-    // Redact the offending spans in the body AND in every (string) header value — so a secret
-    // that leaks in a header (Set-Cookie, an echoed X-Api-Key, …) is masked too, and a rule that
-    // targets `response.header.*` actually strips the header rather than just detecting it.
+    // Each span redactor masks where its condition read (`redactorScope`): a body condition the body and
+    // every (string) header value — so a secret that leaks in a header (Set-Cookie, an echoed X-Api-Key,
+    // …) is masked too — and a header condition only the header it read.
     const headers = { ...(meta.headers || {}) };
     // Whether the response is a JSON document, asked only once a span rewrite needs it, and the lexed
     // structure of the body as it stands — reused by the next span rewrite while the body is unchanged.
@@ -638,14 +638,17 @@ export async function createProtection(options = {}) {
       const mask = maskFn(rule.category);
       // action `encode` HTML-escapes the matched value in place (neutralize stored XSS at output);
       // `redact` masks it. jsonPath redactors act on a structural JSON location, span redactors on
-      // text spans in the body AND header values. Apply structural first (on clean JSON), then spans.
+      // text spans in their scope. Apply structural first (on clean JSON), then spans.
       const transform = rule.action === 'encode' ? htmlEscape : null;
       const pathRedactors = redactors.filter((r) => r.jsonPath);
       const spanRedactors = redactors.filter((r) => !r.jsonPath);
       if (pathRedactors.length) body = applyPathRedactors(body, pathRedactors, mask, screenCap, transform);
       if (!spanRedactors.length) continue;
       const beforeSpan = body;
-      body = applyRedactors(body, spanRedactors, mask, transform);
+      // A redactor masks the body only when its condition read the body; one that read only a header
+      // leaves the body unchanged, and so never reaches the structure check below.
+      const bodySpans = spanRedactors.filter((r) => r.scope.body === true);
+      if (bodySpans.length) body = applyRedactors(body, bodySpans, mask, transform);
       // Span rewrites may change JSON string values, but not keys, containers or other values, and a
       // rewrite that would produce an invalid document is withheld rather than sent. Each result is
       // checked before it becomes input to another transformation. A response that was a JSON document
@@ -663,14 +666,15 @@ export async function createProtection(options = {}) {
       if (transform) continue; // encoding is a body/output concern — headers aren't HTML
       for (const name of Object.keys(headers)) {
         const value = headers[name];
+        const headerSpans = spanRedactors.filter((r) => masksHeader(r, name));
         if (typeof value === 'string') {
-          setOwn(headers, name, applyRedactors(value, spanRedactors, mask));
+          setOwn(headers, name, applyRedactors(value, headerSpans, mask));
         } else if (Array.isArray(value)) {
           // Multi-valued headers (Set-Cookie) — redact each entry.
           setOwn(
             headers,
             name,
-            value.map((item) => (typeof item === 'string' ? applyRedactors(item, spanRedactors, mask) : item)),
+            value.map((item) => (typeof item === 'string' ? applyRedactors(item, headerSpans, mask) : item)),
           );
         }
       }
@@ -2208,6 +2212,27 @@ function hasSpanMutations(rule) {
   return found;
 }
 
+/**
+ * Where a span redactor masks, from the parameter its condition read.
+ *
+ * A single response header — `response.header.<name>` — masks that header only, and `response.headers`
+ * masks the headers only: a rule that read no body does not rewrite it. Any other parameter, the body
+ * among them, masks the body and the same text in every header, so a secret found in the body is not left
+ * behind where it was echoed into a header.
+ */
+function redactorScope(parameter) {
+  const name = typeof parameter === 'string' ? parameter : '';
+  if (name.startsWith('response.header.')) return { header: name.slice('response.header.'.length).toLowerCase() };
+  if (name === 'response.headers') return { headers: true };
+
+  return { body: true, headers: true };
+}
+
+/** Does a span redactor apply to this header? `name` is lower-cased, as every screened header name is. */
+function masksHeader(redactor, name) {
+  return redactor.scope.headers === true || redactor.scope.header === name;
+}
+
 // Derive redaction targets from a rule's own conditions: regex → mask every match;
 // contains/stripos → mask the literal. (Other match types can't identify a span → the
 // rule falls back to block.)
@@ -2225,19 +2250,19 @@ function extractRedactors(rule) {
         if (safe) {
           const flags = safe.flags.includes('g') ? safe.flags : safe.flags + 'g';
           try {
-            out.push({ re: new RegExp(safe.source, flags) });
+            out.push({ re: new RegExp(safe.source, flags), scope: redactorScope(c.parameter) });
           } catch {
             /* skip invalid */
           }
         }
       } else if ((m.type === 'contains' || m.type === 'stripos') && m.value != null) {
-        out.push({ literal: String(m.value) });
+        out.push({ literal: String(m.value), scope: redactorScope(c.parameter) });
       } else if (m.type === 'jwt_claim_equals' && typeof m.claim === 'string') {
         // A span-producing target, not a predicate. A boolean-only matcher would leave `redact` with
         // no span to mask, so the rule would fall back to withholding the WHOLE response — turning a
         // one-token leak into an outage. The spans come from the same `jwtClaimSpans` the matcher
         // used, so what is reported and what is masked cannot diverge.
-        out.push({ jwtClaim: { claim: m.claim, value: String(m.value ?? '') } });
+        out.push({ jwtClaim: { claim: m.claim, value: String(m.value ?? '') }, scope: redactorScope(c.parameter) });
       } else if (m.type === 'array_key_value' && m.match && isBodyParam(c.parameter)) {
         // Structural redaction: mask the value at a JSON path (fanning out over arrays) rather than
         // a text span — e.g. key "orders.customers.email" masks that field in every array element.
