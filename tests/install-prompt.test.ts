@@ -46,7 +46,17 @@ describe('the install prompt', () => {
     // The install ends on a page that loaded before the widget tag existed. The CLI cannot
     // reload the user's browser, so the assistant relaying this is the whole mechanism.
     expect(tested).toMatch(/refresh the preview/i);
-    expect(tested).toContain('Report a vulnerability');
+    expect(tested).toContain('Patchstack widget is not showing');
+  });
+
+  it('makes the widget part of the install rather than a question for the user', () => {
+    // An assistant that stops to ask whether to add the widget leaves the install half done.
+    expect(tested).toMatch(/widget is part of this install and on by default/i);
+    expect(tested).toMatch(/do not ask me whether to/i);
+  });
+
+  it('does not promise a report button the dashboard cannot receive yet', () => {
+    expect(tested).not.toMatch(/report a vulnerability/i);
   });
 
   it('asks for a deploy reminder without authorizing a deploy', () => {

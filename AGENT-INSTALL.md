@@ -27,7 +27,7 @@ Report this as **Patchstack Connector installed**, with any remaining preview or
 1. Check what is already done with `npx @patchstack/connect guide` (read-only). If the project is already provisioned, reuse it — see "Before you start — never install twice".
 2. Install `@patchstack/connect` as a runtime dependency with the project's package manager.
 3. Run `npx @patchstack/connect setup`. In a hosted builder, scope `PATCHSTACK_ENVIRONMENT=sandbox` to that command — see "Automated setup".
-4. Finish any step the checklist at the end of `setup` still lists. "Automated setup" names each one.
+4. Finish any indented `✘` line in the checklist at the end of `setup`. "Automated setup" names each one.
 5. Tell the person the dashboard link, which parts are active and which are not, to refresh their preview, and to deploy when they are ready.
 
 If your tool will not run the command, see "When your tool will not run this CLI". The sections below describe what each command reads, writes, and sends.
@@ -78,7 +78,7 @@ Only `map` analyses your source, and only `map --upload` sends anything derived 
 
 ## Before you start — never install twice
 
-- `npx @patchstack/connect guide` prints a read-only live checklist showing which steps are already done in the current project (install, provisioning, build hooks, widget, runtime protection).
+- `npx @patchstack/connect guide` prints a read-only live checklist of the four steps (install, connect, sync, deploy) and the one next step, with any missing build hook, widget tag or runtime protection wiring listed under its step.
 - If `.patchstackrc.json` contains a `siteUuid` key, the project is already provisioned. Reuse that UUID; run `npx @patchstack/connect status` to re-print it and the dashboard URL. **Do not delete the file and provision a second site.** (A `.patchstackrc.json` with other keys — e.g. an `endpoint` override — but no `siteUuid` is *not* provisioned yet; scan normally.)
 - If `@patchstack/connect` is already in `dependencies`, skip the install command. If it is only in `devDependencies`, move it with the matching package manager so production runtimes that prune dev dependencies can load the generated guard.
 - If the widget script tag (`cdn.patchstack.com/patchstack-widget.js`) is already in the layout, don't add a second one — `scan` also respects an existing tag: it updates its own managed tag in place and leaves a manual one untouched.
@@ -133,11 +133,13 @@ This is a request, not a mechanism: nothing in the install depends on it. Do it 
 
    **What runtime protection can report:** a positively identified static build reports runtime protection as not applicable. A bundler-only project, including plain Vite, can remain runtime unknown and receive a generic scaffold with incomplete wiring. Report that limitation; do not add an artificial server merely to make the check pass, and never describe a widget or an unwired scaffold as runtime protection.
 
-   **A step the checklist still lists is yours to finish, not a result to report.** `setup` applies what it can apply safely and prints the exact edit for anything it would have had to overwrite user code to do. They are: moving `@patchstack/connect` out of `devDependencies`, the widget tag in a root layout `setup` could not edit, the production marker on a server-rendered root, and wiring a generic guard into the server entry. The last three are steps 3 and 4 of "Manual setup" below; after the guard one, `npx @patchstack/connect protect --check` must exit 0.
+   **An indented `✘` line in the checklist is yours to finish, not a result to report.** `setup` applies what it can apply safely and prints the exact edit for anything it would have had to overwrite user code to do. They are: moving `@patchstack/connect` out of `devDependencies`, the widget tag in a root layout `setup` could not edit, the production marker on a server-rendered root, and wiring a generic guard into the server entry. The last three are steps 3 and 4 of "Manual setup" below; after the guard one, `npx @patchstack/connect protect --check` must exit 0.
 
-   **A tick is "nothing owed here", not "this part is on".** The checklist marks steps this project still owes, so a part it cannot carry — or one that is switched off — is green with nothing outstanding. `No build script to integrate`, `Patchstack Connector disabled by config` and `Runtime protection: not applicable` all read that way. So report what the project ended up with by name — dependency scans, the Patchstack Connector, the build hooks, runtime protection — and say which of them are not active and why, rather than reporting an empty checklist as a finished install. Of those, the widget is the one that can be off by setting rather than by the shape of the project: if `.patchstackrc.json` carries `"widget": false` and the person did not ask for that, tell them it is off and ask whether they want it on.
+   **Read the checklist.** `setup`, `guide` and `scan` end on the same four steps — `Install the Patchstack connector`, `Connect project to Patchstack account`, `Sync and monitor in local environment`, `Deploy project to protect live app` — each marked `✔` (done) or `✘` (not yet), followed by the one next step. A `✘` line indented under a step is a technical part of it still missing; a part the project cannot carry (no build script, no request path for runtime protection) is simply not listed. The CLI does not store whether the site has an owner, so `Connect` stays `✘` until a scan hears otherwise from Patchstack; do not report the site as connected from that line alone, and do not report it as unconnected once the person has signed in. Report what the project ended up with by name — dependency scans, the Patchstack Connector, the build hooks, runtime protection — and say which are not active and why.
 
-   **Finish by telling the user to refresh their preview.** The widget loads with the page, so a preview that was already open still shows the HTML from before setup — the widget is missing there until it reloads. Tell them what to expect after the refresh: a site that is not yet connected to an account shows the "Connect this website" panel, and the "Report a vulnerability" button takes its place once the site is claimed. A freshly set up site is unclaimed unless setup ran with a claim token. Nothing in the CLI can reach the user's browser, so relaying this is your job. Phrase it as a check rather than a required step: a builder that hot reloads, or a preview server you restarted, may have refreshed it already.
+   **The widget is part of the install.** It is on by default; add it without asking the person whether to. Honour `"widget": false` in `.patchstackrc.json` only when the person set it themselves. If it is there and they did not ask for it, remove it, run `setup` again, and tell them the widget is back on.
+
+   **Finish by telling the user to refresh their preview.** The widget loads with the page, so a preview that was already open still shows the HTML from before setup — the widget is missing there until it reloads. Tell them what to expect after the refresh: a site that is not yet connected to an account shows the "Connect this website" panel. A freshly set up site is unclaimed unless setup ran with a claim token. Nothing in the CLI can reach the user's browser, so relaying this is your job. Phrase it as a check rather than a required step: a builder that hot reloads, or a preview server you restarted, may have refreshed it already.
 
    **Then tell them to deploy.** Setup changes source files, and the deployed site keeps serving its previous build until the next deploy — so visitors get no widget, and on a server-rendered root no production marker, until the user deploys (or hits Publish) again. Say it as a reminder; do not deploy anything yourself.
 
@@ -155,8 +157,8 @@ Handle it in this order:
    and the source tree as they were.
 
 2. **Hand the person the ways forward, with the exact text.** Say what the command does in plain words —
-   it registers the site with Patchstack, writes two small config files, adds the "Report a vulnerability"
-   line to the page, and adds the protection files and build steps described above — then give them:
+   it registers the site with Patchstack, writes two small config files, adds the Patchstack widget to the
+   page, and adds the protection files and build steps described above — then give them:
 
    - **Run it themselves, in this session.** In Claude Code a line that starts with `!` runs in their shell
      and its output lands in the conversation: `! npx @patchstack/connect setup`. Other tools have a
@@ -187,9 +189,9 @@ Handle it in this order:
    `npx --yes patchstack-connect setup` are different texts, and the rules above do not cover them. On a
    developer's machine the sandbox label is not needed anyway: a scan there reports `local` on its own.
 
-4. **Resume from the output.** `setup` prints the same checklist, dashboard link and outcome block whoever
+4. **Resume from the output.** `setup` prints the same checklist, next step and dashboard link whoever
    ran it, and re-running it changes nothing that is already done. If the person ran it, relay the
-   dashboard link and the outcome block from their output as they are. If your tool still will not run
+   checklist and the next step from their output as they are. If your tool still will not run
    `guide` or `status` for you, verify from the files instead of guessing: `siteUuid` in
    `.patchstackrc.json` means the site is provisioned; `patchstack-connect scan` and
    `patchstack-connect mark-build` in the `package.json` scripts mean the hooks are wired;
@@ -209,7 +211,7 @@ Handle it in this order:
    npx @patchstack/connect scan
    ```
 
-   It prints a dashboard link but never opens it. Open that link in a browser to view reports. It also prints what it did about the widget — if it added the tag, reload the preview and confirm the widget appears: the "Connect this website" panel while the site is unclaimed, the "Report a vulnerability" button once it is claimed.
+   It prints a dashboard link but never opens it. Open that link in a browser to view reports. It also prints what it did about the widget — if it added the tag, reload the preview and confirm the widget appears (the "Connect this website" panel while the site is unclaimed).
 
 2. **Wire builds** in `package.json`:
 
@@ -227,7 +229,7 @@ Handle it in this order:
 
    **Bun-managed projects:** `bun run` does not execute npm-style `pre`/`post` scripts, so wire the build script directly instead: `"build": "patchstack-connect scan && <existing build command> && patchstack-connect mark-build"`.
 
-3. **Verify the Patchstack Connector** — a floating control whose form follows the site's claim state: while the site is unclaimed it is a one-time "Connect this website" panel, and it becomes the public "Report a vulnerability" button once the site is claimed. Do not tell the user the report button will appear on a site that has not been connected to an account yet. `scan` installs it automatically into a plain HTML shell **or a JSX root** (Next, Remix, React Router, TanStack Start, Gatsby), and `mark-build` carries it into built HTML. Only when `scan` reported that it found no editable shell at all — a root whose head mechanism is not a plain script tag, e.g. Nuxt's `useHead` or an Astro layout — add the one-liner it printed to the root layout yourself, just before `</body>` (never a JS entry point), reading `siteUuid` from `.patchstackrc.json`. On those same roots the widget also needs the production marker above the tag — `scan` adds it automatically to a JSX root, and prints it to paste when it finds no anchor. A server-rendered site without the marker serves the build-mode claim flow to its visitors:
+3. **Verify the Patchstack Connector** — a floating control whose form follows the site's claim state: while the site is unclaimed it is a one-time "Connect this website" panel. It is part of the install and on by default; do not ask whether to add it. `scan` installs it automatically into a plain HTML shell **or a JSX root** (Next, Remix, React Router, TanStack Start, Gatsby), and `mark-build` carries it into built HTML. Only when `scan` reported that it found no editable shell at all — a root whose head mechanism is not a plain script tag, e.g. Nuxt's `useHead` or an Astro layout — add the one-liner it printed to the root layout yourself, just before `</body>` (never a JS entry point), reading `siteUuid` from `.patchstackrc.json`. On those same roots the widget also needs the production marker above the tag — `scan` adds it automatically to a JSX root, and prints it to paste when it finds no anchor. A server-rendered site without the marker serves the build-mode claim flow to its visitors:
 
    ```html
    <script src="https://cdn.patchstack.com/patchstack-widget.js" data-site-uuid="<SITE_UUID>" defer></script>
@@ -297,7 +299,7 @@ It is server-only. Never put it in the widget tag, client bundles, or public env
 
 6. **Connect the site to a Patchstack account.** The site is monitored either way, but its vulnerability reports are only visible once it is attached to an account, and an unattached site stays claimable by anyone who loads the page — the site UUID ships in the HTML and claiming is first-come. Three routes reach the same place; tell the user all three and lead with the first, which needs no terminal and no copied URL:
 
-   1. **The widget's "Connect this website" panel**, already on the preview. While the site is unclaimed the widget serves this panel *instead of* the report button, and signing in there attaches the site. On a published build it is hidden from visitors; the owner reveals it by appending `#patchstack` (or `?patchstack`) to the live URL.
+   1. **The widget's "Connect this website" panel**, already on the preview. While the site is unclaimed the widget serves this panel, and signing in there attaches the site. On a published build it is hidden from visitors; the owner reveals it by appending `#patchstack` (or `?patchstack`) to the live URL.
    2. **The dashboard link** the scan printed — open it in a browser and sign in.
    3. **`npx @patchstack/connect claim`** from the terminal, which prints a link to sign in with and then attaches the site.
 
@@ -591,7 +593,7 @@ Two more endpoints the package can call, for completeness:
 - `npx @patchstack/connect status` re-prints the site UUID and dashboard URL, and checks whether the site still exists on Patchstack (`Site status: active / removed / could not be verified`).
 - `npx @patchstack/connect protect --check` verifies from the source that the runtime guard is connected to the request path. It does not run the app.
 - `npx @patchstack/connect protect --check --runtime` additionally **starts the app** on a loopback port and sends it one request, to establish that a request reaches the guard seam. Opt-in, and the only command that runs the application; exit `0`/`1`/`2` as described in step 4.
-- Load the site in a browser — the widget should appear: the "Connect this website" panel while the site is unclaimed, the "Report a vulnerability" button once it is claimed. Refresh a page that was already open before the tag was added: the widget only loads with the page.
+- Load the site in a browser — the widget should appear, as the "Connect this website" panel while the site is unclaimed. Refresh a page that was already open before the tag was added: the widget only loads with the page.
 - On the deployed site, the button appears only after a deploy that includes these source changes.
 
 ## Answering "is Patchstack installed?" / "is Patchstack removed?"
