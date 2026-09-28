@@ -63,6 +63,8 @@ describe('protect.d.ts', () => {
     const configurations = [
       { rules: bundle, reportFirewallLog: false },
       { rules: bundle, reportFirewallLog: false, egress: true },
+      // Block-log reporting on.
+      { rules: bundle, apiKey: 'samplesamplesamplesamplesamplesamplesamp-7', fetchImpl: async () => new Response('{}') },
       { rules: bundle, reportFirewallLog: false, token: 'sample-token', refreshSecret: 'sample-secret', bootTimeoutMs: 50, cacheDir: false as any },
       {
         // Patchstack-delivered rules from the cache, so detection reporting is on.
