@@ -29,6 +29,11 @@ export interface Protection {
    *
    * The client address is the one resolved when this guard screened that request, if it did; otherwise it
    * is resolved here, and any further arguments are passed to `peerAddress` as the host's handler arguments.
+   *
+   * A rule that reads only response headers (`response.header.*`, `response.headers`) redacts or blocks on
+   * the headers alone, so it is enforced even when the body cannot be screened. A redaction masks only the
+   * header value it matched; protecting the body takes a rule on `response.body`. A withheld response
+   * carries only its own `content-type` and `content-length`.
    */
   screenResponse(response: Response, request?: Request, ...hostArgs: unknown[]): Promise<Response>;
   express(options?: { screenResponses?: boolean }): (req: unknown, res: unknown, next: () => void) => void;
@@ -344,7 +349,10 @@ export interface CreateProtectionOptions {
     header?: string;
     isTrusted?: (ip: string) => boolean;
   };
-  /** Override the default response-phase (secret-leak) rule set. */
+  /**
+   * Override the default response-phase (secret-leak) rule set. A rule that reads only response headers is
+   * enforced from the headers, and masks only the header it matched — see `screenResponse`.
+   */
   responseRules?: unknown[];
   /** Override the default egress-phase (SSRF) rule set. */
   egressRules?: unknown[];
