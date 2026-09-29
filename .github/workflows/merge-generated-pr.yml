@@ -86,11 +86,12 @@ jobs:
 
           publish_run=$(gh api "repos/$REPO/commits/$sha" --jq '.commit.message' |
             sed -n 's/^Publish run: \([0-9][0-9]*\)$/\1/p')
-          if [ -z "$publish_run" ] || [ "$(gh api "repos/$REPO/actions/runs/$publish_run" \
-            --jq '.name == "Publish" and .conclusion == "success"')" != true ]; then
-            echo "The publishing run for #$pr has not passed: https://github.com/$REPO/actions/runs/$publish_run" | tee -a "$GITHUB_STEP_SUMMARY"
-            exit 0
-          fi
+          set +e
+          PR="$pr" PR_SHA="$sha" PUBLISH_RUN="$publish_run" node scripts/published-run-status.mjs
+          publish_status=$?
+          set -e
+          if [ "$publish_status" = 3 ]; then exit 0; fi
+          if [ "$publish_status" != 0 ]; then exit "$publish_status"; fi
 
           if [ "$(jq -r '.reviewDecision // ""' <<< "$proposal")" != APPROVED ]; then
             gh pr review "$pr" --repo "$REPO" --approve

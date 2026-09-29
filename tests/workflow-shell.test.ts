@@ -209,6 +209,23 @@ describe('published release recovery', () => {
     const merge = parse(readFileSync(join(workflowDir, 'merge-generated-pr.yml'), 'utf8'));
     expect(merge.on.workflow_run.workflows).toContain('Publish');
   });
+  it('gates merging on the publishing-run recovery check', () => {
+    const merge = parse(readFileSync(join(workflowDir, 'merge-generated-pr.yml'), 'utf8'));
+    const script = merge.jobs.merge.steps.find((s: Step) => s.name === 'Check the generated proposal and merge it').run;
+    expect(script).toContain('PR="$pr" PR_SHA="$sha" PUBLISH_RUN="$publish_run" node scripts/published-run-status.mjs');
+    expect(script).toContain('if [ "$publish_status" = 3 ]; then exit 0; fi');
+    expect(script).toContain('if [ "$publish_status" != 0 ]; then exit "$publish_status"; fi');
+    expect(script.indexOf('node scripts/published-run-status.mjs')).toBeLessThan(script.indexOf('gh pr review'));
+    expect(script.indexOf('node scripts/published-run-status.mjs')).toBeLessThan(script.indexOf('gh pr merge'));
+  });
+  it('distinguishes an unrun canary from a failed assertion in the proposal text', () => {
+    const verification = workflow.jobs['verify-published'];
+    expect(verification.steps.find((s: Step) => s.name === 'Canary — the PUBLISHED tarball blocks the exploit').id).toBe('canary');
+    expect(verification.outputs.canary).toBe('${{ steps.canary.outcome }}');
+    const script = workflow.jobs['record-version'].steps.find((s: Step) => s.name === 'Open or update the pull request').run;
+    expect(script).toContain('needs[\'verify-published\'].outputs.canary');
+    expect(script).toContain('does not establish that the canary failed');
+  });
   it('passes the generated-PR retry policy tests', () => {
     const result = spawnSync(process.execPath, ['--test', 'scripts/generated-pr-ci.test.mjs'], {
       cwd: fileURLToPath(new URL('..', import.meta.url)), encoding: 'utf8',
