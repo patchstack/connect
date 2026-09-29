@@ -15,8 +15,9 @@ export interface Protection {
   mode: "block" | "dry-run";
   /** Active rules split by phase. */
   rules: { request: unknown[]; response: unknown[]; egress: unknown[] };
-  /** (request) => Response (403 when blocked) | null (allow / dry-run). Request phase only. */
-  fetchGuard(): (request: Request) => Promise<Response | null>;
+  /** (request, ...hostArgs) => Response (403 when blocked) | null (allow / dry-run). Request phase only.
+   *  Any further arguments are the host's handler arguments, passed on to `peerAddress`. */
+  fetchGuard(): (request: Request, ...hostArgs: unknown[]) => Promise<Response | null>;
   /** Screens the request, then the response (secret-leak redaction / withhold). */
   fetch(handler: (request: Request, ...rest: unknown[]) => unknown): (request: Request, ...rest: unknown[]) => Promise<unknown>;
   /**
@@ -25,8 +26,11 @@ export interface Protection {
    * Pass the originating `request` wherever it is available. A response rule can be scoped to a route or a
    * method (`when`), and that scope can only be applied if the engine is given the request the response
    * belongs to — without it, a scoped response rule is delivered, counted as protection, and never matches.
+   *
+   * The client address is the one resolved when this guard screened that request, if it did; otherwise it
+   * is resolved here, and any further arguments are passed to `peerAddress` as the host's handler arguments.
    */
-  screenResponse(response: Response, request?: Request): Promise<Response>;
+  screenResponse(response: Response, request?: Request, ...hostArgs: unknown[]): Promise<Response>;
   express(options?: { screenResponses?: boolean }): (req: unknown, res: unknown, next: () => void) => void;
   node(options?: { maxBodyBytes?: number; screenResponses?: boolean }): (req: unknown, res: unknown, next: () => void) => void;
   /** Present when `egress: true` — removes this protection's outbound screen. Outbound calls are
@@ -294,10 +298,19 @@ export interface CreateProtectionOptions {
     write(envelope: unknown): unknown | Promise<unknown>;
   };
   /**
+   * The transport peer of a Fetch request, for runtimes where the host knows it and the `Request` does
+   * not — e.g. `(req, info) => info.remoteAddr.hostname` on Deno, `(req, server) => server.requestIP(req)?.address`
+   * on Bun. Called with the request the host served and the arguments its handler received (passed through
+   * `fetch(handler)`, `fetchGuard()(request, ...args)` and `screenResponse(response, request, ...args)`).
+   * The result counts as the peer for client address resolution, including `trustedProxy`. A throw, or a result that is not an address, supplies no peer.
+   */
+  peerAddress?: (request: Request, ...hostArgs: unknown[]) => string | null | undefined;
+  /**
    * Declare which peers are this deployment's own reverse proxies, so a forwarded header can be believed.
    *
-   * With no policy, the client address is whatever the transport observed — the socket peer on Node, and
-   * nothing at all in a runtime that exposes no peer, where the provenance reads `unavailable`. A
+   * With no policy, the client address is whatever the transport observed — the socket peer on Node, the
+   * `peerAddress` result on a Fetch runtime, and nothing at all where neither is available, in which case
+   * the provenance reads `unavailable` (and, with a policy set, the guard warns once). A
    * forwarded header is never trusted implicitly: it is ordinary request input that any caller can send.
    *
    * A policy must say WHO is trusted, not just which header to read. Declare at least one of:
@@ -413,7 +426,7 @@ export function createSupabaseGuard(opts: {
   maxBodyBytes?: number;
   /** Maximum upstream request duration. Default 30 seconds. */
   timeoutMs?: number;
-}): (request: Request) => Promise<Response>;
+}): (request: Request, ...hostArgs: unknown[]) => Promise<Response>;
 
 /**
  * Server-function guard: inspect a TanStack server function's decoded args against the same

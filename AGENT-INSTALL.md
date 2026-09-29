@@ -480,7 +480,8 @@ whatever supplied it. `client_ip_source` is one of `runtime` (the address the tr
 `unavailable`. When it is `unavailable` the `client_ip` field is **omitted entirely** rather than sent
 empty, so a missing address cannot read as a failed lookup of a real one. A forwarded header is never
 trusted implicitly: with no `trustedProxy` policy the address is whatever the transport observed, and in a
-runtime that exposes no transport peer there is no address to report at all.
+runtime that exposes no transport peer there is no address to report at all unless your code supplies one
+with `peerAddress` (below).
 
 ### Behaviour change: how the client address is determined
 
@@ -495,11 +496,17 @@ Two consequences if you are upgrading:
   peer. **If your app runs behind a proxy or load balancer, addresses will now show as the proxy's**
   until you declare your proxies with `trustedProxy` (below) — which affects attribution in reports and
   any rule matching on `server.ip` or `REMOTE_ADDR`.
-- **Fetch runtimes report no address at all.** A WHATWG `Request` exposes no transport peer, so a Fetch
-  guard (Workers, Deno, Bun, edge) has nothing to observe, and no forwarded header is accepted in its
-  place under any `trustedProxy` policy: `client_ip_source` is `unavailable` and no address is sent.
+- **Fetch runtimes report no address unless you supply the peer.** A WHATWG `Request` exposes no
+  transport peer, so a Fetch guard (Workers, Deno, Bun, edge) has nothing to observe on its own, and no
+  forwarded header is accepted in its place: `client_ip_source` is `unavailable` and no address is sent.
   Earlier versions reported the forwarded header here, so an address-scoped rule that appeared to work on
-  such a runtime was matching a client-supplied value.
+  such a runtime was matching a client-supplied value. Where your runtime does know the peer, pass
+  `peerAddress: (request, ...handlerArgs) => string` — for example `(req, info) => info.remoteAddr.hostname`
+  on Deno, or `(req, server) => server.requestIP(req)?.address` on Bun. It receives the request and the
+  arguments your handler was called with (`fetchGuard()(request, ...args)` and
+  `screenResponse(response, request, ...args)` pass them on), and that address then counts as the
+  transport peer, including for `trustedProxy`. With `trustedProxy` set and no peer supplied, the guard
+  warns once, because the policy can never apply.
 
 `trustedProxy` is the only way to make a forwarded header count. It takes the proxies you actually run —
 `{ peers: ['10.0.0.0/8'] }`, or `{ hops: 1 }` to trust that many hops in from the peer, plus optional
