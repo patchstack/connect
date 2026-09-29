@@ -2,10 +2,11 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { createProtection } from '../../src/protect/runtime.js';
 
 /**
- * A response rule whose parameter list holds something other than a parameter name is loaded, not
- * rejected: the condition masks nothing, the rule is reported through `onError`, and a response the rule
- * matches follows the fallback for a match with nothing to mask. That holds for the first load and for a
- * rule arriving on a refresh, which must not throw either.
+ * A response rule whose parameter list holds something other than a parameter name, given directly as a
+ * response rule, is loaded, not rejected: the condition masks nothing, the rule is reported through
+ * `onError`, and a response the rule matches follows the fallback for a match with nothing to mask. The
+ * same rule delivered by the rules service is refused by the rule contract, so that update is rejected
+ * whole and the previous rules stay in force. Neither path throws.
  */
 
 afterEach(() => vi.restoreAllMocks());
@@ -150,12 +151,11 @@ describe('a malformed parameter list on the first load', () => {
 
 describe('a malformed parameter list arriving on a refresh', () => {
   // The rule source validates a delivered bundle against the rule contract, and an update carrying a rule
-  // it refuses is rejected whole: the previous rules stay in force. A `null` member passes that check, so
-  // it is applied, and the scope handling reports it.
-  const refused = new Set(['a list with a number', 'a list with an object', 'a list with an empty string']);
+  // it refuses is rejected whole: the previous rules stay in force. Every malformed list is refused there.
+  // (`[undefined]` cannot be delivered: JSON carries it as `[null]`.)
   const previous = { ...goodRule, id: 'previous', rule_v2: [{ parameter: 'response.header.x-other', match: PATTERN }] };
 
-  it.each(malformed.filter(([label]) => label !== '[undefined]'))('refreshes with %s without throwing', async (label, parameter, matches) => {
+  it.each(malformed.filter(([label]) => label !== '[undefined]'))('rejects an update with %s and keeps the previous rules', async (_label, parameter) => {
     const bundle = { firewall: [badRule(parameter), goodRule], whitelists: [], whitelist_keys: {} };
     const fetchMock = vi
       .fn()
@@ -175,35 +175,23 @@ describe('a malformed parameter list arriving on a refresh', () => {
     const outcome = await protection.refresh();
     const out = await protection.screenResponse(response());
 
-    if (refused.has(label)) {
-      expect(outcome).toMatchObject({ ok: false, reason: 'update rejected' });
-      expect(errors.some((e) => e.message.includes('rejected the entire update'))).toBe(true);
-      expect(scopeReports(errors)).toHaveLength(0);
-      // The previous rules are still the ones in force.
-      expect(out.status).toBe(200);
-      expect(out.headers.get('x-other')).toBe('[REDACTED]');
-      expect(out.headers.get('x-good')).toBe(SAMPLE);
-
-      return;
-    }
-
-    expect(outcome).toMatchObject({ ok: true });
-    expect(scopeReports(errors)).toHaveLength(1);
-    expect(out.status).toBe(matches ? 500 : 200);
-    if (!matches) {
-      // The well-formed rule the same refresh delivered is in force beside it, and the previous one is not.
-      expect(out.headers.get('x-good')).toBe('[REDACTED]');
-      expect(out.headers.get('x-other')).toBe(SAMPLE);
-    }
+    expect(outcome).toMatchObject({ ok: false, reason: 'update rejected' });
+    expect(errors.some((e) => e.message.includes('rejected the entire update'))).toBe(true);
+    expect(scopeReports(errors)).toHaveLength(0);
+    // The previous rules are still the ones in force, and the well-formed rule from the refused update is not.
+    expect(out.status).toBe(200);
+    expect(out.headers.get('x-other')).toBe('[REDACTED]');
+    expect(out.headers.get('x-good')).toBe(SAMPLE);
   });
 });
 
 describe('a malformed parameter list arriving through the push endpoint', () => {
-  it('refreshes and reports it', async () => {
+  it('reports the push as not refreshed and keeps the previous rules', async () => {
+    const previous = { ...goodRule, id: 'previous', rule_v2: [{ parameter: 'response.header.x-other', match: PATTERN }] };
     const bundle = { firewall: [badRule(['response.header.x-sample', null]), goodRule], whitelists: [], whitelist_keys: {} };
     const fetchMock = vi
       .fn()
-      .mockResolvedValueOnce(new Response(JSON.stringify(EMPTY), { status: 200 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ ...EMPTY, firewall: [previous] }), { status: 200 }))
       .mockResolvedValue(new Response(JSON.stringify(bundle), { status: 200 }));
     vi.stubGlobal('fetch', fetchMock);
     const errors: Error[] = [];
@@ -221,7 +209,12 @@ describe('a malformed parameter list arriving through the push endpoint', () => 
     );
 
     expect(handled.status).toBe(200);
-    expect(scopeReports(errors)).toHaveLength(1);
-    expect((await protection.screenResponse(response())).status).toBe(500);
+    expect(await handled.json()).toEqual({ refreshed: false });
+    expect(errors.some((e) => e.message.includes('rejected the entire update'))).toBe(true);
+    expect(scopeReports(errors)).toHaveLength(0);
+    const out = await protection.screenResponse(response());
+    expect(out.status).toBe(200);
+    expect(out.headers.get('x-other')).toBe('[REDACTED]');
+    expect(out.headers.get('x-sample')).toBe(SAMPLE);
   });
 });
