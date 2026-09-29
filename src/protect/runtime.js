@@ -606,6 +606,10 @@ export async function createProtection(options = {}) {
     // that leaks in a header (Set-Cookie, an echoed X-Api-Key, …) is masked too, and a rule that
     // targets `response.header.*` actually strips the header rather than just detecting it.
     const headers = { ...(meta.headers || {}) };
+    // Whether the response is a JSON document, asked only once a span rewrite needs it, and the lexed
+    // structure of the body as it stands — reused by the next span rewrite while the body is unchanged.
+    let responseIsJson;
+    let structure;
     for (const { rule, redactors } of redactions) {
       const mask = maskFn(rule.category);
       // action `encode` HTML-escapes the matched value in place (neutralize stored XSS at output);
@@ -618,9 +622,20 @@ export async function createProtection(options = {}) {
       if (!spanRedactors.length) continue;
       const beforeSpan = body;
       body = applyRedactors(body, spanRedactors, mask, transform);
-      // Span rewrites may change JSON string values, but not keys, containers or other values.
-      // Check each result before it becomes input to another transformation.
-      if (body !== beforeSpan && !preservesJsonStructure(beforeSpan, body)) return { verdict: 'block' };
+      // Span rewrites may change JSON string values, but not keys, containers or other values, and a
+      // rewrite that would produce an invalid document is withheld rather than sent. Each result is
+      // checked before it becomes input to another transformation. A response that was a JSON document
+      // stays one at every step — path masking re-serialises valid JSON, and each span step is checked
+      // here — so the document's own validity is the only parse this needs.
+      if (body !== beforeSpan) {
+        responseIsJson ??= isJson(text);
+        if (responseIsJson) {
+          if (structure?.text !== beforeSpan) structure = { text: beforeSpan, tokens: lexJson(beforeSpan) };
+          const tokens = lexJson(body);
+          if (!sameJsonStructure(structure.text, structure.tokens, body, tokens)) return { verdict: 'block' };
+          structure = { text: body, tokens };
+        }
+      }
       if (transform) continue; // encoding is a body/output concern — headers aren't HTML
       for (const name of Object.keys(headers)) {
         const value = headers[name];
@@ -636,9 +651,6 @@ export async function createProtection(options = {}) {
         }
       }
     }
-    // A rewritten JSON document must still be consumable as JSON. Text-span transformations can
-    // cross its escaping or delimiters; withhold that result rather than emit an invalid document.
-    if (body !== text && isJson(text) && !isJson(body)) return { verdict: 'block' };
     for (const rule of headerMutations) applyHeaderMutation(headers, rule);
     return { verdict: 'redact', body, headers };
   };
@@ -2094,33 +2106,120 @@ function isJson(text) {
   }
 }
 
-function preservesJsonStructure(before, after) {
-  if (!isJson(before)) return true;
-  if (!isJson(after)) return false;
-  const expected = jsonStructure(before);
-  const actual = jsonStructure(after);
-  for (;;) {
-    const left = expected.next();
-    const right = actual.next();
-    if (left.done || right.done) return left.done === right.done;
-    if (left.value !== right.value) return false;
-  }
+// JSON token kinds. Punctuation is its own character code, so equal kinds mean equal punctuation.
+const JSON_STRING = 1;
+const JSON_NUMBER = 2;
+const JSON_LITERAL = 3;
+const JSON_NUMBER_TOKEN = /-?(?:0|[1-9]\d*)(?:\.\d+)?(?:[eE][+-]?\d+)?/y;
+
+function isHexCode(c) {
+  return (c >= 0x30 && c <= 0x39) || (c >= 0x41 && c <= 0x46) || (c >= 0x61 && c <= 0x66);
 }
 
-// Called only for validated JSON. String values are the only interchangeable tokens; key names,
-// punctuation and non-string tokens remain exact, including number spellings and repeated keys.
-function* jsonStructure(text) {
-  const tokens = /"(?:[^"\\]|\\[\s\S])*"|-?(?:0|[1-9]\d*)(?:\.\d+)?(?:[eE][+-]?\d+)?|[^\s]/g;
-  for (const match of text.matchAll(tokens)) {
-    const token = match[0];
-    if (token[0] !== '"') {
-      yield 'token:' + token;
+// A string segment with no escape or control character, which needs no character-by-character check.
+const PLAIN_STRING_SEGMENT = /^[^"\\\u0000-\u001f]*$/;
+
+/**
+ * Split text into JSON tokens in one pass, or `null` when any token is not lexically valid JSON: only
+ * JSON's own whitespace between tokens, and every string's escapes and characters checked as a parser
+ * checks them. Grammar is not checked here: two token sequences of the same kinds, one of them a valid
+ * document, are both valid. Token `k` is `kinds[k]` over `text.slice(spans[2k], spans[2k + 1])`.
+ */
+function lexJson(text) {
+  let kinds = new Int32Array(1024);
+  let spans = new Int32Array(2048);
+  let count = 0;
+  const n = text.length;
+  let i = 0;
+  while (i < n) {
+    const c = text.charCodeAt(i);
+    if (c === 0x20 || c === 0x09 || c === 0x0a || c === 0x0d) {
+      i++;
       continue;
     }
-    let next = match.index + token.length;
-    while (text[next] === ' ' || text[next] === '\t' || text[next] === '\r' || text[next] === '\n') next++;
-    yield text[next] === ':' ? 'key:' + JSON.parse(token) : 'string';
+    const start = i;
+    let kind;
+    if (c === 0x22) {
+      i++;
+      const close = text.indexOf('"', i);
+      if (close === -1) return null;
+      if (PLAIN_STRING_SEGMENT.test(text.slice(i, close))) {
+        i = close;
+      } else {
+        for (;;) {
+          if (i >= n) return null;
+          const d = text.charCodeAt(i);
+          if (d === 0x22) break;
+          if (d < 0x20) return null;
+          if (d !== 0x5c) {
+            i++;
+            continue;
+          }
+          const e = text.charCodeAt(i + 1);
+          if (e === 0x75) {
+            for (let k = 2; k < 6; k++) if (!isHexCode(text.charCodeAt(i + k))) return null;
+            i += 6;
+          } else if (e === 0x22 || e === 0x5c || e === 0x2f || e === 0x62 || e === 0x66 || e === 0x6e || e === 0x72 || e === 0x74) {
+            i += 2;
+          } else {
+            return null;
+          }
+        }
+      }
+      i++;
+      kind = JSON_STRING;
+    } else if (c === 0x7b || c === 0x7d || c === 0x5b || c === 0x5d || c === 0x3a || c === 0x2c) {
+      i++;
+      kind = c;
+    } else if (text.startsWith('true', i) || text.startsWith('null', i)) {
+      i += 4;
+      kind = JSON_LITERAL;
+    } else if (text.startsWith('false', i)) {
+      i += 5;
+      kind = JSON_LITERAL;
+    } else {
+      JSON_NUMBER_TOKEN.lastIndex = i;
+      if (!JSON_NUMBER_TOKEN.test(text)) return null;
+      i = JSON_NUMBER_TOKEN.lastIndex;
+      kind = JSON_NUMBER;
+    }
+    if (count === kinds.length) {
+      const grownKinds = new Int32Array(count * 2);
+      grownKinds.set(kinds);
+      kinds = grownKinds;
+      const grownSpans = new Int32Array(count * 4);
+      grownSpans.set(spans);
+      spans = grownSpans;
+    }
+    kinds[count] = kind;
+    spans[2 * count] = start;
+    spans[2 * count + 1] = i;
+    count++;
   }
+  return { kinds, spans, count };
+}
+
+/**
+ * Does `after` keep the structure of the valid JSON document `before`? String values are the only
+ * interchangeable tokens: punctuation, key names and every other value stay exact, including number
+ * spellings and repeated keys. The token kinds match one for one and every token lexes, so `after`
+ * is also a valid document.
+ */
+function sameJsonStructure(beforeText, before, afterText, after) {
+  if (!before || !after || before.count !== after.count) return false;
+  const { kinds, spans, count } = before;
+  for (let k = 0; k < count; k++) {
+    const kind = kinds[k];
+    if (after.kinds[k] !== kind) return false;
+    if (kind > JSON_LITERAL) continue; // punctuation: the kind is the character
+    if (kind === JSON_STRING && kinds[k + 1] !== 0x3a) continue; // a string value may change
+    const was = beforeText.slice(spans[2 * k], spans[2 * k + 1]);
+    const now = afterText.slice(after.spans[2 * k], after.spans[2 * k + 1]);
+    if (was === now) continue;
+    // A key may be spelled with different escapes and still name the same member.
+    if (kind !== JSON_STRING || JSON.parse(was) !== JSON.parse(now)) return false;
+  }
+  return true;
 }
 
 // `transform` (optional): map a matched span to its replacement (the `encode` action passes
@@ -2190,15 +2289,16 @@ function applyPathRedactors(text, pathRedactors, mask, cap, transform) {
   if (!pathRedactors.length || typeof text !== 'string' || text.length > cap) return text;
   const head = text.trimStart()[0];
   if (head !== '{' && head !== '[') return text; // not a JSON object/array
-  // Preserve out-of-safe-range integers across the parse→stringify round-trip: JSON.parse would
-  // round e.g. a 20-digit id. We quote such number tokens to a sentinel string before parsing and
-  // unquote them after stringifying, so untouched big ints survive losslessly.
+  // Preserve every number token across the parse→stringify round-trip: JSON.parse would round a
+  // 20-digit id or a long decimal, turn `1e400` into null and respell `1E2` or `-0`. Each number is
+  // quoted to a placeholder string before parsing and unquoted after stringifying, so every leaf the
+  // masking leaves alone keeps its exact spelling.
   let preserved;
   let obj;
   try {
     // Only valid JSON reaches tokenization; malformed intermediate text is not a token source.
     JSON.parse(text);
-    preserved = preserveBigInts(text, mask);
+    preserved = preserveNumbers(text, mask);
     obj = JSON.parse(preserved.text);
   } catch {
     return text;
@@ -2221,25 +2321,25 @@ function applyPathRedactors(text, pathRedactors, mask, cap, transform) {
       }
     });
   }
-  return changed ? restoreBigInts(JSON.stringify(obj), preserved.numbers) : text;
+  return changed ? restoreNumbers(JSON.stringify(obj), preserved.numbers) : text;
 }
 
-// Preserve whole integer tokens, never a digit sequence inside a string, fraction or exponent.
+// Replace every whole number token, never a digit sequence inside a string, with a placeholder.
 // The placeholders are unique to this document and cannot alias a literal string or the mask.
-function preserveBigInts(text, mask) {
+function preserveNumbers(text, mask) {
   const occupied = new Set([mask]);
-  const integers = [];
+  const found = [];
   const tokens = /"(?:[^"\\]|\\[\s\S])*"|-?(?:0|[1-9]\d*)(?:\.\d+)?(?:[eE][+-]?\d+)?/g;
   for (const match of text.matchAll(tokens)) {
     const token = match[0];
     if (token[0] === '"') occupied.add(JSON.parse(token));
-    else if (/^-?\d{16,}$/.test(token)) integers.push({ start: match.index, token });
+    else found.push({ start: match.index, token });
   }
   const numbers = new Map();
   const chunks = [];
   let offset = 0;
   let index = 0;
-  for (const { start, token } of integers) {
+  for (const { start, token } of found) {
     let marker;
     do { marker = '__PSNUMBER_' + index++ + '__'; } while (occupied.has(marker));
     numbers.set(marker, token);
@@ -2250,7 +2350,7 @@ function preserveBigInts(text, mask) {
   return { text: chunks.join(''), numbers };
 }
 
-function restoreBigInts(text, numbers) {
+function restoreNumbers(text, numbers) {
   return text.replace(/"(__PSNUMBER_\d+__)"/g, (token, marker) => numbers.get(marker) ?? token);
 }
 

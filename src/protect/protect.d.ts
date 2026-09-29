@@ -366,7 +366,15 @@ export interface CreateProtectionOptions {
    * only active when `egress` is on and node:dns is available (a no-op on edge runtimes).
    */
   screenDns?: boolean;
-  /** Redaction mask (string or per-category function). Default "[REDACTED]". */
+  /**
+   * Redaction mask (string or per-category function). Default "[REDACTED]".
+   *
+   * In a JSON response, a text-span redaction or encoding may change string values only. When a
+   * rewrite in `block` mode would change the document's structure instead — a match inside a key
+   * name or across fields, a bare number or literal, or a mask that leaves the document invalid — the
+   * whole response is withheld rather than masked. Structural `array_key_value` masking replaces the
+   * leaf it targets, and keeps every other value, including each number, exactly as it was spelled.
+   */
   maskWith?: string | ((category?: string) => string);
   /**
    * Operational problems the guard handled without failing a request. Without it, rules that are not
