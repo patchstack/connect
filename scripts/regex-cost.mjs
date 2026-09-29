@@ -309,13 +309,21 @@ function buildDeclared(candidate, bytes) {
  *
  * A candidate that does not finish inside `timeoutMs` is outside the budget by construction — the
  * deadline is the budget, and the pattern is still running when it expires.
+ *
+ * `derive: false` measures the declared candidate alone. It is for a pattern whose derived candidate
+ * MATCHES it — the derivation reads a pattern as one sequence, so a top-level alternation or a repeated
+ * group can lead it to build an input the pattern accepts — which would otherwise invalidate a screening
+ * the declared candidate can carry. It requires a declared candidate.
  */
-export async function screenPatternCost(pattern, { candidate, bytes = 512 * 1024, budgetMs = 250 } = {}) {
+export async function screenPatternCost(pattern, { candidate, bytes = 512 * 1024, budgetMs = 250, derive = true } = {}) {
   const inputs = [];
   const declared = buildDeclared(candidate, bytes);
   if (declared !== null) inputs.push({ source: 'declared', input: declared });
+  if (!derive && declared === null) {
+    return { pattern, screened: false, reason: 'derive: false needs a declared candidate' };
+  }
 
-  const derived = deriveCandidate(pattern, bytes);
+  const derived = derive ? deriveCandidate(pattern, bytes) : null;
   if (derived !== null) inputs.push({ source: 'derived', input: derived });
 
   if (inputs.length === 0) {
