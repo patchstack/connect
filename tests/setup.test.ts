@@ -1,4 +1,4 @@
-import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from 'node:fs';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
@@ -200,5 +200,35 @@ describe('setupProtection', () => {
 
     expect(second.verification.wired).toBe(true);
     expect(readFileSync(path.join(cwd, 'src', 'start.ts'), 'utf8')).toBe(startAfterFirstRun);
+  });
+});
+
+describe('setupProtection on a plain HTML site', () => {
+  let cwd: string;
+
+  beforeEach(async () => {
+    cwd = await mkdtemp(path.join(tmpdir(), 'patchstack-setup-static-'));
+    writeFileSync(
+      path.join(cwd, 'package.json'),
+      JSON.stringify({ dependencies: { '@patchstack/connect': '^0.5.0' } }),
+    );
+    writeFileSync(path.join(cwd, 'index.html'), '<!doctype html><html><body>hello there</body></html>');
+    writeFileSync(
+      path.join(cwd, '.patchstackrc.json'),
+      JSON.stringify({ siteUuid: '550e8400-e29b-41d4-a716-446655440000' }),
+    );
+  });
+
+  afterEach(async () => {
+    await rm(cwd, { recursive: true, force: true });
+  });
+
+  it('reports protection as not applicable and scaffolds nothing', () => {
+    const result = setupProtection(cwd);
+
+    expect(result.install).toMatchObject({ status: 'not-applicable', leftovers: [] });
+    expect(result.verification).toMatchObject({ applicable: false, wired: false });
+    expect(existsSync(path.join(cwd, 'patchstack'))).toBe(false);
+    expect(readdirSync(cwd).sort()).toEqual(['.patchstackrc.json', 'index.html', 'package.json']);
   });
 });

@@ -8,7 +8,10 @@ Use the package setup flow below for an existing JS/Node application. Work in it
 
 ### Plain HTML sites
 
-For a standalone site made of HTML, CSS, and browser JavaScript, with no package-managed application or server request handler, use the Patchstack Connector directly. Do not create `package.json`, install a framework, invent build hooks, or add a server just to run Connect, unless the person chooses that in step 1. `setup` requires an existing `package.json`; it is not a standalone HTML installer.
+A plain HTML site is a standalone site made of HTML, CSS, and browser JavaScript, with no package-managed application or server request handler. Which path to take depends on what the person asked for:
+
+- **They asked to install or set up `@patchstack/connect`** (for example, "install @patchstack/connect from npm"). They have chosen the Node project option below. Follow "Creating a Node project for a plain HTML site" without stopping to offer the options in step 1.
+- **Any other request**, such as "add the Patchstack widget". Follow the steps below. Do not create `package.json`, install a framework, invent build hooks, or add a server just to run Connect, unless the person chooses that in step 1. `setup` requires an existing `package.json`; it is not a standalone HTML installer.
 
 1. Use the public site UUID or widget snippet for the correct site in the Patchstack dashboard. An existing `.patchstackrc.json` can also supply `siteUuid`. Never invent a UUID or use a claim token or API key as the widget identifier. If neither is available, stop before editing the page and give the person these options in plain words, then wait for their choice:
 
@@ -17,35 +20,45 @@ For a standalone site made of HTML, CSS, and browser JavaScript, with no package
    - **Stop here.** Nothing is changed.
 
    Do not pick for them, and do not create the Node project unless they choose it.
-2. Add one widget tag before `</body>` in the page or shared layout. Preserve an existing correct tag. For a page published directly without a build step, disable the widget's build-mode onboarding with `data-build-mode="false"`:
+2. Add one widget tag before `</body>` in the page or shared layout. Preserve an existing correct tag. For pages published as they are, without a build step, add `data-build-mode="local"`:
 
    ```html
-   <script src="https://cdn.patchstack.com/patchstack-widget.js" data-site-uuid="YOUR_SITE_UUID" data-build-mode="false" defer></script>
+   <script src="https://cdn.patchstack.com/patchstack-widget.js" data-site-uuid="YOUR_SITE_UUID" data-build-mode="local" defer></script>
    ```
 
-   Replace `YOUR_SITE_UUID` with the real public site UUID before saving. Keep credentials out of the page. The [public widget reference](https://cdn.patchstack.com/llm.html) documents this embed and its options.
-3. Verify the saved tag uses the correct UUID. If a browser preview is available, reload it and check that the Patchstack Connector appears (a "Connect this website" panel until the site is claimed); otherwise tell the user that the browser check is pending. Do not submit a vulnerability report as an installation test. Save the HTML change and remind the user to publish it when ready; do not deploy it yourself.
+   Replace `YOUR_SITE_UUID` with the real public site UUID before saving. Keep credentials out of the page. The [public widget reference](https://cdn.patchstack.com/llm.html) documents this embed and its options. See "What `data-build-mode="local"` does" below.
+3. Verify the saved tag uses the correct UUID. If a browser preview is available, reload it and check that the Patchstack Connector appears (a "Connect this website" panel until the site is claimed); otherwise tell the user that the browser check is pending. Do not submit a vulnerability report as an installation test. Save the HTML change and remind the user to publish it when ready; do not deploy it unless they ask you to.
 
 Report this as **Patchstack Connector installed**, with any remaining preview or publishing step. This path does not inventory local JavaScript files or scripts loaded from a CDN, scan npm dependencies, or install runtime exploit protection. External APIs used by the page require their own server-side integration.
 
+#### What `data-build-mode="local"` does
+
+It tells the widget that the pages are published exactly as they are, so no build step marks the live site:
+
+- On a local host — `localhost`, `*.localhost`, `127.x.x.x`, `::1`, `0.0.0.0`, a private network address, `*.local`, `*.test`, or a page opened as a `file:` URL — the widget shows the owner panels: connect the site to an account, log in, and the dashboard.
+- On every other host the widget treats the page as the live site. Visitors never see the owner panels. They get the vulnerability report form, which stays hidden until the owner turns it on in the widget settings. The owner reaches the owner panels on the live site by adding `#patchstack` to the address.
+
+A hosted builder's preview address is not a local host, so there the attribute would hide the owner panels from the owner. `setup` leaves it off when the environment is labelled `sandbox`; without it, the widget shows the owner panels on every host. Widget versions that predate this value treat `"local"` like no attribute at all.
+
 #### Creating a Node project for a plain HTML site
 
-Only when the person chose this option in step 1 above. Work in the folder that holds the site's pages.
+Use this when the person asked to install or set up `@patchstack/connect`, or chose this option in step 1 above. Work in the folder that holds the site's pages.
 
-1. Create the project and install Connect:
+1. Install Connect and run setup:
 
    ```
-   npm init -y
    npm install --save @patchstack/connect
    npx @patchstack/connect setup
    ```
 
-   In a hosted builder, scope `PATCHSTACK_ENVIRONMENT=sandbox` to the `setup` command, as in "Automated setup". `setup` creates the site, writes its `siteUuid` to `.patchstackrc.json`, adds `"postinstall": "patchstack-connect scan"` to `package.json`, and prints the dashboard link. With no `build` script it adds no build steps.
-2. Put the widget on the pages. `setup` adds the tag only to `index.html`, `public/index.html` or `src/app.html`. For any other page it lists the widget under `Missing` and prints the tag to add. Add one tag before `</body>` on each page, or in the shared layout. Because the pages are published without a build step, the tag needs `data-build-mode="false"`, as in step 2 above. If `setup` already added the tag to `index.html`, add that attribute to it. Later scans keep the attribute: they rewrite the tag only when the site ID changes.
-3. Two `✘` lines are expected and need no fix:
-   - `Runtime protection: no server file found`. A plain HTML site has no server to guard. Do not add one. `setup` leaves a generic guard in `patchstack/`, which nothing loads until a server does.
-   - `Deploy project to protect live app`. Publishing the pages is the person's step.
-4. End as in "The message you end on", with the dashboard link from the `Next:` line. Say that the widget, and a check of the packages the site installs, are active, and that runtime protection is not. Remind them to publish the pages when ready, and that `node_modules` is not part of the site. Do not publish anything yourself.
+   `npm install` creates `package.json` when the folder has none, so no `npm init` is needed. In a hosted builder, scope `PATCHSTACK_ENVIRONMENT=sandbox` to the `setup` command, as in "Automated setup". `setup` creates the site, writes its `siteUuid` to `.patchstackrc.json` and its API key to `.patchstackrc.local.json`, adds `"postinstall": "patchstack-connect scan"` to `package.json`, adds the widget tag to `index.html`, and prints the dashboard link. With no `build` script it adds no build steps.
+2. Check the widget tag. When `index.html` is in the folder root and `package.json` has no `build` script, `setup` writes the tag with `data-build-mode="local"` (see "What `data-build-mode="local"` does" above), except in a `sandbox`-labelled environment. A managed tag that carries `data-build-mode="false"` is changed to `"local"`; any other value is left as it is. If a `build` script is added later, the next scan removes `data-build-mode="local"` again, because `mark-build` then marks the built pages as the live site.
+
+   `setup` adds the tag only to `index.html`, `public/index.html` or `src/app.html`. For any other page, add the same tag, copied from `index.html`, before `</body>` on each page or in the shared layout.
+3. Runtime protection is reported under `Done` as `Runtime protection: not needed — static site with no server`. A plain HTML site has no server to guard. Do not add one. `setup` adds no guard files here. It reports this only when the folder has a root `index.html` and no `build` or `start` script, bundler, server framework, server entry file, serverless function or `api/` directory, or edge-runtime tooling; otherwise it treats the project as an application.
+4. `Deploy project to protect live app` stays `✘`. Publishing the pages is the person's step unless they ask you to do it.
+5. To publish, deploy the folder as it is; there is no build step. `.patchstackrc.local.json` holds the site's API key and must never be published. The Netlify CLI and many static hosts skip files whose names start with a dot, but if the host publishes them, publish only the pages: copy the HTML, CSS, JavaScript and assets into a separate folder and publish that folder. `node_modules` is not part of the site.
+6. End as in "The message you end on", with the dashboard link from the `Next:` line. Say that the widget, and a check of the packages the site installs, are active, and that runtime protection does not apply because the site has no server.
 
 ### JS/Node applications — the usual path
 
@@ -167,7 +180,7 @@ Leave out the files you changed, the commands you ran, settings, and anything th
    - A build in a project the builder generated and builds for itself (Lovable, Replit) reports `production` without an override, because the edit preview is a dev server and a build is the publish step — which is exactly why the sandbox label belongs in the workspace process and not in a file.
    - A scan on a developer's machine, in a CI runner this does not know (`CI=true` alone), or on a platform with no such signal reports `local` on its own, and the dashboard shows that app as configured, not deployed.
 
-   **What runtime protection can report:** a positively identified static build reports runtime protection as not applicable. A bundler-only project, including plain Vite, can remain runtime unknown and receive a generic scaffold with incomplete wiring. Report that limitation; do not add an artificial server merely to make the check pass, and never describe a widget or an unwired scaffold as runtime protection.
+   **What runtime protection can report:** a positively identified static build — a static site generator, or plain HTML pages published without a build step (see "Plain HTML sites") — reports runtime protection as not applicable. A bundler-only project, including plain Vite, can remain runtime unknown and receive a generic scaffold with incomplete wiring. Report that limitation; do not add an artificial server merely to make the check pass, and never describe a widget or an unwired scaffold as runtime protection.
 
    **A `✘` line under `Missing` is yours to finish, not a result to report.** `setup` applies what it can apply safely and prints the exact edit (or the command that prints it) for anything it would have had to overwrite user code to do. They are: moving `@patchstack/connect` out of `devDependencies`, the widget tag in a root layout `setup` could not edit, the production marker on a server-rendered root, and wiring a generic guard into the server entry. The last three are steps 3 and 4 of "Manual setup" below; after the guard one, `npx @patchstack/connect protect --check` must exit 0.
 

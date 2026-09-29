@@ -2,6 +2,7 @@ import { existsSync, readFileSync, statSync } from 'node:fs';
 import path from 'node:path';
 
 import { detectDeploymentShapes } from './map/sources.js';
+import { publishesPagesAsIs } from './widget.js';
 import {
   CONDITIONAL_SERVER_DEPENDENCIES,
   SERVER_DEPENDENCIES,
@@ -20,12 +21,13 @@ import {
  * red check that teaches the reader to ignore the command.
  *
  * `none` is the dangerous answer, because it withholds protection, so it is only given on positive
- * static-only evidence: a static site GENERATOR is named, and nothing else in the project could serve. A
- * bundler is not a generator — `vite` and its kin build client apps and server apps alike — so a bundler
- * alone never supports `none`. And a generator beside a `server.mjs` that calls `createServer` is not a
- * static site, so the usual server entry files are read for the calls that serve. Any of these turns the
- * answer to `unknown`, which scaffolds the generic guard and leaves its wiring to be finished, exactly as
- * an unrecognised project always has.
+ * static-only evidence, and nothing else in the project could serve. There are two kinds of that evidence:
+ * a static site GENERATOR is named, or the project is a plain HTML site — a root `index.html` published as
+ * it is, with no `build` or `start` script and no bundler installed. A bundler is not a generator — `vite`
+ * and its kin build client apps and server apps alike — so a bundler alone never supports `none`. And a
+ * generator beside a `server.mjs` that calls `createServer` is not a static site, so the usual server entry
+ * files are read for the calls that serve. Any of these turns the answer to `unknown`, which scaffolds the
+ * generic guard and leaves its wiring to be finished, exactly as an unrecognised project always has.
  *
  * This asks a NARROWER question than `map`'s `serverSurface`, and the two differ deliberately on one
  * signal. `serverSurface` describes the app, so a platform config (`netlify.toml`, `vercel.json`) blocks it
@@ -36,7 +38,7 @@ import {
 export type RequestPath =
   /** Something in this project receives requests, so a guard has a seam. */
   | 'server'
-  /** A static site generator was named and nothing here receives a request. */
+  /** A static site generator or plain HTML pages, and nothing here receives a request. */
   | 'none'
   /** Neither could be established. Never to be read as "no server side". */
   | 'unknown';
@@ -51,6 +53,7 @@ export interface ArchitectureVerdict {
 
 interface Manifest {
   main?: unknown;
+  scripts?: Record<string, unknown>;
   dependencies?: Record<string, string>;
   devDependencies?: Record<string, string>;
 }
@@ -97,6 +100,20 @@ function readManifest(cwd: string): Manifest {
   } catch {
     return {};
   }
+}
+
+/** Pages published exactly as they sit in the project, with nothing installed or scripted to build or serve them. */
+function isPlainHtmlSite(cwd: string, manifest: Manifest, deps: Record<string, string>): boolean {
+  if (!publishesPagesAsIs(cwd)) {
+    return false;
+  }
+
+  const start = manifest.scripts?.start;
+  if (typeof start === 'string' && start.trim().length > 0) {
+    return false;
+  }
+
+  return [...BUNDLERS_NOT_GENERATORS].every((bundler) => deps[bundler] === undefined);
 }
 
 /** Server-framework dependencies present, each named. Any one of them means a request can arrive. */
@@ -209,6 +226,17 @@ export function classifyArchitecture(cwd: string): ArchitectureVerdict {
         `This project builds a static site (${statics.join(', ')}) and nothing in it receives a request, ` +
         'so there is no request path for a runtime guard to attach to. Dependency monitoring and the ' +
         'Patchstack Connector still apply; runtime protection does not.',
+    };
+  }
+
+  if (ambiguous.length === 0 && isPlainHtmlSite(cwd, manifest, deps)) {
+    return {
+      requestPath: 'none',
+      evidence: ['static site: index.html published without a build step'],
+      note:
+        'This project is a static site: its index.html is published as it is and nothing in it receives a ' +
+        'request, so there is no request path for a runtime guard to attach to. Dependency monitoring and ' +
+        'the Patchstack Connector still apply; runtime protection does not.',
     };
   }
 

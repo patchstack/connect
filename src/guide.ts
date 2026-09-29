@@ -20,7 +20,7 @@ import {
   productionGate,
 } from './mark-build.js';
 import { detectStack } from './stack.js';
-import { buildWidgetTag } from './widget.js';
+import { LOCAL_BUILD_MODE, buildWidgetTag } from './widget.js';
 import { type NextStepContext, type Progress } from './progress.js';
 import { renderStatus, type MissingItem } from './report.js';
 import type { Environment, EnvironmentSource } from './types.js';
@@ -505,6 +505,19 @@ export function notConnectedItem(why: string[] = []): MissingItem {
   };
 }
 
+/** The `data-build-mode` scan would write for this project, so a hand-added tag matches it. */
+function suggestedBuildMode(state: GuideState): typeof LOCAL_BUILD_MODE | null {
+  if (state.environment === 'sandbox') {
+    return null;
+  }
+
+  if (state.hasBuildScript) {
+    return null;
+  }
+
+  return state.widgetFileHint === 'index.html' ? LOCAL_BUILD_MODE : null;
+}
+
 /** The build-script lines `setup` adds, for someone adding them by hand. */
 function buildScriptLines(state: GuideState): string[] {
   const lines: string[] = [];
@@ -551,7 +564,7 @@ export function guideMissing(state: GuideState, known: Partial<Progress> = {}): 
         state.widgetFileHint !== null
           ? `Add this to ${state.widgetFileHint}, just before </body>:`
           : 'Add this to your main page layout, just before </body>:',
-        `  ${buildWidgetTag(state.siteUuid)}`,
+        `  ${buildWidgetTag(state.siteUuid, suggestedBuildMode(state))}`,
       ],
     });
   }
@@ -630,7 +643,10 @@ export function renderGuideChecklist(
       paint(ANSI.bold, 'Missing'),
       ` ${paint(ANSI.yellow, '✘')} No package.json here.`,
       '   For a JS/Node app, run this from its package directory.',
-      '   For a plain HTML site, follow "Plain HTML sites" in AGENT-INSTALL.md. It gets the widget only: no dependency scan or runtime protection.',
+      '   For a plain HTML site, follow "Plain HTML sites" in AGENT-INSTALL.md.',
+      '   If you were asked to install @patchstack/connect, run: npm install --save @patchstack/connect',
+      '   (it creates package.json), then: npx @patchstack/connect setup',
+      '   Otherwise the site gets the widget only: no dependency scan or runtime protection.',
       '   Do not create a Node project just to add the widget.',
       '   Use the site UUID or widget snippet from the Patchstack dashboard. Never invent one.',
     ].join('\n');

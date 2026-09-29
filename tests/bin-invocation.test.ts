@@ -346,6 +346,40 @@ describe.skipIf(!built)('the packaged bin, invoked as npm invokes it', () => {
       }
     });
 
+    it('sets up a plain HTML site without a guard and with the widget in local build mode', async () => {
+      const server = await acceptingServer();
+      const dir = freshProject();
+      try {
+        const stdout = await run(dir, server.endpoint, ['setup']);
+        const done = stdout.slice(stdout.indexOf('Done'), stdout.indexOf('Missing') === -1 ? undefined : stdout.indexOf('Missing'));
+
+        expect(done).toContain(' ✔ Runtime protection: not needed — static site with no server');
+        expect(stdout).not.toContain('no server file found');
+        expect(existsSync(path.join(dir, 'patchstack'))).toBe(false);
+        expect(readFileSync(path.join(dir, 'index.html'), 'utf8')).toContain(
+          `data-site-uuid="${SITE}" defer data-build-mode="local" data-patchstack-connect-widget="true"`,
+        );
+      } finally {
+        await server.close();
+        rmSync(dir, { recursive: true, force: true });
+      }
+    });
+
+    it('leaves the widget in the default build mode in a sandbox', async () => {
+      const server = await acceptingServer();
+      const dir = freshProject();
+      try {
+        await scan(dir, server.endpoint, { PATCHSTACK_ENVIRONMENT: 'sandbox' });
+
+        const html = readFileSync(path.join(dir, 'index.html'), 'utf8');
+        expect(html).toContain(`data-site-uuid="${SITE}"`);
+        expect(html).not.toContain('data-build-mode');
+      } finally {
+        await server.close();
+        rmSync(dir, { recursive: true, force: true });
+      }
+    });
+
     it('reports a production scan without ticking the deploy the dashboard has not seen', async () => {
       const server = await acceptingServer();
       const dir = freshProject();

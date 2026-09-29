@@ -151,3 +151,77 @@ describe('classifyArchitecture: none needs positive static-only evidence', () =>
     expect(classifyArchitecture(cwd).requestPath).toBe('none');
   });
 });
+
+describe('classifyArchitecture: a plain HTML site', () => {
+  let cwd: string;
+
+  beforeEach(async () => {
+    cwd = await mkdtemp(path.join(tmpdir(), 'patchstack-architecture-html-'));
+    writeFileSync(path.join(cwd, 'index.html'), '<!doctype html><html><body>hello there</body></html>');
+  });
+
+  afterEach(async () => {
+    await rm(cwd, { recursive: true, force: true });
+  });
+
+  const manifest = (extra: Record<string, unknown> = {}): void => {
+    writeFileSync(
+      path.join(cwd, 'package.json'),
+      JSON.stringify({
+        dependencies: { '@patchstack/connect': '^0.5.0' },
+        scripts: { postinstall: 'patchstack-connect scan' },
+        ...extra,
+      }),
+    );
+  };
+
+  it('finds no request path in pages published without a build step', () => {
+    manifest();
+
+    const verdict = classifyArchitecture(cwd);
+
+    expect(verdict.requestPath).toBe('none');
+    expect(verdict.evidence).toEqual(['static site: index.html published without a build step']);
+    expect(verdict.note).toContain('static site');
+  });
+
+  it('is not static once a build script exists', () => {
+    manifest({ scripts: { build: 'node build.mjs' } });
+
+    expect(classifyArchitecture(cwd).requestPath).toBe('unknown');
+  });
+
+  it('is not static with a start script, which may run a server', () => {
+    manifest({ scripts: { start: 'node bin/www' } });
+
+    expect(classifyArchitecture(cwd).requestPath).toBe('unknown');
+  });
+
+  it('is not static with a bundler installed', () => {
+    manifest({ devDependencies: { vite: '^5.0.0' } });
+
+    expect(classifyArchitecture(cwd).requestPath).toBe('unknown');
+  });
+
+  it('is not static beside a server entry', () => {
+    manifest();
+    writeFileSync(path.join(cwd, 'server.js'), "require('node:http').createServer(() => {}).listen(3000);\n");
+
+    expect(classifyArchitecture(cwd).requestPath).toBe('unknown');
+  });
+
+  it('is a server with a server framework installed', () => {
+    manifest({ dependencies: { express: '^4.19.0' } });
+
+    expect(classifyArchitecture(cwd).requestPath).toBe('server');
+  });
+
+  it('is not static when the HTML is not at the root', async () => {
+    manifest();
+    await rm(path.join(cwd, 'index.html'));
+    mkdirSync(path.join(cwd, 'public'));
+    writeFileSync(path.join(cwd, 'public', 'index.html'), '<html><body></body></html>');
+
+    expect(classifyArchitecture(cwd).requestPath).toBe('unknown');
+  });
+});

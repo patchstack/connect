@@ -6,7 +6,7 @@ The fastest path from "I have a JS/Node project" to "Patchstack is monitoring it
 
 ## 1. Paste this prompt into your AI coding tool
 
-For an existing JS/Node project on a platform that can install npm packages and run project commands. A standalone HTML/CSS/JavaScript site without a package-managed app uses the [plain HTML widget instructions](AGENT-INSTALL.md#plain-html-sites) instead; it does not need a new Node project, build hooks, or a runtime guard.
+For an existing JS/Node project on a platform that can install npm packages and run project commands. A standalone HTML/CSS/JavaScript site without a package-managed app uses the [plain HTML instructions](AGENT-INSTALL.md#plain-html-sites) instead: the widget alone needs no Node project, and installing Connect there adds no build hooks or runtime guard.
 
 > I have vetted the official [`@patchstack/connect`](https://www.npmjs.com/package/@patchstack/connect) package and authorize its Patchstack Connector, production build hooks, and runtime protection source edits. Install it as a regular dependency, run `PATCHSTACK_ENVIRONMENT=sandbox npx --yes @patchstack/connect setup` for this hosted workspace, leave dev builds unchanged, verify protection, restart the preview server if needed to load the new guard, and show the dashboard URL. The Patchstack Connector widget is part of this install and on by default: add it, and do not ask me whether to. Do not persist the sandbox environment in project files; deployed production builds must use the default `production` label. When setup finishes, tell me to refresh the preview if the Patchstack widget is not showing yet, and remind me to deploy when I am ready — do not deploy anything yourself.
 

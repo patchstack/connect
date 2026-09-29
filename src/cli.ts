@@ -88,7 +88,7 @@ import { isInstallOrBuildHook, isPreBundleBuildHook, undeliveredReportLines } fr
 import { applyBuildStamp } from './build-stamp.js';
 import { detectStack, type StackDescriptor } from './stack.js';
 import { PatchstackError, type StoreManifestResponse } from './types.js';
-import { buildWidgetTag, ensureSourceWidget, ensureWidgetInHtml } from './widget.js';
+import { buildWidgetTag, ensureSourceWidget, ensureWidgetInHtml, sourceWidgetBuildMode } from './widget.js';
 
 const HELP = `@patchstack/connect — scan your lockfile and report packages to Patchstack.
 
@@ -838,7 +838,7 @@ async function runScan(
   // this point, and --dry-run returned above.
   const effectiveUuid = config.siteUuid ?? response.uuid ?? null;
   if (config.widget && effectiveUuid !== null && effectiveUuid.length > 0) {
-    reportSourceWidget(effectiveUuid, shellFramework, report);
+    reportSourceWidget(effectiveUuid, shellFramework, config.environment, report);
   }
 
   const synced =
@@ -921,7 +921,12 @@ async function printScanReport(
  * widget management is a convenience layered on top of a successful scan and
  * must not turn one into a failure.
  */
-function reportSourceWidget(siteUuid: string, framework: string | null, report: StatusReport): void {
+function reportSourceWidget(
+  siteUuid: string,
+  framework: string | null,
+  environment: Environment,
+  report: StatusReport,
+): void {
   const handAdd = (why: string): void => {
     report.missing.push({
       text: 'The Patchstack widget is not on your page yet',
@@ -934,7 +939,8 @@ function reportSourceWidget(siteUuid: string, framework: string | null, report: 
     const hint = hasEditableShell(framework) ? resolveWidgetFileHint(process.cwd(), framework) : null;
     const jsxShell = hint !== null && !hint.toLowerCase().endsWith('.html') ? hint : null;
 
-    const result = ensureSourceWidget(process.cwd(), siteUuid, jsxShell);
+    const buildMode = sourceWidgetBuildMode(process.cwd(), environment);
+    const result = ensureSourceWidget(process.cwd(), siteUuid, jsxShell, buildMode);
     switch (result.action) {
       case 'added':
         report.done.push(`Added the Patchstack widget to ${result.shell}`);
@@ -1209,7 +1215,7 @@ function reportProtection(protection: ReturnType<typeof setupProtection>, report
   for (const line of protection.log) detail(`patchstack protect: ${line}`);
 
   if (protection.install.status === 'not-applicable') {
-    report.done.push('Runtime protection is not needed: this project has no server');
+    report.done.push('Runtime protection: not needed — static site with no server');
     if (protection.install.leftovers.length > 0) {
       report.missing.push({
         text: 'Files from an earlier Patchstack protection setup are not used here',
@@ -1256,7 +1262,8 @@ async function runSetup(args: ParsedArgs): Promise<number> {
   const before = await collectGuideState(process.cwd());
   if (!before.hasPackageJson) {
     console.error('No package.json here. Run setup from the folder that has your package.json.');
-    console.error('For a standalone HTML site, use the widget-only instructions in AGENT-INSTALL.md; do not create a Node project just to run setup.');
+    console.error('For a standalone HTML site: to install @patchstack/connect, run npm install --save @patchstack/connect here (it creates package.json), then run setup again.');
+    console.error('To add only the widget, use the widget-only instructions in AGENT-INSTALL.md; do not create a Node project just for the widget.');
     return 1;
   }
   if (before.installed === null) {

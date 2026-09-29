@@ -15,6 +15,7 @@ import {
   widgetTagInPlace,
 } from '../src/guide.js';
 import { PROGRESS_STEPS } from '../src/progress.js';
+import { buildWidgetTag } from '../src/widget.js';
 
 const VALID_UUID = '550e8400-e29b-41d4-a716-446655440000';
 
@@ -473,12 +474,53 @@ describe('guide', () => {
 
       expect(state.hasPackageJson).toBe(false);
       expect(output).toContain('Plain HTML sites');
-      expect(output).toContain('Do not create a Node project');
+      expect(output).toContain('Do not create a Node project just to add the widget');
       expect(output).toContain('site UUID or widget snippet from the Patchstack dashboard');
       expect(output).toContain('no dependency scan or runtime protection');
-      expect(output).not.toContain('npm install');
       expect(output).not.toContain('Runtime protection');
       expect(output).not.toContain('prebuild');
+    });
+
+    it('names the install command for a person who asked for @patchstack/connect in a plain HTML folder', async () => {
+      writeFileSync(path.join(cwd, 'index.html'), '<!doctype html><html><body>Example</body></html>');
+
+      const output = renderGuideChecklist(await collectGuideState(cwd), false);
+
+      expect(output).toContain('If you were asked to install @patchstack/connect');
+      expect(output).toContain('npm install --save @patchstack/connect');
+      expect(output).toContain('npx @patchstack/connect setup');
+      expect(output).not.toContain('npm init');
+    });
+
+    it('does not list runtime protection for a plain HTML site set up with Connect', async () => {
+      writeJson('package.json', {
+        name: 'hello-there',
+        scripts: { postinstall: 'patchstack-connect scan' },
+        dependencies: { '@patchstack/connect': '^0.5.0' },
+      });
+      writeJson('.patchstackrc.json', { siteUuid: VALID_UUID });
+      writeFileSync(path.join(cwd, 'index.html'), '<!doctype html><html><body>hello there</body></html>');
+
+      const state = await collectGuideState(cwd);
+      const output = renderGuideChecklist(state, false);
+
+      expect(state.protectionApplicable).toBe(false);
+      expect(output).not.toContain('Runtime protection');
+      expect(output).not.toContain('no server file found');
+    });
+
+    it('prints the widget tag with data-build-mode="local" for pages published without a build step', async () => {
+      writeJson('package.json', { name: 'hello-there', dependencies: { '@patchstack/connect': '^0.5.0' } });
+      writeJson('.patchstackrc.json', { siteUuid: VALID_UUID });
+      writeFileSync(path.join(cwd, 'index.html'), '<!doctype html><html><body>hello there</body></html>');
+
+      expect(renderGuideChecklist(await collectGuideState(cwd), false)).toContain(buildWidgetTag(VALID_UUID, 'local'));
+
+      writeJson('package.json', { name: 'hello-there', scripts: { build: 'vite build' } });
+
+      const built = renderGuideChecklist(await collectGuideState(cwd), false);
+      expect(built).toContain(buildWidgetTag(VALID_UUID));
+      expect(built).not.toContain('data-build-mode');
     });
 
     it('never mentions reporting a vulnerability', async () => {

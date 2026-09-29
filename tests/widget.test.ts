@@ -4,12 +4,15 @@ import path from 'node:path';
 import ts from 'typescript';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import {
+  LOCAL_BUILD_MODE,
   WIDGET_MARKER_ATTR,
   WIDGET_SCRIPT_URL,
   buildWidgetTag,
   ensureSourceWidget,
   ensureWidgetInHtml,
   findSourceShell,
+  publishesPagesAsIs,
+  sourceWidgetBuildMode,
 } from '../src/widget.js';
 
 const UUID_A = '550e8400-e29b-41d4-a716-446655440000';
@@ -235,5 +238,177 @@ describe('ensureSourceWidget on a JSX root', () => {
       shell: null,
       action: 'no-shell',
     });
+  });
+});
+
+describe('ensureWidgetInHtml: data-build-mode', () => {
+  const managedWith = (mode: string | null, uuid = UUID_A): string =>
+    SHELL.replace('</body>', `  ${buildWidgetTag(uuid, mode)}\n  </body>`);
+
+  it('writes data-build-mode="local" when asked', () => {
+    const { html, action } = ensureWidgetInHtml(SHELL, UUID_A, LOCAL_BUILD_MODE);
+
+    expect(action).toBe('added');
+    expect(html).toContain(buildWidgetTag(UUID_A, 'local'));
+    expect(html.match(/data-build-mode=/g)).toHaveLength(1);
+  });
+
+  it('adds it to an existing managed tag without touching its other attributes', () => {
+    const tag = `<script src="${WIDGET_SCRIPT_URL}" data-site-uuid="${UUID_A}" data-position="left" defer ${WIDGET_MARKER_ATTR}="true"></script>`;
+    const before = SHELL.replace('</body>', `${tag}</body>`);
+
+    const { html, action } = ensureWidgetInHtml(before, UUID_A, LOCAL_BUILD_MODE);
+
+    expect(action).toBe('updated');
+    expect(html).toContain('data-position="left"');
+    expect(html).toContain(`defer data-build-mode="local" ${WIDGET_MARKER_ATTR}="true"`);
+  });
+
+  it('is idempotent once the attribute is there', () => {
+    const first = ensureWidgetInHtml(SHELL, UUID_A, LOCAL_BUILD_MODE);
+    const second = ensureWidgetInHtml(first.html, UUID_A, LOCAL_BUILD_MODE);
+
+    expect(second.action).toBe('unchanged');
+    expect(second.html).toBe(first.html);
+  });
+
+  it('replaces "false" with "local"', () => {
+    const { html, action } = ensureWidgetInHtml(managedWith('false'), UUID_A, LOCAL_BUILD_MODE);
+
+    expect(action).toBe('updated');
+    expect(html).toContain('data-build-mode="local"');
+    expect(html).not.toContain('data-build-mode="false"');
+  });
+
+  it('replaces an unquoted false as well, without adding a second attribute', () => {
+    const tag = `<script src="${WIDGET_SCRIPT_URL}" data-site-uuid="${UUID_A}" data-build-mode=false defer ${WIDGET_MARKER_ATTR}="true"></script>`;
+
+    const { html } = ensureWidgetInHtml(SHELL.replace('</body>', `${tag}</body>`), UUID_A, LOCAL_BUILD_MODE);
+
+    expect(html.match(/data-build-mode=/g)).toHaveLength(1);
+    expect(html).toContain('data-build-mode="local"');
+  });
+
+  it('leaves any other build-mode value alone', () => {
+    const before = managedWith('true');
+
+    for (const wanted of [LOCAL_BUILD_MODE, null, undefined] as const) {
+      const { html, action } = ensureWidgetInHtml(before, UUID_A, wanted);
+      expect(action).toBe('unchanged');
+      expect(html).toBe(before);
+    }
+  });
+
+  it('removes "local" when the pages are no longer published as they are', () => {
+    const { html, action } = ensureWidgetInHtml(managedWith('local'), UUID_A, null);
+
+    expect(action).toBe('updated');
+    expect(html).toContain(buildWidgetTag(UUID_A));
+    expect(html).not.toContain('data-build-mode');
+  });
+
+  it('keeps "false" when asked only to remove "local"', () => {
+    const before = managedWith('false');
+
+    expect(ensureWidgetInHtml(before, UUID_A, null)).toEqual({ html: before, action: 'unchanged' });
+  });
+
+  it('leaves the attribute as found when no build mode is requested', () => {
+    const before = managedWith('local');
+
+    expect(ensureWidgetInHtml(before, UUID_A).action).toBe('unchanged');
+    expect(ensureWidgetInHtml(before, UUID_B).html).toContain(buildWidgetTag(UUID_B, 'local'));
+  });
+
+  it('carries the build mode across a site change', () => {
+    const { html, action } = ensureWidgetInHtml(managedWith(null), UUID_B, LOCAL_BUILD_MODE);
+
+    expect(action).toBe('updated');
+    expect(html).toContain(buildWidgetTag(UUID_B, 'local'));
+  });
+
+  it('never touches a tag it does not manage', () => {
+    const manual = SHELL.replace(
+      '</body>',
+      `<script src="${WIDGET_SCRIPT_URL}" data-site-uuid="${UUID_A}" data-build-mode="false" defer></script></body>`,
+    );
+
+    expect(ensureWidgetInHtml(manual, UUID_A, LOCAL_BUILD_MODE)).toEqual({ html: manual, action: 'manual' });
+  });
+});
+
+describe('sourceWidgetBuildMode and ensureSourceWidget on a plain HTML site', () => {
+  let cwd: string;
+
+  beforeEach(() => {
+    cwd = mkdtempSync(path.join(tmpdir(), 'ps-widget-mode-'));
+    writeFileSync(path.join(cwd, 'index.html'), SHELL);
+  });
+
+  afterEach(() => {
+    rmSync(cwd, { recursive: true, force: true });
+  });
+
+  const manifest = (scripts: Record<string, string> = {}): void => {
+    writeFileSync(
+      path.join(cwd, 'package.json'),
+      JSON.stringify({ dependencies: { '@patchstack/connect': '^0.5.0' }, scripts }),
+    );
+  };
+
+  const scan = (environment: 'local' | 'production' | 'sandbox' = 'local'): string => {
+    ensureSourceWidget(cwd, UUID_A, null, sourceWidgetBuildMode(cwd, environment));
+
+    return readFileSync(path.join(cwd, 'index.html'), 'utf8');
+  };
+
+  it('asks for "local" when index.html is published without a build step', () => {
+    manifest({ postinstall: 'patchstack-connect scan' });
+
+    expect(publishesPagesAsIs(cwd)).toBe(true);
+    expect(sourceWidgetBuildMode(cwd, 'local')).toBe('local');
+    expect(sourceWidgetBuildMode(cwd, 'production')).toBe('local');
+    expect(scan()).toContain(buildWidgetTag(UUID_A, 'local'));
+  });
+
+  it('does not ask for it in a sandbox, whose preview is not a local host', () => {
+    manifest();
+
+    expect(sourceWidgetBuildMode(cwd, 'sandbox')).toBeNull();
+    expect(scan('sandbox')).toContain(buildWidgetTag(UUID_A));
+    expect(scan('sandbox')).not.toContain('data-build-mode');
+  });
+
+  it('takes "local" off again once a build script exists', () => {
+    manifest();
+    expect(scan()).toContain('data-build-mode="local"');
+
+    manifest({ build: 'vite build' });
+
+    expect(publishesPagesAsIs(cwd)).toBe(false);
+    expect(sourceWidgetBuildMode(cwd, 'local')).toBeNull();
+    expect(scan()).toContain(buildWidgetTag(UUID_A));
+    expect(scan()).not.toContain('data-build-mode');
+  });
+
+  it('removes "local" in a sandbox too', () => {
+    manifest();
+    expect(scan()).toContain('data-build-mode="local"');
+
+    expect(scan('sandbox')).not.toContain('data-build-mode');
+  });
+
+  it('treats an empty build script as none', () => {
+    manifest({ build: '  ' });
+
+    expect(sourceWidgetBuildMode(cwd, 'local')).toBe('local');
+  });
+
+  it('does not apply without a root index.html or a readable package.json', () => {
+    expect(publishesPagesAsIs(cwd)).toBe(false);
+
+    manifest();
+    rmSync(path.join(cwd, 'index.html'));
+    expect(publishesPagesAsIs(cwd)).toBe(false);
   });
 });
