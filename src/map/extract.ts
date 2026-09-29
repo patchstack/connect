@@ -6,7 +6,7 @@ import { guessScriptKind } from './ast.js';
 import { buildModuleBindings } from './bindings.js';
 import { collectSources, componentScript, detectDeploymentShapes, detectFramework, hasEntrySignal, isComponentFile, type WalkStats } from './sources.js';
 import { classifyServerSurface, surfaceNote } from './surface.js';
-import { functionNameFromPath, routeFromFilePath } from './routes.js';
+import { functionNameFromPath, isPagesApiFile, routeFromFilePath } from './routes.js';
 import { collectLocalSinks } from './sinks.js';
 import { boundUnprovenFlows } from './flows.js';
 import { createModuleGraph } from './module-graph.js';
@@ -81,7 +81,7 @@ export async function extractInputMap(cwd: string, ts: TsModule, options: Extrac
       // Imports are collected from EVERY file, entry point or not: the data layer of an AI-built app
       // usually lives in a file with no handler in it, so a pre-filtered file is exactly where the
       // interesting dependency is imported.
-      if (!hasEntrySignal(text)) {
+      if (!hasEntrySignal(text) && !isPagesApiFile(relFile)) {
         preFiltered++;
         const scanned = scanFileImports(text, ts);
         if (scanned === null) importScanFailures++; // this file's imports are unknown, not empty

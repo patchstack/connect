@@ -1,6 +1,6 @@
 import type { FieldShape, InputField, InputSource, TsModule } from './types.js';
-import { bindingKey, rootIdentifier } from './ast.js';
-import { declarationOf } from './scope.js';
+import { bindingKey, rootIdentifier, rootIdentifierNode } from './ast.js';
+import { declarationOf, isGlobal } from './scope.js';
 import { npmPackageOf, type Bindings } from './bindings.js';
 import { addressSpaceOf, inputIdOf, runtimeCoordinate } from './coordinates.js';
 
@@ -24,11 +24,14 @@ export function inputsFromHandler(
   ts: TsModule,
   bindings: Bindings,
   opts: { payloadParam?: boolean; validatorSource?: InputSource } = {},
-): InputField[] {
+): { inputs: InputField[]; schemaUnresolved: boolean } {
   // A validated schema inside a handler describes the request body — except for a payload-style entry
   // (a server action), where the schema describes the action's own argument.
   const schemaSource = opts.validatorSource ?? 'json-body';
-  const schemaFields = zodObjectFields(body, ts, bindings);
+  const inline = zodObjectFields(body, ts, bindings);
+  // A schema declared outside the handler and applied to the request (`Schema.parse(await req.json())`).
+  const referenced = inline.length > 0 ? { fields: [], unresolved: false } : referencedSchemaFields(params, body, ts, bindings);
+  const schemaFields = inline.length > 0 ? inline : referenced.fields;
   const reads = requestMemberAccesses(params, body, ts, opts);
 
   // Keyed by IDENTITY — `<space>:<path>` — not by field name. A handler that reads `query.id` and
@@ -49,7 +52,67 @@ export function inputsFromHandler(
     put(name, source ?? schemaSource, shape);
   }
   for (const { name, sources } of reads) for (const source of sources) put(name, source);
-  return [...byId.values()];
+  return { inputs: [...byId.values()], schemaUnresolved: referenced.unresolved };
+}
+
+const SCHEMA_METHODS = new Set(['parse', 'safeParse', 'parseAsync', 'safeParseAsync']);
+
+/**
+ * Fields of a schema the handler applies to its request but declares elsewhere: `Schema.parse(x)` where
+ * `x` derives from a handler parameter. A schema declared in this file is read; one imported from
+ * another module cannot be, and is reported as `unresolved` so its fields count as unknown, not absent.
+ */
+function referencedSchemaFields(params: any, body: any, ts: TsModule, bindings: Bindings): { fields: FieldShape[]; unresolved: boolean } {
+  if (!body) return { fields: [], unresolved: false };
+  const paramDecls = new Set<any>();
+  for (const p of params ?? []) {
+    if (!p?.name) continue;
+    if (ts.isIdentifier(p.name)) paramDecls.add(p.name);
+    else if (ts.isObjectBindingPattern(p.name)) for (const el of p.name.elements) if (ts.isIdentifier(el.name)) paramDecls.add(el.name);
+  }
+  // Rooted at a handler parameter, directly or through one local (`const raw = await req.json()`).
+  const fromParams = (e: any): boolean => {
+    const root = rootIdentifierNode(e, ts);
+    const declaration = root ? declarationOf(root, ts) : undefined;
+    if (declaration === undefined) return false;
+    if (paramDecls.has(declaration)) return true;
+    const owner = declaration.parent;
+    if (owner && ts.isVariableDeclaration(owner) && owner.name === declaration && owner.initializer) {
+      const inner = rootIdentifierNode(owner.initializer, ts);
+      const innerDeclaration = inner ? declarationOf(inner, ts) : undefined;
+      return innerDeclaration !== undefined && paramDecls.has(innerDeclaration);
+    }
+    return false;
+  };
+  let fields: FieldShape[] = [];
+  let unresolved = false;
+  const visit = (n: any) => {
+    if (fields.length > 0) return;
+    if (ts.isCallExpression(n) && ts.isPropertyAccessExpression(n.expression) && SCHEMA_METHODS.has(n.expression.name.text)
+        && ts.isIdentifier(n.expression.expression)
+        && n.arguments.some((a: any) => fromParams(a))) {
+      const declaration = declarationOf(n.expression.expression, ts);
+      const owner = declaration?.parent;
+      if (owner && ts.isVariableDeclaration(owner) && owner.name === declaration && owner.initializer) {
+        const literal = findValidatorObject(owner.initializer, ts, bindings);
+        if (literal) fields = fieldsOfObject(literal, ts, bindings, '');
+        else unresolved = true;
+      } else if (declaration !== undefined && isImported(declaration, ts)) {
+        unresolved = true;
+      }
+    }
+    ts.forEachChild(n, visit);
+  };
+  visit(body);
+  return { fields, unresolved: fields.length === 0 && unresolved };
+}
+
+function isImported(declaration: any, ts: TsModule): boolean {
+  for (let cur = declaration?.parent; cur; cur = cur.parent) {
+    if (ts.isImportDeclaration(cur)) return true;
+    if (ts.isSourceFile(cur) || ts.isStatement(cur)) return false;
+  }
+  return false;
 }
 
 // Find the first validator `.object({...})` in a subtree — gated on the receiver tracing to a known
@@ -151,9 +214,18 @@ function requestMemberAccesses(
     out.set(name, list);
   };
   const p0 = params?.[0];
-  // The request binding itself, so an inner function's own parameter of the same name is not the request.
+  // The request bindings, by declaration, so an inner function's own parameter of the same name is not the
+  // request: the handler's first parameter, a destructured `({ request })`, and aliases (`const r = req`).
   const reqDecl = p0 && ts.isIdentifier(p0.name) ? p0.name : undefined;
-  const isRequest = (e: any): boolean => reqDecl !== undefined && ts.isIdentifier(e) && declarationOf(e, ts) === reqDecl;
+  const requestDecls = new Set<any>(reqDecl ? [reqDecl] : []);
+  const isRequest = (e: any): boolean => ts.isIdentifier(e) && requestDecls.has(declarationOf(e, ts));
+  // A request as an object that carries the request API: the request itself, or a context's `req` (Hono).
+  const isRequestObject = (e: any): boolean =>
+    isRequest(e) || (ts.isPropertyAccessExpression(e) && e.name.text === 'req' && isRequest(e.expression));
+  // `new URL(request.url)`, `request.nextUrl`, a destructured `({ url })` and their aliases — the query
+  // string is read through their `searchParams`.
+  const urlDecls = new Set<any>();
+  const searchParamDecls = new Set<any>();
   // Identifiers that ARE a request-input object (destructured `({ body })` param, `await req.json()`),
   // mapped to the NAMESPACE each one came from. It has to be a map, not a set of names: with
   // `({ query: q })` the local is `q`, and matching the local against the literal 'query'/'params'
@@ -167,9 +239,18 @@ function requestMemberAccesses(
   if (p0 && !reqDecl && ts.isObjectBindingPattern(p0.name)) {
     for (const el of p0.name.elements) {
       const key = bindingKey(el, ts);
-      if (key && REQ_SOURCES.includes(key) && ts.isIdentifier(el.name)) {
-        sourceNames.set(el.name, namespaceSource(key));
-      }
+      if (!key || !ts.isIdentifier(el.name)) continue;
+      if (REQ_SOURCES.includes(key)) sourceNames.set(el.name, namespaceSource(key));
+      // A request event (SvelteKit, Astro): `({ request, url })`.
+      else if (key === 'request') requestDecls.add(el.name);
+      else if (key === 'url') urlDecls.add(el.name);
+    }
+  }
+  // A route context after the request: `(request, { params })` (Next.js).
+  for (const p of (params ?? []).slice(1)) {
+    if (!p?.name || !ts.isObjectBindingPattern(p.name)) continue;
+    for (const el of p.name.elements) {
+      if (bindingKey(el, ts) === 'params' && ts.isIdentifier(el.name)) sourceNames.set(el.name, 'route-param');
     }
   }
   const unwrap = (e: any): any => {
@@ -186,13 +267,35 @@ function requestMemberAccesses(
     const inner = unwrap(e);
     return Boolean(inner && ts.isCallExpression(inner) && ts.isPropertyAccessExpression(inner.expression) &&
       ['json', 'formData'].includes(inner.expression.name.text) &&
-      isRequest(inner.expression.expression));
+      isRequestObject(inner.expression.expression));
+  };
+  const isRequestUrl = (e: any): boolean => {
+    const cur = unwrap(e);
+    if (!cur) return false;
+    if (ts.isIdentifier(cur)) return urlDecls.has(declarationOf(cur, ts));
+    if (ts.isPropertyAccessExpression(cur) && cur.name.text === 'nextUrl') return isRequest(cur.expression);
+    if (ts.isNewExpression(cur) && isGlobal(cur.expression, 'URL', ts)) {
+      const [href] = cur.arguments ?? [];
+      return Boolean(href && ts.isPropertyAccessExpression(href) && href.name.text === 'url' && isRequestObject(href.expression));
+    }
+    return false;
+  };
+  const isSearchParams = (e: any): boolean => {
+    const cur = unwrap(e);
+    if (!cur) return false;
+    if (ts.isIdentifier(cur)) return searchParamDecls.has(declarationOf(cur, ts));
+    return ts.isPropertyAccessExpression(cur) && cur.name.text === 'searchParams' && isRequestUrl(cur.expression);
+  };
+  const literalArgument = (call: any): string | undefined => {
+    const [arg] = call.arguments ?? [];
+    return call.arguments?.length === 1 && arg && ts.isStringLiteral(arg) ? arg.text : undefined;
   };
   // `request.headers.get` in `request.headers.get('x')` is a METHOD of the namespace, not a field of it.
   // Recording it would invent an input named `get` — a coordinate no request carries.
   const isCallee = (n: any): boolean =>
     Boolean(n.parent && (ts.isCallExpression(n.parent) || ts.isNewExpression(n.parent)) && n.parent.expression === n);
   const ACCESSOR_SOURCES = new Set<InputSource>(['header', 'cookie', 'form-body']);
+  const HONO_ACCESSORS: Record<string, InputSource> = { query: 'query', param: 'route-param', header: 'header' };
   const visit = (n: any) => {
     // <source>.<field>
     if (ts.isPropertyAccessExpression(n) && isReqSourceExpr(n.expression) && !isCallee(n)) {
@@ -215,8 +318,37 @@ function requestMemberAccesses(
         && ACCESSOR_SOURCES.has(sourceOfExpr(n.expression.expression))) {
       record((n.arguments[0] as any).text, sourceOfExpr(n.expression.expression));
     }
+    // `url.searchParams.get('q')` — the query string, read through a URL of the request.
+    if (ts.isCallExpression(n) && ts.isPropertyAccessExpression(n.expression) && n.expression.name.text === 'get'
+        && isSearchParams(n.expression.expression)) {
+      const name = literalArgument(n);
+      if (name !== undefined) record(name, 'query');
+    }
+    // Hono: `c.req.query('q')`, `c.req.param('id')`, `c.req.header('x-token')`.
+    if (ts.isCallExpression(n) && ts.isPropertyAccessExpression(n.expression)
+        && ts.isPropertyAccessExpression(n.expression.expression) && n.expression.expression.name.text === 'req'
+        && isRequest(n.expression.expression.expression)) {
+      const source = HONO_ACCESSORS[n.expression.name.text];
+      const name = literalArgument(n);
+      if (source && name !== undefined) record(name, source);
+    }
     if (ts.isVariableDeclaration(n) && n.initializer) {
       const init = unwrap(n.initializer);
+      if (ts.isIdentifier(n.name)) {
+        // const r = req → another name for the request.
+        if (isRequest(init)) requestDecls.add(n.name);
+        // const b = req.body → a namespace of the request, read under another name.
+        else if (ts.isPropertyAccessExpression(init) && isRequest(init.expression) && REQ_SOURCES.includes(init.name.text)) {
+          sourceNames.set(n.name, namespaceSource(init.name.text));
+        } else if (isRequestUrl(init)) urlDecls.add(n.name);
+        else if (isSearchParams(init)) searchParamDecls.add(n.name);
+      }
+      // const { searchParams } = new URL(request.url)
+      if (ts.isObjectBindingPattern(n.name) && isRequestUrl(init)) {
+        for (const el of n.name.elements) {
+          if (bindingKey(el, ts) === 'searchParams' && ts.isIdentifier(el.name)) searchParamDecls.add(el.name);
+        }
+      }
       // const b = await request.json() → b is a request-input object from here on.
       if (ts.isIdentifier(n.name) && isBodyReadCall(n.initializer)) sourceNames.set(n.name, bodyReadSource(n.initializer));
       // const { query: q } = req → the SAME namespace capture as a destructured handler param, just one

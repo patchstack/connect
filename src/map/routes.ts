@@ -70,6 +70,13 @@ export function routeFromFilePath(relFile: string): { route?: string; dynamic?: 
   return { route: route.length > 1 ? route.replace(/\/+$/, '') : '/', dynamic };
 }
 
+/** Whether a file is a Next.js Pages Router API route (`pages/api/**`), whose default export is the handler. */
+export function isPagesApiFile(relFile: string): boolean {
+  const dirs = relFile.split(/[\\/]/).filter(Boolean).slice(0, -1);
+  const i = dirs.lastIndexOf('pages');
+  return i !== -1 && dirs[i + 1] === 'api';
+}
+
 /** Where a Nuxt server route's URL starts, from its directories; undefined outside `server/api` / `server/routes`. */
 function nuxtRoot(dirs: string[]): string[] | undefined {
   const i = dirs.lastIndexOf('server');

@@ -1,7 +1,8 @@
 import type { Endpoint, Sink, TsModule } from './types.js';
 import { hasExport, isFnLike, methodFromObjectArg, spanOf, unwindChain } from './ast.js';
 import type { Bindings } from './bindings.js';
-import { functionNameFromPath, isRoutePath, ROUTE_REGISTER, routeFromChain, routeObject } from './routes.js';
+import { functionNameFromPath, isPagesApiFile, isRoutePath, ROUTE_REGISTER, routeFromChain, routeObject } from './routes.js';
+import { declarationOf } from './scope.js';
 import { withCoordinates } from './coordinates.js';
 import { inputsFromHandler, inputsFromValidator } from './inputs.js';
 import { sinksFrom, type LocalSinks, type SinkContext } from './sinks.js';
@@ -14,6 +15,7 @@ const HTTP_METHODS = new Set(['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'HEAD', '
 export function extractFromFile(sf: any, ts: TsModule, localSinks: LocalSinks, bindings: Bindings, ctx: SinkContext): Omit<Endpoint, 'file'>[] {
   const out: Omit<Endpoint, 'file'>[] = [];
   const isServerActionsFile = fileHasUseServer(sf, ts);
+  const pagesApi = isPagesApiFile(ctx.owner);
 
   const visit = (node: any) => {
     if (ts.isVariableStatement(node) && hasExport(node, ts)) {
@@ -59,6 +61,15 @@ export function extractFromFile(sf: any, ts: TsModule, localSinks: LocalSinks, b
         out.push(handlerEntry(node.name.text, node.name.text, node.parameters, node.body, ts, localSinks, bindings, ctx, spanOf(node)));
       } else if (isServerActionsFile || hasUseServerDirective(node, ts)) {
         out.push(handlerEntry(node.name.text, 'server-action', node.parameters, node.body, ts, localSinks, bindings, ctx, spanOf(node)));
+      }
+    }
+
+    // (2d) Next.js Pages Router: the default export of a `pages/api/**` file handles that route, whether
+    // declared in place or exported by name (`export default handler`).
+    if (pagesApi) {
+      const handler = defaultExportedHandler(node, ts);
+      if (handler) {
+        out.push(handlerEntry(handler.name ?? 'default', 'default-export', handler.fn.parameters, handler.fn.body, ts, localSinks, bindings, ctx, spanOf(handler.fn)));
       }
     }
 
@@ -117,6 +128,21 @@ export function extractFromFile(sf: any, ts: TsModule, localSinks: LocalSinks, b
   return out;
 }
 
+/** The function a module's default export names, when it is one: `export default function`, `export default fn`. */
+function defaultExportedHandler(node: any, ts: TsModule): { name?: string; fn: any } | undefined {
+  const isDefault = (n: any) => Boolean(n.modifiers?.some((m: any) => m.kind === ts.SyntaxKind.DefaultKeyword));
+  if (ts.isFunctionDeclaration(node) && hasExport(node, ts) && isDefault(node) && node.body) return { name: node.name?.text, fn: node };
+  if (!ts.isExportAssignment(node) || node.isExportEquals) return undefined;
+  const target = node.expression;
+  if (isFnLike(target, ts)) return { fn: target };
+  if (!ts.isIdentifier(target)) return undefined;
+  const declaration = declarationOf(target, ts);
+  const owner = declaration?.parent;
+  if (owner && ts.isFunctionDeclaration(owner) && owner.body) return { name: target.text, fn: owner };
+  if (owner && ts.isVariableDeclaration(owner) && owner.initializer && isFnLike(owner.initializer, ts)) return { name: target.text, fn: owner.initializer };
+  return undefined;
+}
+
 // Next server actions: a `'use server'` directive at the top of a module (whole file) or a function body.
 function fileHasUseServer(sf: any, ts: TsModule): boolean {
   const first = sf.statements?.[0];
@@ -148,7 +174,7 @@ function handlerEntry(
     : 'route-handler';
   // A server action receives its payload as the first argument; a route handler receives a Request.
   const payloadStyle = kindLabel === 'server-action';
-  const inputs = inputsFromHandler(params, body, ts, bindings, {
+  const { inputs, schemaUnresolved } = inputsFromHandler(params, body, ts, bindings, {
     payloadParam: payloadStyle,
     validatorSource: payloadStyle ? 'server-fn-data' : 'json-body',
   });
@@ -164,5 +190,7 @@ function handlerEntry(
     inputs,
     sinks,
     ...linkedFlows(body, params, inputs, sinks, ts, handlerInvocations(body, ts, bindings, ctx)),
+    // The handler validates its request with a schema declared in another module: its fields are unknown.
+    ...(schemaUnresolved ? { inputsResolved: false as const } : {}),
   };
 }
