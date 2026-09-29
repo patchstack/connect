@@ -12,11 +12,11 @@ For a standalone site made of HTML, CSS, and browser JavaScript, with no package
 
 1. Use the public site UUID or widget snippet for the correct site in the Patchstack dashboard. An existing `.patchstackrc.json` can also supply `siteUuid`. Never invent a UUID or use a claim token or API key as the widget identifier. If neither is available, stop before editing the page and give the person these options in plain words, then wait for their choice:
 
-   - **Add the widget with a site from the dashboard** (the usual choice for a page like this). They create an "Application" site in the Patchstack dashboard and paste its site ID or widget snippet. You add the tag in step 2. They get the widget only.
-   - **Turn the folder into a JS project first**, only if they want that anyway, for example because the site will grow into an app with packages or a server. This adds `package.json`, a lockfile and `node_modules` to their folder. After that, the JS/Node path below applies: `setup` creates the site and prints the dashboard link. A page with no packages of its own gives the scan little to report, and there is still no runtime protection without a server.
+   - **Add the widget with a site from the dashboard.** They create an "Application" site in the Patchstack dashboard and paste its site ID or widget snippet. You add the tag in step 2. Nothing else is added to their folder. They get the widget only.
+   - **Create a Node project in the folder and let Connect set it up.** No trip to the dashboard first: `setup` creates the site and prints the link that connects it to their account. It adds `package.json`, a lockfile and `node_modules` to their folder. Packages they add later are checked for known security problems. A page with no packages of its own has little to check at first, and there is still no runtime protection without a server. Follow "Creating a Node project for a plain HTML site" below.
    - **Stop here.** Nothing is changed.
 
-   Do not pick for them, and do not start the JS project unless they choose it.
+   Do not pick for them, and do not create the Node project unless they choose it.
 2. Add one widget tag before `</body>` in the page or shared layout. Preserve an existing correct tag. For a page published directly without a build step, disable the widget's build-mode onboarding with `data-build-mode="false"`:
 
    ```html
@@ -27,6 +27,25 @@ For a standalone site made of HTML, CSS, and browser JavaScript, with no package
 3. Verify the saved tag uses the correct UUID. If a browser preview is available, reload it and check that the Patchstack Connector appears (a "Connect this website" panel until the site is claimed); otherwise tell the user that the browser check is pending. Do not submit a vulnerability report as an installation test. Save the HTML change and remind the user to publish it when ready; do not deploy it yourself.
 
 Report this as **Patchstack Connector installed**, with any remaining preview or publishing step. This path does not inventory local JavaScript files or scripts loaded from a CDN, scan npm dependencies, or install runtime exploit protection. External APIs used by the page require their own server-side integration.
+
+#### Creating a Node project for a plain HTML site
+
+Only when the person chose this option in step 1 above. Work in the folder that holds the site's pages.
+
+1. Create the project and install Connect:
+
+   ```
+   npm init -y
+   npm install --save @patchstack/connect
+   npx @patchstack/connect setup
+   ```
+
+   In a hosted builder, scope `PATCHSTACK_ENVIRONMENT=sandbox` to the `setup` command, as in "Automated setup". `setup` creates the site, writes its `siteUuid` to `.patchstackrc.json`, adds `"postinstall": "patchstack-connect scan"` to `package.json`, and prints the dashboard link. With no `build` script it adds no build steps.
+2. Put the widget on the pages. `setup` adds the tag only to `index.html`, `public/index.html` or `src/app.html`. For any other page it lists the widget under `Missing` and prints the tag to add. Add one tag before `</body>` on each page, or in the shared layout. Because the pages are published without a build step, the tag needs `data-build-mode="false"`, as in step 2 above. If `setup` already added the tag to `index.html`, add that attribute to it. Later scans keep the attribute: they rewrite the tag only when the site ID changes.
+3. Two `✘` lines are expected and need no fix:
+   - `Runtime protection: no server file found`. A plain HTML site has no server to guard. Do not add one. `setup` leaves a generic guard in `patchstack/`, which nothing loads until a server does.
+   - `Deploy project to protect live app`. Publishing the pages is the person's step.
+4. End as in "The message you end on", with the dashboard link from the `Next:` line. Say that the widget, and a check of the packages the site installs, are active, and that runtime protection is not. Remind them to publish the pages when ready, and that `node_modules` is not part of the site. Do not publish anything yourself.
 
 ### JS/Node applications — the usual path
 
