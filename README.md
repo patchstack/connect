@@ -262,7 +262,7 @@ group, and a verification that can leave a server running is worse than an unans
 
 No other command runs your application. `protect`, `protect --check`, `setup`, `guide`, `scan`,
 `status` and `mark-build` only read and write files, and — for `scan` and `mark-build` — report the
-dependency manifest they read.
+dependency manifest they read, or only its checksum from a production build that has no API key.
 
 ## Configuration
 
@@ -310,7 +310,7 @@ The site UUID identifies the site and is **not** a secret — the Patchstack Con
 
 If it is ever lost, `npx @patchstack/connect login` recovers it — approval happens in the dashboard and rotates the credential.
 
-The credential's file is never committed, so CI needs `PATCHSTACK_API_KEY` in the environment (and `PATCHSTACK_SITE_UUID` too where `.patchstackrc.json` is also absent). Precedence is CLI flag → env var → `.patchstackrc.local.json` → `.patchstackrc.json`.
+The credential's file is never committed, so CI needs `PATCHSTACK_API_KEY` in the environment (and `PATCHSTACK_SITE_UUID` too where `.patchstackrc.json` is also absent). A production build that has the site UUID but no key — a hosted builder's publish, typically — reports only that the build ran: it POSTs the manifest checksum to `monitor/pulse/build/<uuid>` without a credential and without the package list, and Patchstack accepts it only for the build it last scanned. Set the key there if the publish can change your packages. Precedence is CLI flag → env var → `.patchstackrc.local.json` → `.patchstackrc.json`.
 
 A `pulseAuth` field is still read if present, and `PATCHSTACK_PULSE_AUTH` still overrides, for deployments that authenticate Pulse ingest with a different credential from block-logs. Neither is written by default, and neither is needed when the two share one.
 
