@@ -778,6 +778,8 @@ async function runScan(
     say(`Stored manifest #${response.manifest_id} (checksum ${response.checksum}).`);
   } else if (response.reason === 'duplicate') {
     report.done.unshift(checked, 'No changes since the last check');
+  } else if (response.reason === 'build-reported') {
+    report.done.unshift(checked, response.message ?? 'Reported this production build');
   } else {
     report.missing.push({
       text: 'Patchstack did not save this check',
@@ -842,7 +844,9 @@ async function runScan(
   }
 
   const synced =
-    effectiveUuid !== null && effectiveUuid.length > 0 && (response.stored || response.reason === 'duplicate');
+    effectiveUuid !== null &&
+    effectiveUuid.length > 0 &&
+    (response.stored || response.reason === 'duplicate' || response.reason === 'build-reported');
   const outcome: Omit<Progress, 'installed'> = {
     connected,
     synced,

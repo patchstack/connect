@@ -8,6 +8,7 @@ import {
 } from './types.js';
 import type { WirePayload } from './normalize.js';
 import { detectHostingPlatform } from './hosting.js';
+import { computeManifestChecksum } from './checksum.js';
 import { pulseFetch } from './pulse-token.js';
 import { canonicalBuildId } from './build-id.js';
 import type { EnvLike } from './stack.js';
@@ -502,10 +503,118 @@ export async function postManifestWithEnvironmentFallback(
       environmentUsed: config.environment,
     };
   } catch (err) {
+    // Asked only once the manifest was refused: a host's build authenticates with a HostToken and
+    // carries no key of its own, and its manifest must still go through.
+    if (err instanceof PatchstackError && err.code === 'UNAUTHORIZED' && reportsBuildWithoutCredential(config)) {
+      return {
+        response: await postBuildReport(config, computeManifestChecksum(payload.packages), marker),
+        environmentUsed: 'production',
+      };
+    }
     if (config.environment !== 'local' || !environmentRejected(err)) throw err;
     const fallback: Config = { ...config, environment: 'sandbox' };
     return { response: await postManifest(fallback, payload, marker), environmentUsed: 'sandbox' };
   }
+}
+
+/**
+ * Whether this build can only name itself: a production build of a registered site, with no credential.
+ *
+ * That is a hosted builder's publish. It builds from the committed project, and the API key lives in a
+ * git-ignored file, so the manifest post would be refused. The build report needs no credential
+ * because it cannot say what the app is built from — only that the build Patchstack last scanned was
+ * built for production.
+ */
+export function reportsBuildWithoutCredential(config: Config): boolean {
+  const hasCredential = typeof config.pulseAuth === 'string' && config.pulseAuth.length > 0;
+  return !hasCredential && config.environment === 'production' && config.siteUuid !== null && config.siteUuid !== '';
+}
+
+/** The build-report URL beside a manifest endpoint override. */
+export function buildReportUrl(manifestEndpoint: string, siteUuid: string): string {
+  const url = new URL(manifestEndpoint);
+  const path = url.pathname.replace(/\/$/, '');
+  const id = encodeURIComponent(siteUuid);
+  url.pathname = path.endsWith('/manifest')
+    ? `${path.slice(0, -'/manifest'.length)}/build/${id}`
+    : `/monitor/pulse/build/${id}`;
+  url.search = '';
+  url.hash = '';
+  return url.toString();
+}
+
+/**
+ * Tell Patchstack a production build ran, naming it by checksum. Sent without a credential.
+ *
+ * Accepted only when the checksum is the site's newest scanned build, so a publish that changed the
+ * packages is refused, and the refusal says the key is what that build needs.
+ */
+export async function postBuildReport(
+  config: Config,
+  checksum: string,
+  marker: BuildMarker | null = null,
+): Promise<StoreManifestResponse> {
+  const siteUuid = config.siteUuid ?? '';
+  const url = buildReportUrl(config.endpoint, siteUuid);
+  assertConnectableEndpoint(config, url);
+
+  const needsKey = authFailureMessage(401, config) ?? 'Set PATCHSTACK_API_KEY where this build runs.';
+
+  let response: Response;
+  try {
+    response = await fetch(url, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Accept: 'application/json',
+        'User-Agent': '@patchstack/connect',
+      },
+      body: JSON.stringify({ checksum, environment: 'production', ...(marker !== null ? { marker } : {}) }),
+      signal: AbortSignal.timeout(config.timeoutMs),
+    });
+  } catch (cause) {
+    throw new PatchstackError(
+      isTimeoutError(cause)
+        ? `Patchstack request to ${url} timed out after ${config.timeoutMs}ms. Override with PATCHSTACK_TIMEOUT_MS.`
+        : `Could not reach Patchstack at ${url}. Check your network connection.`,
+      isTimeoutError(cause) ? 'NETWORK_TIMEOUT' : 'NETWORK_ERROR',
+      cause,
+    );
+  }
+
+  let parsed: unknown = null;
+  try {
+    const text = await readBoundedText(response);
+    parsed = text.length > 0 ? JSON.parse(text) : null;
+  } catch {
+    parsed = null;
+  }
+
+  if (response.status === 422) {
+    throw new PatchstackError(
+      safeDisplayString((parsed as { error?: unknown } | null)?.error) ??
+        `This build is not the one Patchstack last scanned. ${needsKey}`,
+      'UNAUTHORIZED',
+    );
+  }
+
+  // A server without the route answers 404 for it, as it does for an unknown site. Either way the key
+  // is what would have let this build report, so that is what is said.
+  if (response.status < 200 || response.status >= 300) {
+    throw new PatchstackError(needsKey, 'UNAUTHORIZED');
+  }
+
+  const result = (parsed as { result?: unknown } | null)?.result;
+  return {
+    uuid: siteUuid,
+    stored: false,
+    checksum,
+    reason: 'build-reported',
+    message:
+      result === 'already-reported'
+        ? 'Patchstack already knew this build was published'
+        : 'Told Patchstack this build was published. There is no API key here, so the package list was not sent again',
+  };
 }
 
 export async function postManifest(
