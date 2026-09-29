@@ -86,7 +86,7 @@ describe('createProtection refresh re-posts the manifest (sandbox path)', () => 
       expect(calls.some((c) => c.startsWith('POST') && c.includes('/manifest/'))).toBe(true);
       expect(calls.some((c) => c.includes('/rules/'))).toBe(true);
     } finally {
-      protection.stopRefresh?.();
+      protection.stop?.();
       await rm(dir, { recursive: true, force: true });
       vi.restoreAllMocks();
     }

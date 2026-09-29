@@ -10,12 +10,50 @@
  *           onBlock?: (info:{url:string,host:string|null,method:string})=>void,
  *           dnsScreen?: boolean,
  *           lookup?: Function }} opts
- * @returns {Promise<() => void>} uninstall (restores every patched surface)
+ * @returns {Promise<() => void>} uninstall (removes this screen; the last one out restores the patched surfaces)
  */
 import { notify } from './notify.js';
 
+// fetch and node:http(s) are process-wide, so the guard on them is too: one wrapper per surface, shared
+// by every protection in the process (including another copy of this package), each registering its own
+// screen. A call is refused when any registered screen refuses it. Keyed on a global symbol so that two
+// copies of this module share one registry rather than each deciding the other's wrapper is enough.
+const REGISTRY = Symbol.for('patchstack.connect.egress-guard');
+
+function egressRegistry() {
+  const existing = globalThis[REGISTRY];
+  if (existing && existing.screens instanceof Set && existing.surfaces instanceof Map) return existing;
+  const created = { screens: new Set(), surfaces: new Map() };
+  Object.defineProperty(globalThis, REGISTRY, { value: created, configurable: true, writable: true });
+  return created;
+}
+
+const refusal = (host) => new Error(`Patchstack blocked an outbound request to a disallowed address: ${host}`);
+
+// The destination of a fetch call whose arguments `Request` would not accept, when one can be read: a
+// URL string, a URL object, or an object carrying `url`/`href`. Null when there is no parseable URL.
+function readableDestination(input, init) {
+  try {
+    const raw = typeof input === 'string' || input instanceof URL ? String(input) : input?.url ?? input?.href;
+    if (typeof raw !== 'string' && !(raw instanceof URL)) return null;
+    const url = new URL(String(raw)).href;
+    const method = String(init?.method ?? input?.method ?? 'GET').toUpperCase();
+    return { url, method };
+  } catch {
+    return null;
+  }
+}
+
+// Asks every screen, so each one reports its own refusal, then answers whether any refused.
+function anyRefuses(screens, url, host, method) {
+  let refused = false;
+  for (const screen of screens) {
+    if (screen.block(url, host, method)) refused = true;
+  }
+  return refused;
+}
+
 export async function installEgressGuard({ shouldBlock, onBlock, onSkip, dnsScreen = true, lookup, allowHosts } = {}) {
-  const restores = [];
   if (typeof shouldBlock !== 'function') return () => {};
   const exempt = new Set((allowHosts ?? []).map((h) => String(h).toLowerCase()));
 
@@ -89,6 +127,10 @@ export async function installEgressGuard({ shouldBlock, onBlock, onSkip, dnsScre
       }
     });
 
+  const registry = egressRegistry();
+  const own = { block, prescreen: resolvesToDisallowed, dns: screen, skip };
+  registry.screens.add(own);
+
   // 1. global fetch — synchronous install, so it's active the instant this returns (no startup race).
   const originalFetch = globalThis.fetch;
   if (typeof originalFetch === 'function' && !originalFetch.__patchstackGuarded) {
@@ -158,8 +200,8 @@ export async function installEgressGuard({ shouldBlock, onBlock, onSkip, dnsScre
       }
     };
 
-    // Screen one outbound URL: hostname/allowlist/literal-IP check, then a DNS-resolution check for
-    // real hostnames. Throws if the destination is disallowed.
+    // Screen one outbound URL against every registered screen: hostname/allowlist/literal-IP check,
+    // then a DNS-resolution check for real hostnames. Throws if any screen disallows the destination.
     const screenUrl = async (u, method) => {
       let host = null;
       try {
@@ -167,9 +209,10 @@ export async function installEgressGuard({ shouldBlock, onBlock, onSkip, dnsScre
       } catch {
         host = null;
       }
-      if (block(u, host, method) || (await resolvesToDisallowed(u, host, method))) {
-        throw new Error(`Patchstack blocked an outbound request to a disallowed address: ${host ?? u}`);
-      }
+      const screens = [...registry.screens];
+      if (anyRefuses(screens, u, host, method)) throw refusal(host ?? u);
+      const resolved = await Promise.all(screens.map((each) => each.prescreen(u, host, method)));
+      if (resolved.includes(true)) throw refusal(host ?? u);
     };
 
     const guarded = async (input, init) => {
@@ -177,7 +220,13 @@ export async function installEgressGuard({ shouldBlock, onBlock, onSkip, dnsScre
       try {
         cur = new Request(input, { ...(init || {}), redirect: 'manual' });
       } catch {
-        return originalFetch(input, init); // odd input we can't normalize — fail open, don't break the caller
+        // An input this runtime's Request refuses is handed to the underlying fetch as it came, which
+        // decides whether it is a request at all. Its destination is still screened when it can be read;
+        // when it cannot, the call goes out unscreened and is counted as such.
+        const destination = readableDestination(input, init);
+        if (destination) await screenUrl(destination.url, destination.method);
+        else for (const each of registry.screens) each.skip('unrecognised-request', {});
+        return originalFetch(input, init);
       }
       const callerRedirect = (init && init.redirect) || (input && input.redirect) || 'follow';
 
@@ -251,8 +300,15 @@ export async function installEgressGuard({ shouldBlock, onBlock, onSkip, dnsScre
     };
     guarded.__patchstackGuarded = true;
     globalThis.fetch = guarded;
-    restores.push(() => {
-      if (globalThis.fetch === guarded) globalThis.fetch = originalFetch;
+    // Released only while it is still the global: a wrapper layered on top later (an APM agent, …)
+    // keeps calling this one, which then stays registered and screens with whichever screens are
+    // registered at the time — none, until a protection registers again.
+    registry.surfaces.set(guarded, {
+      release() {
+        if (globalThis.fetch !== guarded) return false;
+        globalThis.fetch = originalFetch;
+        return true;
+      },
     });
   }
 
@@ -274,12 +330,16 @@ export async function installEgressGuard({ shouldBlock, onBlock, onSkip, dnsScre
   for (const moduleName of ['node:http', 'node:https']) {
     try {
       const mod = await import(moduleName);
-      const restore = patchHttpModule(mod.default ?? mod, block, screen, skip);
-      if (restore) {
+      if (registry.surfaces.has(moduleName)) continue;
+      const release = patchHttpModule(mod.default ?? mod, registry);
+      if (release) {
         patchedAny = true;
-        restores.push(() => {
-          restore();
-          syncBuiltins();
+        registry.surfaces.set(moduleName, {
+          release() {
+            if (!release()) return false;
+            syncBuiltins();
+            return true;
+          },
         });
       }
     } catch {
@@ -296,10 +356,14 @@ export async function installEgressGuard({ shouldBlock, onBlock, onSkip, dnsScre
   // and a hostname-only check would over-promise the control. Outbound screening covers fetch and
   // node:http/https.
 
+  // Removes this screen only. The last screen to leave releases the surfaces it can; one that is no
+  // longer the outermost wrapper stays registered, screening nothing until a screen registers again.
   return () => {
-    for (const restore of restores) {
+    registry.screens.delete(own);
+    if (registry.screens.size > 0) return;
+    for (const [name, surface] of registry.surfaces) {
       try {
-        restore();
+        if (surface.release()) registry.surfaces.delete(name);
       } catch {
         /* ignore */
       }
@@ -320,7 +384,7 @@ function markRedirected(response) {
 
 // Wrap http(s).request/get — and, on node:http, the ClientRequest constructor they build — so a
 // blocked destination throws before the socket opens.
-function patchHttpModule(http, block, screen, skip) {
+function patchHttpModule(http, registry) {
   if (!http || typeof http.request !== 'function' || http.__patchstackGuarded) return null;
   const originalRequest = http.request;
   const originalGet = http.get;
@@ -329,14 +393,23 @@ function patchHttpModule(http, block, screen, skip) {
   // The arguments to hand on, after screening them. Throws when the destination is refused.
   const guardArgs = (args) => {
     const target = extractHttpTarget(args);
-    if (target && block(target.url, target.host, target.method)) {
-      throw new Error(`Patchstack blocked an outbound request to a disallowed address: ${target.host ?? target.url}`);
-    }
-    // DNS screen: only for real hostnames (a literal IP was already covered by the check above),
-    // and skip an explicitly allowlisted host (the operator trusts it — don't second-guess its DNS).
-    if (target && screen && target.host && screen.isIP(target.host) === 0 && !screen.isExempt(target.host)) {
+    if (!target) return args;
+    const screens = [...registry.screens];
+    if (anyRefuses(screens, target.url, target.host, target.method)) throw refusal(target.host ?? target.url);
+    // DNS screen: only for real hostnames (a literal IP was already covered by the check above), and
+    // not for a screen that allowlists this host (the operator trusts it — don't second-guess its DNS).
+    // One resolution serves every screen that wants one, so the connection is pinned to addresses that
+    // all of them checked; it goes through the resolver of the earliest of those screens.
+    const resolving = target.host
+      ? screens.filter((each) => each.dns && each.dns.isIP(target.host) === 0 && !each.dns.isExempt(target.host))
+      : [];
+    if (resolving.length > 0) {
+      const block = (url, host, method) => anyRefuses(resolving, url, host, method);
+      const skip = (reason, detail) => {
+        for (const each of resolving) each.skip(reason, detail);
+      };
       try {
-        return withScreeningLookup(args, target, block, screen.lookup, skip);
+        return withScreeningLookup(args, target, block, resolving[0].dns.lookup, skip);
       } catch {
         // The call goes on with the arguments it came with. Nothing is counted as a fail-open bypass:
         // the only thing here that can throw is reading the caller's options, and Node copies that
@@ -380,13 +453,18 @@ function patchHttpModule(http, block, screen, skip) {
   }
   http.__patchstackGuarded = true;
 
+  // Released only when every wrapper is still the module's own export — don't clobber a wrapper another
+  // library (an APM agent, etc.) layered on top of us after install. Otherwise nothing is restored and
+  // the module keeps calling through ours, so it is never left half-guarded.
   return () => {
-    // Only restore if our wrapper is still installed — don't clobber a wrapper another library
-    // (an APM agent, etc.) layered on top of us after install.
-    if (http.request === guardedRequest) http.request = originalRequest;
-    if (guardedGet && http.get === guardedGet) http.get = originalGet;
-    if (GuardedClientRequest && http.ClientRequest === GuardedClientRequest) http.ClientRequest = OriginalClientRequest;
+    if (http.request !== guardedRequest) return false;
+    if (guardedGet && http.get !== guardedGet) return false;
+    if (GuardedClientRequest && http.ClientRequest !== GuardedClientRequest) return false;
+    http.request = originalRequest;
+    if (guardedGet) http.get = originalGet;
+    if (GuardedClientRequest) http.ClientRequest = OriginalClientRequest;
     delete http.__patchstackGuarded;
+    return true;
   };
 }
 

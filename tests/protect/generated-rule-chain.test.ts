@@ -143,7 +143,7 @@ describe('generated coordinate-pinned rule, through Pulse and the HTTP guard', (
     expect((await p.fetch(appHandler)(req(THIRD_PARTY))).status).toBe(200);
     expect((await p.fetch(appHandler)(req(OTHER_ROUTE))).status).toBe(200);
 
-    p.stopRefresh?.();
+    p.stop?.();
   });
 
   it('is refused at the gate when its scope names no key the engine knows', async () => {
@@ -225,7 +225,7 @@ describe('generated coordinate-pinned rule, through Pulse and the HTTP guard', (
     expect((await p.fetch(appHandler)(req(SSRF))).status).toBe(200);
     expect(detections.length, 'an unbound template cannot match anything').toBe(0);
 
-    p.stopRefresh?.();
+    p.stop?.();
   });
 
   it('binds the fixture from a real serve, with no placeholder left in it', () => {

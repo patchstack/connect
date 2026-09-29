@@ -98,6 +98,6 @@ describe('static-rule-through-Pulse chain (HTTP guard + manual refresh promotion
     expect(calls[calls.length - 1]).toMatchObject({ status: 304, ifNoneMatch: '"v2"' });
     expect(p.mode).toBe('block'); // 304 keeps the last-known-good enforcement
 
-    p.stopRefresh?.();
+    p.stop?.();
   });
 });

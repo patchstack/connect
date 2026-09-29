@@ -1698,10 +1698,11 @@ export async function createProtection(options = {}) {
   const canAsk = Boolean(options.token || pulseAuth);
   recovery = live && canAsk && !loop && ruleSource.ok === false ? startRecovery(refreshTick, { onError }) : null;
 
-  // One method, always present, that reaches everything holding a timer or a buffer: the refresh loop,
-  // the block log, the detection reporter. Always present because a lifecycle method that exists only
-  // for some configurations is one a caller cannot rely on — and each of these components can be the
-  // only one installed, so any of them can be the one left running.
+  // One method, always present, that reaches everything holding a timer, a buffer or a process-wide
+  // hook: the refresh loop, the block log, the detection reporter, the outbound screen. Always present
+  // because a lifecycle method that exists only for some configurations is one a caller cannot rely on
+  // — and each of these components can be the only one installed, so any of them can be the one left
+  // running.
   //
   // Returns a promise that settles when the reporter has finished draining, so a host shutting down can
   // await it rather than racing the last batch against process exit. Bounded and best-effort — a runtime
@@ -1709,6 +1710,8 @@ export async function createProtection(options = {}) {
   protection.stop = () => {
     loop?.stop();
     recovery?.stop();
+    // This protection's outbound screen leaves the shared guard; other protections keep theirs.
+    protection.uninstallEgress?.();
     // Both reporters, because the promise says every buffer this reaches is finished with. Waiting only
     // for one would resolve while the other still had records outstanding — and resolve immediately in a
     // configuration where the one being waited for was never built.
@@ -1718,8 +1721,14 @@ export async function createProtection(options = {}) {
 
     return Promise.all(outstanding).then(() => undefined);
   };
-  // The name callers already have, kept as an alias for it.
-  protection.stopRefresh = protection.stop;
+  // The rule refresh only: the poll loop and the recovery retries. The reporters and this protection's
+  // outbound screen keep running; `stop()` ends those as well.
+  protection.stopRefresh = () => {
+    loop?.stop();
+    recovery?.stop();
+
+    return Promise.resolve();
+  };
   // Which of the three states reporting is in: requested and running, requested but undeliverable, or
   // not requested. A boolean would collapse the middle one into "off", which is the reassuring reading.
   // A getter, because the state follows refreshes: a property assigned once would report the boot value
