@@ -196,14 +196,18 @@ export async function installEgressGuard({ shouldBlock, onBlock, onSkip, dnsScre
       const headers = new Headers(cur.headers);
       const signal = cur.signal;
       const replay = captureReplayBody(cur);
+      // Every hop is sent with the caller's own options (a dispatcher, keepalive, referrer policy, …).
+      // Only what this loop owns per hop is replaced; the body is consumed by the first hop's Request.
+      const { body: _callerBody, ...callerOptions } = init || {};
       let body;
 
       for (let hop = 0; ; hop++) {
         let resp;
         try {
-          resp = await originalFetch(
-            hop === 0 ? cur : new Request(url, { method, headers, body, redirect: 'manual', signal }),
-          );
+          resp =
+            hop === 0
+              ? await originalFetch(cur, { ...callerOptions, redirect: 'manual' })
+              : await originalFetch(url, { ...callerOptions, method, headers, body, redirect: 'manual', signal });
         } catch (error) {
           replay.cancel();
           throw error;
@@ -211,7 +215,7 @@ export async function installEgressGuard({ shouldBlock, onBlock, onSkip, dnsScre
         const location = REDIRECT_STATUSES.has(resp.status) ? resp.headers.get('location') : null;
         if (!location) {
           replay.cancel();
-          return resp;
+          return hop === 0 ? resp : markRedirected(resp);
         }
         await discardResponseBody(resp);
         if (hop >= MAX_REDIRECTS) {
@@ -301,6 +305,17 @@ export async function installEgressGuard({ shouldBlock, onBlock, onSkip, dnsScre
       }
     }
   };
+}
+
+// A response reached by following redirects reports it, as native `follow` would. The final hop was
+// itself fetched with `redirect: 'manual'`, so its own flag reads false.
+function markRedirected(response) {
+  try {
+    Object.defineProperty(response, 'redirected', { value: true, configurable: true });
+  } catch {
+    /* a response that cannot take the property is returned as it is */
+  }
+  return response;
 }
 
 // Wrap http(s).request/get — and, on node:http, the ClientRequest constructor they build — so a
