@@ -540,6 +540,11 @@ export function conditionShapeProblem(condition) {
   if (nested && !named) {
     return `condition carries nested rules but its parameter is ${JSON.stringify(condition.parameter)}; a group must be {"parameter":"${GROUP_PARAMETER}"}`;
   }
+  // The engine reads `inclusive` for its truthiness, so the string "false" would AND a condition its
+  // author meant to OR. Only a boolean says what it means.
+  if (condition.inclusive !== undefined && typeof condition.inclusive !== 'boolean') {
+    return 'inclusive must be true or false';
+  }
   if (named && nested) {
     if (condition.match !== undefined) return 'a group carries no match of its own; the engine ignores it';
     if (condition.mutations !== undefined) return 'a group carries no mutations of its own; the engine ignores them';

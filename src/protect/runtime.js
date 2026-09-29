@@ -24,7 +24,7 @@ import { requestField } from './engine/normalizer.js';
 import { captureValues, createPlanCache, permitsAnything } from './capture-plan.js';
 import { PulseRuleClient } from './engine/pulse-client.js';
 import { fromFetchRequest } from './engine/fetch.js';
-import { fromNodeRequest } from './engine/node.js';
+import { fromNodeRequest, readBodyPrefix } from './engine/node.js';
 import { appendOwn, setOwn } from './engine/own.js';
 import { installEgressGuard } from './egress.js';
 import { DEFAULT_RESPONSE_RULES, DEFAULT_EGRESS_RULES } from './defaults.js';
@@ -1595,31 +1595,24 @@ export async function createProtection(options = {}) {
           return;
         }
 
-        const chunks = [];
-        let size = 0;
-        let overflow = false;
-        req.on('data', (chunk) => {
-          size += chunk.length;
-          if (size > maxBytes) {
-            overflow = true;
+        // A body longer than the cap is screened up to the cap, as on the Fetch path, and reported.
+        readBodyPrefix(req, maxBytes, (err, read) => {
+          if (err) {
+            notify(onError, err, 'onError');
+            next();
             return;
           }
-          chunks.push(chunk);
-        });
-        req.on('error', (err) => {
-          notify(onError, err, 'onError');
-          next();
-        });
-        req.on('end', () => {
-          if (overflow) recordSkip('request', 'body-cap', { bytes: size, limit: maxBytes });
-          screenNodeRequest(req, res, next, overflow ? '' : Buffer.concat(chunks).toString('utf8'));
+          if (read.overflow) recordSkip('request', 'body-cap', { bytes: read.size, limit: maxBytes });
+          if (read.failed) recordSkip('request', 'read-failed', { bytes: read.size });
+          screenNodeRequest(req, res, next, read.text, undefined, read.overflow || read.failed);
         });
       };
 
       // `parsedBody`, when given, is a body somebody else already parsed: it replaces the shaped body
       // rather than being re-serialized, because re-encoding it would have to guess a format and a form
-      // body handed back as JSON resolves no `post.<field>` at all.
-      function screenNodeRequest(req, res, next, rawBody, parsedBody) {
+      // body handed back as JSON resolves no `post.<field>` at all. `truncated` says `rawBody` is only the
+      // beginning of a longer body.
+      function screenNodeRequest(req, res, next, rawBody, parsedBody, truncated = false) {
         let shaped;
         let result;
         try {
@@ -1646,8 +1639,9 @@ export async function createProtection(options = {}) {
           },
           () => {
             // This guard consumed the request stream to screen it; re-expose the parsed
-            // body so a downstream handler (without its own body-parser) can read it.
-            if (req.body === undefined) req.body = shaped.body;
+            // body so a downstream handler (without its own body-parser) can read it. A body cut off at
+            // the cap is not re-exposed: what was parsed is only its beginning, not the request's body.
+            if (req.body === undefined && !truncated) req.body = shaped.body;
             // The resolution the shaping already made, carried into the response phase and the record.
             if (nodeOptions.screenResponses) wrapNodeResponse(res, reqContextFromNode(req, shaped?._clientIp));
             next();

@@ -32,6 +32,12 @@ export interface Protection {
    */
   screenResponse(response: Response, request?: Request, ...hostArgs: unknown[]): Promise<Response>;
   express(options?: { screenResponses?: boolean }): (req: unknown, res: unknown, next: () => void) => void;
+  /**
+   * Node / Connect middleware that reads the request body itself and exposes it as `req.body`.
+   *
+   * A body longer than `maxBodyBytes` (default 1 MiB) has its first `maxBodyBytes` screened, is counted as
+   * a `body-cap` skip in `coverage()` / `onSkip`, and is not exposed as `req.body`.
+   */
   node(options?: { maxBodyBytes?: number; screenResponses?: boolean }): (req: unknown, res: unknown, next: () => void) => void;
   /** Present when `egress: true` — removes this protection's outbound screen. Outbound calls are
    *  screened by every protection that has one registered, and any one of them can refuse a call:
