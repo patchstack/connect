@@ -16,11 +16,11 @@ For a standalone site made of HTML, CSS, and browser JavaScript, with no package
    - **Create a Node project in the folder and let Connect set it up.** No trip to the dashboard first: `setup` creates the site and prints the link that connects it to their account. It adds `package.json`, a lockfile and `node_modules` to their folder. Packages they add later are checked for known security problems. A page with no packages of its own has little to check at first, and there is still no runtime protection without a server. Follow "Creating a Node project for a plain HTML site" below.
    - **Stop here.** Nothing is changed.
 
-   Do not pick for them, and do not create the Node project unless they choose it.
-2. Add one widget tag before `</body>` in the page or shared layout. Preserve an existing correct tag. For a page published directly without a build step, disable the widget's build-mode onboarding with `data-build-mode="false"`:
+   Do not pick for them, and do not create the Node project unless they choose it. **A request to install or set up `@patchstack/connect` is that choice**: follow "Creating a Node project for a plain HTML site" without asking.
+2. Add one widget tag before `</body>` in the page or shared layout. Preserve an existing correct tag. Do not add `data-build-mode`: setting it to `"false"` hides the owner's connect and log-in panels everywhere, including on the person's own machine.
 
    ```html
-   <script src="https://cdn.patchstack.com/patchstack-widget.js" data-site-uuid="YOUR_SITE_UUID" data-build-mode="false" defer></script>
+   <script src="https://cdn.patchstack.com/patchstack-widget.js" data-site-uuid="YOUR_SITE_UUID" defer></script>
    ```
 
    Replace `YOUR_SITE_UUID` with the real public site UUID before saving. Keep credentials out of the page. The [public widget reference](https://cdn.patchstack.com/llm.html) documents this embed and its options.
@@ -32,20 +32,25 @@ Report this as **Patchstack Connector installed**, with any remaining preview or
 
 Only when the person chose this option in step 1 above. Work in the folder that holds the site's pages.
 
-1. Create the project and install Connect:
+The pages get a build step, even though nothing is compiled. The build is what runs `scan` before and `mark-build` after, and `mark-build` is what tells a visitor's browser that a page is the live site. Without it the live site is never recognised as deployed. The build copies the pages to `dist/` and the stamp goes on the copy, so the pages the person edits stay as they are and their own machine keeps showing the owner panels.
+
+1. Move the pages (every `.html` file, plus the CSS, scripts and images they use) into `public/` if they are not there already. Then create the project with its build script **before** running `setup`, so `setup` wires the hooks around it:
 
    ```
    npm init -y
+   npm pkg set scripts.build="node -e \"const fs=require('fs');fs.rmSync('dist',{recursive:true,force:true});fs.cpSync('public','dist',{recursive:true})\""
    npm install --save @patchstack/connect
    npx @patchstack/connect setup
    ```
 
-   In a hosted builder, scope `PATCHSTACK_ENVIRONMENT=sandbox` to the `setup` command, as in "Automated setup". `setup` creates the site, writes its `siteUuid` to `.patchstackrc.json`, adds `"postinstall": "patchstack-connect scan"` to `package.json`, and prints the dashboard link. With no `build` script it adds no build steps.
-2. Put the widget on the pages. `setup` adds the tag only to `index.html`, `public/index.html` or `src/app.html`. For any other page it lists the widget under `Missing` and prints the tag to add. Add one tag before `</body>` on each page, or in the shared layout. Because the pages are published without a build step, the tag needs `data-build-mode="false"`, as in step 2 above. If `setup` already added the tag to `index.html`, add that attribute to it. Later scans keep the attribute: they rewrite the tag only when the site ID changes.
-3. Two `✘` lines are expected and need no fix:
+   `setup` creates the site, writes its `siteUuid` to `.patchstackrc.json`, adds the Patchstack widget to `public/index.html`, adds `"postinstall": "patchstack-connect scan"`, and wires `"prebuild": "patchstack-connect scan"` and `"postbuild": "patchstack-connect mark-build"` around the build. In a hosted builder, scope `PATCHSTACK_ENVIRONMENT=sandbox` to the `setup` command, as in "Automated setup".
+2. Add `dist` to `.gitignore` next to the entries `setup` wrote.
+3. Put the widget on the other pages. `setup` adds the tag only to `index.html`, `public/index.html` or `src/app.html`. For any other page it lists the widget under `Missing` and prints the tag to add. Add one tag before `</body>` on each page, or in the shared layout, exactly as printed — no `data-build-mode`.
+4. When the person names where the site is published, add that host's build settings so it publishes `dist/` and runs the build. See "Deploying" below; for Netlify that is a `netlify.toml` with `command = "npm run build"` and `publish = "dist"`.
+5. Two `✘` lines are expected and need no fix:
    - `Runtime protection: no server file found`. A plain HTML site has no server to guard. Do not add one. `setup` leaves a generic guard in `patchstack/`, which nothing loads until a server does.
    - `Deploy project to protect live app`. Publishing the pages is the person's step.
-4. End as in "The message you end on", with the dashboard link from the `Next:` line. Say that the widget, and a check of the packages the site installs, are active, and that runtime protection is not. Remind them to publish the pages when ready, and that `node_modules` is not part of the site. Do not publish anything yourself.
+6. End as in "The message you end on", with the dashboard link from the `Next:` line. Say that the widget, and a check of the packages the site installs, are active, and that runtime protection is not. To preview it on their own machine, serve `public/` (for example `python3 -m http.server -d public`). Do not publish anything yourself.
 
 ### JS/Node applications — the usual path
 
@@ -129,9 +134,36 @@ When setup is finished, the person reads one short message, not a transcript of 
 1. **One sentence on the result.** "Patchstack is now watching your site." If something did not finish, say what, in one line.
 2. **The four steps**, copied from the end of the `setup` output with their `✔` and `✘`.
 3. **The next step**, from the `Next:` line, in plain words, with its link or command.
-4. **Refresh and deploy.** Refresh the preview to see the Patchstack Connector, and deploy when ready.
+4. **Refresh and deploy.** Refresh the preview to see the Patchstack Connector, and deploy when ready. Say how, in one line: "When you want it live, ask me to deploy it — I'll run the build so Patchstack can recognise the live site."
+
+**When the person later asks you to deploy, re-read "Deploying" below before running anything.** A deploy that skips the build, or uploads the project folder, publishes the API key and leaves the live site unrecognised.
 
 Leave out the files you changed, the commands you ran, settings, and anything that worked as expected. If the person asks for the detail, give it then. `--verbose` prints it.
+
+## Deploying
+
+Only when the person asks you to publish the site. Two things decide whether Patchstack recognises the deploy: the build has to run, and it has to know it is the production build.
+
+- **Deploy through the build, and publish only its output.** Never pass `--no-build`, and never upload the project folder itself: it holds `node_modules` and `.patchstackrc.local.json`, which contains the site's API key. Publish `dist/` for a plain HTML site, or whatever the framework builds.
+- **A deploy that builds on this machine** (`netlify deploy --prod --build`, a static folder uploaded by hand) has nothing that says "production" to Patchstack. Prefix that command, and only the production one, with `PATCHSTACK_ENVIRONMENT=production`:
+
+  ```
+  PATCHSTACK_ENVIRONMENT=production npx netlify deploy --prod --build
+  ```
+
+  The key is in `.patchstackrc.local.json` on this machine, so nothing else is needed. A preview deploy runs without the prefix.
+- **A deploy that builds on the host** (`vercel --prod`, or any git-connected Netlify or Vercel site) labels production by itself, but the host never receives `.patchstackrc.local.json`. Before the first production deploy, put the key in the host's production settings, read straight from the file so it is never printed:
+
+  ```
+  node -p "require('./.patchstackrc.local.json').apiKey" | npx vercel env add PATCHSTACK_API_KEY production --sensitive
+  npx netlify env:set PATCHSTACK_API_KEY "$(node -p "require('./.patchstackrc.local.json').apiKey")" --context production --secret
+  ```
+
+  An app with a server needs this for runtime protection: the guard fetches its rules with the key. Without it the deploy is still recognised as long as the packages have not changed since the last scan, but nothing is protected. Never put the key in a committed file, in a public variable (`NEXT_PUBLIC_*`, `VITE_*`), or in your reply.
+- **Check the live site after deploying**, and tell the person what you found:
+  - `curl -s <live url> | grep -ac __PATCHSTACK_PROD__` prints `1` or more. `0` means the build did not know it was production, and the widget will treat the live site as a preview.
+  - `curl -s -o /dev/null -w "%{http_code}" <live url>/.patchstackrc.local.json` is not `200`. A `200` means the API key was published: delete the deploy and tell the person.
+  - The owner reaches their dashboard on the live site by adding `#patchstack` to the address, for example `https://example.com/#patchstack`. Visitors never see the owner panels there.
 
 ## Automated setup
 
