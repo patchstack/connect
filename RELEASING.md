@@ -14,6 +14,16 @@ the publishing run and its required CI checks pass. Without the App, it remains
 for a maintainer to merge. The change contains only two version strings and the
 lockfile entries `npm version` derives from them.
 
+If publication succeeds but the package-fetch step fails before the canary runs,
+the merge workflow retries the failed verification jobs once. It does not
+republish or retry a failed canary. If that retry fails, the record stays open
+for investigation. After resolving the cause, verify an existing latest release
+without republishing:
+
+```bash
+gh workflow run publish.yml -f version=X.Y.Z -F verify_only=true
+```
+
 That pull request is not bookkeeping. Five surfaces answer the question "which
 version is this?" — the manifest, the two places the lockfile records it, the
 tarball name `npm pack` derives, an SBOM built from a checkout, and

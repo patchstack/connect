@@ -168,6 +168,8 @@ jobs:
     name: Verify the published tarball
     needs: publish
     runs-on: ubuntu-latest
+    outputs:
+      canary: ${{ steps.canary.outcome }}
 
     steps:
       - name: Checkout
@@ -208,6 +210,7 @@ jobs:
         run: node .automation/scripts/fetch-published-package.mjs "$VERSION"
 
       - name: Canary — the PUBLISHED tarball blocks the exploit
+        id: canary
         env:
           PS_CANARY_ENGINE: ${{ steps.package.outputs.engine }}
           PS_REQUIRE_CANARY: '1'
@@ -428,16 +431,15 @@ jobs:
             echo
             echo "**Published tarball verification: ${{ needs['verify-published'].result }}.**"
 
-            # Said plainly and near the top of the body, because it changes what the reader should do
-            # rather than merely how they should feel. The tarball on npm cannot be unpublished; if the
-            # engine inside it does not block the exploit, the version needs deprecating and this pull
-            # request is not the urgent part.
-            if [ "${{ needs['verify-published'].result }}" != "success" ]; then
+            if [ "${{ needs['verify-published'].outputs.canary }}" = "failure" ]; then
               echo
-              echo "The published tarball did NOT pass its canary. \`${VERSION}\` is on npm and cannot be"
-              echo "unpublished — decide whether to deprecate it before treating this pull request as"
-              echo "routine. It is opened regardless, because a repository naming a version other than the"
-              echo "one that was released is a second problem rather than a safeguard against the first."
+              echo "The published tarball failed its canary. Investigate the released package and decide"
+              echo "whether to deprecate \`${VERSION}\` before treating this pull request as routine."
+            elif [ "${{ needs['verify-published'].result }}" != "success" ]; then
+              echo
+              echo "Published-package verification did not complete successfully. A download or setup failure"
+              echo "does not establish that the canary failed. The package remains unverified; automatic merging"
+              echo "stays blocked until verification succeeds. See the publishing run for the failing step."
             fi
             if [ "${{ steps.verify.outcome }}" != "success" ]; then
               echo
