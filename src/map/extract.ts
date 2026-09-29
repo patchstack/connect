@@ -9,6 +9,7 @@ import { classifyServerSurface, surfaceNote } from './surface.js';
 import { functionNameFromPath, isPagesApiFile, routeFromFilePath } from './routes.js';
 import { collectLocalSinks } from './sinks.js';
 import { boundUnprovenFlows } from './flows.js';
+import { budgetDocument } from './budget.js';
 import { createModuleGraph } from './module-graph.js';
 import { isProvenFlow } from './coordinates.js';
 import { extractFromFile } from './entries.js';
@@ -311,7 +312,8 @@ export async function extractInputMap(cwd: string, ts: TsModule, options: Extrac
   const serverSurface = classifyServerSurface(cwd, endpoints.length, deploymentShapes, ts);
   notes.push(surfaceNote(serverSurface));
 
-  return {
+  // Fitted to the size the Patchstack API accepts, so a large app still sends a (bounded) map.
+  return budgetDocument({
     version: 3,
     framework: detectFramework(cwd),
     deploymentShapes,
@@ -351,7 +353,7 @@ export async function extractInputMap(cwd: string, ts: TsModule, options: Extrac
       roots: ['.'],
       notes,
     },
-  };
+  });
 }
 
 

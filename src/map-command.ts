@@ -2,6 +2,7 @@ import path from 'node:path';
 import { buildInputMap } from './map/index.js';
 import { resolveConfig } from './config.js';
 import { postInputMap } from './client.js';
+import { ingestProblems } from './map/budget.js';
 import { isProvenFlow } from './map/coordinates.js';
 import { type Flags, getStringFlag } from './flags.js';
 import { applyBuildStamp } from './build-stamp.js';
@@ -85,6 +86,13 @@ export async function runMap(flags: Flags): Promise<number> {
   // Opt-in, never implied. This is the only path that sends anything derived from source code, so it
   // takes an explicit flag rather than happening because a site UUID exists.
   if (flags.get('upload') === true) {
+    // A map the API would refuse whole is not sent: the upload would fail anyway, after the work of sending it.
+    const problems = ingestProblems(map);
+    if (problems.length > 0) {
+      console.error(`patchstack: did not upload the attack surface — it cannot be fitted to the size Patchstack accepts (${problems.join('; ')}).`);
+
+      return 0;
+    }
     // A map with no recognized entry points is still evidence, and withholding it was the difference
     // between "we could not judge this" and "we never looked". It carries the import inventory, the
     // recorded API invocations, the deployment shapes and the coverage limitations — which is what the
