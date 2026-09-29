@@ -80,26 +80,43 @@ export function urlDecode(value) {
     while (result !== previous && iterations < MAX_DECODE_ITERATIONS) {
         previous = result;
         iterations++;
-
-        try {
-            result = decodeURIComponent(result);
-        } catch {
-            result = safeUrlDecode(result);
-            break;
-        }
+        result = safeUrlDecode(result);
     }
 
     return result;
 }
 
-function safeUrlDecode(value) {
-    return value.replace(/%([0-9A-Fa-f]{2})/g, (match, hex) => {
+const utf8 = new TextDecoder();
+
+/**
+ * Percent-decode every well-formed escape, whatever else the value contains.
+ *
+ * A `%` that does not start an escape is kept as it is, and does not stop the escapes around it from being
+ * decoded. Each run of escapes is decoded as UTF-8; bytes that are not valid UTF-8 become U+FFFD.
+ */
+export function safeUrlDecode(value) {
+    return value.replace(/(?:%[0-9A-Fa-f]{2})+/g, (run) => {
         try {
-            return String.fromCharCode(parseInt(hex, 16));
+            return decodeURIComponent(run);
         } catch {
-            return match;
+            const bytes = new Uint8Array(run.length / 3);
+            for (let i = 0; i < bytes.length; i++) bytes[i] = parseInt(run.slice(i * 3 + 1, i * 3 + 3), 16);
+            return utf8.decode(bytes);
         }
     });
+}
+
+/**
+ * A request target with `+` in its query read as a space, the way query-string parsers read it.
+ *
+ * Only the query is affected: a `+` in the path is a literal `+`. Apply this before percent-decoding, so
+ * an encoded `%2B` still becomes a literal `+`.
+ */
+export function decodeQueryPlus(target) {
+    if (typeof target !== 'string') return target;
+    const query = target.indexOf('?');
+    if (query === -1) return target;
+    return target.slice(0, query + 1) + target.slice(query + 1).replace(/\+/g, ' ');
 }
 
 export function htmlEntityDecode(value) {
@@ -113,17 +130,40 @@ export function htmlEntityDecode(value) {
         result = result.split(entity).join(char);
     }
 
-    result = result.replace(/&#(\d+);/g, (match, code) => {
-        const num = parseInt(code, 10);
-        return num > 0 && num < 65536 ? String.fromCharCode(num) : match;
-    });
+    return decodeHtmlEntities(result);
+}
 
-    result = result.replace(/&#x([0-9A-Fa-f]+);/g, (match, hex) => {
-        const num = parseInt(hex, 16);
-        return num > 0 && num < 65536 ? String.fromCharCode(num) : match;
-    });
+/**
+ * Named entities decoded by `decodeHtmlEntities`: the ones that matter in injection contexts plus the
+ * handful every encoder emits. Numeric references are decoded generally, decimal and hex.
+ */
+const NAMED_ENTITIES = {
+    lt: '<', gt: '>', amp: '&', quot: '"', apos: "'",
+    nbsp: '\u00a0', sol: '/', bsol: '\\', colon: ':', lpar: '(', rpar: ')', equals: '=', grave: '`',
+    Tab: '\t', NewLine: '\n', semi: ';', excl: '!', num: '#', dollar: '$', percnt: '%', ast: '*',
+};
 
-    return result;
+/**
+ * Decode HTML character references in one pass.
+ *
+ * The terminating `;` is optional, as it is for a browser reading a numeric reference: `&#58` and
+ * `&#x3a` decode like `&#58;`. One pass means `&amp;lt;` becomes `&lt;`, not `<`.
+ */
+export function decodeHtmlEntities(input) {
+    return input.replace(/&(#[xX][0-9a-fA-F]+|#\d+|[A-Za-z][A-Za-z0-9]*);?/g, (whole, body) => {
+        if (body[0] === '#') {
+            const hex = body[1] === 'x' || body[1] === 'X';
+            const code = Number.parseInt(hex ? body.slice(2) : body.slice(1), hex ? 16 : 10);
+            if (!Number.isFinite(code) || code < 0 || code > 0x10ffff) return whole;
+            try {
+                return String.fromCodePoint(code);
+            } catch {
+                return whole;
+            }
+        }
+
+        return Object.prototype.hasOwnProperty.call(NAMED_ENTITIES, body) ? NAMED_ENTITIES[body] : whole;
+    });
 }
 
 export function removeSqlComments(value) {
@@ -352,41 +392,69 @@ export function normalizeRequest(req, options = {}) {
         query: normalizeObject(requestField(req, 'query') || {}, options),
         body: normalizeObject(body || {}, options),
         headers: normalizeObject(requestField(req, 'headers') || {}, options),
-        url: normalize(url || '', options),
-        originalUrl: normalize(requestField(req, 'originalUrl') || url || '', options),
+        url: normalize(decodeQueryPlus(url || ''), options),
+        originalUrl: normalize(decodeQueryPlus(requestField(req, 'originalUrl') || url || ''), options),
         _rawBody: rawBody
     };
 }
 
-// Depth bound for the recursive walk: a pathologically deep object would otherwise overflow the
-// stack, and the engine's per-rule catch would swallow that into a fail-open. Beyond the bound the
-// sub-value is left un-normalized (still matched, just in its raw form) rather than crashing.
-const MAX_NORMALIZE_DEPTH = 200;
+// The same depth bound as the engine's leaf walk, so every value that walk reaches is normalized. Past
+// it a sub-value is kept as it is (still matched, in its raw form) and `options.onLimit` is called.
+const MAX_NORMALIZE_DEPTH = 1000;
 
+/**
+ * A copy of `value` with every string inside it normalized.
+ *
+ * Iterative, so depth cannot overflow the stack; the work is linear in the size of the value. A shared
+ * or cyclic node is copied once, and array holes stay holes.
+ */
 export function normalizeObject(value, options = {}, depth = 0) {
     if (typeof value === 'string') {
         return normalize(value, options);
     }
 
-    if (depth >= MAX_NORMALIZE_DEPTH) {
+    if (value === null || typeof value !== 'object') {
         return value;
     }
 
-    if (Array.isArray(value)) {
-        return value.map(item => normalizeObject(item, options, depth + 1));
+    if (depth >= MAX_NORMALIZE_DEPTH) {
+        options.onLimit?.();
+        return value;
     }
 
-    if (typeof value === 'object' && value !== null) {
-        const result = {};
+    const copies = new Map();
+    const copyOf = (node) => {
+        const copy = Array.isArray(node) ? new Array(node.length) : {};
+        copies.set(node, copy);
+        return copy;
+    };
+    const top = copyOf(value);
+    const stack = [[value, top, depth]];
 
-        for (const [key, val] of Object.entries(value)) {
-            setOwn(result, key, normalizeObject(val, options, depth + 1));
+    while (stack.length > 0) {
+        const [node, copy, level] = stack.pop();
+
+        for (const key of Object.keys(node)) {
+            const child = node[key];
+
+            if (typeof child === 'string') {
+                setOwn(copy, key, normalize(child, options));
+            } else if (child === null || typeof child !== 'object') {
+                setOwn(copy, key, child);
+            } else if (copies.has(child)) {
+                setOwn(copy, key, copies.get(child));
+            } else if (level + 1 >= MAX_NORMALIZE_DEPTH) {
+                setOwn(copy, key, child);
+                options.onLimit?.();
+            } else {
+                const childCopy = copyOf(child);
+                setOwn(copy, key, childCopy);
+                stack.push([child, childCopy, level + 1]);
+            }
         }
-
-        return result;
     }
 
-    return value;
+    return top;
 }
 
 export function createMatchVariants(value) {

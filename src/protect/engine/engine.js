@@ -536,6 +536,13 @@ function collectLeafValues(root, nodeCap = 20000, maxDepth = 1000) {
   return out;
 }
 
+// The inspection limits one evaluation reached, as `{ skips: [reason, …] }`, or nothing when it
+// reached none. Callers count each reason in their coverage.
+function skipsOf(resolver) {
+  const skips = resolver?.skips;
+  return skips && skips.length > 0 ? { skips } : {};
+}
+
 // Emit a warning at most once per distinct key (keeps a persistent misconfiguration from spamming).
 const warnedKeys = new Set();
 function warnOnce(key, message) {
@@ -1202,8 +1209,11 @@ export class RuleEngine {
     let normalizedReq;
     let resolver;
     try {
-      normalizedReq = { ...req, ...normalizeRequest(req) };
+      // Past the normalizer's depth bound a value is matched un-normalized; that is reported.
+      let limited = false;
+      normalizedReq = { ...req, ...normalizeRequest(req, { onLimit: () => { limited = true; } }) };
       resolver = new RequestResolver(normalizedReq);
+      if (limited) resolver.noteSkip('container-cap');
     } catch (err) {
       this.#reportError(err);
       return { blocked: false, rule: null, message: null }; // fail open
@@ -1236,7 +1246,8 @@ export class RuleEngine {
             // that re-read the request instead would be reading it a second time: a getter, a stream or
             // anything else that answers once can give a different value, and evidence that disagrees
             // with the match it belongs to is worse than none.
-            resolver
+            resolver,
+            ...skipsOf(resolver)
           };
         }
       } catch (err) {
@@ -1246,7 +1257,7 @@ export class RuleEngine {
       }
     }
 
-    return { blocked: false, rule: null, message: null };
+    return { blocked: false, rule: null, message: null, ...skipsOf(resolver) };
   }
 
   #evaluateRule(conditions, resolver) {

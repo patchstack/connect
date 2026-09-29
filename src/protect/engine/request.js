@@ -1,3 +1,4 @@
+import { decodeHtmlEntities, safeUrlDecode } from './normalizer.js';
 import { setOwn } from './own.js';
 
 // Resolvable DATA attributes of an uploaded file part (files.<name>.<attr>). The engine only exposes
@@ -22,53 +23,68 @@ export function base64DecodeUtf8(value) {
   return new TextDecoder().decode(bytes);
 }
 
-/**
- * Decode HTML entities, so a payload written as `&lt;script&gt;` is screened as `<script>`.
- *
- * The mutation was documented, used by a shipped rule, and not implemented — so it was applied as a silent
- * no-op. Implemented here to make the name mean what it says, NOT to close a coverage gap: `normalizer.js`
- * already decodes entities across the whole request before matching, iteratively, which is why the
- * entity-encoded payloads that rule exists for were being caught anyway. Anyone reading this should not
- * conclude that entity coverage depended on this mutation; it did not, and the contract test is what turned
- * "the name does nothing" into something visible.
- *
- * Named entities are limited to the ones that matter for injection contexts plus the handful every encoder
- * emits. A full entity table would be a dependency, and the gap it leaves is a payload encoded with an
- * exotic named entity — which no encoder in this path produces. Numeric forms are handled generally, both
- * decimal and hex, because those are what an attacker writes by hand.
- */
-const NAMED_ENTITIES = {
-  lt: '<', gt: '>', amp: '&', quot: '"', apos: "'", '#39': "'",
-  nbsp: '\u00a0', sol: '/', bsol: '\\', colon: ':', lpar: '(', rpar: ')', equals: '=', grave: '`',
-  Tab: '\t', NewLine: '\n', semi: ';', excl: '!', num: '#', dollar: '$', percnt: '%', ast: '*',
-};
+// Mutations that decode one string into another.
+const TEXT_MUTATIONS = new Set(['base64_decode', 'urldecode', 'htmlentitydecode']);
 
-function decodeHtmlEntities(input) {
-  // One pass. Decoding repeatedly would turn `&amp;lt;` into `<`, which is not what a browser does — and a
-  // guard that decodes further than the sink does is a guard that blocks strings the app never sees.
-  return input.replace(/&(#[xX]?[0-9a-fA-F]+|[A-Za-z][A-Za-z0-9]*);?/g, (whole, body) => {
-    if (body[0] === '#') {
-      const hex = body[1] === 'x' || body[1] === 'X';
-      const code = Number.parseInt(hex ? body.slice(2) : body.slice(1), hex ? 16 : 10);
-      if (!Number.isFinite(code) || code < 0 || code > 0x10ffff) return whole;
-      try {
-        return String.fromCodePoint(code);
-      } catch {
-        return whole;
+// Same bounds as the engine's leaf walk: beyond them a node is kept as it is, still matched undecoded.
+const MAX_MAPPED_NODES = 20000;
+const MAX_MAPPED_DEPTH = 1000;
+
+/**
+ * A copy of `root` with `fn` applied to every string leaf. Iterative and bounded, so an oversized or
+ * deeply nested value cannot overflow the stack; a shared or cyclic node is copied once.
+ */
+function mapStringLeaves(root, fn) {
+  const copies = new Map();
+  const copyOf = (node) => {
+    const copy = Array.isArray(node) ? [] : {};
+    copies.set(node, copy);
+    return copy;
+  };
+  const top = copyOf(root);
+  const stack = [[root, top, 0]];
+  let visited = 0;
+  while (stack.length) {
+    const [node, copy, depth] = stack.pop();
+    visited++;
+    for (const key of Object.keys(node)) {
+      const child = node[key];
+      if (typeof child === 'string') {
+        setOwn(copy, key, fn(child));
+      } else if (child === null || typeof child !== 'object') {
+        setOwn(copy, key, child);
+      } else if (copies.has(child)) {
+        setOwn(copy, key, copies.get(child));
+      } else if (depth + 1 >= MAX_MAPPED_DEPTH || visited + stack.length >= MAX_MAPPED_NODES) {
+        setOwn(copy, key, child);
+      } else {
+        const childCopy = copyOf(child);
+        setOwn(copy, key, childCopy);
+        stack.push([child, childCopy, depth + 1]);
       }
     }
-
-    return Object.prototype.hasOwnProperty.call(NAMED_ENTITIES, body) ? NAMED_ENTITIES[body] : whole;
-  });
+  }
+  return top;
 }
 
 export class RequestResolver {
   #req;
   #cookies;
+  #skips = new Set();
 
   constructor(req) {
     this.#req = req;
     this.#cookies = null;
+  }
+
+  /** Record an inspection limit this evaluation reached (reported once per reason). */
+  noteSkip(reason) {
+    this.#skips.add(reason);
+  }
+
+  /** The inspection limits recorded so far, in the order first reached. */
+  get skips() {
+    return [...this.#skips];
   }
 
   resolve(parameter) {
@@ -175,6 +191,12 @@ export class RequestResolver {
       return value;
     }
 
+    // A text decoder applied to a structured value decodes each string inside it and keeps the structure,
+    // so the matcher still sees every leaf.
+    if (typeof value === 'object' && TEXT_MUTATIONS.has(mutation)) {
+      return mapStringLeaves(value, (leaf) => this.#applyMutation(mutation, leaf));
+    }
+
     switch (mutation) {
       case 'base64_decode':
         try {
@@ -198,11 +220,8 @@ export class RequestResolver {
         }
 
       case 'urldecode':
-        try {
-          return decodeURIComponent(String(value));
-        } catch {
-          return value;
-        }
+        // Form decoding: `+` is a space, and every well-formed escape is decoded even beside a stray `%`.
+        return safeUrlDecode(String(value).replace(/\+/g, ' '));
 
       case 'htmlentitydecode':
         return decodeHtmlEntities(String(value));

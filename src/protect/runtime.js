@@ -445,6 +445,10 @@ export async function createProtection(options = {}) {
     // lands after a try/catch here would have returned.
     notify(onSkip, { phase, reason, detail, count: skipCounts[key] }, 'onSkip');
   };
+  // The inspection limits a request-phase evaluation reached (see RuleEngine#evaluate).
+  const recordEvaluationSkips = (result) => {
+    for (const reason of result?.skips ?? []) recordSkip('request', reason);
+  };
 
   const maskFn =
     typeof options.maskWith === 'function'
@@ -535,6 +539,7 @@ export async function createProtection(options = {}) {
     const redactions = [];
     const headerMutations = [];
     let lowerText = null; // lazily lowercased body, only if a rule uses a prefilter
+    const responseSkips = new Set(); // each inspection limit counted once per response
     for (const { rule, engine: re, redactors, prefilter, mutatedSpan } of responseRuleSet) {
       // `only` narrows the set to the rules a caller is entitled to run. The no-body path uses it to
       // exclude every rule that reads the body, rather than evaluating one against an empty string —
@@ -556,6 +561,11 @@ export async function createProtection(options = {}) {
       } catch (err) {
         notify(onError, err, 'onError');
         continue;
+      }
+      for (const reason of result.skips ?? []) {
+        if (responseSkips.has(reason)) continue;
+        responseSkips.add(reason);
+        recordSkip('response', reason);
       }
       if (!result.blocked) continue;
       // Per-rule enforcement applies to every phase, not just the request. A generated response rule in
@@ -705,6 +715,7 @@ export async function createProtection(options = {}) {
         recordSkip('request', shaped._bodyInspectionSkip, { limit: options.maxBodyBytes ?? 1024 * 1024 });
       }
       result = engine.evaluate(shaped);
+      recordEvaluationSkips(result);
     } catch (err) {
       notify(onError, err, 'onError');
 
@@ -1484,6 +1495,7 @@ export async function createProtection(options = {}) {
         const { shaped, client } = shapeExpressRequest(req);
         try {
           result = engine.evaluate(shaped);
+          recordEvaluationSkips(result);
         } catch (err) {
           notify(onError, err, 'onError');
           if (exprOptions.screenResponses) wrapNodeResponse(res, reqContextFromNode(req, client));
@@ -1555,6 +1567,7 @@ export async function createProtection(options = {}) {
           shaped = fromNodeRequest(req, rawBody, { trustedProxy: options.trustedProxy });
           if (parsedBody !== undefined && parsedBody !== null) shaped.body = parsedBody;
           result = engine.evaluate(shaped);
+          recordEvaluationSkips(result);
         } catch (err) {
           notify(onError, err, 'onError');
           return next();
