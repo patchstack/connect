@@ -123,8 +123,8 @@ patchstack-connect scan   [options]                Scan the lockfile and POST to
                                                    one and Connect persists it. After a
                                                    successful post, adds/updates the Patchstack
                                                    Connector tag in the root HTML shell. Also adds the
-                                                   production marker to a JSX root shell, before the
-                                                   post (opt out of both with "widget": false in
+                                                   production marker to a JSX root or Astro layout,
+                                                   before the post (opt out of both with "widget": false in
                                                    .patchstackrc.json)
 patchstack-connect setup  [options]                Run scan, manage the widget, and idempotently
                                                    install + verify runtime protection and wire
@@ -376,14 +376,14 @@ The Patchstack Connector is a floating control whose form follows the site's cla
   <script src="https://cdn.patchstack.com/patchstack-widget.js" data-site-uuid="<SITE_UUID>" defer data-patchstack-connect-widget="true"></script>
   ```
 
-- **`scan`** installs the widget tag into a plain HTML shell, and — where there is none — into a JSX root (`src/routes/__root.tsx`, `app/layout.tsx`, …), just before `</body>`. The same tag serves both: JSX reads `defer` as a boolean attribute and passes `data-*` through. A server-rendered app has no HTML shell at all, so without this its published site carries no widget and Patchstack never hears from the live page.
+- **`scan`** installs the widget tag into a plain HTML shell, and — where there is none — into a JSX root (`src/routes/__root.tsx`, `app/layout.tsx`, …) or an Astro layout (`src/layouts/Layout.astro`, `Base.astro`, or the first layout that closes `</body>`), just before `</body>`. The same tag serves both: JSX reads `defer` as a boolean attribute and passes `data-*` through. A server-rendered app has no HTML shell at all, so without this its published site carries no widget and Patchstack never hears from the live page.
 - **`scan`** also adds the production marker when the root shell is JSX rather than HTML (`src/routes/__root.tsx`, `app/layout.tsx`, …), above the widget tag and guarded by the framework's production expression. A server-rendered app emits no built HTML for `mark-build` to stamp, so without it the widget reads the published site as build mode and shows the claim flow to visitors instead of the report form.
 
-  Re-runs update the tag in place (the `data-patchstack-connect-widget` attribute marks it as managed by Connect); a pre-existing manual widget tag is left untouched. `--dry-run` never edits anything; a failed post still skips the widget tag (it needs the site UUID) but the production marker may already have been written, since it runs before the post. Projects whose root layout is code rather than HTML (Next.js, Nuxt, Astro, …) get the exact snippet and target file printed instead — `guide` shows framework-specific placement.
+  Re-runs update the tag in place (the `data-patchstack-connect-widget` attribute marks it as managed by Connect); a pre-existing manual widget tag is left untouched. `--dry-run` never edits anything; a failed post still skips the widget tag (it needs the site UUID) but the production marker may already have been written, since it runs before the post. Projects whose root layout is code that Connect does not edit (Nuxt, …) get the exact snippet and target file printed instead — `guide` shows framework-specific placement.
 
 - **`mark-build`** ensures the same tag in built HTML output, covering builds whose source shell Connect couldn't edit, and stamps `window.__PATCHSTACK_PROD__` so the widget hides the claim/login UI on the published site (owners reach it by appending `#patchstack` to the live URL). It then reports what it did — `stamped`, `withheld`, `no-pages` for a server-rendered build, or `no-output` — alongside the same manifest `scan` sent before the bundler ran, so the dashboard can say why a published app is or is not reporting its build. That report is the second half of one build, not a second build: Patchstack keeps one copy of the manifest and reads the two together. It is sent only for a site that is already registered, and never carries the site's address or name, which `mark-build` does not resolve. The marker says the page is the live site, so **only a production build carries it**: the environment is read the same way `scan` reads it (the build platform's own tier or branch name, then the hosted builder the project belongs to), and a local or preview build gets the widget tag, no marker, and any marker an earlier build left behind removed. Publishing a static build by hand from your machine is the case that needs `--production` (or `PATCHSTACK_ENVIRONMENT=production`), because nothing in that environment can say the build is a deployment.
 
-- **Opting out:** persist `"widget": false` in `.patchstackrc.json` to disable both the widget tag and the production marker (dependency scanning only). Without it, the next successful scan re-adds the managed tag, and the next scan re-adds the marker on a JSX root.
+- **Opting out:** persist `"widget": false` in `.patchstackrc.json` to disable both the widget tag and the production marker (dependency scanning only). Without it, the next successful scan re-adds the managed tag, and the next scan re-adds the marker on a JSX root or Astro layout.
 
 ## Programmatic API
 

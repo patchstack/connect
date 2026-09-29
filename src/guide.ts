@@ -16,7 +16,7 @@ import { runVerify } from './protect/install/index.js';
 import type { VerifyCheck } from './protect/install/types.js';
 import {
   buildSourceMarkerSnippet,
-  hasJsxShell,
+  hasEditableShell,
   productionGate,
 } from './mark-build.js';
 import { detectStack } from './stack.js';
@@ -116,7 +116,7 @@ const WIDGET_FILE_CANDIDATES: Record<string, string[]> = {
   'react-router': ['app/root.tsx', 'src/root.tsx'],
   'tanstack-start': ['src/routes/__root.tsx', 'app/routes/__root.tsx'],
   sveltekit: ['src/app.html'],
-  astro: ['src/layouts/Layout.astro'],
+  astro: ['src/layouts/Layout.astro', 'src/layouts/Base.astro', 'src/layouts/BaseLayout.astro'],
   gatsby: ['src/html.js'],
 };
 
@@ -308,6 +308,30 @@ export function resolveWidgetFileHint(cwd: string, framework: string | null): st
   for (const candidate of candidates) {
     if (existsSync(path.join(cwd, candidate))) {
       return candidate;
+    }
+  }
+  return framework === 'astro' ? findAstroDocumentLayout(cwd) : null;
+}
+
+/**
+ * Astro has no fixed name for the layout that renders the page document, so past the common names
+ * the shell is the first layout that closes `<body>` itself.
+ */
+function findAstroDocumentLayout(cwd: string): string | null {
+  const dir = path.join('src', 'layouts');
+  let names: string[];
+  try {
+    names = readdirSync(path.join(cwd, dir)).filter((name) => name.endsWith('.astro')).sort();
+  } catch {
+    return null;
+  }
+  for (const name of names) {
+    try {
+      if (/<\/body>/i.test(readFileSync(path.join(cwd, dir, name), 'utf8'))) {
+        return path.posix.join('src', 'layouts', name);
+      }
+    } catch {
+      // unreadable — try the next layout
     }
   }
   return null;
@@ -563,7 +587,7 @@ export function guideMissing(state: GuideState, known: Partial<Progress> = {}): 
   if (needsSourceProductionMarker(state) && !state.productionMarkerWired) {
     const gate = productionGate(state.framework);
     missing.push(
-      hasJsxShell(state.framework)
+      hasEditableShell(state.framework)
         ? {
             text: 'Your live app does not tell Patchstack it is live yet',
             hint: [`Run: npx @patchstack/connect scan (it edits ${state.widgetFileHint})`],
