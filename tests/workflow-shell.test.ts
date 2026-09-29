@@ -186,3 +186,33 @@ describe('embedded workflow shell scripts', () => {
     expect(broken).toEqual([]);
   });
 });
+
+describe('published release recovery', () => {
+  const workflow = parse(readFileSync(join(workflowDir, 'publish.yml'), 'utf8'));
+  it('never republishes in recovery mode', () => {
+    expect(workflow.on.workflow_dispatch.inputs.verify_only.default).toBe(false);
+    const steps = workflow.jobs.publish.steps;
+    expect(steps.find((s: Step) => s.name === 'Publish to npm').if).toBe('inputs.verify_only != true');
+    expect(steps.find((s: Step) => s.name === 'Confirm the existing release').if).toBe('inputs.verify_only == true');
+  });
+  it('uses current verification tooling but tests from the released tag', () => {
+    const steps = workflow.jobs['verify-published'].steps;
+    expect(steps.find((s: Step) => s.name === 'Checkout').with.ref).toContain('needs.publish.outputs.version');
+    expect(steps.find((s: Step) => s.name === 'Checkout verification tooling').with.ref).toBe('${{ github.sha }}');
+    expect(steps.find((s: Step) => s.name === 'Fetch the published package').run).toContain('.automation/scripts/fetch-published-package.mjs');
+    expect(steps.find((s: Step) => s.name === 'Canary — the PUBLISHED tarball blocks the exploit').env.PS_REQUIRE_CANARY).toBe('1');
+  });
+  it('still requires verification before notifying consumers', () => {
+    expect(workflow.jobs['notify-release-consumers'].if).toContain("needs.verify-published.result == 'success'");
+  });
+  it('rechecks the merge when publication finishes, even if PR CI finished first', () => {
+    const merge = parse(readFileSync(join(workflowDir, 'merge-generated-pr.yml'), 'utf8'));
+    expect(merge.on.workflow_run.workflows).toContain('Publish');
+  });
+  it('passes the generated-PR retry policy tests', () => {
+    const result = spawnSync(process.execPath, ['--test', 'scripts/generated-pr-ci.test.mjs'], {
+      cwd: fileURLToPath(new URL('..', import.meta.url)), encoding: 'utf8',
+    });
+    expect(result.status, result.stdout + result.stderr).toBe(0);
+  });
+});

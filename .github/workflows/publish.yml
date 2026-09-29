@@ -10,6 +10,10 @@ on:
         description: Version to publish (e.g. 0.3.7). Leave blank for a dry-run.
         type: string
         default: ""
+      verify_only:
+        description: Recover verification and records for an existing npm version, without publishing.
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -25,6 +29,16 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
+      - name: Validate recovery input
+        env:
+          VERIFY_ONLY: ${{ inputs.verify_only }}
+          VERSION: ${{ inputs.version }}
+        run: |
+          if [ "$VERIFY_ONLY" = true ] && [ -z "$VERSION" ]; then
+            echo "::error::Recovery requires an explicit published version."
+            exit 1
+          fi
+
       - name: Checkout
         uses: actions/checkout@v7
 
@@ -85,13 +99,20 @@ jobs:
     steps:
       - name: Resolve version
         id: version
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          REQUESTED_VERSION: ${{ inputs.version }}
         run: |
-          if [ "${{ github.event_name }}" = "release" ]; then
+          if [ "$EVENT_NAME" = "release" ]; then
             version="${GITHUB_REF_NAME#v}"
           else
-            version="${{ inputs.version }}"
+            version="$REQUESTED_VERSION"
           fi
-          echo "Publishing version $version"
+          if ! [[ "$version" =~ ^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-[0-9A-Za-z.-]+)?$ ]]; then
+            echo "::error::Invalid release version."
+            exit 1
+          fi
+          echo "Release version $version"
           echo "version=$version" >> "$GITHUB_OUTPUT"
           echo "url=https://www.npmjs.com/package/@patchstack/connect/v/$version" >> "$GITHUB_OUTPUT"
 
@@ -117,7 +138,22 @@ jobs:
         run: npm run build
 
       - name: Publish to npm
+        if: inputs.verify_only != true
         run: npm publish --access public --provenance
+
+      - name: Confirm the existing release
+        if: inputs.verify_only == true
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          set -euo pipefail
+          published=$(npm view "@patchstack/connect@$VERSION" version --registry=https://registry.npmjs.org)
+          test "$published" = "$VERSION"
+          latest=$(npm view @patchstack/connect version --registry=https://registry.npmjs.org)
+          if [ "$latest" != "$VERSION" ]; then
+            echo "::error::Recovery must use the latest published version to avoid rolling records back."
+            exit 1
+          fi
 
   # A job of its own, separate from `publish`, and the separation carries the invariant.
   #
@@ -139,6 +175,14 @@ jobs:
         with:
           ref: refs/tags/v${{ needs.publish.outputs.version }}
 
+      # Recovery of an older tag uses the verifier from the workflow's revision, not the older tag.
+      - name: Checkout verification tooling
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ github.sha }}
+          path: .automation
+          persist-credentials: false
+
       - name: Setup Node
         uses: actions/setup-node@v7
         with:
@@ -157,33 +201,17 @@ jobs:
       # After the publish rather than before, because the tarball does not exist until then. A failure here
       # cannot unpublish the version; it is a loud signal to deprecate it, which is the honest position:
       # the alternative is not knowing.
+      - name: Fetch the published package
+        id: package
+        env:
+          VERSION: ${{ needs.publish.outputs.version }}
+        run: node .automation/scripts/fetch-published-package.mjs "$VERSION"
+
       - name: Canary — the PUBLISHED tarball blocks the exploit
-        run: |
-          set -euo pipefail
-          version='${{ needs.publish.outputs.version }}'
-
-          # npm needs a moment before a fresh version resolves; a failure to install here is not a failure
-          # of the engine and must not be reported as one.
-          for attempt in 1 2 3 4 5; do
-            if npm pack "@patchstack/connect@${version}" --pack-destination /tmp >/dev/null 2>&1; then
-              break
-            fi
-            if [ "$attempt" = "5" ]; then
-              echo "::error::Could not fetch @patchstack/connect@${version} from the registry to verify it. The published engine is UNVERIFIED — this is not evidence that it works."
-              exit 1
-            fi
-            sleep 15
-          done
-
-          mkdir -p /tmp/published && tar -xzf /tmp/patchstack-connect-"${version}".tgz -C /tmp/published
-          engine=/tmp/published/package/dist/protect.js
-
-          if [ ! -f "$engine" ]; then
-            echo "::error::The published tarball has no dist/protect.js. Nothing that installs this package can protect anything."
-            exit 1
-          fi
-
-          PS_CANARY_ENGINE="$engine" PS_REQUIRE_CANARY=1 npx vitest run tests/protect/canary-engine-proof.test.ts
+        env:
+          PS_CANARY_ENGINE: ${{ steps.package.outputs.engine }}
+          PS_REQUIRE_CANARY: '1'
+        run: npx vitest run tests/protect/canary-engine-proof.test.ts
 
   notify-release-consumers:
     name: Notify configured release consumers

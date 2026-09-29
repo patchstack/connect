@@ -2,14 +2,14 @@ name: Merge generated version record
 
 on:
   workflow_run:
-    workflows: [CI]
+    workflows: [CI, Publish]
     types: [completed]
   schedule:
     - cron: '17 * * * *'
   workflow_dispatch:
 
 permissions:
-  actions: read
+  actions: write
   checks: read
   contents: write
   pull-requests: write
@@ -20,7 +20,14 @@ jobs:
     name: Merge verified version record
     if: vars.AUTOMATION_APP_BOT_LOGIN != ''
     runs-on: ubuntu-latest
+    concurrency:
+      group: generated-version-merge
+      cancel-in-progress: false
     steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: main
+          persist-credentials: false
       - name: Check the generated proposal and merge it
         env:
           GH_TOKEN: ${{ github.token }}
@@ -47,16 +54,20 @@ jobs:
             .isDraft == false and .mergeable == "MERGEABLE" and
             .reviewDecision != "CHANGES_REQUESTED" and
             .changedFiles == 2 and (.files | length) == 2 and
-            ([.files[].path] | sort) == ["package-lock.json", "package.json"] and
-            (.statusCheckRollup | length) > 0 and
-            all(.statusCheckRollup[];
-              if .__typename == "CheckRun" then
-                .status == "COMPLETED" and
-                (.conclusion == "SUCCESS" or .conclusion == "NEUTRAL" or .conclusion == "SKIPPED")
-              else .state == "SUCCESS" end) and
-            any(.statusCheckRollup[]; .name == "Required CI gate" and .conclusion == "SUCCESS")
+            ([.files[].path] | sort) == ["package-lock.json", "package.json"]
           ' <<< "$proposal" >/dev/null; then
             echo "Generated version proposal #$pr is not mergeable yet."
+            exit 0
+          fi
+
+          set +e
+          PR="$pr" PROPOSAL="$proposal" CI_WORKFLOW=.github/workflows/ci.yml node scripts/generated-pr-ci.mjs
+          check_status=$?
+          set -e
+          if [ "$check_status" = 3 ]; then exit 0; fi
+          if [ "$check_status" != 0 ]; then exit "$check_status"; fi
+          if ! jq -e 'any(.statusCheckRollup[]; .name == "Required CI gate" and .conclusion == "SUCCESS")' <<< "$proposal" >/dev/null; then
+            echo "Required CI gate has not passed on #$pr." | tee -a "$GITHUB_STEP_SUMMARY"
             exit 0
           fi
 
@@ -77,7 +88,7 @@ jobs:
             sed -n 's/^Publish run: \([0-9][0-9]*\)$/\1/p')
           if [ -z "$publish_run" ] || [ "$(gh api "repos/$REPO/actions/runs/$publish_run" \
             --jq '.name == "Publish" and .conclusion == "success"')" != true ]; then
-            echo "The publishing run for #$pr has not passed."
+            echo "The publishing run for #$pr has not passed: https://github.com/$REPO/actions/runs/$publish_run" | tee -a "$GITHUB_STEP_SUMMARY"
             exit 0
           fi
 

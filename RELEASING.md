@@ -78,6 +78,21 @@ one event type that is exempt.
 
 ## Manual fallback
 
+### Recover an already-published version
+
+If npm accepted a release but subsequent verification or notifications failed, run
+`Publish` from `main` with its existing version and `verify_only=true`:
+
+```bash
+gh workflow run publish.yml --ref main -f version=0.5.17 -f verify_only=true
+```
+
+This does not publish or create a tag. It requires the version to exist on npm,
+downloads the published tarball with bounded retries and visible errors, and runs
+the canary from that version's tag. The normal version-record PR and notifications
+then run; notifications and automatic merging still require verification to pass.
+Use the latest released version so recovery does not propose an older version record.
+
 You can still cut a release by hand. Because a human token (not `GITHUB_TOKEN`)
 creates it, the release event fires `Publish` on its own:
 
