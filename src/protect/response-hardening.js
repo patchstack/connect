@@ -45,7 +45,30 @@ export function hardensWithoutBody(rule) {
 
   // A parameterless match — `cross_origin`, `off_origin`, `cors_reflected` — reads the request's origin
   // and the response's own headers, so it carries no parameter and needs no body.
-  return parameters.every(
-    (parameter) => BODY_INDEPENDENT.includes(parameter) || parameter.startsWith(BODY_INDEPENDENT_PREFIX),
-  );
+  return parameters.every(bodyIndependent);
+}
+
+/**
+ * Does this rule read response headers and nothing else?
+ *
+ * The decision half of `hardensWithoutBody`, for a rule whose action is not a header action — a
+ * `redact` keyed on `response.header.*` masks the header value it matched, which needs no body either.
+ * A header must be among what it reads: a rule keyed on the status alone is aimed at the body, and
+ * masking header values on its behalf would carry out a different rule from the one written.
+ */
+export function readsOnlyResponseHeaders(rule) {
+  if (!rule) return false;
+
+  const { parameters, complete } = readRuleParameters(rule);
+  if (!complete || !parameters.some(isHeaderParameter)) return false;
+
+  return parameters.every(bodyIndependent);
+}
+
+function isHeaderParameter(parameter) {
+  return parameter === 'response.headers' || parameter.startsWith(BODY_INDEPENDENT_PREFIX);
+}
+
+function bodyIndependent(parameter) {
+  return BODY_INDEPENDENT.includes(parameter) || parameter.startsWith(BODY_INDEPENDENT_PREFIX);
 }
