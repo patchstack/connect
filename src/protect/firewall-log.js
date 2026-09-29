@@ -79,7 +79,12 @@ export function resolveApiBase(pulseOrManifestUrl) {
 export function createFirewallLogReporter(opts) {
   const creds = parseApiKey(opts.apiKey);
   if (!creds) {
-    return { record() {}, flush: () => Promise.resolve(), stop: () => Promise.resolve() };
+    return {
+      record() {},
+      flush: () => Promise.resolve(),
+      stop: () => Promise.resolve(),
+      health: () => ({ recorded: 0, delivered: 0, failed: 0, dropped: 0, queued: 0 }),
+    };
   }
 
   const apiBase = safeBaseUrl(opts.apiBase, DEFAULT_API_BASE, 'block-log API').replace(/\/$/, '');
@@ -101,6 +106,27 @@ export function createFirewallLogReporter(opts) {
   let activeController = null;
   /** Set when a shutdown gives up waiting: nothing may start, continue, or be retained after it. */
   let ended = false;
+
+  // Where every record went. `recorded` is what the queue accepted, and each accepted record ends up
+  // delivered (the endpoint acknowledged its batch), failed (its batch was refused or could not be sent),
+  // or dropped (a shutdown ran out of time before it was sent). `dropped` also counts records turned
+  // away because the queue was full, which were never accepted.
+  let recorded = 0;
+  let delivered = 0;
+  let failed = 0;
+  let dropped = 0;
+  /** The batch being sent, until its outcome is counted. A shutdown that gives up counts it as dropped. */
+  /** @type {{ size: number, counted: boolean } | null} */
+  let activeBatch = null;
+  /** Count a batch's outcome once: whichever of the send and a shutdown decides first. */
+  const settle = (sent, outcome) => {
+    if (sent.counted) return;
+    sent.counted = true;
+    if (outcome === 'delivered') delivered += sent.size;
+    else if (outcome === 'failed') failed += sent.size;
+    else dropped += sent.size;
+    if (activeBatch === sent) activeBatch = null;
+  };
 
   /** @type {{ token: string, expiresAt: number } | null} */
   let cachedToken = null;
@@ -168,11 +194,18 @@ export function createFirewallLogReporter(opts) {
     // whether it succeeded.
     /** @type {Promise<void>} */
     let entry;
+    const sent = { size: batch.length, counted: false };
+    activeBatch = sent;
     entry = (async () => {
       try {
         const token = await fetchAccessToken(controller?.signal);
         // Not after a shutdown gave up: it has already reported itself finished.
-        if (!token || ended) return;
+        if (ended) return;
+        if (!token) {
+          settle(sent, 'failed');
+
+          return;
+        }
 
         const body = new URLSearchParams();
         body.set('type', 'firewall');
@@ -191,10 +224,14 @@ export function createFirewallLogReporter(opts) {
           // Both phases carry the attempt controller, so slow transports cannot accumulate work.
           ...(controller ? { signal: controller.signal } : {}),
         });
-        if (p && typeof p.then === 'function') await p.catch(() => {});
+        const res = p && typeof p.then === 'function' ? await p.catch(() => null) : p;
+        settle(sent, res && res.ok ? 'delivered' : 'failed');
       } catch {
         /* A delivery problem is never worth disturbing the app over. */
       } finally {
+        // Anything not counted above failed before a verdict. A shutdown that gave up has already counted
+        // this batch as dropped, so an answer arriving later changes nothing.
+        settle(sent, 'failed');
         clearTimeout(attemptTimer);
         if (activeController === controller) activeController = null;
         if (inFlight === entry) inFlight = null;
@@ -225,7 +262,12 @@ export function createFirewallLogReporter(opts) {
       const fid = event?.rule?.id;
       if (fid === undefined || fid === null || fid === '') return;
 
-      if (queue.length >= MAX_QUEUE) return;
+      if (queue.length >= MAX_QUEUE) {
+        dropped++;
+
+        return;
+      }
+      recorded++;
       queue.push({
         fid,
         method: event.method ?? null,
@@ -242,6 +284,10 @@ export function createFirewallLogReporter(opts) {
       if (!timer) timer = setTimeout(flush, flushMs);
     },
     flush,
+    /** Where the records went so far; see the counters above. `queued` is what is waiting now. */
+    health() {
+      return { recorded, delivered, failed, dropped, queued: queue.length };
+    },
     /**
      * Stop, and hand back a wait for what was outstanding.
      *
@@ -275,6 +321,9 @@ export function createFirewallLogReporter(opts) {
         ended = true;
         activeController?.abort();
         activeController = null;
+        // The batch in flight may never settle: a transport can ignore its abort signal.
+        if (activeBatch) settle(activeBatch, 'dropped');
+        dropped += queue.length;
         queue = [];
         inFlight = null;
       };

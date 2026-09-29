@@ -1747,6 +1747,11 @@ export async function createProtection(options = {}) {
     get: () => (detections ? () => detections.health() : undefined),
     enumerable: true,
   });
+  // The same for the block log, when there is one: accepted, delivered, failed, dropped, and still queued.
+  Object.defineProperty(protection, 'blockLogHealth', {
+    get: () => (firewallLog ? () => firewallLog.health() : undefined),
+    enumerable: true,
+  });
 
   return protection;
 }
