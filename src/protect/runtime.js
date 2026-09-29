@@ -901,7 +901,11 @@ export async function createProtection(options = {}) {
       // Nothing was screened — a leak/PII rule cannot have applied. Record it (a live stream and a
       // binary body are by design; a body-cap or read failure is a coverage hole worth alerting on).
       if (read.skip !== 'not-a-response') {
-        recordSkip('response', read.skip, { status: response?.status, ...(read.encoding ? { encoding: read.encoding } : {}) });
+        recordSkip('response', read.skip, {
+          status: response?.status,
+          ...(read.encoding ? { encoding: read.encoding } : {}),
+          ...(read.charset ? { charset: read.charset } : {}),
+        });
       }
       if (read.skip === 'not-a-response') return response;
 
@@ -910,10 +914,10 @@ export async function createProtection(options = {}) {
       // original body is untouched and can be handed on as it is.
       return hardenHeadersOnly(response, reqCtx);
     }
-    const text = read.text;
+    const text = readJsonEscapes(read.text);
     const r = screenText(text, { status: response.status, headers: headerObject(response.headers) }, reqCtx);
-    if (r.verdict === 'block') return leakResponse();
-    if (r.verdict === 'redact') return rebuildResponse(response, r.body, r.headers);
+    if (r.verdict === 'block' || (r.verdict === 'redact' && outgrowsCharset(read.ascii, r.body))) return leakResponse();
+    if (r.verdict === 'redact') return rebuildResponse(response, withBom(read.bom, r.body), r.headers);
     return response;
   };
 
@@ -1499,7 +1503,14 @@ export async function createProtection(options = {}) {
 
         return passThrough(screenUnreadHead());
       }
-      const text = buffer.toString('utf8');
+      // A body in a charset that does not read as UTF-8 is sent as it is.
+      const reading = charsetReading(ct, buffer);
+      if (reading.skip) {
+        recordSkip('response', 'unsupported-charset', { charset: reading.skip });
+
+        return passThrough(screenUnreadHead());
+      }
+      const text = readJsonEscapes(buffer.toString('utf8', reading.bom ? 3 : 0));
       let r;
       try {
         r = screenText(text, head, reqCtx, notYetAnswered);
@@ -1508,6 +1519,8 @@ export async function createProtection(options = {}) {
 
         return passThrough();
       }
+      if (r.verdict === 'redact' && outgrowsCharset(reading.ascii, r.body)) r = { verdict: 'block' };
+      if (r.verdict === 'redact') r = { ...r, body: withBom(reading.bom, r.body) };
       if (r.verdict !== 'block' && r.verdict !== 'redact') return passThrough();
 
       // The body is about to change, so the head must describe the new one. If the head has already
@@ -2118,6 +2131,91 @@ function stillEncoded(bytes) {
   }
 }
 
+// Charset labels whose bytes read as UTF-8. ASCII is a subset of it.
+const UTF8_CHARSETS = new Set(['utf-8', 'utf8', 'unicode-1-1-utf-8', 'us-ascii', 'ascii']);
+// Encodings with more than one byte per character, whose bytes never read as ASCII text.
+const WIDE_CHARSET = /^(?:utf-?(?:16|32)|ucs-?[24]|unicode|iso-10646)/;
+
+/** The `charset` parameter of a Content-Type value, lower-cased, or null. */
+function declaredCharset(ct) {
+  const m = /;\s*charset\s*=\s*(?:"([^"]*)"|([^;\s]*))/i.exec(String(ct ?? ''));
+  const label = m ? (m[1] ?? m[2] ?? '').trim().toLowerCase() : '';
+
+  return label || null;
+}
+
+/**
+ * How a body's bytes read for screening, which reads text as UTF-8.
+ *
+ * A byte-order mark decides first, as it does for a client. A UTF-8 one is left out of the text screened
+ * and put back in front of a rewritten body (`bom`), so the client keeps reading it as UTF-8 whatever the
+ * declared charset says. Otherwise the declared charset does: a UTF-8
+ * label, or none, reads as UTF-8. Any other label reads identically only over plain ASCII bytes — no
+ * byte above 0x7F, no NUL, and no ESC, which switches a stateful encoding — and a rewrite of it must then
+ * stay ASCII. Anything else cannot be read here: `{ skip: <charset> }`.
+ */
+function charsetReading(ct, bytes) {
+  if (bytes.length >= 3 && bytes[0] === 0xef && bytes[1] === 0xbb && bytes[2] === 0xbf) return { ascii: false, bom: true };
+  if (bytes.length >= 2 && bytes[0] === 0xff && bytes[1] === 0xfe) return { skip: 'utf-16le' };
+  if (bytes.length >= 2 && bytes[0] === 0xfe && bytes[1] === 0xff) return { skip: 'utf-16be' };
+  const charset = declaredCharset(ct);
+  if (!charset || UTF8_CHARSETS.has(charset)) return { ascii: false };
+  if (WIDE_CHARSET.test(charset)) return { skip: charset };
+  for (let i = 0; i < bytes.length; i++) {
+    const b = bytes[i];
+    if (b >= 0x80 || b === 0x00 || b === 0x1b) return { skip: charset };
+  }
+
+  return { ascii: true };
+}
+
+/** `{ text, ascii, bom }` to screen, or an `unsupported-charset` skip naming the charset. */
+function decodeForScreening(ct, bytes) {
+  const reading = charsetReading(ct, bytes);
+  if (reading.skip) return { skip: 'unsupported-charset', charset: reading.skip };
+
+  // The decoder drops a UTF-8 byte-order mark, which `bom` records.
+  return { text: new TextDecoder().decode(bytes), ascii: reading.ascii, bom: reading.bom === true };
+}
+
+/** A rewritten body with the UTF-8 byte-order mark its original carried. */
+function withBom(bom, body) {
+  return bom ? '\uFEFF' + body : body;
+}
+
+/** A rewrite that cannot be sent in the charset of the body it replaces: non-ASCII into an ASCII-only one. */
+function outgrowsCharset(ascii, body) {
+  return ascii === true && /[^\x00-\x7f]/.test(body);
+}
+
+const KEPT_ESCAPES = new Set([0x22, 0x5c, 0x3c, 0x3e, 0x26, 0x27]);
+
+/**
+ * A JSON body with its string escapes read the way a JSON parser reads them, for screening.
+ *
+ * `\uXXXX` for printable ASCII and `\/` become the characters they stand for, so a value is screened as
+ * the client will see it. What an escape protects stays escaped: the quote, the backslash and control
+ * characters, which keep the document well-formed; `<`, `>`, `&`, `'` and a `\/` after `<`, which keep it
+ * safe to place in markup. The result parses to the same value. A body that is not JSON is returned as it
+ * is.
+ */
+function readJsonEscapes(text) {
+  if (!text.includes('\\u') && !text.includes('\\/')) return text;
+  try {
+    JSON.parse(text);
+  } catch {
+    return text;
+  }
+
+  return text.replace(/\\(?:u([0-9a-fA-F]{4})|([\s\S]))/g, (whole, hex, ch, offset) => {
+    if (hex === undefined) return ch === '/' && text[offset - 1] !== '<' ? '/' : whole;
+    const code = parseInt(hex, 16);
+    if (code < 0x20 || code > 0x7e || KEPT_ESCAPES.has(code)) return whole;
+
+    return String.fromCharCode(code);
+  });
+}
+
 // Returns { text } when the body was fully buffered for screening, or { skip: <reason> } when it was
 // NOT screened — the reason is surfaced to `onSkip`/coverage so a fail-open bypass is observable
 // instead of silent (an unscreened response is a real hole in enforcement).
@@ -2174,19 +2272,20 @@ async function readTextResponse(response, cap = DEFAULT_SCREEN_CAP) {
     const bytes = concatBytes(chunks, size);
     if (codings.length > 0 && stillEncoded(bytes)) return encodedSkip();
     try {
-      return { text: new TextDecoder().decode(bytes) };
+      return decodeForScreening(ct, bytes);
     } catch {
       return { skip: 'decode-failed' };
     }
   }
 
   try {
-    if (codings.length > 0) {
+    if (codings.length > 0 || typeof clone.arrayBuffer === 'function') {
       const bytes = new Uint8Array(await clone.arrayBuffer());
       if (bytes.byteLength > cap) return { skip: 'body-cap' };
-      if (stillEncoded(bytes)) return encodedSkip();
+      if (codings.length > 0 && stillEncoded(bytes)) return encodedSkip();
+      if (codings.length === 0 && sniff && looksBinary(bytes)) return { skip: 'binary-body' };
 
-      return { text: new TextDecoder().decode(bytes) };
+      return decodeForScreening(ct, bytes);
     }
     const text = await clone.text();
     if (text.length > cap) return { skip: 'body-cap' };
