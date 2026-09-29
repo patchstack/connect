@@ -6,6 +6,7 @@
  * obfuscation techniques that attackers use to evade pattern matching.
  */
 import { setOwn } from './own.js';
+import { parseCookieHeader } from './cookies.js';
 
 
 const HTML_ENTITIES = {
@@ -388,14 +389,27 @@ export function normalizeRequest(req, options = {}) {
         ? req._rawBody
         : serializeForRawDetection(body ?? null);
 
+    const headers = requestField(req, 'headers') || {};
+
     return {
         query: normalizeObject(requestField(req, 'query') || {}, options),
         body: normalizeObject(body || {}, options),
-        headers: normalizeObject(requestField(req, 'headers') || {}, options),
+        headers: normalizeObject(headers, options),
+        // Cookies are split into name/value pairs BEFORE their values are normalised, and normalised the
+        // same way whether a framework parsed them or they come from the header — so a rule on a cookie
+        // sees one value, independent of which cookie parser (if any) ran first.
+        cookies: normalizeObject(cookieValues(requestField(req, 'cookies'), headers), options),
         url: normalize(decodeQueryPlus(url || ''), options),
         originalUrl: normalize(decodeQueryPlus(requestField(req, 'originalUrl') || url || ''), options),
         _rawBody: rawBody
     };
+}
+
+// The request's cookies as name → value: the ones a cookie parser already produced when there are any,
+// otherwise the `Cookie` header's pairs.
+function cookieValues(parsed, headers) {
+    if (parsed !== null && typeof parsed === 'object' && !Array.isArray(parsed)) return parsed;
+    return parseCookieHeader(headers?.cookie);
 }
 
 // The same depth bound as the engine's leaf walk, so every value that walk reaches is normalized. Past

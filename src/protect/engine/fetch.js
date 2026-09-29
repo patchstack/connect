@@ -9,6 +9,7 @@
 import { resolveClientIp } from '../client-ip.js';
 import { RuleEngine } from './engine.js';
 import { notify } from '../notify.js';
+import { parseCookieHeader } from './cookies.js';
 import { appendOwn, setOwn } from './own.js';
 
 // Cap how much request body we buffer for inspection. A larger body is left UNSCANNED
@@ -67,7 +68,7 @@ export async function fromFetchRequest(request, options = {}) {
     // that guessed differently would attribute one request to two addresses.
     ip: client.ip ?? '',
     _clientIp: client,
-    cookies: parseCookies(headers.cookie),
+    cookies: parseCookieHeader(headers.cookie),
     // Verbatim body text: preserves literal keys (e.g. `__proto__`) that JSON.stringify
     // drops, so prototype-pollution rules on `raw` are robust.
     _rawBody: rawBody,
@@ -272,20 +273,6 @@ function decodeExtendedValue(value) {
   }
 }
 
-function parseCookies(header) {
-  const cookies = {};
-  if (!header) {
-    return cookies;
-  }
-  for (const pair of header.split(';')) {
-    const idx = pair.indexOf('=');
-    if (idx === -1) {
-      continue;
-    }
-    setOwn(cookies, pair.slice(0, idx).trim(), pair.slice(idx + 1).trim());
-  }
-  return cookies;
-}
 
 function defaultBlockResponse(result) {
   return new Response(
@@ -319,6 +306,9 @@ export function createFetchMiddleware(rulesData, options = {}) {
         notify(options.onSkip, { phase: 'request', reason: req._bodyInspectionSkip }, 'onSkip');
       }
       result = engine.evaluate(req);
+      for (const reason of result.skips ?? []) {
+        notify(options.onSkip, { phase: 'request', reason }, 'onSkip');
+      }
     } catch (err) {
       notify(options.onError, err, 'onError');
       return null; // fail open
