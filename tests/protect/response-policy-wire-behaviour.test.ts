@@ -295,6 +295,13 @@ describe('a diagnostic disclosure is withheld, whole', () => {
       residues: ['users_email_unique', 'duplicate key', 'SQLSTATE'],
     },
     {
+      id: 'resp-sql-error',
+      why: 'a MySQL error code',
+      body: json({ code: 'ER_DUP_ENTRY', sqlMessage: "Duplicate entry 'a@example.com' for key 'users.email'" }),
+      type: 'application/json',
+      residues: ['ER_DUP_ENTRY', 'a@example.com', 'users.email'],
+    },
+    {
       id: 'resp-exception-trace',
       why: 'a Python traceback',
       body: json({ error: 'Traceback (most recent call last):\n  File "app.py", line 42, in handler\n    raise ValueError("boom")' }),
@@ -320,6 +327,7 @@ describe('a diagnostic disclosure is withheld, whole', () => {
   it.each([
     ['resp-stack-trace', json({ note: 'The meeting starts at 10:00 (room 4)' })],
     ['resp-sql-error', json({ error: 'The request could not be completed' })],
+    ['resp-sql-error', '<div class="hero-cover__background"><header class="site-header__inner"></header></div>'],
     ['resp-exception-trace', json({ note: 'System.out.println was called during startup' })],
   ] as Array<[string, string]>)('%s serves an ordinary response untouched', async (id, body) => {
     const result = await wire(id, body);

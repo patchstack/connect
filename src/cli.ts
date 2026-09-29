@@ -47,7 +47,7 @@ import {
   buildSourceMarkerSnippet,
   ensureSourceMarker,
   findHtmlFiles,
-  hasJsxShell,
+  hasEditableShell,
   injectMarker,
   productionGate,
   resolveBuildDir,
@@ -929,9 +929,9 @@ function reportSourceWidget(siteUuid: string, framework: string | null, report: 
     });
   };
   try {
-    // A server-rendered project has no HTML shell to edit, so the framework's JSX root stands in for
-    // one. Only where a literal tag is known to belong — the same set the marker will write into.
-    const hint = hasJsxShell(framework) ? resolveWidgetFileHint(process.cwd(), framework) : null;
+    // A server-rendered project has no HTML shell to edit, so the framework's JSX root or Astro layout
+    // stands in for one. Only where a literal tag is known to belong — the same set the marker will write into.
+    const hint = hasEditableShell(framework) ? resolveWidgetFileHint(process.cwd(), framework) : null;
     const jsxShell = hint !== null && !hint.toLowerCase().endsWith('.html') ? hint : null;
 
     const result = ensureSourceWidget(process.cwd(), siteUuid, jsxShell);
@@ -992,7 +992,7 @@ function reportSourceMarker(framework: string | null, checksum: string | null, r
         // Without it the widget cannot tell the live app from a preview, and shows the setup panel to visitors.
         report.missing.push({
           text: 'Your live app does not tell Patchstack it is live yet',
-          hint: hasJsxShell(framework)
+          hint: hasEditableShell(framework)
             ? [`Add this inside <head> in ${shell}:`, ...buildSourceMarkerSnippet(framework).split('\n').map((line) => `  ${line}`)]
             : [
                 `Add this inside <head> in ${shell}, only when ${productionGate(framework)}:`,

@@ -624,6 +624,39 @@ describe('guide', () => {
       expect(renderGuideChecklist(state, false)).not.toContain('does not tell Patchstack it is live');
     });
 
+    const astroProject = (layout: string, contents: string): void => {
+      writeJson('package.json', {
+        name: 'astro-app',
+        dependencies: { astro: '5.0.0', '@astrojs/node': '9.0.0' },
+      });
+      writeJson('.patchstackrc.json', { siteUuid: VALID_UUID });
+      mkdirSync(path.join(cwd, 'src', 'layouts'), { recursive: true });
+      writeFileSync(path.join(cwd, 'src', 'layouts', layout), contents);
+    };
+
+    it('finds an Astro layout that is not named Layout.astro', async () => {
+      astroProject('Base.astro', '<html><head></head><body><slot /></body></html>');
+      const state = await collectGuideState(cwd);
+
+      expect(state.widgetFileHint).toBe('src/layouts/Base.astro');
+      expect(needsSourceProductionMarker(state)).toBe(true);
+    });
+
+    it('falls back to the Astro layout that renders the document', async () => {
+      astroProject('Card.astro', '<div class="card"><slot /></div>');
+      writeFileSync(path.join(cwd, 'src', 'layouts', 'Site.astro'), '<html><body><slot /></body></html>');
+
+      expect((await collectGuideState(cwd)).widgetFileHint).toBe('src/layouts/Site.astro');
+    });
+
+    it('prints the Astro form of the marker, which Astro leaves unbundled', async () => {
+      astroProject('Layout.astro', '<html><head></head><body><slot /></body></html>');
+      const output = renderGuideChecklist(await collectGuideState(cwd), false, {}, { verbose: true });
+
+      expect(output).toContain('Run: npx @patchstack/connect scan (it edits src/layouts/Layout.astro)');
+      expect(output).toContain('<script is:inline data-patchstack-build="true">window.__PATCHSTACK_PROD__=true;</script>');
+    });
+
     it('stays silent for a plain HTML shell, where mark-build stamps the marker', async () => {
       writeJson('package.json', { name: 'spa', dependencies: { vite: '5.0.0' } });
       writeJson('.patchstackrc.json', { siteUuid: VALID_UUID });

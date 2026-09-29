@@ -181,7 +181,10 @@ export const DEFAULT_RESPONSE_RULES = [
     // the constraint name, the column and the offending value discloses the schema anyway.
     action: 'block',
     prefilter: ['SQLSTATE', 'Sequelize', 'ER_', 'ORA-', 'PG::', 'SQLITE_ERROR', 'SQL syntax'],
-    rule_v2: [{ parameter: 'response.body', match: { type: 'regex', value: '/(SQLSTATE\\[[0-9A-Z]+\\]|SequelizeDatabaseError|ER_[A-Z_]+|ORA-\\d{5}|PG::[A-Za-z]+Error|SQLITE_ERROR|You have an error in your SQL syntax)/i' } }]
+    // Case-sensitive, because every signature is emitted in one fixed case. `ER_` is the one that needs
+    // it: MySQL error codes are whole upper-case words (`ER_DUP_ENTRY`), and matched without case or a
+    // word boundary it finds the end of ordinary identifiers such as a `cover__background` class name.
+    rule_v2: [{ parameter: 'response.body', match: { type: 'regex', value: '/(SQLSTATE\\[[0-9A-Z]+\\]|SequelizeDatabaseError|\\bER_[A-Z][A-Z0-9_]*|ORA-\\d{5}|PG::[A-Za-z]+Error|SQLITE_ERROR|You have an error in your SQL syntax)/' } }]
   },
   {
     id: 'resp-exception-trace',

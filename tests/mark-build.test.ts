@@ -10,7 +10,7 @@ import {
   ensureMarkerInJsxShell,
   ensureSourceMarker,
   findHtmlFiles,
-  hasJsxShell,
+  hasEditableShell,
   injectMarker,
   productionGate,
   resolveBuildDir,
@@ -270,13 +270,14 @@ describe('ensureMarkerInJsxShell with a build fingerprint', () => {
   });
 });
 
-describe('hasJsxShell', () => {
-  it('is true for React-family roots and false otherwise', () => {
-    expect(hasJsxShell('tanstack-start')).toBe(true);
-    expect(hasJsxShell('next')).toBe(true);
-    expect(hasJsxShell('nuxt')).toBe(false);
-    expect(hasJsxShell('sveltekit')).toBe(false);
-    expect(hasJsxShell(null)).toBe(false);
+describe('hasEditableShell', () => {
+  it('is true for React-family roots and Astro, and false otherwise', () => {
+    expect(hasEditableShell('tanstack-start')).toBe(true);
+    expect(hasEditableShell('next')).toBe(true);
+    expect(hasEditableShell('astro')).toBe(true);
+    expect(hasEditableShell('nuxt')).toBe(false);
+    expect(hasEditableShell('sveltekit')).toBe(false);
+    expect(hasEditableShell(null)).toBe(false);
   });
 });
 
@@ -538,6 +539,58 @@ describe('ensureMarkerInJsxShell', () => {
   it('declines frameworks whose root shell is not JSX', () => {
     expect(ensureMarkerInJsxShell(doc(widgetLine), 'nuxt').action).toBe('unsupported');
     expect(ensureMarkerInJsxShell(doc(widgetLine), 'sveltekit').action).toBe('unsupported');
+  });
+});
+
+describe('ensureMarkerInJsxShell on an Astro layout', () => {
+  const layout = [
+    '---',
+    "import BaseHead from '../components/BaseHead.astro';",
+    'const note = "<head>";',
+    '---',
+    '<html lang="en">',
+    '  <head>',
+    '    <BaseHead />',
+    '  </head>',
+    '  <body>',
+    '    <slot />',
+    '  </body>',
+    '</html>',
+    '',
+  ].join('\n');
+
+  it('adds an inline, production-gated marker as the first child of <head>', () => {
+    const { source, action } = ensureMarkerInJsxShell(layout, 'astro', 'ac749db1ff30');
+
+    expect(action).toBe('added');
+    expect(source).toContain(
+      '{import.meta.env.PROD && (\n      <script is:inline data-patchstack-build="true">' +
+        'window.__PATCHSTACK_PROD__=true;window.__PATCHSTACK_BUILD__="ac749db1ff30";</script>\n    )}',
+    );
+    expect(source.indexOf('__PATCHSTACK_PROD__')).toBeGreaterThan(source.indexOf('  <head>'));
+    expect(source.indexOf('__PATCHSTACK_PROD__')).toBeLessThan(source.indexOf('<BaseHead />'));
+  });
+
+  it('leaves the frontmatter alone, even where it mentions <head>', () => {
+    const { source } = ensureMarkerInJsxShell(layout, 'astro');
+    const frontmatter = layout.slice(0, layout.indexOf('<html'));
+
+    expect(source.startsWith(frontmatter)).toBe(true);
+  });
+
+  it('refreshes the block in place on a re-run', () => {
+    const once = ensureMarkerInJsxShell(layout, 'astro', 'aaaaaaaaaaaa').source;
+    const twice = ensureMarkerInJsxShell(once, 'astro', 'bbbbbbbbbbbb').source;
+
+    expect((twice.match(/__PATCHSTACK_PROD__/g) ?? []).length).toBe(1);
+    expect(twice).toContain('bbbbbbbbbbbb');
+    expect(twice).not.toContain('aaaaaaaaaaaa');
+  });
+
+  it('adopts a marker the layout already sets', () => {
+    const hand = layout.replace('<BaseHead />', '<script is:inline>window.__PATCHSTACK_PROD__=true;</script>');
+
+    expect(ensureMarkerInJsxShell(hand, 'astro')).toEqual({ source: hand, action: 'manual' });
   });
 });
 

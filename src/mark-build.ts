@@ -222,10 +222,11 @@ export function injectMarker(html: string, snippet: string): string {
 /* ------------------------------------------------------------------ */
 
 /**
- * Frameworks whose root shell is JSX. These get a literal snippet; every other
+ * Frameworks whose root shell is JSX. These get a literal snippet; so does an
+ * Astro layout, whose template takes the same `{expression}` syntax. Every other
  * code shell gets the requirement described instead, because its head mechanism
- * (`useHead`, `<svelte:head>`, Astro frontmatter) is not a plain script tag and
- * a wrong snippet costs more than an accurate sentence.
+ * (`useHead`, `<svelte:head>`) is not a plain script tag and a wrong snippet costs
+ * more than an accurate sentence.
  */
 const JSX_SHELL_FRAMEWORKS = new Set([
   'next',
@@ -257,9 +258,11 @@ export function productionGate(framework: string | null): string {
   return mapped ?? DEFAULT_PRODUCTION_GATE;
 }
 
-/** True when `guide` can print a literal marker snippet for this framework. */
-export function hasJsxShell(framework: string | null): boolean {
-  return framework !== null && JSX_SHELL_FRAMEWORKS.has(framework);
+const ASTRO = 'astro';
+
+/** True when the root shell is JSX or an Astro template: `scan` can edit it, and `guide` can print a literal snippet. */
+export function hasEditableShell(framework: string | null): boolean {
+  return framework !== null && (JSX_SHELL_FRAMEWORKS.has(framework) || framework === ASTRO);
 }
 
 /**
@@ -290,6 +293,15 @@ export function buildSourceMarkerSnippet(
   const statements = ['window.__PATCHSTACK_PROD__=true;'];
   if (checksum !== null && checksum !== '') {
     statements.push(`window.__PATCHSTACK_BUILD__=${JSON.stringify(checksum)};`);
+  }
+  if (framework === ASTRO) {
+    // `is:inline` keeps Astro from bundling the script into a module, which would run after the
+    // deferred widget instead of before it.
+    return (
+      `{${gate} && (\n` +
+      `  <script is:inline ${MARKER_ATTR}="true">${statements.join('')}</script>\n` +
+      `)}`
+    );
   }
   return (
     `{${gate} && (\n` +
@@ -339,8 +351,13 @@ interface JsxShellAnchor {
  * a small lexical scan rather than a character class. Self-closing tags cannot
  * carry the marker as a child and are skipped.
  */
-function findJsxShellAnchor(source: string, tagName: 'head' | 'body'): JsxShellAnchor | null {
+function findJsxShellAnchor(
+  source: string,
+  tagName: 'head' | 'body',
+  from = 0,
+): JsxShellAnchor | null {
   const candidates = new RegExp(`^([ \\t]*)<${tagName}(?=[\\s/>])`, 'gm');
+  candidates.lastIndex = from;
   let candidate: RegExpExecArray | null;
 
   while ((candidate = candidates.exec(source)) !== null) {
@@ -401,6 +418,17 @@ function findJsxShellAnchor(source: string, tagName: 'head' | 'body'): JsxShellA
 }
 
 /**
+ * Where an Astro component's template begins: after the `---` frontmatter fence
+ * when there is one. The frontmatter is script, so a `<head>` in it is a string.
+ */
+function astroTemplateStart(source: string): number {
+  const open = /^\s*---[ \t]*\r?\n/.exec(source);
+  if (open === null) return 0;
+  const close = /^---[ \t]*$/m.exec(source.slice(open[0].length));
+  return close === null ? 0 : open[0].length + close.index + close[0].length;
+}
+
+/**
  * Insert the production marker into a JSX root shell, idempotently.
  *
  * Anchors as the first child of `<head>`, then `<body>`, so the marker runs
@@ -413,7 +441,7 @@ export function ensureMarkerInJsxShell(
   framework: string | null,
   checksum: string | null = null,
 ): SourceMarkerResult {
-  if (!hasJsxShell(framework)) {
+  if (!hasEditableShell(framework)) {
     return { source, action: 'unsupported' };
   }
 
@@ -427,8 +455,9 @@ export function ensureMarkerInJsxShell(
       .map((line) => `${indent}${line}`)
       .join('\n');
 
+  const from = framework === ASTRO ? astroTemplateStart(stripped) : 0;
   for (const tagName of ['head', 'body'] as const) {
-    const anchor = findJsxShellAnchor(stripped, tagName);
+    const anchor = findJsxShellAnchor(stripped, tagName, from);
     if (anchor === null) continue;
 
     const indent = `${anchor.indent}  `;
