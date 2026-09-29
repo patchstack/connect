@@ -4,12 +4,13 @@ import {
   isFnLike,
   isShadowedByEnclosingBinding,
   isUninvokedFunctionDeclaration,
-  localCalls,
+  localCallIdentifiers,
   opCallOf,
   rootIdentifier,
   spanOf,
 } from './ast.js';
 import { npmPackageOf, type Bindings } from './bindings.js';
+import { declarationOf } from './scope.js';
 
 const DB_OPS = new Set(['insert', 'update', 'delete', 'select', 'upsert', 'rpc']);
 const PRISMA_OPS = new Set(['create', 'createMany', 'update', 'updateMany', 'delete', 'deleteMany', 'upsert', 'findFirst', 'findUnique', 'findMany', 'count', 'aggregate']);
@@ -112,34 +113,57 @@ export interface SinkContext {
 }
 
 // --- sinks (agnostic) -------------------------------------------------------
-export function collectLocalSinks(sf: any, ts: TsModule, bindings: Bindings, ctx?: SinkContext): Map<string, Sink[]> {
-  const map = new Map<string, Sink[]>();
-  const visit = (node: any) => {
-    if (ts.isFunctionDeclaration(node) && node.name && node.body) map.set(node.name.text, directSinks(node.body, ts, bindings, ctx));
+/**
+ * A file's helper functions and the sinks each one reaches.
+ *
+ * `byDeclaration` is keyed by the helper's declaring identifier, so a call reaches the helper its name
+ * resolves to in scope: two handlers that each define their own `run` get their own sinks. `byName` is
+ * for callers that only have an exported name to go on; a top-level declaration wins over a nested one.
+ */
+export interface LocalSinks {
+  byDeclaration: Map<any, Sink[]>;
+  byName: Map<string, Sink[]>;
+}
+
+export function collectLocalSinks(sf: any, ts: TsModule, bindings: Bindings, ctx?: SinkContext): LocalSinks {
+  const byDeclaration = new Map<any, Sink[]>();
+  const byName = new Map<string, Sink[]>();
+  const record = (name: any, body: any, topLevel: boolean) => {
+    const sinks = directSinks(body, ts, bindings, ctx);
+    byDeclaration.set(name, sinks);
+    if (topLevel || !byName.has(name.text)) byName.set(name.text, sinks);
+  };
+  const visit = (node: any, depth: number) => {
+    const topLevel = depth === 0;
+    if (ts.isFunctionDeclaration(node) && node.name && node.body) record(node.name, node.body, topLevel);
     else if (ts.isVariableStatement(node)) {
       for (const decl of node.declarationList.declarations) {
         if (ts.isIdentifier(decl.name) && decl.initializer && isFnLike(decl.initializer, ts)) {
-          map.set(decl.name.text, directSinks(decl.initializer.body, ts, bindings, ctx));
+          record(decl.name, decl.initializer.body, topLevel);
         }
       }
     }
-    ts.forEachChild(node, visit);
+    ts.forEachChild(node, (child: any) => visit(child, depth + (ts.isSourceFile(node) ? 0 : 1)));
   };
-  visit(sf);
-  return map;
+  visit(sf, 0);
+  return { byDeclaration, byName };
 }
 
-export function sinksFrom(arrowOrNode: any, ts: TsModule, localSinks: Map<string, Sink[]>, bindings: Bindings, ctx?: SinkContext): Sink[] {
+export function sinksFrom(arrowOrNode: any, ts: TsModule, localSinks: LocalSinks, bindings: Bindings, ctx?: SinkContext): Sink[] {
   if (!arrowOrNode) return [];
   const body = arrowOrNode.isSyntheticBody ? arrowOrNode.body
     : isFnLike(arrowOrNode, ts) ? arrowOrNode.body : arrowOrNode;
   if (!body) return [];
   const sinks = directSinks(body, ts, bindings, ctx);
-  for (const called of localCalls(body, ts)) {
-    // Same-file helper.
-    for (const s of localSinks.get(called) ?? []) sinks.push(s);
-    // Imported helper: the name resolves to a RELATIVE module → follow one hop into it.
-    if (ctx) {
+  for (const callee of localCallIdentifiers(body, ts)) {
+    const called = callee.text;
+    const declaration = declarationOf(callee, ts);
+    // Same-file helper: the one this call's name resolves to in scope.
+    const helper = declaration === undefined ? undefined : localSinks.byDeclaration.get(declaration);
+    for (const s of helper ?? []) sinks.push(s);
+    // Imported helper: the name resolves to a RELATIVE module → follow one hop into it. Only when the
+    // name is not bound by something closer, such as a parameter or a local of the same name.
+    if (ctx && (declaration === undefined || isModuleLevel(declaration, ts))) {
       const spec = bindings.resolve(called);
       if (spec && spec.startsWith('.')) {
         for (const s of ctx.graph.importedSinks(ctx.file, spec, bindings.exportNameOf(called) ?? called)) sinks.push(s);
@@ -159,6 +183,18 @@ export function sinksFrom(arrowOrNode: any, ts: TsModule, localSinks: Map<string
     }
   }
   return dedupeSinks(sinks, ctx?.owner ?? '');
+}
+
+/**
+ * Whether a declaring identifier is bound at module level (an import, a top-level `require`), which is
+ * where module bindings resolve names. A parameter or a function-local of the same name is not.
+ */
+function isModuleLevel(declaration: any, ts: TsModule): boolean {
+  for (let cur = declaration?.parent; cur; cur = cur.parent) {
+    if (ts.isSourceFile(cur)) return true;
+    if (ts.isFunctionLike(cur) || ts.isBlock(cur) || ts.isClassLike(cur)) return false;
+  }
+  return false;
 }
 
 /** `ns.member(...)` calls in a subtree, as [namespace root, member] pairs. */
@@ -232,7 +268,7 @@ function directSinks(node: any, ts: TsModule, bindings: Bindings, ctx?: SinkCont
   const visit = (n: any) => {
     // A function that is DECLARED here but not invoked here is not reached by this endpoint — walking
     // into it would report sinks the endpoint never touches (e.g. an unused local helper that shells
-    // out). Skip those subtrees; when the handler DOES call such a helper, `localCalls` +
+    // out). Skip those subtrees; when the handler DOES call such a helper, `localCallIdentifiers` +
     // `collectLocalSinks` bring its sinks in by name. Inline callbacks / IIFEs are NOT skipped — those
     // do run (`items.map(x => db.insert(x))`, `.then(...)`).
     if (n !== node && isUninvokedFunctionDeclaration(n, ts)) return;

@@ -1,5 +1,6 @@
 import type { AddressSpace, ApiInvocation, ArgumentRole, DependencyInputFlow, Flow, InputField, Limitation, Sink, TsModule } from './types.js';
-import { bindingKey, calleeName, isValueRead, lineOf, rootIdentifier } from './ast.js';
+import { bindingKey, calleeName, isValueRead, lineOf, rootIdentifierNode } from './ast.js';
+import { declarationOf } from './scope.js';
 import { REQ_SOURCES } from './inputs.js';
 import { addressSpaceOf, isProvenFlow } from './coordinates.js';
 import { argumentRoleOf, CANDIDATE_FAMILIES } from './sinks.js';
@@ -48,6 +49,77 @@ interface Root {
    * and reading them as namespaces would move a body field into another address space.
    */
   request?: boolean;
+  /**
+   * The binding, or one it was derived from, is assigned again after its declaration. What reaches a
+   * sink through it may be the request value or whatever replaced it, so a read through it is evidence
+   * of reachability but never of an exact, untransformed value.
+   */
+  reassigned?: boolean;
+}
+
+/**
+ * Tainted bindings keyed by the declaration an occurrence resolves to, never by its name: a block-scoped
+ * or callback binding that happens to share a request binding's name is a different variable.
+ */
+class Roots {
+  private readonly byDeclaration = new Map<any, Root>();
+
+  constructor(private readonly ts: TsModule) {}
+
+  add(declaration: any, root: Root): void {
+    if (!this.byDeclaration.has(declaration)) this.byDeclaration.set(declaration, root);
+  }
+
+  /** The root an identifier occurrence refers to, when its binding is tainted. */
+  get(id: any): Root | undefined {
+    const declaration = declarationOf(id, this.ts);
+
+    return declaration === undefined ? undefined : this.byDeclaration.get(declaration);
+  }
+}
+
+/** Declarations whose binding is the target of an assignment, an update or a `for…of`/`for…in` head. */
+function reassignedDeclarations(body: any, ts: TsModule): Set<any> {
+  const out = new Set<any>();
+  const target = (n: any): void => {
+    if (!n) return;
+    if (ts.isParenthesizedExpression(n)) return target(n.expression);
+    if (ts.isIdentifier(n)) {
+      const declaration = declarationOf(n, ts);
+      if (declaration !== undefined) out.add(declaration);
+      return;
+    }
+    // Destructuring assignment: `({ cmd } = other)`, `[cmd] = list`.
+    if (ts.isObjectLiteralExpression(n)) {
+      for (const p of n.properties) {
+        if (ts.isShorthandPropertyAssignment(p)) target(p.name);
+        else if (ts.isPropertyAssignment(p)) target(p.initializer);
+        else if (ts.isSpreadAssignment(p)) target(p.expression);
+      }
+      return;
+    }
+    if (ts.isArrayLiteralExpression(n)) {
+      for (const e of n.elements) target(ts.isSpreadElement(e) ? e.expression : e);
+      return;
+    }
+    if (ts.isBinaryExpression(n) && n.operatorToken.kind === ts.SyntaxKind.EqualsToken) target(n.left);
+  };
+  const visit = (n: any) => {
+    if (!n) return;
+    if (ts.isBinaryExpression(n)
+        && n.operatorToken.kind >= ts.SyntaxKind.FirstAssignment && n.operatorToken.kind <= ts.SyntaxKind.LastAssignment) {
+      target(n.left);
+    }
+    if ((ts.isPrefixUnaryExpression(n) || ts.isPostfixUnaryExpression(n))
+        && (n.operator === ts.SyntaxKind.PlusPlusToken || n.operator === ts.SyntaxKind.MinusMinusToken)) {
+      target(n.operand);
+    }
+    if ((ts.isForOfStatement(n) || ts.isForInStatement(n)) && !ts.isVariableDeclarationList(n.initializer)) target(n.initializer);
+    ts.forEachChild(n, visit);
+  };
+  visit(body);
+
+  return out;
 }
 
 /** Request namespaces whose `.get('<name>')` reads the field `<name>`. */
@@ -115,21 +187,24 @@ function linkFlows(
   // has none — its next segment decides (`req.query.x` vs `req.body.x`) — but `({ query: q })` fixes `q`
   // in `get` for good. Without this the space was dropped along with the namespace segment, so a read of
   // `query.id` was indistinguishable from a read of `body.id` and could match either input.
-  const rootPath = new Map<string, Root>();
-  const addRoot = (name: string, path: string, space?: AddressSpace, accessor = false, request = false) => {
-    if (!rootPath.has(name)) rootPath.set(name, { path, space, ...(accessor ? { accessor } : {}), ...(request ? { request } : {}) });
+  const rootPath = new Roots(ts);
+  // A binding assigned again after its declaration may no longer hold what it was declared with.
+  const reassigned = reassignedDeclarations(bodyNode, ts);
+  const addRoot = (declaration: any, path: string, space?: AddressSpace, accessor = false, request = false, inherited = false) => {
+    const changed = inherited || reassigned.has(declaration);
+    rootPath.add(declaration, { path, space, ...(accessor ? { accessor } : {}), ...(request ? { request } : {}), ...(changed ? { reassigned: true } : {}) });
   };
   for (const [index, p] of (params ?? []).entries()) {
     if (!p?.name) continue;
     // The handler's first parameter is its request; later ones (`res`, a route context) are not.
-    if (ts.isIdentifier(p.name)) addRoot(p.name.text, '', undefined, false, index === 0);
+    if (ts.isIdentifier(p.name)) addRoot(p.name, '', undefined, false, index === 0);
     else if (ts.isObjectBindingPattern(p.name)) {
       for (const el of p.name.elements) {
         if (!ts.isBindingElement(el) || !ts.isIdentifier(el.name)) continue;
         const key = bindingKey(el, ts);
         // A destructured request source (`{ body }`) is a container: its members ARE the paths.
         const container = key !== undefined && CONTAINER_KEYS.has(key);
-        addRoot(el.name.text, container ? '' : key ?? el.name.text, container ? spaceOfKey(key) : undefined, container && ACCESSOR_NAMESPACES.has(key!));
+        addRoot(el.name, container ? '' : key ?? el.name.text, container ? spaceOfKey(key) : undefined, container && ACCESSOR_NAMESPACES.has(key!));
       }
     }
   }
@@ -144,9 +219,9 @@ function linkFlows(
     if (ts.isCallExpression(cur) && ts.isPropertyAccessExpression(cur.expression)) {
       const m = cur.expression.name.text;
       if (['json', 'formData', 'text'].includes(m)) {
-        const root = rootIdentifier(cur.expression.expression, ts);
+        const root = rootIdentifierNode(cur.expression.expression, ts);
         // A body read: whatever the field names turn out to be, they are addressed in `post`.
-        if (!root || !rootPath.has(root)) return undefined;
+        if (!root || !rootPath.get(root)) return undefined;
 
         return m === 'formData' ? { path: '', space: 'post', accessor: true } : { path: '', space: 'post' };
       }
@@ -165,7 +240,7 @@ function linkFlows(
     if (ts.isVariableDeclaration(n) && n.initializer) {
       const base = requestReadPath(n.initializer);
       if (base !== undefined) {
-        if (ts.isIdentifier(n.name)) addRoot(n.name.text, base.path, base.space, base.accessor === true);
+        if (ts.isIdentifier(n.name)) addRoot(n.name, base.path, base.space, base.accessor === true, false, base.reassigned === true);
         else if (ts.isObjectBindingPattern(n.name)) {
           for (const el of n.name.elements) {
             if (!ts.isBindingElement(el) || !ts.isIdentifier(el.name)) continue;
@@ -176,7 +251,7 @@ function linkFlows(
             const container = base.path === '' && key !== undefined && CONTAINER_KEYS.has(key) && (namespace || !REQ_SOURCES.includes(key));
             // `const { query: q } = req` — the binding KEY names the space when the base has none yet.
             const space = base.space ?? (namespace ? spaceOfKey(key) : undefined);
-            addRoot(el.name.text, container ? '' : join2(base.path, key ?? el.name.text), space, namespace && ACCESSOR_NAMESPACES.has(key!));
+            addRoot(el.name, container ? '' : join2(base.path, key ?? el.name.text), space, namespace && ACCESSOR_NAMESPACES.has(key!), false, base.reassigned === true);
           }
         }
       }
@@ -228,7 +303,7 @@ function linkFlows(
           const whole = pathFromTainted(args[i], ts, rootPath) ?? accessorRead(args[i], ts, rootPath);
           for (const read of taintedReadPaths(args[i], ts, rootPath)) {
             const key = `${read.space ?? '*'}:${read.path}`;
-            const exact = whole !== undefined && whole.path === read.path && whole.space === read.space;
+            const exact = whole !== undefined && whole.path === read.path && whole.space === read.space && whole.reassigned !== true;
             const entry = reads.get(key) ?? { read, roles: new Set<ArgumentRole>(), exact: false };
             entry.roles.add(role);
             entry.exact = entry.exact || exact;
@@ -364,7 +439,7 @@ function linkFlows(
               kind: invocation.kind,
               resolution: invocation.resolution,
               argumentIndex,
-              argumentUse: whole?.path === read.path && whole.space === read.space ? 'direct' : 'within-expression',
+              argumentUse: whole?.path === read.path && whole.space === read.space && whole.reassigned !== true ? 'direct' : 'within-expression',
               line: site.line,
               start: site.start,
               end: site.end,
@@ -437,7 +512,7 @@ function fluentChainCalls(call: any, ts: TsModule): any[] {
  * never be mistaken for the distinct input `billing.email`. Array indices normalize to `[]`.
  * Property KEYS, member names and binding names are not reads.
  */
-function taintedReadPaths(node: any, ts: TsModule, rootPath: Map<string, Root>, includeDeferredBodies = true): Root[] {
+function taintedReadPaths(node: any, ts: TsModule, rootPath: Roots, includeDeferredBodies = true): Root[] {
   const out: Root[] = [];
   const seen = new Set<string>();
   const add = (r: Root) => {
@@ -462,9 +537,9 @@ function taintedReadPaths(node: any, ts: TsModule, rootPath: Map<string, Root>, 
       const read = pathFromTainted(n, ts, rootPath);
       if (read !== undefined) { add(read); return; } // the inner nodes are the path, not separate reads
     }
-    if (ts.isIdentifier(n) && rootPath.has(n.text) && isValueRead(n, ts)) {
-      const r = rootPath.get(n.text)!;
-      if (r.path) add({ path: normalizePath(r.path), space: r.space });
+    const bound = ts.isIdentifier(n) && isValueRead(n, ts) ? rootPath.get(n) : undefined;
+    if (bound) {
+      if (bound.path) add({ path: normalizePath(bound.path), space: bound.space });
     }
     ts.forEachChild(n, visit);
   };
@@ -479,7 +554,7 @@ function taintedReadPaths(node: any, ts: TsModule, rootPath: Map<string, Root>, 
  *   - `insert({ v: body[field] })` → the field is chosen at runtime; no coordinate can name it.
  *   - `insert({ ...body })`        → the whole payload reaches the sink; which field is unidentifiable.
  */
-function sinkArgumentLimitations(node: any, ts: TsModule, rootPath: Map<string, Root>): Limitation[] {
+function sinkArgumentLimitations(node: any, ts: TsModule, rootPath: Roots): Limitation[] {
   const out: Limitation[] = [];
   const seen = new Set<string>();
   const add = (kind: Limitation['kind'], detail: string, n: any) => {
@@ -495,16 +570,16 @@ function sinkArgumentLimitations(node: any, ts: TsModule, rootPath: Map<string, 
     if (!n) return;
     // A computed member read off tainted data with a non-literal index.
     if (ts.isElementAccessExpression(n)) {
-      const root = rootIdentifier(n.expression, ts);
+      const root = rootIdentifierNode(n.expression, ts);
       const arg = n.argumentExpression;
-      if (root && rootPath.has(root) && arg && !ts.isStringLiteralLike(arg) && !ts.isNumericLiteral(arg)) {
+      if (root && rootPath.get(root) && arg && !ts.isStringLiteralLike(arg) && !ts.isNumericLiteral(arg)) {
         add('dynamic-key', text(n), n);
       }
     }
     // A spread of tainted data into the sink's argument.
     if ((ts.isSpreadAssignment?.(n) || ts.isSpreadElement(n)) && n.expression) {
-      const root = rootIdentifier(n.expression, ts);
-      if (root && rootPath.has(root)) add('spread-into-sink', text(n.parent ?? n), n);
+      const root = rootIdentifierNode(n.expression, ts);
+      if (root && rootPath.get(root)) add('spread-into-sink', text(n.parent ?? n), n);
     }
     ts.forEachChild(n, visit);
   };
@@ -520,7 +595,7 @@ function sinkArgumentLimitations(node: any, ts: TsModule, rootPath: Map<string, 
  * transformation of anything. Only a string-literal name is a read of a known field, and only on an
  * accessor: `req.body.account.get('name')` is an application method whose result can be anything.
  */
-function accessorRead(node: any, ts: TsModule, rootPath: Map<string, Root>): Root | undefined {
+function accessorRead(node: any, ts: TsModule, rootPath: Roots): Root | undefined {
   let cur = node;
   while (cur && (ts.isAwaitExpression(cur) || ts.isParenthesizedExpression(cur) || ts.isNonNullExpression(cur))) cur = cur.expression;
   if (!cur || !ts.isCallExpression(cur) || !ts.isPropertyAccessExpression(cur.expression)) return undefined;
@@ -536,12 +611,12 @@ function accessorRead(node: any, ts: TsModule, rootPath: Map<string, Root>): Roo
  * `request.cookies` on the request itself, or a binding that holds one (`({ cookies })`, a
  * `formData()` result).
  */
-function isAccessor(node: any, ts: TsModule, rootPath: Map<string, Root>): boolean {
+function isAccessor(node: any, ts: TsModule, rootPath: Roots): boolean {
   let cur = node;
   while (cur && (ts.isParenthesizedExpression(cur) || ts.isNonNullExpression(cur))) cur = cur.expression;
-  if (ts.isIdentifier(cur)) return rootPath.get(cur.text)?.accessor === true;
+  if (ts.isIdentifier(cur)) return rootPath.get(cur)?.accessor === true;
   if (ts.isPropertyAccessExpression(cur) && ACCESSOR_NAMESPACES.has(cur.name.text) && ts.isIdentifier(cur.expression)) {
-    return rootPath.get(cur.expression.text)?.request === true;
+    return rootPath.get(cur.expression)?.request === true;
   }
 
   return false;
@@ -551,7 +626,7 @@ function isAccessor(node: any, ts: TsModule, rootPath: Map<string, Root>): boole
  * Canonical path of a member/element access rooted in a tainted binding, or undefined if not tainted.
  * `trailing` is appended to the segments read off `node` — the field an accessor call names.
  */
-function pathFromTainted(node: any, ts: TsModule, rootPath: Map<string, Root>, trailing: string[] = []): Root | undefined {
+function pathFromTainted(node: any, ts: TsModule, rootPath: Roots, trailing: string[] = []): Root | undefined {
   const segs: string[] = [];
   let cur = node;
   for (;;) {
@@ -566,7 +641,7 @@ function pathFromTainted(node: any, ts: TsModule, rootPath: Map<string, Root>, t
     break;
   }
   if (!cur || !ts.isIdentifier(cur)) return undefined;
-  const base = rootPath.get(cur.text);
+  const base = rootPath.get(cur);
   if (base === undefined) return undefined;
   segs.push(...trailing);
   let space = base.space;
@@ -584,6 +659,7 @@ function pathFromTainted(node: any, ts: TsModule, rootPath: Map<string, Root>, t
   // Read bare, the request is still the request — which is what lets `const { headers } = request`
   // destructure a namespace, and `const { headers } = await request.json()` not.
   const request = base.request === true && segs.length === 0 ? { request: true } : {};
+  const reassigned = base.reassigned === true ? { reassigned: true } : {};
 
-  return { path: normalizePath([base.path, ...segs].filter(Boolean).join('.')), space, ...request };
+  return { path: normalizePath([base.path, ...segs].filter(Boolean).join('.')), space, ...request, ...reassigned };
 }

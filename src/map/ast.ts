@@ -17,6 +17,18 @@ export function rootIdentifier(node: any, ts: TsModule): string | undefined {
   return undefined;
 }
 
+/** The leftmost identifier NODE of a chain, for callers that resolve it to its declaration. */
+export function rootIdentifierNode(node: any, ts: TsModule): any | undefined {
+  let cur = node;
+  while (cur) {
+    if (ts.isIdentifier(cur)) return cur;
+    if (ts.isPropertyAccessExpression(cur) || ts.isElementAccessExpression(cur) || ts.isCallExpression(cur) || ts.isNewExpression(cur) || ts.isNonNullExpression(cur) || ts.isParenthesizedExpression(cur) || ts.isAwaitExpression(cur)) {
+      cur = cur.expression;
+    } else return undefined;
+  }
+  return undefined;
+}
+
 // Source span of a node: the auditable coordinate, AND the sink's identity for flow analysis (a line is
 // not an identity — two sinks can share one, and an enclosing statement can hold unrelated expressions).
 export function spanOf(node: any): { line?: number; start?: number; end?: number } {
@@ -138,6 +150,17 @@ export function isValueRead(id: any, ts: TsModule): boolean {
 export function opCallOf(propAccess: any, ts: TsModule): any {
   const p = propAccess?.parent;
   return p && ts.isCallExpression(p) && p.expression === propAccess ? p : propAccess;
+}
+
+/** The callee identifiers of plain calls (`run(x)`) in a subtree, for resolving each to its declaration. */
+export function localCallIdentifiers(node: any, ts: TsModule): any[] {
+  const out: any[] = [];
+  const visit = (n: any) => {
+    if (ts.isCallExpression(n) && ts.isIdentifier(n.expression)) out.push(n.expression);
+    ts.forEachChild(n, visit);
+  };
+  visit(node);
+  return out;
 }
 
 export function localCalls(node: any, ts: TsModule): string[] {

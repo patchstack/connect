@@ -1,5 +1,6 @@
 import type { FieldShape, InputField, InputSource, TsModule } from './types.js';
 import { bindingKey, rootIdentifier } from './ast.js';
+import { declarationOf } from './scope.js';
 import { npmPackageOf, type Bindings } from './bindings.js';
 import { addressSpaceOf, inputIdOf, runtimeCoordinate } from './coordinates.js';
 
@@ -150,20 +151,24 @@ function requestMemberAccesses(
     out.set(name, list);
   };
   const p0 = params?.[0];
-  const reqName = p0 && ts.isIdentifier(p0.name) ? p0.name.text : undefined;
+  // The request binding itself, so an inner function's own parameter of the same name is not the request.
+  const reqDecl = p0 && ts.isIdentifier(p0.name) ? p0.name : undefined;
+  const isRequest = (e: any): boolean => reqDecl !== undefined && ts.isIdentifier(e) && declarationOf(e, ts) === reqDecl;
   // Identifiers that ARE a request-input object (destructured `({ body })` param, `await req.json()`),
   // mapped to the NAMESPACE each one came from. It has to be a map, not a set of names: with
   // `({ query: q })` the local is `q`, and matching the local against the literal 'query'/'params'
   // discards the namespace — which silently mis-addresses the input (`post.doc` for a query-string
   // field, and worse, a coordinate for a route param, which the resolver cannot address at all).
-  const sourceNames = new Map<string, InputSource>();
-  const payloadNames = new Set<string>();
-  if (opts.payloadParam && p0 && ts.isIdentifier(p0.name)) payloadNames.add(p0.name.text);
-  if (p0 && !reqName && ts.isObjectBindingPattern(p0.name)) {
+  // Keyed by declaration, like the request itself: a same-named binding in another scope is not one.
+  const sourceNames = new Map<any, InputSource>();
+  const payloadNames = new Set<any>();
+  const sourceOf = (e: any): InputSource | undefined => (ts.isIdentifier(e) ? sourceNames.get(declarationOf(e, ts)) : undefined);
+  if (opts.payloadParam && p0 && ts.isIdentifier(p0.name)) payloadNames.add(p0.name);
+  if (p0 && !reqDecl && ts.isObjectBindingPattern(p0.name)) {
     for (const el of p0.name.elements) {
       const key = bindingKey(el, ts);
       if (key && REQ_SOURCES.includes(key) && ts.isIdentifier(el.name)) {
-        sourceNames.set(el.name.text, namespaceSource(key));
+        sourceNames.set(el.name, namespaceSource(key));
       }
     }
   }
@@ -172,16 +177,16 @@ function requestMemberAccesses(
     while (cur && (ts.isAwaitExpression(cur) || ts.isAsExpression(cur) || ts.isParenthesizedExpression(cur) || ts.isNonNullExpression(cur))) cur = cur.expression;
     return cur;
   };
-  const isPayloadExpr = (e: any): boolean => ts.isIdentifier(e) && payloadNames.has(e.text);
+  const isPayloadExpr = (e: any): boolean => ts.isIdentifier(e) && payloadNames.has(declarationOf(e, ts));
   const isReqSourceExpr = (e: any): boolean =>
     isPayloadExpr(e) ||
-    (ts.isPropertyAccessExpression(e) && ts.isIdentifier(e.expression) && e.expression.text === reqName && REQ_SOURCES.includes(e.name.text)) ||
-    (ts.isIdentifier(e) && sourceNames.has(e.text));
+    (ts.isPropertyAccessExpression(e) && isRequest(e.expression) && REQ_SOURCES.includes(e.name.text)) ||
+    sourceOf(e) !== undefined;
   const isBodyReadCall = (e: any): boolean => {
     const inner = unwrap(e);
     return Boolean(inner && ts.isCallExpression(inner) && ts.isPropertyAccessExpression(inner.expression) &&
       ['json', 'formData'].includes(inner.expression.name.text) &&
-      ts.isIdentifier(inner.expression.expression) && inner.expression.expression.text === reqName);
+      isRequest(inner.expression.expression));
   };
   // `request.headers.get` in `request.headers.get('x')` is a METHOD of the namespace, not a field of it.
   // Recording it would invent an input named `get` — a coordinate no request carries.
@@ -213,14 +218,14 @@ function requestMemberAccesses(
     if (ts.isVariableDeclaration(n) && n.initializer) {
       const init = unwrap(n.initializer);
       // const b = await request.json() → b is a request-input object from here on.
-      if (ts.isIdentifier(n.name) && isBodyReadCall(n.initializer)) sourceNames.set(n.name.text, bodyReadSource(n.initializer));
+      if (ts.isIdentifier(n.name) && isBodyReadCall(n.initializer)) sourceNames.set(n.name, bodyReadSource(n.initializer));
       // const { query: q } = req → the SAME namespace capture as a destructured handler param, just one
       // statement later. Without this the fields read off `q` are invisible: no coordinate is emitted
       // (so nothing is mis-addressed) but the surface goes unreported, which reads as "nothing here".
-      if (ts.isObjectBindingPattern(n.name) && ts.isIdentifier(init) && reqName && init.text === reqName) {
+      if (ts.isObjectBindingPattern(n.name) && isRequest(init)) {
         for (const el of n.name.elements) {
           const key = bindingKey(el, ts);
-          if (key && REQ_SOURCES.includes(key) && ts.isIdentifier(el.name)) sourceNames.set(el.name.text, namespaceSource(key));
+          if (key && REQ_SOURCES.includes(key) && ts.isIdentifier(el.name)) sourceNames.set(el.name, namespaceSource(key));
         }
       }
       // const { a, b } = <source> | await request.json()
@@ -249,7 +254,7 @@ function requestMemberAccesses(
     }
     // The recorded namespace, so an ALIAS resolves correctly (`({ query: q }) => q.id` → query).
     if (ts.isIdentifier(e)) {
-      const recorded = sourceNames.get(e.text);
+      const recorded = sourceOf(e);
       if (recorded) return recorded;
     }
     return 'body';
