@@ -8,9 +8,15 @@ Use the package setup flow below for an existing JS/Node application. Work in it
 
 ### Plain HTML sites
 
-For a standalone site made of HTML, CSS, and browser JavaScript, with no package-managed application or server request handler, use the Patchstack Connector directly. Do not create `package.json`, install a framework, invent build hooks, or add a server just to run Connect. `setup` requires an existing `package.json`; it is not a standalone HTML installer.
+For a standalone site made of HTML, CSS, and browser JavaScript, with no package-managed application or server request handler, use the Patchstack Connector directly. Do not create `package.json`, install a framework, invent build hooks, or add a server just to run Connect, unless the person chooses that in step 1. `setup` requires an existing `package.json`; it is not a standalone HTML installer.
 
-1. Use the public site UUID or widget snippet for the correct site in the Patchstack dashboard. An existing `.patchstackrc.json` can also supply `siteUuid`. If neither is available, ask the user for the site's public UUID or dashboard-provided snippet before editing the page. Never invent a UUID or use a claim token or API key as the widget identifier.
+1. Use the public site UUID or widget snippet for the correct site in the Patchstack dashboard. An existing `.patchstackrc.json` can also supply `siteUuid`. Never invent a UUID or use a claim token or API key as the widget identifier. If neither is available, stop before editing the page and give the person these options in plain words, then wait for their choice:
+
+   - **Add the widget with a site from the dashboard** (the usual choice for a page like this). They create an "Application" site in the Patchstack dashboard and paste its site ID or widget snippet. You add the tag in step 2. They get the widget only.
+   - **Turn the folder into a JS project first**, only if they want that anyway, for example because the site will grow into an app with packages or a server. This adds `package.json`, a lockfile and `node_modules` to their folder. After that, the JS/Node path below applies: `setup` creates the site and prints the dashboard link. A page with no packages of its own gives the scan little to report, and there is still no runtime protection without a server.
+   - **Stop here.** Nothing is changed.
+
+   Do not pick for them, and do not start the JS project unless they choose it.
 2. Add one widget tag before `</body>` in the page or shared layout. Preserve an existing correct tag. For a page published directly without a build step, disable the widget's build-mode onboarding with `data-build-mode="false"`:
 
    ```html
