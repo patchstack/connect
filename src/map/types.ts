@@ -180,6 +180,12 @@ export interface Endpoint {
    * and some were left out. Proven flows are never left out.
    */
   flowsTruncated?: true;
+  /**
+   * How many PROVEN flows (`exact-local` / `transformed-local`) were left out to keep the document within the
+   * size the Patchstack API accepts. The flows listed are true, but a coordinate missing from this endpoint
+   * may be one that was left out, so its absence is not evidence. Absent when none were.
+   */
+  provenFlowsOmitted?: number;
   /** Request inputs observed in arguments of dependency API calls. Positive evidence only: the call
    * is not a modeled dangerous sink, and this field alone never authorizes an enforcing rule. */
   dependencyInputFlows?: DependencyInputFlow[];
