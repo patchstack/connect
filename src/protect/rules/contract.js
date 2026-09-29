@@ -572,6 +572,9 @@ export function parameterProblem(parameter) {
       // member that is itself a list resolves to nothing. Accepting it would validate a rule that names
       // parameters and matches on none of them.
       if (Array.isArray(member)) return 'a parameter list holds parameters, not more lists';
+      // An absent parameter is allowed only for a whole condition, where it means "no parameter". Inside a
+      // list it names nothing, so it is held to the same rule as any other member.
+      if (member === undefined || member === null) return 'parameter list members must be non-empty strings';
       const problem = parameterProblem(member);
       if (problem !== null) return problem;
     }
