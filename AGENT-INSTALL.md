@@ -85,7 +85,7 @@ Only `map` analyses your source, and only `map --upload` sends anything derived 
 
 ## Talk to the person while you work
 
-The person who asked for this usually did not write the project and has never installed a package. Installs and builds here can run for several minutes, and a silent wall of build output is the worst part of their first experience of Patchstack. Narrate it.
+The person who asked for this usually did not write the project and has never installed a package. Installs and builds here can run for several minutes, and a silent wall of build output is the worst part of their first experience of Patchstack. Narrate it, one or two sentences at a time.
 
 - **Say what you are about to do, before the slow command.** One sentence, no command names: "I'm adding Patchstack to your site — this takes a few minutes because it has to reinstall everything the site is built from."
 - **Say what the wait is.** "It's downloading the pieces your site is built out of. Nothing is broken; this is just slow."
@@ -96,6 +96,17 @@ The person who asked for this usually did not write the project and has never in
 - **Report a failure in terms of what they can do**, not what errored. If a step is genuinely unavailable on this platform, say which one and what it means for them, rather than reporting success.
 
 This is a request, not a mechanism: nothing in the install depends on it. Do it anyway — the wait is the only moment where the person is paying full attention.
+
+### The message you end on
+
+When setup is finished, the person reads one short message, not a transcript of the install. Keep it to about ten lines, in this order:
+
+1. **One sentence on the result.** "Patchstack is now watching your site." If something did not finish, say what, in one line.
+2. **The four steps**, copied from the end of the `setup` output with their `✔` and `✘`.
+3. **The next step**, from the `Next:` line, in plain words, with its link or command.
+4. **Refresh and deploy.** Refresh the preview to see the Patchstack Connector, and deploy when ready.
+
+Leave out the files you changed, the commands you ran, settings, and anything that worked as expected. If the person asks for the detail, give it then. `--verbose` prints it.
 
 ## Automated setup
 
@@ -135,7 +146,7 @@ This is a request, not a mechanism: nothing in the install depends on it. Do it 
 
    **A `✘` line under `Missing` is yours to finish, not a result to report.** `setup` applies what it can apply safely and prints the exact edit (or the command that prints it) for anything it would have had to overwrite user code to do. They are: moving `@patchstack/connect` out of `devDependencies`, the widget tag in a root layout `setup` could not edit, the production marker on a server-rendered root, and wiring a generic guard into the server entry. The last three are steps 3 and 4 of "Manual setup" below; after the guard one, `npx @patchstack/connect protect --check` must exit 0.
 
-   **Read the report.** `setup` and `scan` start with `Done` (what this run did) and `Missing` (what is still missing, each with the one thing to do); `guide` shows `Missing` only. All three end on the same four steps — `Install the Patchstack connector`, `Connect project to Patchstack account`, `Sync and monitor in local environment`, `Deploy project to protect live app` — each marked `✔` (done) or `✘` (not yet), followed by the one next step. A part the project cannot carry (no build script, no request path for runtime protection) is simply not listed. The CLI does not store whether the site has an owner, so `Connect` stays `✘` until a scan hears otherwise from Patchstack; do not report the site as connected from that line alone, and do not report it as unconnected once the person has signed in. Report what the project ended up with by name — dependency scans, the Patchstack Connector, the build hooks, runtime protection — and say which are not active and why.
+   **Read the report.** `setup` and `scan` start with `Done` (what this run did) and `Missing` (what is still missing, each with the one thing to do); `guide` shows `Missing` only. All three end on the same four steps — `Install the Patchstack connector`, `Connect project to Patchstack account`, `Sync and monitor in local environment`, `Deploy project to protect live app` — each marked `✔` (done) or `✘` (not yet), followed by the one next step. A part the project cannot carry (no build script, no request path for runtime protection) is simply not listed. The CLI does not store whether the site has an owner, so `Connect` stays `✘` until a scan hears otherwise from Patchstack; do not report the site as connected from that line alone, and do not report it as unconnected once the person has signed in. In the message you end on, name only the parts that are not active — dependency scans, the Patchstack Connector, the build hooks, runtime protection — and why, one line each; the four steps already say what is done.
 
    **The widget is part of the install.** It is on by default; add it without asking the person whether to. Honour `"widget": false` in `.patchstackrc.json` only when the person set it themselves. If it is there and they did not ask for it, remove it, run `setup` again, and tell them the widget is back on.
 
