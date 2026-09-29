@@ -88,6 +88,12 @@ export interface Protection {
    * dropped, and `blockLogHealth()` reports those.
    */
   stop: () => Promise<void>;
+  /**
+   * How often the guard passed something through without inspecting it, in the cases it can observe,
+   * keyed `<phase>:<reason>` (for example `request:body-cap`, `response:live-stream`). Zero skips means
+   * nothing the guard could see was bypassed, not that nothing was.
+   */
+  coverage(): { skipped: Record<string, number> };
   /** Stops the rule refresh only — the poll loop and its recovery retries. The reporters and this
    *  protection's outbound screening keep running; use `stop()` to end those too. */
   stopRefresh: () => Promise<void>;
@@ -269,7 +275,8 @@ export interface CreateProtectionOptions {
   detectionFlushMs?: number;
   /** Optional Source-Host header for connector hostname checks. */
   sourceHost?: string;
-  /** Optional fetch override (tests). */
+  /** Optional fetch override for the block-log and detection reporters (tests). The rules client and
+   *  the manifest re-post use the global `fetch`. */
   fetchImpl?: typeof fetch;
   /**
    * Re-fetch and hot-swap the live rules every N ms. For long-lived runtimes that aren't restarted
@@ -288,7 +295,8 @@ export interface CreateProtectionOptions {
    * During a refresh, also re-post the dependency manifest (the runtime counterpart to `scan`) so a
    * dependency added after boot — e.g. via `npm install <pkg>`, which fires no npm lifecycle hook —
    * is reported and enforced without a restart. Defaults on when a `siteUuid` is set; set false to
-   * refresh rules only. Only meaningful with `refreshMs > 0` and a Pulse `siteUuid`.
+   * refresh rules only. Only meaningful with a Pulse `siteUuid` and a refresh path: `refreshMs > 0` or a
+   * refresh secret. A manual `refresh()` re-posts too when either is configured.
    */
   reportManifest?: boolean;
   /** Directory the manifest re-scan reads the lockfile from during a refresh. Default process.cwd(). */
@@ -350,6 +358,36 @@ export interface CreateProtectionOptions {
     header?: string;
     isTrusted?: (ip: string) => boolean;
   };
+  /** How long the boot-time rules fetch may take before the guard starts on its cache or bundled
+   *  fallback. Default 5000ms. Refreshes use `refreshTimeoutMs`. */
+  bootTimeoutMs?: number;
+  /** How long a refresh's rules fetch may take. Default 30000ms. */
+  refreshTimeoutMs?: number;
+  /** Largest request body the Fetch path buffers for inspection. A larger body is passed through
+   *  uninspected and counted as a `request:body-cap` skip. Default 1 MiB. The Node guard takes its own
+   *  `node({ maxBodyBytes })`. */
+  maxBodyBytes?: number;
+  /**
+   * Apply the valid part of a live rules update when some of its rules fail validation. By default the
+   * whole update is refused, the previous rules stay in force and the response is not cached; either
+   * way every rejected rule is reported through `onRuleRejected`.
+   */
+  acceptPartialBundle?: boolean;
+  /** Permit whitelist entries with no `rule_id`, which apply to every rule. Refused by default. */
+  allowGlobalWhitelists?: boolean;
+  /** Called for each delivered rule that failed validation and is not enforced. Without it, rejections
+   *  are written to the console. */
+  onRuleRejected?: (rejection: { id: string | number; reason: string; accepted?: boolean }) => void;
+  /** Called each time the guard passes something through without inspecting it (an oversized or
+   *  encoded body, a live stream, a binary body, an outbound call it could not resolve). `detail` carries
+   *  operational context such as sizes and hostnames — keep it server-side. `protection.coverage()`
+   *  holds the running counts. */
+  onSkip?: (skip: {
+    phase: Phase;
+    reason: string;
+    detail?: Record<string, unknown>;
+    count: number;
+  }) => void;
   /**
    * Override the default response-phase (secret-leak) rule set. A rule that reads only response headers is
    * enforced from the headers, and masks only the header it matched — see `screenResponse`.
