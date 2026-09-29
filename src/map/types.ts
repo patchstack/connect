@@ -186,6 +186,10 @@ export interface Endpoint {
    * may be one that was left out, so its absence is not evidence. Absent when none were.
    */
   provenFlowsOmitted?: number;
+  /** Inputs left out to stay within the per-endpoint limit; the endpoint's flows are then incomplete too. */
+  inputsOmitted?: number;
+  /** Sinks left out to stay within the per-endpoint limit; the endpoint's flows are then incomplete too. */
+  sinksOmitted?: number;
   /** Request inputs observed in arguments of dependency API calls. Positive evidence only: the call
    * is not a modeled dangerous sink, and this field alone never authorizes an enforcing rule. */
   dependencyInputFlows?: DependencyInputFlow[];
@@ -403,6 +407,10 @@ export interface Coverage {
    * neither term: excluding a local helper is a correct answer, not a miss.
    */
   apiInvocations?: number;
+  /** Invocations left out of `apiInvocations` to fit the document. Positive evidence only, so nothing follows from their absence. */
+  apiInvocationsOmitted?: number;
+  /** Endpoints left out to fit the document (beyond the endpoint limit, or with an over-long file path). */
+  endpointsOmitted?: number;
   callsTotal?: number;
   callsDependency?: number;
   callsLocal?: number;
@@ -466,6 +474,8 @@ export interface Coverage {
      * false "incomplete", which withholds a negative conclusion rather than granting a wrong one.
      */
     unresolvableImports: number;
+    /** Imports left out to fit the document. Any non-zero value makes `importsComplete` false. */
+    omittedForSize?: number;
     /**
      * Directories the walk skipped BY NAME that hold source, repo-relative.
      *
