@@ -1,5 +1,6 @@
 import { createHash } from 'node:crypto';
 import type { ArgumentRole, CandidateFamily, Sink, SinkKind, TsModule } from './types.js';
+import { PACKAGE_SINK_MODELS } from './capabilities.js';
 import {
   isFnLike,
   isShadowedByEnclosingBinding,
@@ -52,9 +53,10 @@ const isExecPackage = (pkg: string) => pkg === 'node:child_process' || EXEC_PACK
 // a serializer like `serialize-javascript` has an output-side flaw, not this one. Recognizing a package
 // here is a claim that untrusted input reaching this call runs code, and a wrong claim aims a rule at
 // something that is not the vulnerability.
-const DESERIALIZE_CALLS = /^unserialize$/;
-const DESERIALIZE_PACKAGES = ['node-serialize'];
-const isDeserializePackage = (pkg: string) => DESERIALIZE_PACKAGES.includes(pkg);
+const deserializeModel = (pkg: string, api?: string) => PACKAGE_SINK_MODELS.find(
+  (model) => model.sinkKind === 'eval' && model.package === pkg && (api === undefined || model.api === api),
+);
+const isDeserializePackage = (pkg: string) => deserializeModel(pkg) !== undefined;
 
 /**
  * Which sink families this package can produce, per the recognizer tables above — i.e. what the map is
@@ -334,7 +336,7 @@ function directSinks(node: any, ts: TsModule, bindings: Bindings, ctx?: SinkCont
           // `serialize.unserialize(` — the usual shape, since the package exports an object. Same rule as
           // fs/exec above: the receiver must resolve to a recognized package, because the method name on
           // its own proves nothing.
-          if (DESERIALIZE_CALLS.test(method) && b.pkg && isDeserializePackage(b.pkg)) {
+          if (b.pkg && deserializeModel(b.pkg, method)) {
             push({ kind: 'eval', provider: b.root, package: b.pkg, op: method, attribution: 'import', ...spanOf(n) });
           }
           // http: any client whose binding resolves to a known http package (`axios.get`, `ky.post`,
@@ -376,7 +378,7 @@ function directSinks(node: any, ts: TsModule, bindings: Bindings, ctx?: SinkCont
         if (name === 'eval' && trueGlobal) push({ kind: 'eval', op: 'eval', attribution: 'global', ...spanOf(n) });
         // A destructured import: `const { unserialize } = require('node-serialize')`. Never a global, so
         // without a resolved package binding this is app code that happens to share the name.
-        if (DESERIALIZE_CALLS.test(name) && pkg && isDeserializePackage(pkg)) {
+        if (pkg && deserializeModel(pkg, name)) {
           push({ kind: 'eval', package: pkg, op: name, attribution: 'import', ...spanOf(n) });
         }
       }
@@ -446,7 +448,10 @@ export function argumentRoleOf(sinkKind: string, method: string | undefined, ind
   // `unserialize(payload)` — the payload IS the executed code, so argument 0 carries the `code` role and
   // therefore the `code-injection` candidate family. Without this the flow lands on `unknown` and no rule
   // can be compiled from it.
-  if (sinkKind === 'eval' && method === 'unserialize') return index === 0 ? 'code' : 'unknown';
+  const packageModel = PACKAGE_SINK_MODELS.find(
+    (model) => model.sinkKind === sinkKind && model.api === method,
+  );
+  if (packageModel) return index === 0 ? packageModel.argumentRole : 'unknown';
   const table = method ? ARGUMENT_ROLES[sinkKind]?.[method] : undefined;
   return table?.[index] ?? 'unknown';
 }
