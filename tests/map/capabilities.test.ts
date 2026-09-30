@@ -48,6 +48,7 @@ describe('the committed manifest matches the source of truth', () => {
     expect(manifest.confidenceTiers).toEqual([...CONFIDENCE_TIERS]);
     expect(manifest.provenConfidenceTiers).toEqual([...PROVEN_CONFIDENCE_TIERS]);
     expect(manifest.addressSpaces).toEqual([...ADDRESS_SPACES]);
+    expect(manifest.packageSinkModels).toEqual(CAPABILITY_MANIFEST.packageSinkModels);
   });
 
   it('carries a semver version, so a consumer can pin and detect a break', () => {
@@ -245,9 +246,8 @@ describe('the emitted manifest covers every declared vocabulary', () => {
 
   // Exported `as const` arrays are the vocabularies. `CAPABILITY_MANIFEST` itself is the assembly, not a
   // member, and the scalar pins are read separately by the emitter.
-  const declared = [...source.matchAll(/export const ([A-Z_]+) = \[/g)]
-    .map((m) => m[1])
-    .filter((name) => name !== 'CAPABILITY_MANIFEST');
+  const declared = [...source.matchAll(/export const ([A-Z_]+) = \[([^\]]*)\] as const;/gs)]
+    .map((m) => m[1]);
 
   it('finds the vocabularies to check, so an empty list cannot pass', () => {
     expect(declared.length).toBeGreaterThanOrEqual(8);
@@ -263,4 +263,3 @@ describe('the emitted manifest covers every declared vocabulary', () => {
     expect(manifest[key]).toEqual(members);
   });
 });
-

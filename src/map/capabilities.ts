@@ -20,7 +20,7 @@
  * member is breaking and bumps the MAJOR, because a consumer pinned to the old list will keep emitting a
  * value that can no longer match.
  */
-export const CAPABILITY_VERSION = '1.2.0';
+export const CAPABILITY_VERSION = '1.3.0';
 
 /** Sink families the extractor recognizes. A dangerous OPERATION, not a package. */
 export const SINK_KINDS = ['db', 'fs', 'http', 'exec', 'eval'] as const;
@@ -94,6 +94,30 @@ export const INPUT_SOURCES = [
   'server-fn-data', 'unknown',
 ] as const;
 
+/**
+ * Package APIs whose implementation is modeled as a sink.
+ *
+ * The generic vocabularies above can say that an `eval`/`code` flow exists, but an author deciding
+ * whether a particular package supports a sink-side reachability detector also needs to know which APIs
+ * the extractor actually recognizes. Publishing this table keeps that decision tied to the recognizer
+ * instead of leaving every consumer to guess from the package name.
+ */
+export const PACKAGE_SINK_MODELS = [
+  {
+    package: 'node-serialize',
+    api: 'unserialize',
+    sinkKind: 'eval',
+    argumentRole: 'code',
+    candidateFamily: 'code-injection',
+  },
+] as const satisfies readonly {
+  package: string;
+  api: string;
+  sinkKind: (typeof SINK_KINDS)[number];
+  argumentRole: (typeof ARGUMENT_ROLES)[number];
+  candidateFamily: (typeof CANDIDATE_FAMILIES)[number];
+}[];
+
 /** The whole contract, as the other repos consume it. Key order is stable so the JSON is diffable. */
 export const CAPABILITY_MANIFEST = {
   version: CAPABILITY_VERSION,
@@ -108,6 +132,7 @@ export const CAPABILITY_MANIFEST = {
   inputSources: INPUT_SOURCES,
   invocationKinds: INVOCATION_KINDS,
   invocationResolutions: INVOCATION_RESOLUTIONS,
+  packageSinkModels: PACKAGE_SINK_MODELS,
 } as const;
 
 /**

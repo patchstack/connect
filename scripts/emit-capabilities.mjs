@@ -32,6 +32,25 @@ const stringOf = (name) => {
   if (!m) throw new Error(`could not find ${name}`);
   return m[1];
 };
+const packageSinkModels = () => {
+  const block = /export const PACKAGE_SINK_MODELS = \[([\s\S]*?)\n\] as const satisfies/.exec(src)?.[1];
+  if (!block) throw new Error('could not find PACKAGE_SINK_MODELS in src/map/capabilities.ts');
+
+  return [...block.matchAll(/\{([\s\S]*?)\}/g)].map((entry) => {
+    const field = (name) => {
+      const value = new RegExp(`${name}: '([^']+)'`).exec(entry[1])?.[1];
+      if (!value) throw new Error(`PACKAGE_SINK_MODELS entry is missing ${name}`);
+      return value;
+    };
+    return {
+      package: field('package'),
+      api: field('api'),
+      sinkKind: field('sinkKind'),
+      argumentRole: field('argumentRole'),
+      candidateFamily: field('candidateFamily'),
+    };
+  });
+};
 
 const manifest = {
   $comment:
@@ -50,6 +69,7 @@ const manifest = {
   inputSources: arrayOf('INPUT_SOURCES'),
   invocationKinds: arrayOf('INVOCATION_KINDS'),
   invocationResolutions: arrayOf('INVOCATION_RESOLUTIONS'),
+  packageSinkModels: packageSinkModels(),
 };
 
 const out = join(root, 'capabilities.json');
