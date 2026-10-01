@@ -38,7 +38,7 @@ describe('wireBuildScripts', () => {
     expect(readPackage().scripts).toMatchObject({
       build: 'vite build',
       postinstall: 'patchstack-connect scan',
-      prebuild: 'patchstack-connect scan && npm run lint',
+      prebuild: 'patchstack-connect scan && npm run lint && patchstack-connect map --upload',
       postbuild: 'echo complete && patchstack-connect mark-build',
     });
   });
@@ -77,7 +77,7 @@ describe('wireBuildScripts', () => {
 
     expect(result).toMatchObject({ changed: true, strategy: 'build-chain' });
     expect(readPackage().scripts.build).toBe(
-      'patchstack-connect scan && vite build && patchstack-connect mark-build',
+      'patchstack-connect scan && patchstack-connect map --upload && vite build && patchstack-connect mark-build',
     );
     expect(readPackage().scripts.postinstall).toBe('patchstack-connect scan');
   });
@@ -105,7 +105,7 @@ describe('wireBuildScripts', () => {
 
     expect(second.changed).toBe(false);
     expect(readPackage().scripts.postinstall).toBe('patchstack-connect scan');
-    expect(readPackage().scripts.prebuild).toBe('patchstack-connect scan');
+    expect(readPackage().scripts.prebuild).toBe('patchstack-connect scan && patchstack-connect map --upload');
     expect(readPackage().scripts.postbuild).toBe('patchstack-connect mark-build');
   });
 
@@ -133,6 +133,20 @@ describe('wireBuildScripts', () => {
     expect(readPackage().scripts.postinstall).toBe(
       'prisma generate && patchstack-connect scan',
     );
+  });
+
+  it('maps after prebuild code generation even if an earlier map hook already exists', () => {
+    writePackage({scripts:{build:'vite build',prebuild:'patchstack-connect map --upload && node generate.js'}});
+    wireBuildScripts(cwd,'npm');
+    expect(readPackage().scripts.prebuild).toBe('patchstack-connect scan && patchstack-connect map --upload && node generate.js && patchstack-connect map --upload');
+    expect(wireBuildScripts(cwd,'npm').changed).toBe(false);
+  });
+
+  it('puts a Bun map before bundling even when a user already maps after it', () => {
+    writePackage({scripts:{build:'vite build && patchstack-connect map --upload'}});
+    wireBuildScripts(cwd,'bun');
+    expect(readPackage().scripts.build).toBe('patchstack-connect scan && patchstack-connect map --upload && vite build && patchstack-connect map --upload && patchstack-connect mark-build');
+    expect(wireBuildScripts(cwd,'bun').changed).toBe(false);
   });
 
   it('creates a scripts object for the dependency-install scan', () => {

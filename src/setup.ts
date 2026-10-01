@@ -8,6 +8,7 @@ import type { ProtectResult, VerifyReport } from './protect/install/types.js';
 import { writeProjectFileSync } from './safe-file.js';
 
 const SCAN_COMMAND = 'patchstack-connect scan';
+const MAP_COMMAND = 'patchstack-connect map --upload';
 const MARK_BUILD_COMMAND = 'patchstack-connect mark-build';
 
 interface PackageJson {
@@ -65,6 +66,12 @@ function prependHook(existing: string | undefined, command: string): string {
   return [command, ...remaining].join(' && ');
 }
 
+/** Map after source-generating prebuild commands, including when an older map step came first. */
+function finishWithMap(existing: string): string {
+  if (/(?:^|&&|;)\s*patchstack-connect map --upload\s*$/.test(existing)) return existing;
+  return `${existing} && ${MAP_COMMAND}`;
+}
+
 /**
  * Wire a scan after dependency installs and around the project's build without
  * invoking a shell. Bun skips npm-style pre/post build hooks, so Bun projects get
@@ -93,6 +100,9 @@ export function wireBuildScripts(
     scripts.postinstall = postinstall;
   } else if (packageManager === 'bun') {
     let nextBuild = prependHook(build, SCAN_COMMAND);
+    if (!/^\s*patchstack-connect scan\s*&&\s*patchstack-connect map --upload(?:\s*(?:&&|;)|\s*$)/.test(nextBuild)) {
+      nextBuild = nextBuild.replace(SCAN_COMMAND, `${SCAN_COMMAND} && ${MAP_COMMAND}`);
+    }
     if (!nextBuild.includes(MARK_BUILD_COMMAND)) {
       nextBuild = `${nextBuild} && ${MARK_BUILD_COMMAND}`;
     }
@@ -108,7 +118,7 @@ export function wireBuildScripts(
   } else {
     // The scan clears a previous map identity. It has to precede any existing prebuild command because
     // that command may create and upload the new map which the bundled guard should retain.
-    const prebuild = prependHook(scripts.prebuild, SCAN_COMMAND);
+    const prebuild = finishWithMap(prependHook(scripts.prebuild, SCAN_COMMAND));
     const postbuild = appendHook(scripts.postbuild, MARK_BUILD_COMMAND);
     if (
       prebuild === scripts.prebuild &&
@@ -144,11 +154,11 @@ export function wireBuildScripts(
     ? {
         changed: true,
         strategy: 'build-chain',
-        detail: 'added a dependency-install scan and chained scan/mark-build around the build.',
+        detail: 'added a dependency-install scan and chained scan/map-upload/mark-build around the build.',
       }
     : {
         changed: true,
         strategy: 'lifecycle-hooks',
-        detail: 'added scans to postinstall/prebuild and mark-build to postbuild.',
+        detail: 'added scans to postinstall/prebuild, map upload before bundling, and mark-build to postbuild.',
       };
 }
