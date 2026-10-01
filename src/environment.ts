@@ -14,7 +14,7 @@ import type { Environment, EnvironmentSource } from './types.js';
  * had been committed, let alone published.
  *
  * `production` is claimed only when the platform building this project says so through its OWN
- * variables. Some name the tier outright — Vercel's `VERCEL_ENV`, Netlify's `CONTEXT`, GitLab's
+ * variables. Some name the tier outright — Vercel's `VERCEL_TARGET_ENV` or `VERCEL_ENV`, Netlify's `CONTEXT`, GitLab's
  * `CI_ENVIRONMENT_TIER` — and the same variable naming a preview makes the build `sandbox`: not the live
  * site, and known not to be. Others name only the branch: Cloudflare Pages and Workers Builds, AWS
  * Amplify, GitHub Actions, and GitLab without a tier. There the label rests on the branch NAME — `main`,
@@ -25,7 +25,8 @@ import type { Environment, EnvironmentSource } from './types.js';
  *
  * Two things deliberately do not count. A generic CI marker on its own (`CI=true`, CircleCI, Jenkins,
  * Bitbucket, ...) proves automation, not deployment, and stays `local`. And a variable that is set but
- * empty is not set.
+ * empty or whitespace is not set. Vercel or Netlify without a tier stays `local`; a CI branch or
+ * hosted-builder dependency cannot establish the missing hosting tier.
  *
  * The label decides more than the dashboard's wording. `mark-build` stamps the live-site marker only on a
  * `production` build, so a deployment mislabelled `local` ships its pages without it: the dashboard shows
@@ -35,7 +36,7 @@ import type { Environment, EnvironmentSource } from './types.js';
  * else. `PATCHSTACK_ENVIRONMENT` remains the override for a platform this does not know.
  */
 
-const set = (value: string | undefined): value is string => value !== undefined && value !== '';
+const set = (value: string | undefined): value is string => value !== undefined && value.trim() !== '';
 
 export interface EnvironmentVerdict {
   environment: Environment;
@@ -45,7 +46,7 @@ export interface EnvironmentVerdict {
 
 interface Discriminator {
   platform: string;
-  /** `production`, `sandbox` (a preview the platform names as such), or null when the platform is absent. */
+  /** Null when absent; `local` when present without enough evidence to identify a deployment tier. */
   read: (env: EnvLike) => EnvironmentVerdict | null;
 }
 
@@ -85,16 +86,32 @@ const DISCRIMINATORS: readonly Discriminator[] = [
   {
     platform: 'vercel',
     read: (env) => {
-      if (!set(env.VERCEL) || !set(env.VERCEL_ENV)) return null;
-      return env.VERCEL_ENV === 'production'
-        ? { environment: 'production', evidence: 'VERCEL_ENV=production' }
-        : { environment: 'sandbox', evidence: `VERCEL_ENV=${env.VERCEL_ENV}` };
+      // The target names custom environments as well as the standard deployment tiers.
+      const variable = set(env.VERCEL_TARGET_ENV) ? 'VERCEL_TARGET_ENV' : 'VERCEL_ENV';
+      const tier = env[variable];
+      if (set(tier)) {
+        return {
+          environment: tier === 'production' ? 'production' : 'sandbox',
+          evidence: `${variable}=${tier}`,
+        };
+      }
+      if (env.VERCEL !== '1') return null;
+      return { environment: 'local', evidence: 'VERCEL=1 without a deployment tier; set PATCHSTACK_ENVIRONMENT' };
     },
   },
   {
     platform: 'netlify',
     read: (env) => {
-      if (env.NETLIFY !== 'true' || !set(env.CONTEXT)) return null;
+      if (env.NETLIFY_PREVIEW_SERVER === 'true') {
+        return { environment: 'sandbox', evidence: 'NETLIFY_PREVIEW_SERVER=true' };
+      }
+      if (env.NETLIFY_DEV === 'true') {
+        return { environment: 'local', evidence: 'NETLIFY_DEV=true (the local development server)' };
+      }
+      if (env.NETLIFY !== 'true') return null;
+      if (!set(env.CONTEXT)) {
+        return { environment: 'local', evidence: 'NETLIFY=true without CONTEXT; set PATCHSTACK_ENVIRONMENT' };
+      }
       return env.CONTEXT === 'production'
         ? { environment: 'production', evidence: 'CONTEXT=production' }
         : { environment: 'sandbox', evidence: `CONTEXT=${env.CONTEXT}` };
@@ -255,12 +272,13 @@ export function detectHostedBuilder(cwd: string): string | null {
 
 export interface InferredEnvironment {
   environment: Environment;
-  /** What decided it, for the line the CLI prints. Empty for `local`, which is decided by absence. */
+  /** What decided it, for the line the CLI prints. Empty when no platform supplied evidence. */
   evidence: string[];
   /**
    * Which kind of thing decided it, for the report. `platform` is the build platform saying so in
    * its own variables; `builder` is an assumption about a project whose builds only happen when
-   * its owner publishes. Null for `local`, which nothing declared.
+   * its owner publishes. Null when no platform supplied evidence. An incomplete platform signal
+   * has source `platform` even when the label remains `local`.
    *
    * A `production` label is a claim that this build is the one going live, and how much that claim
    * can bear depends on which of these decided it.

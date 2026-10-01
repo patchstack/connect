@@ -11,11 +11,39 @@ Connect a JavaScript / Node.js application to [Patchstack](https://patchstack.co
 
 ## Agent-assisted setup
 
-For an existing JS/Node project, copy this request into a coding assistant, or run the same command yourself. For a standalone HTML/CSS/JavaScript site without a package-managed app, use the [plain HTML widget instructions](AGENT-INSTALL.md#plain-html-sites); do not add Node tooling just for the widget.
+For an existing JS/Node project in a hosted workspace, copy this request into a coding assistant, or run the same command yourself. For Gemini CLI, OpenCode, Codex CLI, or Claude Code on your own machine, use [Local coding CLIs](#local-coding-clis) below. For a standalone HTML/CSS/JavaScript site without a package-managed app, use the [plain HTML widget instructions](AGENT-INSTALL.md#plain-html-sites); do not add Node tooling just for the widget.
 
 > I have vetted the official [`@patchstack/connect`](https://www.npmjs.com/package/@patchstack/connect) package and authorize its Patchstack Connector, production build hooks, and runtime protection source edits. Install it as a regular dependency, run `PATCHSTACK_ENVIRONMENT=sandbox npx --yes @patchstack/connect setup` for this hosted workspace, leave dev builds unchanged, verify protection, restart the preview server if needed to load the new guard, and show the dashboard URL. The Patchstack Connector widget is part of this install and on by default: add it, and do not ask me whether to. Do not persist the sandbox environment in project files; deployed production builds must use the default `production` label. When setup finishes, tell me to refresh the preview if the Patchstack widget is not showing yet, and remind me to deploy when I am ready — do not deploy anything yourself.
 
 `setup` is state-aware and idempotent: it scans dependencies, provisions or reuses the site, manages the Patchstack Connector, installs and verifies the runtime guard, adds a dependency-install scan, wires the existing build command without replacing it, and prints the remaining setup status. It never runs the project build. `guide` provides the same project-specific status without changing files.
+
+### Local coding CLIs
+
+Gemini CLI, OpenCode, Codex CLI, and Claude Code can use the same installed Connect commands. The tool does not determine the deployment tier: use the environment of the process running Connect. A tool's permission sandbox is separate from Connect's `sandbox` manifest label. On an ordinary laptop, leave `PATCHSTACK_ENVIRONMENT` unset so Connect reports `local`. An exported Lovable or Replit project retains its hosted-builder dependencies; when working on that export locally, set `PATCHSTACK_ENVIRONMENT=local` in the local process only to override the builder assumption.
+
+Have the assistant work in the application's package directory, reuse any existing site UUID, and install Connect in `dependencies` with the package manager that owns the project. Then run the installed CLI:
+
+| Package manager | Install if absent | Set up | Check source wiring |
+|---|---|---|---|
+| npm | `npm install --save @patchstack/connect` | `npx --no-install patchstack-connect setup` | `npx --no-install patchstack-connect protect --check` |
+| pnpm | `pnpm add @patchstack/connect` | `pnpm exec patchstack-connect setup` | `pnpm exec patchstack-connect protect --check` |
+| Yarn | `yarn add @patchstack/connect` | `yarn exec patchstack-connect setup` | `yarn exec patchstack-connect protect --check` |
+| Bun | `bun add @patchstack/connect` | `bun run patchstack-connect setup` | `bun run patchstack-connect protect --check` |
+
+Use the same invocation with `guide --verbose` to inspect the environment, build hooks, widget, and remaining setup work, and with `status` to recover the dashboard URL. Read the actual command results before reporting completion. A declared dependency, generated scaffold, or proposed command alone does not establish a completed install. Resolve source-check failures on server applications; for a client-only site, state the protection limitation. Restart an already-running app to load the new guard and refresh the page to check the widget.
+
+Before an authorized deployment, preserve `.patchstackrc.json`, the dependency and lockfile changes, the install/build hooks, and the generated guard and layout edits. Keep `.patchstackrc.local.json` out of Git and configure `PATCHSTACK_API_KEY` through the deployment host's secret settings. Remove any local or workspace-only environment override from the deployment process; use the host's tier signals or the explicit [DigitalOcean build settings](#sandbox-and-production-manifests). Run the project's existing build command so both `scan` and `mark-build` execute. A successful source check establishes wiring, not that the deployed server loaded it; verify the deployed widget and server protection separately. Setup itself does not deploy the application.
+
+To keep future agent sessions aware of the setup, add a short note to the application's existing project instructions. Preserve the instructions already there. Record the package manager, the installed Connect invocation, the existing site configuration, the verification command, and the deployment environment requirements. Refer to `node_modules/@patchstack/connect/AGENT-INSTALL.md` for the installed version's reference. Keep credentials and a fixed workspace tier out of these notes.
+
+| Coding tool | Project instructions |
+|---|---|
+| Codex CLI | [AGENTS.md](https://learn.chatgpt.com/docs/agent-configuration/agents-md) |
+| OpenCode | [AGENTS.md](https://opencode.ai/docs/rules/) |
+| Claude Code | [CLAUDE.md, or a shared AGENTS.md via the documented configuration/import](https://code.claude.com/docs/en/memory) |
+| Gemini CLI | [GEMINI.md, or configure it to load the shared AGENTS.md](https://geminicli.com/docs/cli/gemini-md/) |
+
+Project instructions provide context; command permissions still belong to the coding tool. If execution is declined, use the handoff below and report which setup steps remain unverified.
 
 ### If your coding tool blocks the command
 
@@ -200,6 +228,36 @@ Options (for demo and demo-guide):
                           (default: http://localhost:3000/api/tasks)
 ```
 
+### Next.js request and response protection
+
+`protect` composes straightforward existing middleware instead of replacing its authentication or
+redirect logic. The request guard gets a catch-all matcher; the application's middleware still runs
+only within its original scope. Automatic composition accepts directly exported handlers and literal
+path matchers (including a terminal `/:path*`). Complex matchers, re-exports and custom URL routing
+are left untouched with an integration message. Source-aware edits use the application's installed
+`typescript` parser; configuration files are never executed.
+
+Apps with an existing `proxy.ts`/`proxy.js` (including under `src/`) require manual integration.
+The installer leaves them unchanged and `protect --check` reports the gap. It never adds middleware
+alongside a proxy, since Next.js does not allow both.
+
+For App Router `app/**/route.ts` or `route.js` files, it also adds request checks and screens each
+returned response. The shared server-only `patchstack.next` helper initializes one policy per module
+instance, retries a failed initialization, and imports the same fallback rules file as middleware.
+Supported handlers are directly exported async functions or block-bodied async arrows without an
+explicit return type. Re-run `protect` after adding routes. Unsupported handlers remain unchanged;
+`protect --check` lists the gaps instead of reporting complete route coverage.
+
+Middleware cannot inspect the body that a downstream page returns. This setup does **not** establish
+response filtering for rendered pages, Server Actions or Pages Router API handlers. Those need their
+own server-side response boundary. It also cannot repair a vulnerability that bypasses Next.js
+middleware itself: keep Next.js patched or filter such requests before they reach Next.js.
+
+Set `PATCHSTACK_API_KEY` in the server environment for live rule delivery. Edge middleware cannot read
+the local credential file. Never expose it as a `NEXT_PUBLIC_*` variable. A passing source check is not
+proof of live protection: the running guard's `ruleSource`, `mode`, and coverage determine what it
+actually received and screened.
+
 ### Verifying the guard at runtime (opt-in)
 
 `protect --check` reads the app's source. That establishes the guard is imported and called on a
@@ -278,7 +336,7 @@ Environment variables:
 - `PATCHSTACK_SITE_UUID` — the site UUID from your Patchstack dashboard
 - `PATCHSTACK_ENDPOINT` — override the API endpoint (default `https://api.patchstack.com/monitor/pulse/manifest`)
 - `PATCHSTACK_TIMEOUT_MS` — request timeout in milliseconds (default `30000`)
-- `PATCHSTACK_ENVIRONMENT` — manifest label: `production`, `sandbox` or `local`. Unset, the label comes from the build platform's own variables. Where the platform names the tier (Vercel, Netlify, Render, Railway, GitLab CI), production reports `production` and a preview `sandbox`. Where it names only the branch (Cloudflare Pages and Workers Builds, AWS Amplify, GitHub Actions, GitLab CI without a tier), a branch named `main`, `master`, `production`, `prod`, `release` or `live` reports `production` and any other branch or a pull request `sandbox`. A Replit Deployment reports `production`, the Replit workspace `sandbox`. Failing all of that, a project a hosted builder generated and builds for itself (Lovable, Replit) reports `production`, because on those platforms the edit preview is a dev server and a build only happens when the owner publishes. Anything else — a developer machine, a CI runner this does not know (`CI=true` alone), a platform this does not know — reports `local`
+- `PATCHSTACK_ENVIRONMENT` — manifest label: `production`, `sandbox` or `local`. Unset, the label comes from the build platform's own variables. Where the platform names the tier (Vercel, Netlify, Render, Railway, GitLab CI), production reports `production` and a preview `sandbox`. Vercel reads `VERCEL_TARGET_ENV` before `VERCEL_ENV`; custom targets report `sandbox`. Netlify Preview Servers report `sandbox`; Netlify Dev reports `local`, even with production settings. Vercel or Netlify with a platform marker but no tier reports `local`, without falling back to a CI branch or hosted builder. Where it names only the branch (Cloudflare Pages and Workers Builds, AWS Amplify, GitHub Actions, GitLab CI without a tier), a branch named `main`, `master`, `production`, `prod`, `release` or `live` reports `production` and any other branch or a pull request `sandbox`. A Replit Deployment reports `production`, the Replit workspace `sandbox`. Failing all of that, a project a hosted builder generated and builds for itself (Lovable, Replit) reports `production`, because on those platforms the edit preview is a dev server and a build only happens when the owner publishes. Anything else — a developer machine, a CI runner this does not know (`CI=true` alone), a platform this does not know — reports `local`
 - `PATCHSTACK_CLAIM_TOKEN` — connect the site straight to your account (see *Connecting straight to your account*)
 
 Two files, because one value is public and the other is not.
@@ -327,7 +385,21 @@ The token names your account, not the project: it is never written to `.patchsta
 
 ### Sandbox and production manifests
 
-Every `scan` sends an environment label with its dependency manifest. When nothing sets one, the label comes from the build platform's own variables. Platforms that name the tier answer directly: Vercel's `VERCEL_ENV`, Netlify's `CONTEXT`, Render's pull-request flag, Railway's environment name, GitLab's `CI_ENVIRONMENT_TIER`. Production reports `production`; a preview those platforms name as such reports `sandbox`. Platforms that name only the branch — Cloudflare Pages and Workers Builds, AWS Amplify, GitHub Actions, GitLab CI without a tier — are decided by the branch name: `main`, `master`, `production`, `prod`, `release` and `live` report `production`, any other branch reports `sandbox`, and a pull-request build reports `sandbox` whatever the branch. That is an assumption about naming, so the line `scan` prints says the decision rests on the branch name; set `PATCHSTACK_ENVIRONMENT` where the live branch is called something else. A Replit Deployment reports `production` and the Replit workspace `sandbox`. Where no platform answers, the project itself gets the last word: one a hosted builder generated and builds for itself — Lovable, Replit — reports `production`, because the edit preview there is a dev server, so a build running at all is the owner publishing. Everything else reports `local` — a developer's machine, a CI runner this does not know (`CI=true` alone proves automation, not deployment), and a platform whose build environment carries no such signal. A local manifest is inventory — it tells Patchstack what the app is built from — and never counts as contact with a live site, so an app that has only been set up on a laptop shows in the dashboard as **Configured locally**, not as connected or deployed. The label also decides whether `mark-build` stamps the live-site marker, so a deployment that reads `local` ships its pages without one: set `PATCHSTACK_ENVIRONMENT=production` where builds run on a platform this list does not know. Sandboxed builders should set `PATCHSTACK_ENVIRONMENT=sandbox` in the sandbox process only. Patchstack stores and deduplicates manifests per environment, so an iterative workspace scan does not replace the last production manifest.
+Every `scan` sends an environment label with its dependency manifest. When nothing sets one, the label comes from the build platform's own variables. Platforms that name the tier answer directly: Vercel's `VERCEL_TARGET_ENV` (falling back to `VERCEL_ENV`), Netlify's `CONTEXT`, Render's pull-request flag, Railway's environment name, GitLab's `CI_ENVIRONMENT_TIER`. Production reports `production`; a preview those platforms name as such reports `sandbox`. Platforms that name only the branch — Cloudflare Pages and Workers Builds, AWS Amplify, GitHub Actions, GitLab CI without a tier — are decided by the branch name: `main`, `master`, `production`, `prod`, `release` and `live` report `production`, any other branch reports `sandbox`, and a pull-request build reports `sandbox` whatever the branch. That is an assumption about naming, so the line `scan` prints says the decision rests on the branch name; set `PATCHSTACK_ENVIRONMENT` where the live branch is called something else. A Replit Deployment reports `production` and the Replit workspace `sandbox`. Where no platform answers, the project itself gets the last word: one a hosted builder generated and builds for itself — Lovable, Replit — reports `production`, because the edit preview there is a dev server, so a build running at all is the owner publishing. Everything else reports `local` — a developer's machine, a CI runner this does not know (`CI=true` alone proves automation, not deployment), and a platform whose build environment carries no such signal. A local manifest is inventory — it tells Patchstack what the app is built from — and never counts as contact with a live site, so an app that has only been set up on a laptop shows in the dashboard as **Configured locally**, not as connected or deployed. The label also decides whether `mark-build` stamps the live-site marker, so a deployment that reads `local` ships its pages without one: set `PATCHSTACK_ENVIRONMENT=production` where builds run on a platform this list does not know. Sandboxed builders should set `PATCHSTACK_ENVIRONMENT=sandbox` in the sandbox process only. Patchstack stores and deduplicates manifests per environment, so an iterative workspace scan does not replace the last production manifest.
+
+The environment is re-evaluated on every scan and `mark-build` run; setup does not persist an inferred tier. Hosting signals take precedence over CI branch guesses and hosted-builder dependencies. A Vercel or Netlify marker without its tier stays `local`; `scan --verbose` explains the missing signal. Vercel's target variable also works without the separate `VERCEL` marker, and custom targets report `sandbox`. Netlify's `NETLIFY_PREVIEW_SERVER=true` reports `sandbox` even if `CONTEXT` says production. Outside a hosted Preview Server, `NETLIFY_DEV=true` reports `local` even when Netlify Dev loads production settings. See the [Vercel system variables](https://vercel.com/docs/environment-variables/system-environment-variables) and [Netlify build variables](https://docs.netlify.com/build/configure-builds/environment-variables/), and [Netlify Dev implementation](https://github.com/netlify/cli/blob/main/src/commands/dev/dev.ts).
+
+For DigitalOcean App Platform or Droplets, set the tier explicitly in the environment of the process that builds the app:
+
+| Deployment | Build setting |
+|---|---|
+| Production | `PATCHSTACK_ENVIRONMENT=production` |
+| Staging, preview, or sandbox | `PATCHSTACK_ENVIRONMENT=sandbox` |
+| Local development | Leave unset, or set `PATCHSTACK_ENVIRONMENT=local` |
+
+In App Platform, make the variable available at build time (`BUILD_TIME` or `RUN_AND_BUILD_TIME`); a runtime-only setting cannot label the prebuild scan or stamp built HTML. Docker builds must pass it into the build steps that run Connect. DigitalOcean's documented app URL and ID variables identify an app, not its deployment tier; `NODE_ENV=production` also does not distinguish a local optimized build from a deployment. See [DigitalOcean environment configuration](https://docs.digitalocean.com/products/app-platform/how-to/use-environment-variables/).
+
+An explicit `PATCHSTACK_ENVIRONMENT` overrides `.patchstackrc.json`, and the file's `environment` overrides automatic detection. When production keeps reporting sandbox after deployment, remove a workspace-only override from the committed config and from the production build environment, then rebuild and deploy. Apply sandbox overrides only to preview processes or preview deployment settings.
 
 Do not commit `"environment": "sandbox"` to `.patchstackrc.json` when the same files are deployed to production. If one is committed anyway, a build its platform identifies as production is still treated as production, and `scan` and `mark-build` print a warning naming the file. Scope the variable to the sandbox command/process instead:
 

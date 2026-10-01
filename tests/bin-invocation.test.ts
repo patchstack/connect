@@ -361,6 +361,54 @@ describe.skipIf(!built)('the packaged bin, invoked as npm invokes it', () => {
       }
     });
 
+    it('keeps scan reports and built HTML consistent as a project moves between deployment tiers', async () => {
+      const bodies: Record<string, unknown>[] = [];
+      const server = createServer((req, res) => {
+        let raw = '';
+        req.on('data', (chunk) => { raw += chunk.toString(); });
+        req.on('end', () => {
+          bodies.push(JSON.parse(raw) as Record<string, unknown>);
+          res.writeHead(200, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ uuid: SITE, stored: true, checksum: 'abc' }));
+        });
+      });
+      await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+      const { port } = server.address() as AddressInfo;
+      const endpoint = `http://127.0.0.1:${port}/monitor/pulse/manifest`;
+      const dir = freshProject();
+      mkdirSync(path.join(dir, 'dist'));
+      const page = path.join(dir, 'dist', 'index.html');
+      writeFileSync(page, '<html><head></head><body></body></html>');
+      const cases: { env: NodeJS.ProcessEnv; tier: string; platform?: string }[] = [
+        { env: {}, tier: 'local' },
+        { env: { VERCEL_TARGET_ENV: 'production' }, tier: 'production', platform: 'vercel' },
+        { env: { VERCEL_ENV: 'production', VERCEL_TARGET_ENV: 'staging' }, tier: 'sandbox', platform: 'vercel' },
+        { env: { NETLIFY: 'true', CONTEXT: 'production' }, tier: 'production', platform: 'netlify' },
+        { env: { NETLIFY: 'true', CONTEXT: 'production', NETLIFY_DEV: 'true' }, tier: 'local' },
+        { env: { NETLIFY_PREVIEW_SERVER: 'true' }, tier: 'sandbox', platform: 'netlify' },
+        { env: { PATCHSTACK_ENVIRONMENT: 'production' }, tier: 'production' },
+        { env: { PATCHSTACK_ENVIRONMENT: 'sandbox' }, tier: 'sandbox' },
+        { env: { VERCEL: '1', GITHUB_ACTIONS: 'true', GITHUB_REF_NAME: 'main' }, tier: 'local' },
+      ];
+      try {
+        for (const { env, tier, platform } of cases) {
+          bodies.length = 0;
+          await scan(dir, endpoint, env);
+          await run(dir, endpoint, ['mark-build'], env);
+          expect(bodies).toHaveLength(2);
+          expect(bodies[0].environment).toBe(tier);
+          expect(bodies[1].environment).toBe(tier);
+          expect(bodies[1].marker).toBe(tier === 'production' ? 'stamped' : 'withheld');
+          expect(readFileSync(page, 'utf8').includes('__PATCHSTACK_PROD__')).toBe(tier === 'production');
+          if (platform) expect(bodies[0].hosting).toMatchObject({ platform });
+          expect(JSON.parse(readFileSync(path.join(dir, '.patchstackrc.json'), 'utf8'))).not.toHaveProperty('environment');
+        }
+      } finally {
+        await new Promise<void>((resolve) => server.close(() => resolve()));
+        rmSync(dir, { recursive: true, force: true });
+      }
+    }, 30_000);
+
     it('marks the site connected when the claim token connected it', async () => {
       const server = await acceptingServer({ state: 'claimed' });
       const dir = freshProject();

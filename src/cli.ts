@@ -690,7 +690,8 @@ async function runScan(
   // The label decides how the dashboard reads this report — a production build is contact with a live
   // site, a local one is inventory — so the detail says which, and what decided it.
   if (config.environment === 'local') {
-    say('Environment: local (this machine). Set PATCHSTACK_ENVIRONMENT=production on a live build your host does not identify.');
+    const because = (config.environmentEvidence ?? []).join('; ') || 'this machine';
+    say(`Environment: local (${because}). Set PATCHSTACK_ENVIRONMENT=production on a live build your host does not identify.`);
   } else {
     const because = (config.environmentEvidence ?? []).length > 0
       ? ` (${config.environmentEvidence!.join('; ')})`

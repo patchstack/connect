@@ -92,6 +92,7 @@ const SEAMS: Record<string, Seam> = {
     api.handle({ event: { request: REQUEST() }, resolve: async () => (ran(), served) }),
   // Next and Nuxt fall through by answering nothing; the route runs after the middleware returns.
   'next-middleware.ts#middleware': async (api, _served, ran) => (ran(), api.middleware(REQUEST())),
+  'next-guard.ts#getPatchstackProtection': async (api, _served, ran) => (ran(), api.getPatchstackProtection()),
   'nuxt-middleware.ts#default': async (api, _served, ran) => (ran(), api.default({ method: 'GET', headers: {} })),
 
   // Null is "allow" on both of these.
