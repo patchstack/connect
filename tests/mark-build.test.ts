@@ -13,6 +13,7 @@ import {
   hasEditableShell,
   injectMarker,
   productionGate,
+  removeHandMarkers,
   resolveBuildDir,
   buildDirCandidates,
   outputDirFromBuildScript,
@@ -89,6 +90,23 @@ describe('the withheld marker', () => {
     expect(withheld).not.toContain('__PATCHSTACK_PROD__');
     expect(withheld).not.toContain('__PATCHSTACK_BUILD__');
     expect(withheld).toContain('<title>t</title>');
+  });
+
+  it('removes a marker script written by hand, however it is spaced', () => {
+    const page =
+      '<html><head><script>window.__PATCHSTACK_PROD__ = true</script><title>t</title></head>' +
+      '<body><script type="text/javascript">\n  window.__PATCHSTACK_PROD__=true;\n  window.__PATCHSTACK_BUILD__="abc";\n</script></body></html>';
+    const cleared = removeHandMarkers(page);
+    expect(cleared).not.toContain('__PATCHSTACK_');
+    expect(cleared).toContain('<title>t</title>');
+  });
+
+  it('leaves alone any script that does more than set the marker', () => {
+    const page =
+      '<head><script>window.__PATCHSTACK_PROD__=true; startAnalytics();</script>' +
+      '<script src="/marker.js">window.__PATCHSTACK_PROD__=true</script>' +
+      '<script>if (live) { window.__PATCHSTACK_PROD__=true; }</script></head>';
+    expect(removeHandMarkers(page)).toBe(page);
   });
 });
 

@@ -217,6 +217,23 @@ export function injectMarker(html: string, snippet: string): string {
   return stripped + snippet;
 }
 
+/**
+ * An inline script whose whole body is assignments to the marker globals, however it was written:
+ * no `src`, and nothing in it but `window.__PATCHSTACK_PROD__ = …` and its companions. A script that
+ * does anything else is someone's code and is never matched.
+ */
+const HAND_MARKER_RE =
+  /\s*<script(?![^>]*\bsrc\s*=)[^>]*>\s*(?:window\.__PATCHSTACK_(?:PROD|BUILD|STACK)__\s*=\s*[^;<]*;?\s*)+<\/script>/gi;
+
+/**
+ * Remove marker scripts that do not carry `data-patchstack-build` — typically one pasted into a page
+ * by hand. Only for a build that must not carry the marker: on production output a second copy is
+ * harmless, and the person who placed it may depend on it.
+ */
+export function removeHandMarkers(html: string): string {
+  return html.replace(HAND_MARKER_RE, '');
+}
+
 /* ------------------------------------------------------------------ */
 /*  Source-shell marking (server-rendered roots)                      */
 /* ------------------------------------------------------------------ */

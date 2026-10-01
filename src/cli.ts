@@ -49,6 +49,7 @@ import {
   findHtmlFiles,
   hasEditableShell,
   injectMarker,
+  removeHandMarkers,
   productionGate,
   resolveBuildDir,
   buildDirCandidates,
@@ -695,6 +696,8 @@ async function runScan(
       : '';
     say(`Environment: ${config.environment}${because}.`);
   }
+  const overruled = ignoredFileEnvironmentWarning(config);
+  if (overruled !== null) console.warn(`patchstack: ${overruled}`);
   if (config.endpoint !== DEFAULT_ENDPOINT) {
     say(`Endpoint override: ${config.endpoint}`);
   }
@@ -963,6 +966,20 @@ function reportSourceWidget(siteUuid: string, framework: string | null, report: 
     handAdd('Add this to your main page layout, just before </body>:');
     detail(`Widget: skipped (${(err as Error).message}).`);
   }
+}
+
+/**
+ * What to say when `.patchstackrc.json` named a non-production environment and the build platform's own
+ * answer was used instead, or null when there is nothing to say.
+ */
+function ignoredFileEnvironmentWarning(config: Config): string | null {
+  const ignored = config.ignoredFileEnvironment;
+  if (ignored == null) return null;
+  const because = (config.environmentEvidence ?? []).length > 0 ? ` (${config.environmentEvidence!.join('; ')})` : '';
+  return (
+    `.patchstackrc.json sets "environment": "${ignored}", but this build is production${because}, so it is treated as production. ` +
+    `Remove "environment" from .patchstackrc.json and set PATCHSTACK_ENVIRONMENT=${ignored} only in the process that needs it.`
+  );
 }
 
 /**
@@ -1477,6 +1494,8 @@ async function runMarkBuild(args: ParsedArgs): Promise<number> {
     }
     environment = config.environment;
     environmentEvidence = config.environmentEvidence ?? [];
+    const overruled = ignoredFileEnvironmentWarning(config);
+    if (overruled !== null) console.warn(`mark-build: ${overruled}`);
   } catch (err) {
     console.warn(
       `mark-build: could not resolve the site UUID (${(err as Error).message}). Skipping the widget pass.`,
@@ -1544,9 +1563,15 @@ async function runMarkBuild(args: ParsedArgs): Promise<number> {
   const snippet = published ? buildInjectionSnippet(checksum, stack) : '';
   let marked = 0;
   let widgetTouched = 0;
+  let handRemoved = 0;
   for (const file of files) {
     const before = readFileSync(file, 'utf8');
     let after = injectMarker(before, snippet);
+    if (!published) {
+      const cleared = removeHandMarkers(after);
+      if (cleared !== after) handRemoved += 1;
+      after = cleared;
+    }
     // Built HTML that came through a shell scan already edited carries the
     // managed tag; this covers output whose source shell we couldn't edit.
     // Manual installs are adopted (left untouched), same as in scan.
@@ -1589,6 +1614,12 @@ async function runMarkBuild(args: ParsedArgs): Promise<number> {
       `${widgetTouched > 0 ? `, widget tag ensured in ${widgetTouched}` : ''}` +
       `${stackSummary !== null ? ` [${stackSummary}]` : ''}.`,
   );
+  if (handRemoved > 0) {
+    console.warn(
+      `mark-build: removed a hand-added __PATCHSTACK_PROD__ script from ${plural(handRemoved, 'page', 'pages')}. ` +
+        'Production builds get the marker from mark-build, so it does not need to be in your source.',
+    );
+  }
   await reportBuildStamp(reported, wirePayload, 'withheld');
   return 0;
 }
