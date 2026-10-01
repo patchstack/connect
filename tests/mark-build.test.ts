@@ -6,6 +6,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import {
   MARKER_ATTR,
   buildInjectionSnippet,
+  buildSandboxSnippet,
   buildSourceMarkerSnippet,
   ensureMarkerInJsxShell,
   ensureSourceMarker,
@@ -13,6 +14,7 @@ import {
   hasEditableShell,
   injectMarker,
   productionGate,
+  removeHandMarkers,
   resolveBuildDir,
   buildDirCandidates,
   outputDirFromBuildScript,
@@ -89,6 +91,36 @@ describe('the withheld marker', () => {
     expect(withheld).not.toContain('__PATCHSTACK_PROD__');
     expect(withheld).not.toContain('__PATCHSTACK_BUILD__');
     expect(withheld).toContain('<title>t</title>');
+  });
+
+  it('removes a marker script written by hand, however it is spaced', () => {
+    const page =
+      '<html><head><script>window.__PATCHSTACK_PROD__ = true</script><title>t</title></head>' +
+      '<body><script type="text/javascript">\n  window.__PATCHSTACK_PROD__=true;\n  window.__PATCHSTACK_BUILD__="abc";\n</script></body></html>';
+    const cleared = removeHandMarkers(page);
+    expect(cleared).not.toContain('__PATCHSTACK_');
+    expect(cleared).toContain('<title>t</title>');
+  });
+
+  it('replaces a production marker with the sandbox stamp, and back again', () => {
+    const page = '<html><head><title>t</title></head><body>x</body></html>';
+    const published = injectMarker(page, buildInjectionSnippet('abc123', null));
+    const sandbox = removeHandMarkers(injectMarker(published, buildSandboxSnippet()));
+    expect(sandbox).toContain('window.__PATCHSTACK_ENV__="sandbox";');
+    expect(sandbox).not.toContain('__PATCHSTACK_PROD__');
+    expect(sandbox).not.toContain('__PATCHSTACK_BUILD__');
+
+    const republished = injectMarker(sandbox, buildInjectionSnippet('abc123', null));
+    expect(republished).toContain('__PATCHSTACK_PROD__');
+    expect(republished).not.toContain('__PATCHSTACK_ENV__');
+  });
+
+  it('leaves alone any script that does more than set the marker', () => {
+    const page =
+      '<head><script>window.__PATCHSTACK_PROD__=true; startAnalytics();</script>' +
+      '<script src="/marker.js">window.__PATCHSTACK_PROD__=true</script>' +
+      '<script>if (live) { window.__PATCHSTACK_PROD__=true; }</script></head>';
+    expect(removeHandMarkers(page)).toBe(page);
   });
 });
 

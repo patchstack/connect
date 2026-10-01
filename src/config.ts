@@ -175,16 +175,29 @@ export async function resolveConfig(options: ResolveConfigOptions): Promise<Conf
   // The project itself gets the last word, after every platform has declined. A hosted builder sets
   // no variable we can read, and on those platforms a build only ever happens when the owner
   // publishes — so a Lovable app would otherwise report its live site as a working tree.
+  //
+  // One exception to "stated wins": a non-production label in the committed file does not outrank a
+  // build its platform identifies as production. The file travels with the source to every
+  // environment, so `"environment": "sandbox"` written there for a workspace would otherwise ship the
+  // live site without its marker, showing visitors the owner's panel. A label meant for one process
+  // belongs in that process's PATCHSTACK_ENVIRONMENT, which still wins outright.
   const inferred =
-    environmentRaw === undefined
+    fromEnv.environment === undefined
       ? inferEnvironment(process.env, detectHostedBuilder(options.cwd))
       : null;
-  const environment: Environment = environmentRaw ?? inferred!.environment;
-  const environmentEvidence: string[] = inferred?.evidence ?? [];
+  const fileLabelOverruled =
+    fromEnv.environment === undefined &&
+    environmentRaw !== undefined &&
+    environmentRaw !== 'production' &&
+    inferred!.environment === 'production';
+  const labelled = fileLabelOverruled ? undefined : environmentRaw;
+  const environment: Environment = labelled ?? inferred!.environment;
+  const environmentEvidence: string[] = labelled === undefined ? inferred!.evidence : [];
   // Stated is `override` whichever file or variable stated it: both are the owner's word, and the
   // report has no use for which one they reached for.
   const environmentSource: EnvironmentSource | null =
-    environmentRaw !== undefined ? 'override' : inferred!.source;
+    labelled !== undefined ? 'override' : inferred!.source;
+  const ignoredFileEnvironment: Environment | null = fileLabelOverruled ? environmentRaw : null;
 
   if (siteUuid !== null && siteUuid.length > 0 && !isCanonicalUuid(siteUuid)) {
     throw new PatchstackError(
@@ -229,6 +242,7 @@ export async function resolveConfig(options: ResolveConfigOptions): Promise<Conf
     environment,
     environmentEvidence,
     environmentSource,
+    ignoredFileEnvironment,
     widget: fromFile.widget !== false,
     claimToken,
   };

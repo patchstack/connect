@@ -195,14 +195,43 @@ describe('resolveConfig', () => {
     expect(await readFile(path.join(cwd, '.patchstackrc.json'), 'utf8')).toBe(original);
   });
 
-  it('keeps explicit overrides authoritative over deployment inference', async () => {
+  it('keeps PATCHSTACK_ENVIRONMENT authoritative over deployment inference', async () => {
     await writeConfigFile(cwd, { siteUuid: VALID_UUID, environment: 'sandbox' });
     process.env.VERCEL_TARGET_ENV = 'production';
-    expect(await resolveConfig({ cwd })).toMatchObject({ environment: 'sandbox', environmentSource: 'override' });
     process.env.PATCHSTACK_ENVIRONMENT = 'production';
     expect(await resolveConfig({ cwd })).toMatchObject({ environment: 'production', environmentSource: 'override' });
     process.env.PATCHSTACK_ENVIRONMENT = 'local';
     expect((await resolveConfig({ cwd })).environment).toBe('local');
+  });
+
+  it('does not let a non-production label in the file outrank a production build', async () => {
+    // The file reaches production with the rest of the source, so a workspace label written there
+    // would otherwise ship the live site unmarked.
+    await writeConfigFile(cwd, { siteUuid: VALID_UUID, environment: 'sandbox' });
+    process.env.VERCEL = '1';
+    process.env.VERCEL_ENV = 'production';
+    const config = await resolveConfig({ cwd });
+    expect(config.environment).toBe('production');
+    expect(config.environmentSource).toBe('platform');
+    expect(config.ignoredFileEnvironment).toBe('sandbox');
+  });
+
+  it('keeps the file label when the platform does not say production', async () => {
+    await writeConfigFile(cwd, { siteUuid: VALID_UUID, environment: 'local' });
+    process.env.VERCEL = '1';
+    process.env.VERCEL_ENV = 'preview';
+    const config = await resolveConfig({ cwd });
+    expect(config.environment).toBe('local');
+    expect(config.ignoredFileEnvironment).toBeNull();
+  });
+
+  it('still lets PATCHSTACK_ENVIRONMENT label a production platform build', async () => {
+    process.env.VERCEL = '1';
+    process.env.VERCEL_ENV = 'production';
+    process.env.PATCHSTACK_ENVIRONMENT = 'sandbox';
+    const config = await resolveConfig({ cwd, cliSiteUuid: VALID_UUID });
+    expect(config.environment).toBe('sandbox');
+    expect(config.ignoredFileEnvironment).toBeNull();
   });
 
   it('throws CONFIG_INVALID when the environment is not production or sandbox', async () => {
@@ -294,6 +323,7 @@ describe('resolveConfig: where the app is published', () => {
 
   it('infers the production url from the build environment', async () => {
     await writeConfigFile(cwd, { siteUuid: VALID_UUID });
+    process.env.VERCEL = '1';
     process.env.VERCEL_ENV = 'production';
     process.env.VERCEL_PROJECT_PRODUCTION_URL = 'shop.example.com';
 
@@ -303,6 +333,7 @@ describe('resolveConfig: where the app is published', () => {
 
   it('prefers what a person configured over what the build environment reports', async () => {
     await writeConfigFile(cwd, { siteUuid: VALID_UUID, url: 'https://www.example.com' });
+    process.env.VERCEL = '1';
     process.env.VERCEL_ENV = 'production';
     process.env.VERCEL_PROJECT_PRODUCTION_URL = 'shop-abc.vercel.app';
 
@@ -323,6 +354,7 @@ describe('resolveConfig: where the app is published', () => {
     // would tell Patchstack about a different site than the one the owner wrote down, and the address is
     // adopted once and then belongs to the site.
     await writeConfigFile(cwd, { siteUuid: VALID_UUID, url: 'http://localhost:3000' });
+    process.env.VERCEL = '1';
     process.env.VERCEL_ENV = 'production';
     process.env.VERCEL_PROJECT_PRODUCTION_URL = 'shop.example.com';
 
@@ -334,6 +366,7 @@ describe('resolveConfig: where the app is published', () => {
   it('treats a blank PATCHSTACK_SITE_URL as unset, which is how CI clears one', async () => {
     await writeConfigFile(cwd, { siteUuid: VALID_UUID });
     process.env.PATCHSTACK_SITE_URL = '  ';
+    process.env.VERCEL = '1';
     process.env.VERCEL_ENV = 'production';
     process.env.VERCEL_PROJECT_PRODUCTION_URL = 'shop.example.com';
 
@@ -346,6 +379,7 @@ describe('resolveConfig: where the app is published', () => {
     // shares resolveConfig, and none of them has a reason to open index.html or read a host's URL.
     await writeFile(path.join(cwd, 'index.html'), '<title>Recipe Box</title>', 'utf8');
     await writeConfigFile(cwd, { siteUuid: VALID_UUID, url: 'https://shop.example.com' });
+    process.env.VERCEL = '1';
     process.env.VERCEL_ENV = 'production';
     process.env.VERCEL_PROJECT_PRODUCTION_URL = 'shop.example.com';
 

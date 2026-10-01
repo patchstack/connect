@@ -104,6 +104,11 @@ export interface Config {
    */
   environmentSource?: EnvironmentSource | null;
   /**
+   * A non-production label from `.patchstackrc.json` that was set aside because the build platform
+   * identified this build as production. Null when the file stated nothing, or was followed.
+   */
+  ignoredFileEnvironment?: Environment | null;
+  /**
    * Whether Connect manages the Patchstack Connector tag (source shell on
    * `scan`, built HTML on `mark-build`). Defaults to true; persist
    * `"widget": false` in .patchstackrc.json for dependency-scanning only.

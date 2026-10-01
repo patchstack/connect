@@ -198,6 +198,18 @@ export function buildInjectionSnippet(
 }
 
 /**
+ * The <script> that marks a SANDBOX build: it tells the widget this page is a preview, so the
+ * owner's panel shows on a host the widget cannot recognise by name. It carries nothing else — no
+ * fingerprint, no stack — because those describe a deployment and this is not one.
+ *
+ * Only for `sandbox`. A `local` build that ends up on a public host was published by hand, which is
+ * the live site, and the widget treats an unmarked page as that already.
+ */
+export function buildSandboxSnippet(): string {
+  return `<script ${MARKER_ATTR}>window.__PATCHSTACK_ENV__="sandbox";</script>`;
+}
+
+/**
  * Insert (or replace) the marker script in a single HTML document. Idempotent:
  * a prior marker is stripped first so repeated builds don't stack tags. Prefers
  * `</head>`, falls back to `</body>`, then appends.
@@ -215,6 +227,23 @@ export function injectMarker(html: string, snippet: string): string {
     return stripped.replace(/<\/body>/i, `${snippet}</body>`);
   }
   return stripped + snippet;
+}
+
+/**
+ * An inline script whose whole body is assignments to the marker globals, however it was written:
+ * no `src`, and nothing in it but `window.__PATCHSTACK_PROD__ = …` and its companions. A script that
+ * does anything else is someone's code and is never matched.
+ */
+const HAND_MARKER_RE =
+  /\s*<script(?![^>]*\bsrc\s*=)[^>]*>\s*(?:window\.__PATCHSTACK_(?:PROD|BUILD|STACK)__\s*=\s*[^;<]*;?\s*)+<\/script>/gi;
+
+/**
+ * Remove marker scripts that do not carry `data-patchstack-build` — typically one pasted into a page
+ * by hand. Only for a build that must not carry the marker: on production output a second copy is
+ * harmless, and the person who placed it may depend on it.
+ */
+export function removeHandMarkers(html: string): string {
+  return html.replace(HAND_MARKER_RE, '');
 }
 
 /* ------------------------------------------------------------------ */
