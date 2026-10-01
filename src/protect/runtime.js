@@ -1821,7 +1821,7 @@ export async function createProtection(options = {}) {
   // zero-day published) never applies until the process restarts. A refresh re-fetches and
   // hot-swaps the engines in place; the same tick can be driven by a poll loop (`refreshMs`), a
   // manual `protection.refresh()`, or an authenticated push (`protection.refreshHandler()`).
-  const cwd = options.cwd ?? (typeof process !== 'undefined' ? process.cwd() : undefined);
+  const cwd = workingDirectory(options);
   const live = Boolean(options.siteUuid || options.token);
   const refreshSecret = options.refreshSecret ?? (typeof process !== 'undefined' ? process.env.PATCHSTACK_REFRESH_SECRET : undefined);
   const refreshable = live && (options.refreshMs > 0 || Boolean(refreshSecret));
@@ -1997,6 +1997,16 @@ function resolveMode(options, bundle) {
  */
 const CREDENTIAL_FILES = ['.patchstackrc.local.json', '.patchstackrc.json'];
 
+function workingDirectory(options) {
+  if (options?.cwd !== undefined) return options.cwd;
+  try {
+    // Some edge runtimes expose a process facade whose filesystem methods throw when called.
+    return typeof process !== 'undefined' && typeof process.cwd === 'function' ? process.cwd() : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
 /**
  * A credential field from the config files, or undefined.
  *
@@ -2005,7 +2015,8 @@ const CREDENTIAL_FILES = ['.patchstackrc.local.json', '.patchstackrc.json'];
  * guard down.
  */
 async function readCredentialField(options, field) {
-  if (typeof process === 'undefined' || typeof process.cwd !== 'function') return undefined;
+  const cwd = workingDirectory(options);
+  if (!cwd) return undefined;
 
   let readFileSync;
   let join;
@@ -2017,7 +2028,6 @@ async function readCredentialField(options, field) {
     return undefined; // no filesystem on this runtime
   }
 
-  const cwd = options?.cwd ?? process.cwd();
   for (const filename of CREDENTIAL_FILES) {
     try {
       const value = JSON.parse(readFileSync(join(cwd, filename), 'utf8'))?.[field];

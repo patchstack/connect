@@ -2,6 +2,7 @@ import { describe, it, expect, beforeAll } from 'vitest';
 import { existsSync, readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { execFileSync } from 'node:child_process';
+import { runInNewContext } from 'node:vm';
 
 // A REAL edge build test. The source-level "no static node import" check (edge-safe.test.ts) is
 // necessary but NOT sufficient: bundlers FOLLOW dynamic imports, so `await import('node:fs')` still
@@ -40,6 +41,7 @@ describe('edge bundle', () => {
     const src = readFileSync(EDGE, 'utf8');
     const refs = src.match(/(?:^|[\s(])(?:import|require)\s*\(?\s*["'](?:node:)?(?:fs|fs\/promises|path|os|dns|net|crypto|child_process|worker_threads|module)["']/gm);
     expect(refs ?? []).toEqual([]);
+    expect(src).not.toMatch(/process\.(?:cwd|platform)\b/);
   });
 
   it('still enforces rules when imported (no filesystem, cacheDir ignored)', async () => {
@@ -74,6 +76,32 @@ describe('edge bundle', () => {
     expect(keys.indexOf('workerd')).toBeLessThan(keys.indexOf('import'));
     // And `default` must be last, or it shadows everything after it.
     expect(keys.indexOf('default')).toBe(keys.length - 1);
+  });
+
+  it.each(['missing', 'throws'])('boots with a process facade whose cwd is %s', async (cwdKind) => {
+    const { build } = await import('esbuild');
+    const built = await build({ entryPoints: [EDGE], bundle: true, write: false, format: 'iife',
+      globalName: 'PatchstackRuntime', platform: 'browser', logLevel: 'silent' });
+    const context = {
+      Request, Response, Headers, URL, URLSearchParams, TextEncoder, TextDecoder, AbortController,
+      setTimeout, clearTimeout, setInterval, clearInterval, crypto: globalThis.crypto,
+      console: { log() {}, warn() {}, error() {} },
+      fetch: async () => new Response('unexpected network', { status: 503 }),
+      process: { env: {}, ...(cwdKind === 'throws' ? { cwd() { throw new Error('unavailable on edge'); } } : {}) },
+    };
+    const runtime = runInNewContext(`${built.outputFiles[0]!.text}\nPatchstackRuntime`, context);
+    const protection = await runtime.createProtection({
+      mode: 'block', egress: true,
+      rules: { firewall: [{ id: 'synthetic-edge-rule', rule_v2: [
+        { parameter: 'get.input', match: { type: 'contains', value: 'synthetic-block' } },
+      ] }], whitelists: [], whitelist_keys: {} },
+    });
+    try {
+      expect((await protection.fetchGuard()(new Request('https://app.example/?input=synthetic-block'))).status).toBe(403);
+      expect(await protection.fetchGuard()(new Request('https://app.example/?input=ordinary'))).toBeNull();
+    } finally {
+      await protection.stop();
+    }
   });
 
   it('ships the declarations both format conditions point at', () => {
