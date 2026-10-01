@@ -25,8 +25,12 @@ describe('resolveConfig', () => {
     // CI runner that happens to be one of these platforms) cannot decide what these tests see.
     for (const key of [
       'VERCEL_ENV',
+      'VERCEL',
+      'VERCEL_TARGET_ENV',
       'VERCEL_PROJECT_PRODUCTION_URL',
       'NETLIFY',
+      'NETLIFY_PREVIEW_SERVER',
+      'NETLIFY_DEV',
       'CONTEXT',
       'URL',
       'RENDER',
@@ -159,6 +163,46 @@ describe('resolveConfig', () => {
     process.env.PATCHSTACK_ENVIRONMENT = 'production';
     const config = await resolveConfig({ cwd });
     expect(config.environment).toBe('production');
+  });
+
+  it('re-evaluates the environment as the same project moves between a laptop and deployments', async () => {
+    process.env = {};
+    await writeConfigFile(cwd, { siteUuid: VALID_UUID });
+    const original = await readFile(path.join(cwd, '.patchstackrc.json'), 'utf8');
+    expect((await resolveConfig({ cwd })).environment).toBe('local');
+
+    process.env.VERCEL_TARGET_ENV = 'production';
+    expect(await resolveConfig({ cwd })).toMatchObject({
+      siteUuid: VALID_UUID, environment: 'production', environmentSource: 'platform',
+    });
+    process.env.VERCEL_TARGET_ENV = 'preview';
+    expect((await resolveConfig({ cwd })).environment).toBe('sandbox');
+
+    delete process.env.VERCEL_TARGET_ENV;
+    process.env.NETLIFY = 'true';
+    process.env.CONTEXT = 'production';
+    expect((await resolveConfig({ cwd })).environment).toBe('production');
+    process.env.CONTEXT = 'deploy-preview';
+    expect((await resolveConfig({ cwd })).environment).toBe('sandbox');
+
+    process.env = { PATCHSTACK_ENVIRONMENT: 'production' };
+    expect((await resolveConfig({ cwd })).environmentSource).toBe('override');
+    expect((await resolveConfig({ cwd })).environment).toBe('production');
+    process.env.PATCHSTACK_ENVIRONMENT = 'sandbox';
+    expect((await resolveConfig({ cwd })).environment).toBe('sandbox');
+    process.env = {};
+    expect((await resolveConfig({ cwd })).environment).toBe('local');
+    expect(await readFile(path.join(cwd, '.patchstackrc.json'), 'utf8')).toBe(original);
+  });
+
+  it('keeps explicit overrides authoritative over deployment inference', async () => {
+    await writeConfigFile(cwd, { siteUuid: VALID_UUID, environment: 'sandbox' });
+    process.env.VERCEL_TARGET_ENV = 'production';
+    expect(await resolveConfig({ cwd })).toMatchObject({ environment: 'sandbox', environmentSource: 'override' });
+    process.env.PATCHSTACK_ENVIRONMENT = 'production';
+    expect(await resolveConfig({ cwd })).toMatchObject({ environment: 'production', environmentSource: 'override' });
+    process.env.PATCHSTACK_ENVIRONMENT = 'local';
+    expect((await resolveConfig({ cwd })).environment).toBe('local');
   });
 
   it('throws CONFIG_INVALID when the environment is not production or sandbox', async () => {
