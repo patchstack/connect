@@ -96,11 +96,13 @@
     "access": "public",
     "registry": "https://registry.npmjs.org/"
   },
+  "dependencies": {
+    "typescript": "^5.4.0"
+  },
   "devDependencies": {
     "@types/node": "^26.5.0",
     "fastify": "^5.12.1",
     "tsup": "^8.0.0",
-    "typescript": "^5.4.0",
     "vitest": "^4.1.11",
     "yaml": "^2.9.0"
   },

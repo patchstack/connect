@@ -104,9 +104,12 @@ export function scaffoldGeneric(
   const dir = genericDir(cwd);
   const dst = join(cwd, dir);
   ensureProjectDirectorySync(cwd, dst);
-  copyProjectFileSync(cwd, join(templates, guardTemplate), join(dst, guardFile));
   const guardRel = `${dir}/${guardFile}`;
-  const changed = [guardRel];
+  const changed: string[] = [];
+  if (!existsSync(join(dst, guardFile))) {
+    copyProjectFileSync(cwd, join(templates, guardTemplate), join(dst, guardFile));
+    changed.push(guardRel);
+  }
   if (!opts.demo) bakeSiteUuid(cwd, guardRel);
   const rulesDst = join(dst, 'rules.json');
   if (opts.demo || !existsSync(rulesDst)) {

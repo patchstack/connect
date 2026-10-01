@@ -34,8 +34,8 @@ export default defineConfig([
     target: 'node20',
     banner: { js: '#!/usr/bin/env node' },
     // `map` parses the target app's source with a TypeScript compiler resolved at RUNTIME (the app's
-    // own `typescript`, or the environment's). Never bundle the compiler into the CLI — it's a heavy
-    // devDependency and the runtime guard never needs it.
+    // own `typescript`, or Connect's CLI dependency). Keep it external to the bundles: the runtime
+    // guard does not import the compiler.
     external: ['typescript'],
   },
   {
