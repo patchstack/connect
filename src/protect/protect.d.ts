@@ -19,7 +19,7 @@ export interface Protection {
    *  Any further arguments are the host's handler arguments, passed on to `peerAddress`. */
   fetchGuard(): (request: Request, ...hostArgs: unknown[]) => Promise<Response | null>;
   /** Screens the request, then the response (secret-leak redaction / withhold). */
-  fetch(handler: (request: Request, ...rest: unknown[]) => unknown): (request: Request, ...rest: unknown[]) => Promise<unknown>;
+  fetch<This, Args extends unknown[]>(handler: (this: This, request: Request, ...rest: Args) => Response | Promise<Response>): (this: This, request: Request, ...rest: Args) => Promise<Response>;
   /**
    * Screen a fetch Response through the response-phase rules (redact/withhold/encode).
    *

@@ -21,7 +21,7 @@ function declaredMembers(name: string): Set<string> {
   for (const line of body.split('\n')) {
     if (depth === 0) {
       if (line.startsWith('}')) break;
-      const member = /^ {2}(?:readonly )?([A-Za-z_$][\w$]*)\??(?:\(|:)/.exec(line);
+      const member = /^ {2}(?:readonly )?([A-Za-z_$][\w$]*)\??(?:<[^>]*>)?(?:\(|:)/.exec(line);
       if (member) members.add(member[1]);
     }
     for (const ch of line.replace(/\/\*.*?\*\/|\/\/.*$|"[^"]*"|'[^']*'|`[^`]*`/g, '')) {

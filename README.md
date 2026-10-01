@@ -115,7 +115,7 @@ npm install --save @patchstack/connect && npx @patchstack/connect setup
 
 > **Use your project's own package manager.** On Bun-managed projects (including many Lovable projects) install with `bun add @patchstack/connect` instead — running `npm install` there plants a `package-lock.json` that the platform's native dependency flow never updates again, leaving a stale lockfile next to the live one. Connect detects and works around that (see *Stale lockfiles* below), but not creating the fossil is better. Protection imports `@patchstack/connect/protect` at runtime, so deployments that prune dev dependencies need the package in `dependencies`.
 
-> **Hosted builders:** set `PATCHSTACK_ENVIRONMENT=sandbox` in the workspace process environment (or scope it to the setup command above), persist every file written by `setup`, and restart any already-running server so it loads the new middleware. Do not write `"environment": "sandbox"` to the committed `.patchstackrc.json`: the same project files reach production, where scans should inherit no override and default to `production`. TanStack Start + Supabase (the server shape emitted by Lovable) is auto-wired: browser Supabase traffic is tunneled through a same-origin guard, server-function arguments are inspected, and responses are screened. A client-only SPA has no server request path to protect; setup will leave a generic scaffold and `protect --check` will remain red until the host adds a server/edge seam. Set `PATCHSTACK_ROUTE_WAF=1` when the deployment should additionally screen every TanStack route request.
+> **Hosted builders:** set `PATCHSTACK_ENVIRONMENT=sandbox` in the workspace process environment (or scope it to the setup command above), persist every file written by `setup`, and restart any already-running server so it loads the new middleware. Do not write `"environment": "sandbox"` to the committed `.patchstackrc.json`: the same project files reach production, where scans should inherit no override and default to `production`. TanStack Start + Supabase (the server shape emitted by Lovable) is auto-wired: browser Supabase traffic is tunneled through a same-origin guard, server-function arguments are inspected, and responses are screened. A client-only SPA has no server request path to protect; setup will leave a generic scaffold and `protect --check` will remain red until the host adds a server/edge seam. Native TanStack requests are screened by default; no additional route-WAF switch is needed. New Start apps without that Supabase layout use the documented server Fetch entry. Browser-direct services and separately deployed functions still require their own protection.
 
 That's it. `setup`:
 
@@ -230,16 +230,26 @@ Options (for demo and demo-guide):
 
 ### Next.js request and response protection
 
+Framework detection follows the exported application's server entry, not the builder's name.
+[Lovable documents TanStack Start for new projects and React/Vite for older ones](https://docs.lovable.dev/introduction/faq);
+[Hostinger Horizons offers a hosted backend](https://www.hostinger.com/blog/horizons-integrated-backend/),
+and [Airo exports React/TypeScript applications](https://airo-builder.godaddy.com/discover/features).
+Those frontends do not establish where backend requests execute. Browser-direct APIs, Supabase Edge
+Functions and other separately deployed services need their own server-side integration; a browser
+tunnel does not replace backend authorization or RLS. Tests use synthetic framework-shaped apps,
+not proprietary builder templates, and do not certify a builder's live hosting environment.
+
 `protect` composes straightforward existing middleware instead of replacing its authentication or
 redirect logic. The request guard gets a catch-all matcher; the application's middleware still runs
 only within its original scope. Automatic composition accepts directly exported handlers and literal
 path matchers (including a terminal `/:path*`). Complex matchers, re-exports and custom URL routing
-are left untouched with an integration message. Source-aware edits use the application's installed
-`typescript` parser; configuration files are never executed.
+are left untouched with an integration message. Source-aware edits use a TypeScript parser supplied
+by the app or Connect's CLI dependency; configuration files are never executed.
 
-Apps with an existing `proxy.ts`/`proxy.js` (including under `src/`) require manual integration.
-The installer leaves them unchanged and `protect --check` reports the gap. It never adds middleware
-alongside a proxy, since Next.js does not allow both.
+On Next 16+, the installer creates `proxy.ts` for new wiring and composes supported existing
+`proxy.ts`/`proxy.js` handlers (including under `src/`). Older versions retain middleware. Conflicting
+entries, unsupported proxy exports, and custom normalization stay untouched and are reported by
+`protect --check`. Middleware and proxy are never created alongside one another.
 
 For App Router `app/**/route.ts` or `route.js` files, it also adds request checks and screens each
 returned response. The shared server-only `patchstack.next` helper initializes one policy per module

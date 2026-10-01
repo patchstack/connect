@@ -91,7 +91,7 @@ export function standardNextRouting(ts: Compiler, file: string, source: string):
     return false;
   };
   if (!literal(target) || ![...objects.values()].every(literal)) return false;
-  return target.properties.every(p => p.name && !['basePath', 'i18n', 'skipMiddlewareUrlNormalize', 'pageExtensions', '__proto__'].includes(
+  return target.properties.every(p => p.name && !['basePath', 'i18n', 'skipMiddlewareUrlNormalize', 'skipProxyUrlNormalize', 'pageExtensions', '__proto__'].includes(
     ts.isIdentifier(p.name) || ts.isStringLiteral(p.name) ? p.name.text : '',
   ));
 }
@@ -158,7 +158,7 @@ function prelude(request: string, marker: string): string {
 export function composeNextMiddleware(ts: Compiler, file: string, source: string, guardImport: string): string | null {
   const sf = parse(ts, file, source);
   if (!sf || /\b(?:psProtection|psBlocked|psRequest|getPatchstackProtection)\b/.test(source)) return null;
-  const found = handlers(ts, sf, new Set(['middleware']));
+  const found = handlers(ts, sf, new Set([/proxy\.[jt]s$/.test(file) ? 'proxy' : 'middleware']));
   if (found.length !== 1 || sf.statements.some(s => ts.isExportAssignment(s) || ts.isExportDeclaration(s))) return null;
   const fn = found[0]!;
   const request = requestName(ts, fn);
@@ -225,7 +225,7 @@ export function nextSourceWired(ts: Compiler, file: string, source: string, guar
   if (route && !sf.statements.some(s => ts.isImportDeclaration(s) && ts.isStringLiteral(s.moduleSpecifier)
     && s.moduleSpecifier.text === guardImport && s.importClause?.namedBindings && ts.isNamedImports(s.importClause.namedBindings)
     && s.importClause.namedBindings.elements.some(e => !e.propertyName && e.name.text === 'screenPatchstackResponse'))) return false;
-  const found = handlers(ts, sf, route ? METHODS : new Set(['middleware']));
+  const found = handlers(ts, sf, route ? METHODS : new Set([/proxy\.[jt]s$/.test(file) ? 'proxy' : 'middleware']));
   if (!found.length || sf.statements.some(s => ts.isExportDeclaration(s) || ts.isExportAssignment(s))) return false;
   if (route && methodExportCount(ts, sf) !== found.length) return false;
   const compact = (text: string) => text.replace(/\s+/g, '');

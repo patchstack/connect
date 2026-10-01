@@ -40,19 +40,19 @@ const START_IMPORTS = ['import { getRequest } from "@tanstack/react-start/server
 // reconcileBlock() keys off them.
 const REQUEST_MIDDLEWARE_BLOCK = [
   '// #region patchstack-guard (managed by patchstack-connect protect — do not edit)',
-  '// Browser→Supabase tunnel + response screening; optional route WAF via PATCHSTACK_ROUTE_WAF=1.',
+  '// Screen native requests and responses as well as the browser→Supabase tunnel.',
   'const patchstackGuard = createMiddleware().server(async ({ next }) => {',
   '  const request = getRequest();',
   '  if (request) {',
   '    const { pathname } = new URL(request.url);',
   '    if (pathname === GUARD_PATH) return handleGuardRequest(request);',
-  '    if (process.env.PATCHSTACK_ROUTE_WAF === "1") {',
-  '      const blocked = await guardRequest(request);',
-  '      if (blocked) return blocked;',
-  '    }',
+  '    const blocked = await guardRequest(request);',
+  '    if (blocked) return blocked;',
   '  }',
   '  // The request is passed so route/method-scoped response rules can apply their scope.',
-  '  return screenResponse(await next(), request);',
+  '  const result = await next();',
+  '  if (result instanceof Response) return screenResponse(result, request);',
+  '  return { ...result, response: await screenResponse(result.response, request) };',
   '});',
   '// #endregion patchstack-guard',
 ].join('\n');
@@ -140,9 +140,6 @@ function scaffold(cwd: string, opts: WireOptions): string[] {
 }
 
 function patchClient(ts: Compiler, s: string): string | null {
-  if (s.includes('x-ps-target')) {
-    return s;
-  }
   const tree = parsedSource(ts, 'client.ts', s);
   if (!tree) return null;
   const anchors: number[] = [];
@@ -151,12 +148,25 @@ function patchClient(ts: Compiler, s: string): string | null {
       const call = node.expression;
       if (call.expression.getText(tree) === 'headers.set'
         && call.arguments[0] && ts.isStringLiteral(call.arguments[0]) && call.arguments[0].text === 'apikey'
-        && call.arguments[1]?.getText(tree) === 'supabaseKey') anchors.push(node.end);
+        && call.arguments[1]?.getText(tree) === 'supabaseKey') {
+        const block = node.parent;
+        const fn = block.parent;
+        if (ts.isBlock(block) && ts.isArrowFunction(fn) && fn.parameters.length === 2
+          && fn.parameters[0]!.name.getText(tree) === 'input' && fn.parameters[1]!.name.getText(tree) === 'init'
+          && block.statements.some(statement => ts.isVariableStatement(statement) && statement.declarationList.declarations.some(d =>
+            ts.isIdentifier(d.name) && d.name.text === 'headers' && d.initializer && ts.isNewExpression(d.initializer)
+            && d.initializer.expression.getText(tree) === 'Headers'))) anchors.push(node.end);
+      }
     }
     ts.forEachChild(node, visit);
   };
   visit(tree);
   if (anchors.length !== 1) return null;
+  if (s.includes('x-ps-target')) {
+    // Existing custom tunnels are not replaced automatically. A marker alone is not a tunnel.
+    const code = ts.createPrinter({removeComments:true}).printFile(tree);
+    return /\.set\(['"]x-ps-target['"],/.test(code) && /return fetch\(/.test(code) ? s : null;
+  }
   return s.slice(0, anchors[0]) + '\n' + CLIENT_TUNNEL + s.slice(anchors[0]);
 }
 
@@ -169,6 +179,7 @@ function patchStart(ts: Compiler, original: string): string | null {
   if (!tree) return null;
   const startImport = tree.statements.find(node => ts.isImportDeclaration(node)
     && ts.isStringLiteral(node.moduleSpecifier) && node.moduleSpecifier.text === '@tanstack/react-start'
+    && !node.importClause?.isTypeOnly && !node.importClause?.name
     && node.importClause?.namedBindings && ts.isNamedImports(node.importClause.namedBindings)
     && node.importClause.namedBindings.elements.length === 2
     && node.importClause.namedBindings.elements.every(e => !e.propertyName && !e.isTypeOnly
@@ -221,8 +232,8 @@ function patchStart(ts: Compiler, original: string): string | null {
   } else {
     const requestImport = tree.statements.some(node => ts.isImportDeclaration(node)
       && ts.isStringLiteral(node.moduleSpecifier) && node.moduleSpecifier.text === '@tanstack/react-start/server'
-      && node.importClause?.namedBindings && ts.isNamedImports(node.importClause.namedBindings)
-      && node.importClause.namedBindings.elements.some(e => !e.propertyName && e.name.text === 'getRequest'));
+      && !node.importClause?.isTypeOnly && node.importClause?.namedBindings && ts.isNamedImports(node.importClause.namedBindings)
+      && node.importClause.namedBindings.elements.some(e => !e.propertyName && !e.isTypeOnly && e.name.text === 'getRequest'));
     if (!requestImport && /\bgetRequest\b/.test(original)) return null;
     s = s.replace(importAnchor, importAnchor + '\n' + (requestImport ? GUARD_IMPORT : START_IMPORTS));
   }
@@ -297,11 +308,12 @@ function verify(cwd: string): VerifyResult {
   const guard = existsSync(guardPath) ? read(guardPath) : '';
   const client = existsSync(clientPath) ? read(clientPath) : '';
   const start = existsSync(startPath) ? read(startPath) : '';
+  const ts = sourceCompiler(cwd);
 
   const checks = [
     { label: 'guard.ts scaffolded', ok: guard.length > 0, hint: 'run `patchstack-connect protect`' },
     { label: 'guard helper implementation verified', ok: matchesGuardTemplate(cwd, GUARD_FILE, 'guard.ts'), hint: 'preserved custom helpers require manual review before redirecting browser traffic' },
-    { label: 'Supabase client tunnels through the guard', ok: client.includes('x-ps-target'), hint: 'run `patchstack-connect protect` to re-patch src/integrations/supabase/client.ts' },
+    { label: 'Supabase client tunnels through the guard', ok: !!ts && client.includes('x-ps-target') && patchClient(ts, client) === client, hint: 'run `patchstack-connect protect` to re-patch src/integrations/supabase/client.ts' },
     { label: 'request middleware defined + registered', ok: start.includes('const patchstackGuard =') && start.includes('requestMiddleware: [patchstackGuard'), hint: 'run `patchstack-connect protect` to re-patch src/start.ts' },
     { label: 'server-function middleware defined + registered', ok: start.includes('const patchstackFunctionGuard =') && start.includes('functionMiddleware: [patchstackFunctionGuard'), hint: 'run `patchstack-connect protect` to re-patch src/start.ts' },
   ];
