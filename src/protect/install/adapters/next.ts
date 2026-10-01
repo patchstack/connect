@@ -12,6 +12,10 @@ function middlewareInfo(cwd: string) {
   return { relFile, relDir: dirname(relFile), exists: existsSync(join(cwd, relFile)) };
 }
 
+function proxyFiles(cwd: string): string[] {
+  return ['proxy.ts', 'proxy.js', 'src/proxy.ts', 'src/proxy.js'].filter(file => existsSync(join(cwd, file)));
+}
+
 function paths(cwd: string) {
   const mw = middlewareInfo(cwd);
   const ext = mw.relFile.endsWith('.js') ? 'js' : 'ts';
@@ -64,6 +68,11 @@ function sharedGuardPresent(file: string): boolean {
 }
 
 function wire(cwd: string, opts: WireOptions): WireResult {
+  const proxies = proxyFiles(cwd);
+  if (proxies.length) {
+    log(`left ${proxies.join(', ')} untouched: Next.js proxy integration requires manual wiring. Do not add middleware alongside a proxy; protect --check reports this gap.`);
+    return { ok: false, changed: [] };
+  }
   const templates = templatesDir();
   const mw = paths(cwd);
   ensureProjectDirectorySync(cwd, join(cwd, mw.relDir));
@@ -131,6 +140,12 @@ function wire(cwd: string, opts: WireOptions): WireResult {
 }
 
 function verify(cwd: string): VerifyResult {
+  const proxies = proxyFiles(cwd);
+  if (proxies.length) return {
+    wired: false,
+    checks: [{ label: 'Next.js proxy wiring requires manual verification', ok: false,
+      hint: `review ${proxies.join(', ')}; automatic proxy integration is not supported. Next.js cannot use middleware and proxy together.` }],
+  };
   const mw = paths(cwd);
   const ts = nextCompiler(cwd);
   const source = mw.exists ? read(join(cwd, mw.relFile)) : '';

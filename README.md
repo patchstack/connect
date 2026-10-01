@@ -209,6 +209,10 @@ path matchers (including a terminal `/:path*`). Complex matchers, re-exports and
 are left untouched with an integration message. Source-aware edits use the application's installed
 `typescript` parser; configuration files are never executed.
 
+Apps with an existing `proxy.ts`/`proxy.js` (including under `src/`) require manual integration.
+The installer leaves them unchanged and `protect --check` reports the gap. It never adds middleware
+alongside a proxy, since Next.js does not allow both.
+
 For App Router `app/**/route.ts` or `route.js` files, it also adds request checks and screens each
 returned response. The shared server-only `patchstack.next` helper initializes one policy per module
 instance, retries a failed initialization, and imports the same fallback rules file as middleware.

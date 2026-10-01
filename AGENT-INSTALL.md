@@ -330,7 +330,9 @@ It is server-only. Never put it in the widget tag, client bundles, or public env
    preserving its original routing scope, and edits supported `app/**/route.ts`/`route.js` handlers to
    check requests and filter returned responses. It writes a shared server-only `patchstack.next`
    helper alongside `patchstack.rules.json`. Unsupported exports, complex matchers or handlers are
-   left unchanged and reported by `--check`; re-run `protect` after adding routes. Middleware alone
+   left unchanged and reported by `--check`; re-run `protect` after adding routes. An existing
+   `proxy.ts`/`proxy.js` requires manual integration: no competing middleware is scaffolded and
+   `--check` reports the gap. Middleware alone
    cannot filter downstream page bodies. Rendered pages, Server Actions and Pages API response
    filtering are not verified by this adapter. Keep Next.js patched: a framework middleware bypass
    also bypasses a guard in middleware. Edge middleware needs `PATCHSTACK_API_KEY` in the server
