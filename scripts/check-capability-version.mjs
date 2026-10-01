@@ -17,6 +17,7 @@ import { execFileSync } from 'node:child_process';
 import { readFileSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { isDeepStrictEqual } from 'node:util';
 
 const root = join(dirname(fileURLToPath(import.meta.url)), '..');
 const FILE = 'capabilities.json';
@@ -56,9 +57,10 @@ for (const [key, value] of headMap) {
   }
   const was = beforeMap.get(key);
   if (Array.isArray(value) && Array.isArray(was)) {
-    for (const m of value) if (!was.includes(m)) added.push(`${key}.${m}`);
-    for (const m of was) if (!value.includes(m)) removed.push(`${key}.${m}`);
-  } else if (value !== was) {
+    const label = (member) => typeof member === 'string' ? member : JSON.stringify(member);
+    for (const m of value) if (!was.some((member) => isDeepStrictEqual(member, m))) added.push(`${key}.${label(m)}`);
+    for (const m of was) if (!value.some((member) => isDeepStrictEqual(member, m))) removed.push(`${key}.${label(m)}`);
+  } else if (!isDeepStrictEqual(value, was)) {
     // A scalar change (e.g. which tier may auto-promote) changes the MEANING of the contract for every
     // consumer, so it is breaking even though nothing was removed from a list.
     removed.push(`${key}: ${JSON.stringify(was)} → ${JSON.stringify(value)}`);
