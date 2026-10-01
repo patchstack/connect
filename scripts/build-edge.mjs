@@ -40,6 +40,9 @@ const result = await esbuild.build({
   format: 'esm',
   platform: 'browser', // WinterCG: no Node globals assumed
   target: 'es2022',
+  // Edge has no working directory or filesystem platform, even when the host exposes a process
+  // facade. Keep these calls out of the artifact as well as failing safely in the universal source.
+  define: { 'process.cwd': 'undefined', 'process.platform': 'undefined' },
   sourcemap: true,
   // The map resolves a stack frame to file and line without carrying the source text, which is published
   // in this repository anyway. `tsup.config.ts` sets the same thing for the other three artifacts, and
