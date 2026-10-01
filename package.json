@@ -54,6 +54,11 @@
       "default": "./dist/protect.js"
     }
   },
+  "typesVersions": {
+    "*": {
+      "protect": ["dist/protect.d.ts"]
+    }
+  },
   "bin": {
     "patchstack-connect": "./dist/cli.js"
   },

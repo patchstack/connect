@@ -1,90 +1,166 @@
-// Adapter: Next.js. Wires the guard as edge middleware (request-phase WAF + egress SSRF).
-// If the app has no middleware yet, scaffolds `middleware.ts` (+ patchstack.rules.json). If a
-// middleware file already exists, we do NOT clobber it — we scaffold the rules and print a plan
-// (add the guard to your middleware), so an existing middleware is never silently overwritten.
-
-import { existsSync } from 'node:fs';
-import { join } from 'node:path';
+import { existsSync, lstatSync, readdirSync } from 'node:fs';
+import { dirname, join, relative } from 'node:path';
 import { bakeSiteUuid, hasDependency, read, log, templatesDir } from '../util.js';
 import type { Adapter, WireOptions, WireResult, VerifyResult } from '../types.js';
-import { copyProjectFileSync, ensureProjectDirectorySync } from '../../../safe-file.js';
+import { copyProjectFileSync, ensureProjectDirectorySync, writeProjectFileSync } from '../../../safe-file.js';
+import { composeNextMiddleware, composeNextRoute, nextCompiler, nextSourceWired, standardNextRouting, NEXT_MARKER, ROUTE_MARKER } from './next-source.js';
 
-// Next reads middleware from `middleware.ts` at the project root, or `src/middleware.ts` when the
-// app uses a `src/` dir. Return the existing one if present, else the conventional target.
-function middlewareInfo(cwd: string): { relDir: string; relFile: string; exists: boolean } {
+function middlewareInfo(cwd: string) {
   const candidates = ['middleware.ts', 'middleware.js', 'src/middleware.ts', 'src/middleware.js'];
-  for (const rel of candidates) {
-    if (existsSync(join(cwd, rel))) return { relDir: rel.includes('/') ? 'src' : '.', relFile: rel, exists: true };
+  const relFile = candidates.find(rel => existsSync(join(cwd, rel)))
+    ?? (existsSync(join(cwd, 'src')) ? 'src/middleware.ts' : 'middleware.ts');
+  return { relFile, relDir: dirname(relFile), exists: existsSync(join(cwd, relFile)) };
+}
+
+function paths(cwd: string) {
+  const mw = middlewareInfo(cwd);
+  const ext = mw.relFile.endsWith('.js') ? 'js' : 'ts';
+  return { ...mw, rules: join(mw.relDir, 'patchstack.rules.json'), guard: join(mw.relDir, `patchstack.next.${ext}`) };
+}
+
+function importFrom(file: string, guard: string): string {
+  const rel = relative(dirname(file), guard).replace(/\\/g, '/').replace(/\.ts$/, '');
+  return rel.startsWith('.') ? rel : `./${rel}`;
+}
+
+function routes(cwd: string): { files: string[]; incomplete: boolean } {
+  const files: string[] = [];
+  let incomplete = false;
+  let visited = 0;
+  const walk = (rel: string) => {
+    if (++visited > 5000) { incomplete = true; return; }
+    const full = join(cwd, rel);
+    if (lstatSync(full).isSymbolicLink()) { incomplete = true; return; }
+    for (const entry of readdirSync(full, { withFileTypes: true })) {
+      if (entry.name.startsWith('_') || entry.name.startsWith('.') || entry.name === 'node_modules') continue;
+      if (entry.isSymbolicLink()) { incomplete = true; continue; }
+      const child = join(rel, entry.name);
+      if (entry.isDirectory()) walk(child);
+      else if (entry.isFile() && /^route\.(?:tsx?|jsx?)$/.test(entry.name)) files.push(child);
+    }
+  };
+  for (const root of ['app', 'src/app']) {
+    if (!existsSync(join(cwd, root))) continue;
+    if (root.startsWith('src/') && lstatSync(join(cwd, 'src')).isSymbolicLink()) { incomplete = true; continue; }
+    try { walk(root); } catch { incomplete = true; }
   }
-  const useSrc = existsSync(join(cwd, 'src'));
-  return { relDir: useSrc ? 'src' : '.', relFile: useSrc ? 'src/middleware.ts' : 'middleware.ts', exists: false };
+  return { files: files.sort(), incomplete };
 }
 
-function detect(cwd: string): boolean {
-  return hasDependency(cwd, 'next');
+// URL-normalization overrides and custom routing need framework-specific review before widening.
+function customRouting(cwd: string, ts: NonNullable<ReturnType<typeof nextCompiler>>): boolean {
+  return ['js', 'mjs', 'ts', 'cjs'].some(ext => {
+    const file = join(cwd, `next.config.${ext}`);
+    return existsSync(file) && !standardNextRouting(ts, file, read(file));
+  });
 }
 
-function rulesFile(relDir: string): string {
-  return relDir === '.' ? 'patchstack.rules.json' : `${relDir}/patchstack.rules.json`;
+function sharedGuardPresent(file: string): boolean {
+  if (!existsSync(file)) return false;
+  const source = read(file);
+  return source.includes('export async function getPatchstackProtection')
+    && source.includes('export async function screenPatchstackResponse')
+    && source.includes('import { createProtection } from "@patchstack/connect/protect"');
 }
 
 function wire(cwd: string, opts: WireOptions): WireResult {
   const templates = templatesDir();
-  const mw = middlewareInfo(cwd);
-  const dir = join(cwd, mw.relDir === '.' ? '' : mw.relDir);
-  ensureProjectDirectorySync(cwd, dir);
-
-  // Co-locate the rules next to the middleware (the template imports ./patchstack.rules.json).
-  const rulesDst = join(dir, 'patchstack.rules.json');
+  const mw = paths(cwd);
+  ensureProjectDirectorySync(cwd, join(cwd, mw.relDir));
   const changed: string[] = [];
-  if (opts.demo || !existsSync(rulesDst)) {
-    copyProjectFileSync(cwd, join(templates, opts.demo ? 'demo-rules.json' : 'rules.json'), rulesDst);
-    changed.push(rulesFile(mw.relDir));
+  if (opts.demo || !existsSync(join(cwd, mw.rules))) {
+    copyProjectFileSync(cwd, join(templates, opts.demo ? 'demo-rules.json' : 'rules.json'), join(cwd, mw.rules));
+    changed.push(mw.rules);
+  }
+  const ts = nextCompiler(cwd);
+  const guardPath = join(cwd, mw.guard);
+  const guardConflict = existsSync(guardPath) && !sharedGuardPresent(guardPath);
+  const ensureGuard = () => {
+    if (existsSync(guardPath)) return;
+    const source = read(join(templates, 'next-guard.ts'));
+    writeProjectFileSync(cwd, guardPath, mw.guard.endsWith('.js')
+      ? ts!.transpileModule(source, { compilerOptions: { target: ts!.ScriptTarget.ES2022, module: ts!.ModuleKind.ESNext } }).outputText
+      : source);
+    if (!opts.demo) bakeSiteUuid(cwd, mw.guard);
+    changed.push(mw.guard);
+  };
+
+  const existing = mw.exists ? read(join(cwd, mw.relFile)) : '';
+  if (!mw.exists) {
+    copyProjectFileSync(cwd, join(templates, 'next-middleware.ts'), join(cwd, mw.relFile));
+    if (!opts.demo) bakeSiteUuid(cwd, mw.relFile);
+    changed.push(mw.relFile);
+    log(`scaffolded ${mw.relFile} (request-phase guard)`);
+  } else if (existing.includes(NEXT_MARKER) || existing.includes('#region patchstack-next (')) {
+    log(`${mw.relFile} already has a Patchstack guard — left as-is`);
+    if (ts && existing.includes(NEXT_MARKER)) ensureGuard();
+  } else {
+    const composed = ts && !guardConflict && !customRouting(cwd, ts) && composeNextMiddleware(ts, mw.relFile, existing, importFrom(mw.relFile, mw.guard));
+    if (composed) {
+      ensureGuard();
+      writeProjectFileSync(cwd, join(cwd, mw.relFile), composed);
+      changed.push(mw.relFile);
+      log(`composed ${mw.relFile}: request guard first; existing middleware keeps its original matcher scope`);
+    } else {
+      log(`left ${mw.relFile} untouched: middleware/export/matcher shape needs manual integration${ts ? '' : ' (install typescript to enable source-aware composition)'}. Add a guard before application middleware and preserve its routing scope; protect --check reports this gap.`);
+    }
   }
 
-  const mwPath = join(cwd, mw.relFile);
-  const existing = mw.exists ? read(mwPath) : '';
-  if (mw.exists && existing.includes('patchstack-next')) {
-    // Already ours — do NOT re-copy the template over it: middleware.ts is user-editable, so
-    // overwriting would discard any edits made after scaffolding.
-    log(`${mw.relFile} already has the Patchstack middleware — left as-is`);
-    return { ok: true, changed };
+  const inventory = routes(cwd);
+  for (const file of inventory.files) {
+    const source = read(join(cwd, file));
+    if (source.includes(ROUTE_MARKER)) {
+      if (ts) ensureGuard();
+      continue;
+    }
+    const composed = ts && !guardConflict && /\.(?:ts|js)$/.test(file)
+      && composeNextRoute(ts, file, source, importFrom(file, mw.guard));
+    if (composed) {
+      ensureGuard();
+      writeProjectFileSync(cwd, join(cwd, file), composed);
+      changed.push(file);
+      log(`wired ${file} (request checks + response filtering)`);
+    } else {
+      log(`left ${file} untouched: wrap its request and final Response manually; protect --check reports this response-filtering gap.`);
+    }
   }
-  if (mw.exists) {
-    // The app's own middleware — leave it, and tell the user how to add the guard.
-    log(
-      `existing ${mw.relFile} left untouched — scaffolded ${rulesFile(mw.relDir)}; add the guard to your ` +
-        `middleware: import { createProtection } from "@patchstack/connect/protect", run fetchGuard() on the ` +
-        `request, and return the block Response. Then: npx patchstack-connect protect --check`,
-    );
-    return { ok: true, changed };
-  }
-
-  // Fresh → write the managed middleware.
-  copyProjectFileSync(cwd, join(templates, 'next-middleware.ts'), mwPath);
-  if (!opts.demo) bakeSiteUuid(cwd, mw.relFile);
-  changed.push(mw.relFile);
-  log(`scaffolded ${mw.relFile} (Patchstack middleware)`);
+  if (guardConflict) log(`${mw.guard} already exists but is not a recognized helper — left untouched; resolve the filename conflict before integrating handlers.`);
+  if (inventory.incomplete) log('App Router inventory was incomplete — review skipped paths manually.');
+  log('Next middleware cannot inspect downstream response bodies. Route-handler filtering does not cover rendered pages, Server Actions, or Pages API routes. Keep Next.js patched: a middleware bypass also bypasses a middleware guard.');
   return { ok: true, changed: [...new Set(changed)] };
 }
 
 function verify(cwd: string): VerifyResult {
-  const mw = middlewareInfo(cwd);
-  const present = mw.exists && read(join(cwd, mw.relFile)).includes('patchstack-next');
-  const rulesPresent = existsSync(join(cwd, rulesFile(mw.relDir)));
+  const mw = paths(cwd);
+  const ts = nextCompiler(cwd);
+  const source = mw.exists ? read(join(cwd, mw.relFile)) : '';
+  const shared = sharedGuardPresent(join(cwd, mw.guard));
+  const legacy = source.includes('#region patchstack-next (')
+    && source.includes('await protection.fetchGuard()(request)') && source.includes('if (blocked) return blocked')
+    && source.includes('matcher: "/:path*"');
+  const composed = ts && shared && !customRouting(cwd, ts) && nextSourceWired(ts, mw.relFile, source, importFrom(mw.relFile, mw.guard));
+  const present = !!(legacy || composed);
+  const rulesPresent = existsSync(join(cwd, mw.rules));
+  const inventory = routes(cwd);
+  const missing = inventory.files.filter(file => !(ts && shared
+    && nextSourceWired(ts, file, read(join(cwd, file)), importFrom(file, mw.guard), true)));
   return {
-    wired: present && rulesPresent,
+    wired: present && rulesPresent && missing.length === 0 && !inventory.incomplete,
     checks: [
-      { label: 'Patchstack middleware present', ok: present, hint: `run \`patchstack-connect protect\` (writes ${mw.relFile})` },
-      { label: 'rules co-located with the middleware', ok: rulesPresent, hint: 'run `patchstack-connect protect`' },
+      { label: 'Next middleware request guard has a catch-all matcher', ok: present,
+        hint: `run \`patchstack-connect protect\`; review any unsupported middleware shape in ${mw.relFile}` },
+      { label: 'fallback rules co-located with the guard', ok: rulesPresent, hint: 'run `patchstack-connect protect`' },
+      { label: `App Router request/response wiring: ${inventory.files.length - missing.length}/${inventory.files.length} route files`,
+        ok: missing.length === 0 && !inventory.incomplete,
+        hint: `run protect again after adding routes; manually integrate unsupported handlers: ${missing.join(', ') || 'inventory incomplete'}` },
+      { label: 'rendered pages, Server Actions and Pages API response filtering are not verified', ok: true, unverifiable: true,
+        hint: 'middleware cannot screen the downstream response; use a supported server boundary or add response filtering to those handlers' },
+      { label: 'live rule delivery and enforcement are not established by source inspection', ok: true, unverifiable: true,
+        hint: 'inspect the running guard’s ruleSource and mode; a request reaching middleware does not prove rules were fetched, accepted, or enforced. Framework middleware bypasses require a patched Next.js or upstream protection.' },
     ],
   };
 }
 
 export const nextAdapter: Adapter = {
-  name: 'nextjs',
-  label: 'Next.js',
-  detect,
-  wire,
-  verify,
+  name: 'nextjs', label: 'Next.js', detect: cwd => hasDependency(cwd, 'next'), wire, verify,
 };

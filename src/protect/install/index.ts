@@ -85,7 +85,7 @@ export function runProtect(cwd: string, opts: WireOptions = {}): ProtectResult {
  * an environment variable in the deployment. Without it the guard runs on the rules it shipped with: it
  * screens every request, reports healthy, and never receives another rule.
  */
-const RUNTIMES_WITHOUT_CONFIG_FILE = new Set(['next', 'sveltekit', 'astro', 'nuxt', 'generic']);
+const RUNTIMES_WITHOUT_CONFIG_FILE = new Set(['nextjs', 'sveltekit', 'astro', 'nuxt', 'generic']);
 
 /**
  * A note about the deployment credential, when the stack needs one and this machine cannot confirm it.

@@ -170,10 +170,10 @@ describe('Next.js adapter', () => {
     }
   });
 
-  it('does NOT overwrite an existing middleware (scaffolds rules + leaves it, verify not wired)', () => {
+  it('leaves an unsupported middleware untouched and reports the wiring gap', () => {
     const dir = tmp('ps-next2-');
     writeFileSync(path.join(dir, 'package.json'), JSON.stringify({ name: 'x', dependencies: { next: '^14.0.0' } }));
-    const ownMiddleware = 'export function middleware() { /* my own */ }\n';
+    const ownMiddleware = 'export { middleware } from "./authentication";\n';
     writeFileSync(path.join(dir, 'middleware.ts'), ownMiddleware);
     try {
       runProtect(dir);
