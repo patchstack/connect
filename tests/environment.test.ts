@@ -40,6 +40,71 @@ describe('inferEnvironment', () => {
     expect(inferEnvironment({ RAILWAY_ENVIRONMENT_NAME: 'staging' }).environment).toBe('sandbox');
   });
 
+  it('reads Vercel tiers without requiring a separate platform marker', () => {
+    expect(inferEnvironment({ VERCEL_ENV: 'production' })).toEqual({
+      environment: 'production',
+      evidence: ['vercel: VERCEL_ENV=production'],
+      source: 'platform',
+    });
+    expect(inferEnvironment({ VERCEL_ENV: 'preview' }).environment).toBe('sandbox');
+    expect(inferEnvironment({ VERCEL_TARGET_ENV: 'production' })).toEqual({
+      environment: 'production',
+      evidence: ['vercel: VERCEL_TARGET_ENV=production'],
+      source: 'platform',
+    });
+  });
+
+  it('lets the Vercel target decide over the legacy tier and CI branch', () => {
+    const env = { VERCEL: '1', VERCEL_ENV: 'production', GITHUB_ACTIONS: 'true', GITHUB_REF_NAME: 'main' };
+    for (const target of ['preview', 'development', 'staging', 'qa']) {
+      expect(inferEnvironment({ ...env, VERCEL_TARGET_ENV: target }, 'lovable')).toEqual({
+        environment: 'sandbox',
+        evidence: [`vercel: VERCEL_TARGET_ENV=${target}`],
+        source: 'platform',
+      });
+    }
+    expect(inferEnvironment({ ...env, VERCEL_ENV: 'preview', VERCEL_TARGET_ENV: 'production' }).environment).toBe('production');
+    expect(inferEnvironment({ ...env, VERCEL_TARGET_ENV: ' ' }).environment).toBe('production');
+  });
+
+  it('reads a Netlify Preview Server as sandbox even with a production context', () => {
+    expect(inferEnvironment({ NETLIFY_PREVIEW_SERVER: 'true' }, 'lovable')).toEqual({
+      environment: 'sandbox',
+      evidence: ['netlify: NETLIFY_PREVIEW_SERVER=true'],
+      source: 'platform',
+    });
+    expect(inferEnvironment({ NETLIFY: 'true', CONTEXT: 'production', NETLIFY_PREVIEW_SERVER: 'true' }).environment).toBe('sandbox');
+    expect(inferEnvironment({ NETLIFY: 'true', CONTEXT: 'production', NETLIFY_PREVIEW_SERVER: 'false' }).environment).toBe('production');
+  });
+
+  it('reads Netlify Dev as local even when it loads production settings', () => {
+    const env = { NETLIFY: 'true', CONTEXT: 'production', NETLIFY_DEV: 'true' };
+    expect(inferEnvironment(env, 'lovable')).toEqual({
+      environment: 'local',
+      evidence: ['netlify: NETLIFY_DEV=true (the local development server)'],
+      source: 'platform',
+    });
+    expect(inferEnvironment({ ...env, NETLIFY_PREVIEW_SERVER: 'true' }).environment).toBe('sandbox');
+    expect(inferEnvironment({ ...env, NETLIFY_DEV: 'false' }).environment).toBe('production');
+  });
+
+  it('does not let CI or builder assumptions fill a missing hosting tier', () => {
+    const ci = { GITHUB_ACTIONS: 'true', GITHUB_REF_TYPE: 'tag', GITHUB_REF_NAME: 'v1.0.0' };
+    for (const platform of [{ VERCEL: '1' }, { NETLIFY: 'true' }]) {
+      const result = inferEnvironment({ ...ci, ...platform }, 'lovable');
+      expect(result.environment).toBe('local');
+      expect(result.source).toBe('platform');
+      expect(result.evidence[0]).toContain('set PATCHSTACK_ENVIRONMENT');
+    }
+  });
+
+  it('does not use production build mode or a site URL as evidence of a production deployment', () => {
+    expect(inferEnvironment({ NODE_ENV: 'production', APP_URL: 'https://example.test', APP_ID: 'example-app' }).environment).toBe('local');
+    expect(inferEnvironment({ VERCEL_PROJECT_PRODUCTION_URL: 'example.test' }).environment).toBe('local');
+    expect(inferEnvironment({ CONTEXT: 'production' }).environment).toBe('local');
+    expect(inferEnvironment({ VERCEL: '0', NETLIFY: 'false', NETLIFY_PREVIEW_SERVER: 'false' }, null).environment).toBe('local');
+  });
+
   it('decides a Cloudflare Pages build by its branch name, and says so', () => {
     expect(
       inferEnvironment({ CF_PAGES: '1', CF_PAGES_BRANCH: 'main', CF_PAGES_URL: 'https://x.pages.dev' }),
@@ -179,8 +244,9 @@ describe('inferEnvironment', () => {
   it('treats a variable that is set but empty as not set', () => {
     expect(inferEnvironment({ NETLIFY: '' }).environment).toBe('local');
     expect(inferEnvironment({ NETLIFY: '', CONTEXT: 'production' }).environment).toBe('local');
-    expect(inferEnvironment({ VERCEL: '', VERCEL_ENV: 'production' }).environment).toBe('local');
+    expect(inferEnvironment({ VERCEL: '', VERCEL_ENV: 'production' }).environment).toBe('production');
     expect(inferEnvironment({ VERCEL: '1', VERCEL_ENV: '' }).environment).toBe('local');
+    expect(inferEnvironment({ VERCEL: '1', VERCEL_ENV: ' ', VERCEL_TARGET_ENV: '\t' }).environment).toBe('local');
     expect(inferEnvironment({ RAILWAY_ENVIRONMENT_NAME: '' }).environment).toBe('local');
     expect(inferEnvironment({ CF_PAGES: '1', CF_PAGES_BRANCH: '' }).environment).toBe('local');
     expect(inferEnvironment({ AWS_APP_ID: 'd1abc', AWS_BRANCH: '' }).environment).toBe('local');

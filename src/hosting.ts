@@ -29,8 +29,8 @@ interface HostingRule {
  * build of a Netlify-style project still says Cloudflare, because that is where it will be served).
  */
 const RULES: readonly HostingRule[] = [
-  { platform: 'netlify', any: ['NETLIFY', 'NETLIFY_BUILD_BASE', 'DEPLOY_PRIME_URL'] },
-  { platform: 'vercel', any: ['VERCEL', 'VERCEL_ENV', 'VERCEL_URL'] },
+  { platform: 'netlify', any: ['NETLIFY', 'NETLIFY_PREVIEW_SERVER', 'NETLIFY_DEV', 'NETLIFY_BUILD_BASE', 'DEPLOY_PRIME_URL'] },
+  { platform: 'vercel', any: ['VERCEL', 'VERCEL_TARGET_ENV', 'VERCEL_ENV', 'VERCEL_URL'] },
   { platform: 'cloudflare', any: ['CF_PAGES', 'CF_PAGES_URL', 'WORKERS_CI', 'WORKERS_CI_BRANCH', 'CLOUDFLARE_ACCOUNT_ID'] },
   { platform: 'aws', any: ['AWS_APP_ID', 'AWS_BRANCH', 'AWS_LAMBDA_FUNCTION_NAME', 'AWS_EXECUTION_ENV'] },
   { platform: 'render', any: ['RENDER', 'RENDER_SERVICE_ID', 'RENDER_EXTERNAL_URL'] },
