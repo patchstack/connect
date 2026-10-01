@@ -42,6 +42,8 @@ export interface GuideState {
   installed: { version: string; section: 'devDependencies' | 'dependencies' } | null;
   siteUuid: string | null;
   claimUrl: string | null;
+  /** True when `.patchstackrc.json` records the site as claimed (see `persistClaimState`). */
+  claimed: boolean;
   /** Non-default API endpoint in effect (rc file, env, or flag), else null. */
   endpointOverride: string | null;
   /** Where a scan from here reports from, and what decided it. Null when the config is unreadable. */
@@ -356,6 +358,7 @@ export async function collectGuideState(cwd: string): Promise<GuideState> {
 
   let siteUuid: string | null = null;
   let claimUrl: string | null = null;
+  let claimed = false;
   let endpointOverride: string | null = null;
   let widgetOptOut = false;
   let environment: Environment | null = null;
@@ -365,6 +368,7 @@ export async function collectGuideState(cwd: string): Promise<GuideState> {
     environment = config.environment;
     environmentSource = config.environmentSource ?? null;
     siteUuid = config.siteUuid;
+    claimed = siteUuid !== null && config.claimed === true;
     if (siteUuid !== null && config.endpointTrusted !== false) {
       claimUrl = buildClaimUrl(config.endpoint, siteUuid);
     }
@@ -395,6 +399,7 @@ export async function collectGuideState(cwd: string): Promise<GuideState> {
     installed,
     siteUuid,
     claimUrl,
+    claimed,
     endpointOverride,
     environment,
     environmentSource,
@@ -473,9 +478,9 @@ export function countRemainingSteps(state: GuideState): number {
 export function guideProgress(state: GuideState, known: Partial<Progress> = {}): Progress {
   return {
     installed: state.installed !== null,
-    // Claim state lives on the server and nothing on disk records it, so only a caller that has just
-    // heard from the server (a scan's claim outcome) can mark it done.
-    connected: false,
+    // Claim state lives on the server. The working tree has only the note a scan, status or claim left
+    // in `.patchstackrc.json`; a caller that has just heard from the server overrides it.
+    connected: state.claimed,
     // `.patchstackrc.json` only gains a site UUID from a manifest the server stored.
     synced: state.siteUuid !== null,
     // Only the dashboard can see the live site, so nothing the CLI runs marks this done.
@@ -525,8 +530,8 @@ function buildScriptLines(state: GuideState): string[] {
  * What the working tree is still missing, each with the one thing to do about it. Until the site exists
  * only a dev-only install is listed: before that, `setup` is the next step and applies the rest.
  *
- * `connected` is whether the caller heard from Patchstack that the project has an owner. Nothing on disk
- * records it, so without that answer the project is treated as not connected.
+ * `connected` is whether the caller heard from Patchstack that the project has an owner. Without that
+ * answer, the note in `.patchstackrc.json` decides.
  */
 export function guideMissing(state: GuideState, known: Partial<Progress> = {}): MissingItem[] {
   const missing: MissingItem[] = [];
@@ -603,7 +608,7 @@ export function guideMissing(state: GuideState, known: Partial<Progress> = {}): 
     );
   }
 
-  if (known.connected !== true) missing.push(notConnectedItem());
+  if ((known.connected ?? state.claimed) !== true) missing.push(notConnectedItem());
 
   return missing;
 }

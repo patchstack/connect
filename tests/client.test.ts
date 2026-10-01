@@ -5,6 +5,7 @@ import {
   buildPackageRemovedUrl,
   buildRulesUrl,
   buildSettingsUrl,
+  fetchClaimState,
   fetchSiteStatus,
   postManifest,
   postPackageRemoved,
@@ -167,6 +168,70 @@ describe('fetchSiteStatus', () => {
       /^https:\/\/example\.com\/monitor\/widget\/settings\/uuid\?t=\d+$/,
     );
     expect((init.headers as Record<string, string>)['Cache-Control']).toBe('no-cache');
+  });
+});
+
+describe('fetchClaimState', () => {
+  const config = {
+    siteUuid: 'uuid',
+    endpoint: 'https://example.com/monitor/pulse/manifest',
+    timeoutMs: 30_000,
+    widget: true,
+    environment: 'production',
+  } as const;
+
+  const answering = (body: unknown, status = 200) =>
+    vi.fn().mockResolvedValue(new Response(JSON.stringify(body), { status }));
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it('reads an ownerless site as unclaimed', async () => {
+    vi.stubGlobal('fetch', answering({ state: 'claimable' }));
+    await expect(fetchClaimState(config)).resolves.toBe('unclaimed');
+  });
+
+  it('reads a site with an owner as claimed, whoever owns it', async () => {
+    vi.stubGlobal('fetch', answering({ state: 'owned-by-other' }));
+    await expect(fetchClaimState(config)).resolves.toBe('claimed');
+
+    vi.stubGlobal('fetch', answering({ state: 'owned-by-you' }));
+    await expect(fetchClaimState(config)).resolves.toBe('claimed');
+  });
+
+  it('returns unknown for any other answer, a failed response or no network', async () => {
+    vi.stubGlobal('fetch', answering({ state: 'not-found' }));
+    await expect(fetchClaimState(config)).resolves.toBe('unknown');
+
+    vi.stubGlobal('fetch', answering({ state: 'claimable' }, 500));
+    await expect(fetchClaimState(config)).resolves.toBe('unknown');
+
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response('not json', { status: 200 })));
+    await expect(fetchClaimState(config)).resolves.toBe('unknown');
+
+    vi.stubGlobal('fetch', vi.fn().mockRejectedValue(new Error('boom')));
+    await expect(fetchClaimState(config)).resolves.toBe('unknown');
+  });
+
+  it('returns unknown without a request when no siteUuid is configured', async () => {
+    const fetchMock = vi.fn();
+    vi.stubGlobal('fetch', fetchMock);
+
+    await expect(fetchClaimState({ ...config, siteUuid: null })).resolves.toBe('unknown');
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it('asks the claim page on the endpoint origin, with the site UUID and no credential', async () => {
+    const fetchMock = answering({ state: 'claimable' });
+    vi.stubGlobal('fetch', fetchMock);
+
+    await fetchClaimState({ ...config, apiKey: 'secret-key' } as typeof config);
+
+    const [calledUrl, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+    expect(calledUrl).toBe('https://example.com/monitor/claim/preview?site=uuid');
+    expect(init.method).toBe('GET');
+    expect(JSON.stringify(init.headers)).not.toContain('secret-key');
   });
 });
 

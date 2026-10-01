@@ -115,6 +115,12 @@ export interface Config {
    */
   widget: boolean;
   /**
+   * Whether `.patchstackrc.json` records the site as claimed — what `scan`, `status` or `claim` last
+   * saw. A note on disk, not Patchstack's answer: only those commands ask. Optional on the same terms
+   * as `siteUrl`.
+   */
+  claimed?: boolean;
+  /**
    * The claim token the Patchstack dashboard puts in its install prompt, so the site the first scan
    * provisions is born in that account instead of waiting for a dashboard link. Read from
    * `--claim-token` or `PATCHSTACK_CLAIM_TOKEN` and never written to any file: it names an account,

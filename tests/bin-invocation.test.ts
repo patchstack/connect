@@ -367,6 +367,12 @@ describe.skipIf(!built)('the packaged bin, invoked as npm invokes it', () => {
         let raw = '';
         req.on('data', (chunk) => { raw += chunk.toString(); });
         req.on('end', () => {
+          // The ownership lookup a scan makes after a stored manifest; it carries no body.
+          if (req.method === 'GET') {
+            res.writeHead(200, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({ state: 'claimable' }));
+            return;
+          }
           bodies.push(JSON.parse(raw) as Record<string, unknown>);
           res.writeHead(200, { 'Content-Type': 'application/json' });
           res.end(JSON.stringify({ uuid: SITE, stored: true, checksum: 'abc' }));
@@ -420,6 +426,43 @@ describe.skipIf(!built)('the packaged bin, invoked as npm invokes it', () => {
         expect(stdout).not.toContain('/monitor/claim?site=');
       } finally {
         await server.close();
+        rmSync(dir, { recursive: true, force: true });
+      }
+    });
+
+    it('marks the site connected once Patchstack says it has an owner, and stops asking after that', async () => {
+      const lookups: string[] = [];
+      const server = createServer((req, res) => {
+        req.resume();
+        req.on('end', () => {
+          res.writeHead(200, { 'Content-Type': 'application/json' });
+          if (req.method === 'GET') {
+            lookups.push(req.url ?? '');
+            res.end(JSON.stringify({ state: 'owned-by-other' }));
+            return;
+          }
+          res.end(JSON.stringify({ uuid: SITE, stored: true, manifest_id: 7, checksum: 'abc' }));
+        });
+      });
+      await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+      const { port } = server.address() as AddressInfo;
+      const endpoint = `http://127.0.0.1:${port}/monitor/pulse/manifest`;
+      const dir = freshProject();
+      try {
+        const first = await scan(dir, endpoint);
+
+        expect(first).toContain(' ✔ Connect project to Patchstack account');
+        expect(first).not.toContain('/monitor/claim?site=');
+        expect(lookups).toEqual([`/monitor/claim/preview?site=${SITE}`]);
+        const saved = JSON.parse(readFileSync(path.join(dir, '.patchstackrc.json'), 'utf8')) as Record<string, unknown>;
+        expect(saved).toMatchObject({ siteUuid: SITE, claimed: true });
+        expect(saved).not.toHaveProperty('claimUrl');
+
+        const second = await scan(dir, endpoint);
+        expect(second).toContain(' ✔ Connect project to Patchstack account');
+        expect(lookups).toHaveLength(1);
+      } finally {
+        await new Promise<void>((resolve) => server.close(() => resolve()));
         rmSync(dir, { recursive: true, force: true });
       }
     });

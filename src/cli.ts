@@ -14,6 +14,7 @@ import {
   claimOutcome,
   DEFAULT_ENDPOINT,
   buildClaimUrl,
+  fetchClaimState,
   fetchSiteStatus,
   postManifest,
   postManifestWithEnvironmentFallback,
@@ -36,6 +37,7 @@ import {
   credentialInCommittedConfig,
   persistApiKey,
   secretFileIgnored,
+  persistClaimState,
   persistSiteUuid,
   resolveConfig,
   type ResolveConfigOptions,
@@ -385,6 +387,7 @@ async function runClaim(args: ParsedArgs): Promise<number> {
   }
 
   const settled = async (result: ClaimResult): Promise<number> => {
+    await recordClaimState(config, siteUuid, true);
     console.log(
       `\n  ✓ Site claimed${result.account !== undefined ? ` by ${result.account}` : ''}.`,
     );
@@ -448,6 +451,7 @@ async function runClaim(args: ParsedArgs): Promise<number> {
       // An already-claimed site is the goal state, not a failure: an assistant re-running this after
       // the user claimed in the browser must not report the setup as broken.
       if (started.status === 'already-claimed') {
+        await recordClaimState(config, siteUuid, true);
         console.log(`\n  ${started.message ?? 'This site is already claimed.'}\n`);
         return 0;
       }
@@ -468,6 +472,7 @@ async function runClaim(args: ParsedArgs): Promise<number> {
 
   if (result.status === 'claimed') return await settled(result);
   if (result.status === 'already-claimed') {
+    await recordClaimState(config, siteUuid, true);
     console.log(`\n  ${result.message ?? 'This site is already claimed.'}\n`);
     return 0;
   }
@@ -796,9 +801,10 @@ async function runScan(
   // The server always returns the UUID. If we didn't have one, persist it so
   // every subsequent scan targets the same site.
   if (provisioning && response.uuid !== undefined && response.uuid.length > 0) {
-    const target = await persistSiteUuid(process.cwd(), response.uuid);
+    const claimUrl = config.endpointTrusted !== false ? buildClaimUrl(config.endpoint, response.uuid) : null;
+    const target = await persistSiteUuid(process.cwd(), response.uuid, claimUrl);
     report.done.push('Added this project to Patchstack');
-    say(`Created site ${response.uuid}. Saved to ${target}.`);
+    say(`Created site ${response.uuid}. Saved it${claimUrl !== null ? ' and the link to connect it' : ''} to ${target}.`);
   }
   if (typeof response.api_key === 'string' && response.api_key.length > 0) {
     // One credential for both paths: Pulse resolution falls back to apiKey, so
@@ -838,7 +844,7 @@ async function runScan(
   } else if (claim !== null) {
     report.missing.push(notConnectedItem([`${claim.summary}.`, ...claim.hint]));
   }
-  const connected = response.claim?.state === 'claimed' || response.claim?.state === 'owned-by-you';
+  const tokenConnected = response.claim?.state === 'claimed' || response.claim?.state === 'owned-by-you';
 
   // With a UUID in hand (existing or freshly provisioned), ensure the Patchstack widget's managed tag in
   // the source HTML shell so the next preview reload shows it. Best-effort; a failed post never reaches
@@ -847,6 +853,8 @@ async function runScan(
   if (config.widget && effectiveUuid !== null && effectiveUuid.length > 0) {
     reportSourceWidget(effectiveUuid, shellFramework, report);
   }
+
+  const connected = await resolveConnected(config, effectiveUuid, tokenConnected);
 
   const synced =
     effectiveUuid !== null &&
@@ -869,6 +877,32 @@ async function runScan(
   }
 
   return 0;
+}
+
+/**
+ * Whether the site has an owner, and keep `.patchstackrc.json`'s note of it current.
+ *
+ * A claim token that connected the site answers outright. Otherwise a site the file already records as
+ * claimed is taken at its word, so a build does not ask again on every run; any other site is looked up.
+ * Best-effort: a failed lookup or write leaves the site reported as not connected, never fails the scan.
+ */
+async function resolveConnected(config: Config, siteUuid: string | null, tokenConnected: boolean): Promise<boolean> {
+  if (siteUuid === null || siteUuid.length === 0) return false;
+  if (!tokenConnected && config.claimed === true) return true;
+
+  const state = tokenConnected ? 'claimed' : await fetchClaimState({ ...config, siteUuid });
+  if (state !== 'unknown') await recordClaimState(config, siteUuid, state === 'claimed');
+  return state === 'claimed';
+}
+
+/** Write what Patchstack said about ownership to `.patchstackrc.json`. Never throws. */
+async function recordClaimState(config: Config, siteUuid: string, claimed: boolean): Promise<void> {
+  const claimUrl = config.endpointTrusted !== false ? buildClaimUrl(config.endpoint, siteUuid) : null;
+  try {
+    await persistClaimState(process.cwd(), claimed, claimUrl);
+  } catch {
+    // The note is a convenience for `guide`; the answer itself was already given.
+  }
 }
 
 /** An item the run reported replaces the working-tree item with the same key, which says less. */
@@ -1332,7 +1366,16 @@ async function runStatus(args: ParsedArgs): Promise<number> {
   console.log(`Environment: ${config.environment}`);
   if (config.siteUuid !== null) {
     console.log(`Dashboard URL: ${buildClaimUrl(config.endpoint, config.siteUuid)}`);
-    console.log('  Not connected yet? Open the link above or run `npx @patchstack/connect claim`.');
+
+    const claimState = await fetchClaimState(config);
+    if (claimState !== 'unknown') await recordClaimState(config, config.siteUuid, claimState === 'claimed');
+    if (claimState === 'claimed') {
+      console.log('Connected:     yes, to a Patchstack account');
+    } else if (claimState === 'unclaimed') {
+      console.log('Connected:     not yet. Open the link above or run `npx @patchstack/connect claim`.');
+    } else {
+      console.log('Connected:     could not be verified. Not connected yet? Open the link above.');
+    }
 
     switch (await fetchSiteStatus(config)) {
       case 'active':

@@ -50,6 +50,16 @@ interface ConfigFile {
    * `package.json` still named after its template, an HTML shell whose title is filled in by script.
    */
   name?: string;
+  /**
+   * The link that connects this site to a Patchstack account, written when the site is created so it
+   * survives a terminal nobody read. Dropped once the site is claimed, when the link has done its job.
+   */
+  claimUrl?: string;
+  /**
+   * True once `scan`, `status` or `claim` has seen the site attached to an account. Lets `guide`, which
+   * sends nothing over the network, stop asking for a claim that already happened.
+   */
+  claimed?: boolean;
 }
 
 export interface ResolveConfigOptions {
@@ -244,6 +254,7 @@ export async function resolveConfig(options: ResolveConfigOptions): Promise<Conf
     environmentSource,
     ignoredFileEnvironment,
     widget: fromFile.widget !== false,
+    claimed: fromFile.claimed === true,
     claimToken,
   };
 }
@@ -432,9 +443,42 @@ function ignoresEntry(contents: string, entry: string): boolean {
  * Merge a new siteUuid into the existing `.patchstackrc.json` (or create it).
  * Preserves any `endpoint` / `timeoutMs` / `apiKey` the user already wrote.
  */
-export async function persistSiteUuid(cwd: string, siteUuid: string): Promise<string> {
+export async function persistSiteUuid(cwd: string, siteUuid: string, claimUrl?: string | null): Promise<string> {
   const existing = await readConfigFile(cwd);
-  return writeConfigFile(cwd, { ...existing, siteUuid });
+  return writeConfigFile(cwd, {
+    ...existing,
+    siteUuid,
+    ...(typeof claimUrl === 'string' && claimUrl !== '' ? { claimUrl } : {}),
+  });
+}
+
+/**
+ * Record whether the site has an owner, as last seen from Patchstack.
+ *
+ * A claimed site loses its `claimUrl`; an unclaimed one gets it back when the caller supplies it. The
+ * file is left untouched when it already says the same thing, so a re-run does not rewrite a committed
+ * file for nothing. Returns whether it wrote.
+ */
+export async function persistClaimState(
+  cwd: string,
+  claimed: boolean,
+  claimUrl?: string | null,
+): Promise<boolean> {
+  const existing = await readConfigFile(cwd);
+  if (typeof existing.siteUuid !== 'string' || existing.siteUuid === '') return false;
+
+  const next: ConfigFile = { ...existing };
+  if (claimed) {
+    next.claimed = true;
+    delete next.claimUrl;
+  } else {
+    delete next.claimed;
+    if (typeof claimUrl === 'string' && claimUrl !== '') next.claimUrl = claimUrl;
+  }
+
+  if (JSON.stringify(next) === JSON.stringify(existing)) return false;
+  await writeConfigFile(cwd, next);
+  return true;
 }
 
 /**
