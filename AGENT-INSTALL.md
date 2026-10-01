@@ -324,7 +324,7 @@ It is server-only. Never put it in the widget tag, client bundles, or public env
    npx @patchstack/connect protect --check
    ```
 
-   `setup` performs both steps automatically. The explicit commands are for manual setup or repair. If verification reports a generic or existing framework seam, complete the printed source edit and re-run `--check`; do not report protection as active until it exits successfully.
+   `setup` performs both steps automatically. The explicit commands are for manual setup or repair. If verification reports a generic or existing framework seam, follow [Completing guard wiring](#completing-guard-wiring), complete the source edit and re-run `--check`; do not report protection as active until it exits successfully.
 
    `--check` reads the app's source. It can establish that the guard is imported and called on a request
    path; it cannot establish that a request ever reaches it — an app can wire the guard onto one server
@@ -376,6 +376,96 @@ It is server-only. Never put it in the widget tag, client bundles, or public env
    1. **The widget's "Connect this website" panel**, already on the preview. While the site is unclaimed the widget serves this panel, and signing in there attaches the site. On a published build it is hidden from visitors; the owner reveals it by appending `#patchstack` (or `?patchstack`) to the live URL.
    2. **The dashboard link** the scan printed — open it in a browser and sign in.
    3. **`npx @patchstack/connect claim`** from the terminal, which prints a link to sign in with and then attaches the site.
+
+## Completing guard wiring
+
+Use this procedure when scaffolding leaves a manual step, and review automatic edits against it too.
+The printed entry candidates and framework names are hints. A generated guard or a successful source
+check is not proof that every deployed route passes through it.
+
+1. **Find what actually serves requests.** Read the application's package, installed framework version,
+   start/build scripts, deployment adapter and existing server hooks. In a workspace, inspect each
+   deployed package separately. Trace the production entry to pages, APIs, loaders/actions, RPC and
+   server functions; include separately deployed functions and additional listeners. UI dependencies
+   and Vite alone do not establish a server or a static-only deployment. For a static export, establish
+   that no request handler is deployed before reporting runtime protection as not applicable.
+2. **Choose the shared request entry.** Prefer the framework's server hook or the deployed server's
+   outer handler over individual routes. Read the generated guard's exports and calling convention.
+   `protectFetch` wraps a handler receiving a Web `Request` and returning a `Response`; it is not a
+   wrapper for arbitrary framework contexts or response-writing callbacks. Preserve handler arguments,
+   runtime bindings and any required receiver. Do not pass Connect middleware directly to Koa, Hapi,
+   Adonis or other incompatible middleware APIs. If the conversion cannot be established, leave that
+   entry unwired and name the missing integration rather than inventing an API.
+3. **Compose a minimal edit.** Preserve authentication, redirects, rewrites, cookies, headers, errors
+   and existing matchers. Inspect matcher exclusions for skipped application routes. Keep the guard
+   server-only and return its blocking response before calling application code; call the original
+   handler once for an allowed request. The Express adapter's guard uses parsed `req.body` and belongs
+   **after** the body parser, before routes. The generic Node guard reads the stream and belongs
+   **before** body parsers. Preserve raw-body webhook verification and test uploads and streams before
+   claiming those paths work. Do not edit generated build output, replace an existing hook wholesale,
+   add a server to a static app, or rerun scaffolding over a manually adapted guard without reviewing
+   what it will write. Check the diff for duplicate registrations and unrelated changes.
+4. **Verify the integration and its limits.** Run `protect --check`, then the app's existing typecheck,
+   build and relevant request tests. In a local test environment, check an allowed request and a
+   controlled blocking case for each independent entry and representative page/API/action path;
+   verify the blocked request does not reach the handler. Include existing authentication, redirects,
+   body handling and error behavior. The opt-in `--runtime` check described above probes the guard
+   seam; it does not prove route coverage or rule effectiveness. Record an unsupported probe or an
+   unrecognized custom seam as unverified. Never add marker comments, dummy imports or unused calls
+   merely to make the source check pass.
+
+### Framework entry points to inspect
+
+These are navigation hints for agent-assisted integration, not additional automatic adapters or a
+compatibility guarantee. Confirm the installed version and deployment mode before choosing a hook.
+The linked framework documentation describes its lifecycle; the generated Connect guard determines
+which integration API is available.
+
+| Framework or UI layer | Server entry and coverage question |
+| --- | --- |
+| [React](https://react.dev/learn/creating-a-react-app) | Find the hosting framework or custom server. A browser component or client router is not a request guard. |
+| [Vue](https://vuejs.org/guide/scaling-up/ssr.html) | Inspect the SSR host or separate API; component setup and router navigation guards do not guard server requests. |
+| [Angular](https://angular.dev/guide/ssr) | Distinguish browser/prerender output from the deployed SSR server; inspect `server.ts` and its HTTP adapter. |
+| [Svelte](https://svelte.dev/docs/svelte/overview) | Determine whether this is a browser bundle, SvelteKit or a custom SSR host before choosing a server hook. |
+| [Preact](https://preactjs.com/guide/v10/server-side-rendering/) | Guard the host invoking SSR or APIs; a render function alone is not the shared HTTP entry. |
+| [Solid](https://docs.solidjs.com/quick-start) | Separate the UI library from SolidStart or a custom server; keep protection out of client components. |
+| [Qwik](https://qwik.dev/docs/qwikcity/) | Inspect Qwik City and the deployment adapter; component resumability does not identify the request entry. |
+| [Ember](https://guides.emberjs.com/release/getting-started/quick-start/) | Inspect the deployed backend or SSR host separately; browser routes and the development server are not production coverage. |
+| [Next.js](https://nextjs.org/docs/app/api-reference/file-conventions/proxy) | Inspect root or `src/` middleware/proxy, matchers, APIs and Server Actions. Next 16 renamed middleware to proxy; Connect scaffolds `middleware.ts`. Do not leave competing files or assume its source check validates `proxy.ts`. |
+| [Nuxt](https://nuxt.com/docs/4.x/directory-structure/server) | Inspect the configured server directory and Nitro server middleware, not client navigation middleware. Distinguish a server deployment from generated static output. |
+| [SvelteKit](https://svelte.dev/docs/kit/hooks) | Compose the existing server `handle` hook; check endpoints, actions, prerendering and the deployed adapter. |
+| [Astro](https://docs.astro.build/en/guides/middleware/) | Compose `onRequest` in server middleware; distinguish execution during prerendering from on-demand routes behind an adapter. |
+| [Remix](https://v2.remix.run/docs/discussion/runtimes/) | Inspect the adapter around `createRequestHandler`; cover document requests, loaders, actions and resource routes, not only `entry.server` rendering. |
+| [React Router](https://reactrouter.com/how-to/middleware) | Determine library versus framework/SSR mode. Inspect the server adapter and version-specific server middleware; client middleware cannot guard loaders/actions on the server. |
+| [TanStack Start](https://tanstack.com/start/latest/docs/framework/react/guide/middleware) | Inspect the server entry and global request middleware, including server functions. The automatic TanStack/Supabase adapter matches a particular project layout, not every Start app. |
+| [SolidStart](https://docs.solidjs.com/solid-start/v1/advanced/middleware) | Inspect configured server middleware and adapter; verify API and server action paths separately rather than assuming rendering middleware covers them. |
+| [Qwik City](https://qwik.dev/docs/middleware/) | Inspect deployment entry and request middleware, including endpoints, loaders and actions. Confirm route/layout scope and static output. |
+| [Gatsby](https://www.gatsbyjs.com/docs/reference/functions/) | Static pages need no request guard, but `src/api` functions and SSR deployments need their own server entry review. |
+| [Docusaurus](https://docusaurus.io/docs/deployment) | Confirm static output; inspect any separately deployed API or custom server without adding a guard to browser code. |
+| [Eleventy](https://www.11ty.dev/docs/) | Confirm static output; review accompanying functions or a custom server separately from build-time templates. |
+| [Express](https://expressjs.com/en/guide/using-middleware/) | Register the generated Express guard after its body parser and before routers, for every app that actually serves traffic. |
+| [NestJS](https://docs.nestjs.com/middleware) | Inspect `NestFactory.create` and the selected HTTP adapter. Express-style middleware is not proof of Fastify compatibility or microservice/WebSocket coverage. |
+| [Fastify](https://fastify.dev/docs/latest/Reference/Hooks/) | Register the generated plugin in the root scope before route plugins; inspect encapsulation and every server instance. |
+| [Hono](https://hono.dev/docs/api/hono) | Inspect the deployed Fetch entry and preserve environment/context arguments; check mounted apps and any other exported handlers. |
+| [Koa](https://koajs.com/) | Inspect the Node server around `app.callback()` or use a verified Koa integration; `(ctx, next)` is not Connect's `(req, res, next)`. |
+| [Elysia](https://elysiajs.com/integrations/cheat-sheet) | Inspect the actual Bun/Node/Fetch deployment entry and plugin scope; a local hook need not cover sibling routes. |
+| [AdonisJS](https://docs.adonisjs.com/guides/basics/middleware) | Inspect the server middleware stack in `start/kernel.ts`; named route middleware alone leaves other routes outside its scope. |
+| [Hapi](https://hapi.dev/api/21.x.x) | Inspect server lifecycle extensions and payload timing; adapt request/response semantics instead of passing Express middleware to `server.ext`. |
+| [Nitro](https://nitro.build/docs/migration) | Inspect installed major, configured server directories, middleware and deployment preset; directory scanning conventions differ across versions. |
+| [Strapi](https://docs.strapi.io/cms/backend-customization/middlewares) | Inspect configured global Koa middleware; route middleware and Document Service middleware do not establish whole-server HTTP coverage. |
+
+### When wiring cannot be completed
+
+Return a short handoff in the current conversation for the person or their coding agent: framework
+and version, deployment mode, project-relative server entries, files changed, exact failing check,
+the remaining edit, and the routes or services whose coverage is unknown. Include commands actually
+run and their results; omit credentials and environment values. If no server entry can be established,
+say so and identify the missing deployment information. Do not invent one to clear a checklist.
+
+Keep automatic scaffolding, source verification, local request verification and deployed coverage
+separate in the report. HTTP middleware does not establish coverage of jobs, queues, WebSocket messages
+or services deployed elsewhere. Connect prints a local plan; it does not automatically contact another
+AI model. A framework or hosting upgrade requires this review again.
 
 ## Rules
 
