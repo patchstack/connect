@@ -6,6 +6,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import {
   MARKER_ATTR,
   buildInjectionSnippet,
+  buildSandboxSnippet,
   buildSourceMarkerSnippet,
   ensureMarkerInJsxShell,
   ensureSourceMarker,
@@ -99,6 +100,19 @@ describe('the withheld marker', () => {
     const cleared = removeHandMarkers(page);
     expect(cleared).not.toContain('__PATCHSTACK_');
     expect(cleared).toContain('<title>t</title>');
+  });
+
+  it('replaces a production marker with the sandbox stamp, and back again', () => {
+    const page = '<html><head><title>t</title></head><body>x</body></html>';
+    const published = injectMarker(page, buildInjectionSnippet('abc123', null));
+    const sandbox = removeHandMarkers(injectMarker(published, buildSandboxSnippet()));
+    expect(sandbox).toContain('window.__PATCHSTACK_ENV__="sandbox";');
+    expect(sandbox).not.toContain('__PATCHSTACK_PROD__');
+    expect(sandbox).not.toContain('__PATCHSTACK_BUILD__');
+
+    const republished = injectMarker(sandbox, buildInjectionSnippet('abc123', null));
+    expect(republished).toContain('__PATCHSTACK_PROD__');
+    expect(republished).not.toContain('__PATCHSTACK_ENV__');
   });
 
   it('leaves alone any script that does more than set the marker', () => {

@@ -198,6 +198,18 @@ export function buildInjectionSnippet(
 }
 
 /**
+ * The <script> that marks a SANDBOX build: it tells the widget this page is a preview, so the
+ * owner's panel shows on a host the widget cannot recognise by name. It carries nothing else — no
+ * fingerprint, no stack — because those describe a deployment and this is not one.
+ *
+ * Only for `sandbox`. A `local` build that ends up on a public host was published by hand, which is
+ * the live site, and the widget treats an unmarked page as that already.
+ */
+export function buildSandboxSnippet(): string {
+  return `<script ${MARKER_ATTR}>window.__PATCHSTACK_ENV__="sandbox";</script>`;
+}
+
+/**
  * Insert (or replace) the marker script in a single HTML document. Idempotent:
  * a prior marker is stripped first so repeated builds don't stack tags. Prefers
  * `</head>`, falls back to `</body>`, then appends.

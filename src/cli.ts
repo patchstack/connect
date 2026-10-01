@@ -44,6 +44,7 @@ import {
 } from './config.js';
 import {
   buildInjectionSnippet,
+  buildSandboxSnippet,
   buildSourceMarkerSnippet,
   ensureSourceMarker,
   findHtmlFiles,
@@ -1557,10 +1558,14 @@ async function runMarkBuild(args: ParsedArgs): Promise<number> {
     );
   }
 
-  // An empty snippet strips a marker and adds none, which is exactly what a build that is not going
-  // to production needs: a directory carrying yesterday's production marker is corrected rather than
-  // left to claim the local preview is the live site.
-  const snippet = published ? buildInjectionSnippet(checksum, stack) : '';
+  // Any earlier marker is replaced, so a directory carrying yesterday's production marker is
+  // corrected rather than left to claim the preview is the live site. A sandbox build says it is one;
+  // a local build gets nothing, which the widget reads as the live site unless the host is local.
+  const snippet = published
+    ? buildInjectionSnippet(checksum, stack)
+    : environment === 'sandbox'
+      ? buildSandboxSnippet()
+      : '';
   let marked = 0;
   let widgetTouched = 0;
   let handRemoved = 0;
