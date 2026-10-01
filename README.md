@@ -200,6 +200,36 @@ Options (for demo and demo-guide):
                           (default: http://localhost:3000/api/tasks)
 ```
 
+### Next.js request and response protection
+
+`protect` composes straightforward existing middleware instead of replacing its authentication or
+redirect logic. The request guard gets a catch-all matcher; the application's middleware still runs
+only within its original scope. Automatic composition accepts directly exported handlers and literal
+path matchers (including a terminal `/:path*`). Complex matchers, re-exports and custom URL routing
+are left untouched with an integration message. Source-aware edits use the application's installed
+`typescript` parser; configuration files are never executed.
+
+Apps with an existing `proxy.ts`/`proxy.js` (including under `src/`) require manual integration.
+The installer leaves them unchanged and `protect --check` reports the gap. It never adds middleware
+alongside a proxy, since Next.js does not allow both.
+
+For App Router `app/**/route.ts` or `route.js` files, it also adds request checks and screens each
+returned response. The shared server-only `patchstack.next` helper initializes one policy per module
+instance, retries a failed initialization, and imports the same fallback rules file as middleware.
+Supported handlers are directly exported async functions or block-bodied async arrows without an
+explicit return type. Re-run `protect` after adding routes. Unsupported handlers remain unchanged;
+`protect --check` lists the gaps instead of reporting complete route coverage.
+
+Middleware cannot inspect the body that a downstream page returns. This setup does **not** establish
+response filtering for rendered pages, Server Actions or Pages Router API handlers. Those need their
+own server-side response boundary. It also cannot repair a vulnerability that bypasses Next.js
+middleware itself: keep Next.js patched or filter such requests before they reach Next.js.
+
+Set `PATCHSTACK_API_KEY` in the server environment for live rule delivery. Edge middleware cannot read
+the local credential file. Never expose it as a `NEXT_PUBLIC_*` variable. A passing source check is not
+proof of live protection: the running guard's `ruleSource`, `mode`, and coverage determine what it
+actually received and screened.
+
 ### Verifying the guard at runtime (opt-in)
 
 `protect --check` reads the app's source. That establishes the guard is imported and called on a
