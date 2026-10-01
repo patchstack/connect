@@ -35,13 +35,10 @@ export async function getProtection() {
 }
 
 async function buildProtection() {
-  const mode = process.env.PATCHSTACK_MODE === "dry-run" ? "dry-run" : "block";
-  const token = process.env.PATCHSTACK_WAF_TOKEN;
-  const siteUuid = PS_SITE_UUID.startsWith("__") ? process.env.PATCHSTACK_SITE_UUID : PS_SITE_UUID;
-  // The sandbox dev server is long-lived and isn't restarted on change, so refresh the live
-  // rules periodically — a dependency flagged after boot is then enforced without a restart.
-  // Production relies on a redeploy (which re-fetches at boot), so refresh stays off there.
-  const refreshMs = process.env.PATCHSTACK_ENVIRONMENT === "sandbox" ? 15000 : 0;
+  const mode = (typeof process === "undefined" ? undefined : process.env.PATCHSTACK_MODE) === "dry-run" ? "dry-run" : "block";
+  const token = (typeof process === "undefined" ? undefined : process.env.PATCHSTACK_WAF_TOKEN);
+  const siteUuid = PS_SITE_UUID.startsWith("__") ? (typeof process === "undefined" ? undefined : process.env.PATCHSTACK_SITE_UUID) : PS_SITE_UUID;
+  const refreshMs = (typeof process === "undefined" ? undefined : process.env.PATCHSTACK_ENVIRONMENT) === "sandbox" ? 15000 : 300000;
   const common = { mode, egress: true, refreshMs } as const;
   return createProtection(
     siteUuid
@@ -116,7 +113,7 @@ export function patchstackMiddleware(req: unknown, res: unknown, next: (err?: un
   // there is nothing to answer and the request is screened as normal.
   const screen = () => {
     getProtection().then(
-      (protection) => (protection.node() as (a: unknown, b: unknown, c: (e?: unknown) => void) => void)(req, res, carryOn),
+      (protection) => (protection.node({ screenResponses: true }) as (a: unknown, b: unknown, c: (e?: unknown) => void) => void)(req, res, carryOn),
       (err) => {
         psStepAside(err);
         carryOn();

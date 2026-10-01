@@ -3,7 +3,7 @@ import { readFileSync, mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'nod
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { genericVerify, scaffoldGeneric } from '../../src/protect/install/generic.js';
-import { runVerify } from '../../src/protect/install/index.js';
+import { runProtect, runVerify } from '../../src/protect/install/index.js';
 import { expressAdapter } from '../../src/protect/install/adapters/express.js';
 import { createProtection } from '../../src/protect/runtime.js';
 
@@ -35,6 +35,42 @@ function project(files: Record<string, string> = {}): string {
 function template(name: string): string {
   return readFileSync(new URL(`../../src/protect/templates/${name}`, import.meta.url), 'utf8');
 }
+
+describe('executable scaffold verification', () => {
+  it.each([
+    ['@sveltejs/kit', 'src/hooks.server.ts', 'patchstack-sveltekit', 'export const handle = ({event, resolve}) => resolve(event);'],
+    ['astro', 'src/middleware.ts', 'patchstack-astro', 'export const onRequest = (ctx, next) => next();'],
+    ['nuxt', 'server/middleware/patchstack.ts', 'patchstack-nuxt', 'export default () => {};'],
+  ])('does not treat a marker as %s wiring', (dependency, file, marker, source) => {
+    const cwd = project({'package.json':JSON.stringify({dependencies:{[dependency]:'*'}})});
+    runProtect(cwd);
+    expect(runVerify(cwd).wired).toBe(true);
+    writeFileSync(join(cwd, file), `// #region ${marker}\n${source}\n// #endregion ${marker}\n`);
+    expect(runVerify(cwd).wired).toBe(false);
+    const original = readFileSync(join(cwd,file),'utf8');
+    expect(runProtect(cwd).status).toBe('scaffolded');
+    expect(readFileSync(join(cwd,file),'utf8')).toBe(original);
+  });
+
+  it('preserves a Fetch handler receiver and host arguments, and propagates app errors once', async () => {
+    const protection = await createProtection({rules:{firewall:[],whitelists:[]},mode:'block',reportDetections:false});
+    const context = {label:'app'};
+    const options = {context:{tenant:'synthetic'}};
+    let calls = 0;
+    const handler = protection.fetch(function(this: typeof context, request: Request, opts: typeof options) {
+      calls++;
+      expect(this).toBe(context);
+      expect(opts).toBe(options);
+      if (request.url.endsWith('/error')) throw new Error('application failure');
+      return new Response('ok');
+    });
+    try {
+      expect(await (await handler.call(context,new Request('https://app.example/'),options)).text()).toBe('ok');
+      await expect(handler.call(context,new Request('https://app.example/error'),options)).rejects.toThrow('application failure');
+      expect(calls).toBe(2);
+    } finally { protection.stop(); }
+  });
+});
 
 describe('the request a response seam passes on', () => {
   it('is threaded through every generated seam', () => {

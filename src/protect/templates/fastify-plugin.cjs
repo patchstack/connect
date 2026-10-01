@@ -31,10 +31,11 @@ async function getProtection() {
 }
 
 async function buildProtection() {
-  const mode = process.env.PATCHSTACK_MODE === "dry-run" ? "dry-run" : "block";
-  const token = process.env.PATCHSTACK_WAF_TOKEN;
-  const siteUuid = PS_SITE_UUID.startsWith("__") ? process.env.PATCHSTACK_SITE_UUID : PS_SITE_UUID;
-  const common = { mode, egress: true };
+  const mode = (typeof process === "undefined" ? undefined : process.env.PATCHSTACK_MODE) === "dry-run" ? "dry-run" : "block";
+  const token = (typeof process === "undefined" ? undefined : process.env.PATCHSTACK_WAF_TOKEN);
+  const siteUuid = PS_SITE_UUID.startsWith("__") ? (typeof process === "undefined" ? undefined : process.env.PATCHSTACK_SITE_UUID) : PS_SITE_UUID;
+  const refreshMs = (typeof process === "undefined" ? undefined : process.env.PATCHSTACK_ENVIRONMENT) === "sandbox" ? 15000 : 300000;
+  const common = { mode, egress: true, refreshMs };
   return createProtection(
     siteUuid
       ? { ...common, siteUuid, rules: fallbackRules, cacheDir: ".patchstack" }
@@ -93,14 +94,59 @@ async function patchstackFastify(fastify) {
     const host = request.headers?.host ?? "localhost";
     const url = `http://${host}${request.url ?? "/"}`;
     const hasBody = method !== "GET" && method !== "HEAD" && request.body != null;
-    const body = hasBody ? (typeof request.body === "string" ? request.body : JSON.stringify(request.body)) : undefined;
-    const blocked = await guard(new Request(url, { method, headers: request.headers, body }));
+    let blocked;
+    try {
+      const headers = new Headers();
+      for (const [name, value] of Object.entries(request.headers)) {
+        if (value !== undefined) headers.set(name, Array.isArray(value) ? value.join(", ") : String(value));
+      }
+      const parsed = hasBody && typeof request.body === "object" && !Buffer.isBuffer(request.body);
+      const body = hasBody ? (parsed ? JSON.stringify(request.body) : request.body) : undefined;
+      // Fastify already parsed form fields. Screen that object as JSON, not JSON mislabeled as a form.
+      // Only the screening copy changes; the route keeps its original body, headers and raw stream.
+      if (parsed) headers.set("content-type", "application/json");
+      headers.delete("content-length");
+      blocked = await guard(new Request(url, { method, headers, body }));
+    } catch (err) {
+      psStepAside(err);
+      return;
+    }
     if (blocked) {
       const contentType = blocked.headers.get("content-type");
       reply.code(blocked.status);
       if (contentType) reply.header("content-type", contentType);
       reply.send(await blocked.text());
       return reply;
+    }
+  });
+
+  fastify.addHook("onSend", async (request, reply, payload) => {
+    // Do not consume streams, hijacked responses, or bodyless status codes.
+    if ((typeof payload !== "string" && !Buffer.isBuffer(payload))
+      || request.method === "HEAD" || reply.statusCode < 200 || [204, 205, 304].includes(reply.statusCode)) return payload;
+    const protection = await getProtection().catch(psStepAside);
+    if (!protection) return payload;
+    try {
+      const headers = new Headers();
+      for (const [name, value] of Object.entries(reply.getHeaders())) {
+        for (const item of Array.isArray(value) ? value : [value]) {
+          if (item !== undefined) headers.append(name, String(item));
+        }
+      }
+      const original = new Response(typeof payload === "string" ? payload : new Uint8Array(payload).buffer, { status: reply.statusCode, headers });
+      const context = new Request(`http://${request.headers?.host ?? "localhost"}${request.url ?? "/"}`, { method: request.method, headers: request.headers });
+      const screened = await protection.screenResponse(original, context);
+      if (screened === original) return payload;
+      const body = Buffer.from(await screened.arrayBuffer());
+      reply.code(screened.status);
+      for (const name of Object.keys(reply.getHeaders())) reply.removeHeader(name);
+      screened.headers.forEach((value, name) => { if (name !== "set-cookie") reply.header(name, value); });
+      const cookies = screened.headers.getSetCookie();
+      if (cookies.length) reply.header("set-cookie", cookies);
+      return body;
+    } catch (err) {
+      psStepAside(err);
+      return payload;
     }
   });
 }

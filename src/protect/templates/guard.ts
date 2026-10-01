@@ -49,9 +49,9 @@ async function getProtection() {
 
 async function buildProtection() {
   // Always-on: block by default. An explicit PATCHSTACK_MODE=dry-run downgrades to log-only.
-  const mode: "block" | "dry-run" = process.env.PATCHSTACK_MODE === "dry-run" ? "dry-run" : "block";
-  const token = process.env.PATCHSTACK_WAF_TOKEN;
-  const siteUuid = PS_SITE_UUID.startsWith("__") ? process.env.PATCHSTACK_SITE_UUID : PS_SITE_UUID;
+  const mode: "block" | "dry-run" = (typeof process === "undefined" ? undefined : process.env.PATCHSTACK_MODE) === "dry-run" ? "dry-run" : "block";
+  const token = (typeof process === "undefined" ? undefined : process.env.PATCHSTACK_WAF_TOKEN);
+  const siteUuid = PS_SITE_UUID.startsWith("__") ? (typeof process === "undefined" ? undefined : process.env.PATCHSTACK_SITE_UUID) : PS_SITE_UUID;
   // Egress SSRF screening: block the app's outbound calls to internal / metadata addresses,
   // but never its own Supabase project.
   let allowHosts: string[] = [];
@@ -60,10 +60,7 @@ async function buildProtection() {
   } catch {
     /* ignore a malformed SUPABASE_URL — just don't add an allow entry */
   }
-  // The sandbox dev server is long-lived and isn't restarted on change, so refresh the live
-  // rules periodically — a dependency flagged after boot is then enforced without a restart.
-  // Production relies on a redeploy (which re-fetches at boot), so refresh stays off there.
-  const refreshMs = process.env.PATCHSTACK_ENVIRONMENT === "sandbox" ? 15000 : 0;
+  const refreshMs = (typeof process === "undefined" ? undefined : process.env.PATCHSTACK_ENVIRONMENT) === "sandbox" ? 15000 : 300000;
   const common = { mode, egress: true, allowHosts, refreshMs };
   return createProtection(
     siteUuid
