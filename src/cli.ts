@@ -479,9 +479,9 @@ async function runClaim(args: ParsedArgs): Promise<number> {
 
 async function runLogin(args: ParsedArgs): Promise<number> {
   // CI has no browser and no human; build agents must not print credentials
-  // into logs. Deploys use PATCHSTACK_PULSE_AUTH from the platform's secrets.
+  // into logs. Deploys use PATCHSTACK_API_KEY from the platform's secrets.
   if (runningInCi()) {
-    console.error('`login` is interactive and cannot run in CI. Set PATCHSTACK_PULSE_AUTH instead.');
+    console.error('`login` is interactive and cannot run in CI. Set PATCHSTACK_API_KEY instead.');
     return 1;
   }
 
