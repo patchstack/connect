@@ -297,18 +297,20 @@ describe('writing the stamp', () => {
 
 describe('when a build may write to the project', () => {
   it('is a pre-bundle build lifecycle, and nothing else', () => {
+    const before = project({'package.json':JSON.stringify({scripts:{build:'patchstack-connect scan && vite build && patchstack-connect mark-build'}})});
+    const after = project({'package.json':JSON.stringify({scripts:{build:'vite build && patchstack-connect scan'}})});
     expect(isPreBundleBuildHook({ npm_lifecycle_event: 'prebuild' })).toBe(true);
     expect(
       isPreBundleBuildHook({
         npm_lifecycle_event: 'build',
         npm_lifecycle_script: 'patchstack-connect scan && vite build && patchstack-connect mark-build',
-      }),
+      }, before),
     ).toBe(true);
     expect(
       isPreBundleBuildHook({
         npm_lifecycle_event: 'build',
         npm_lifecycle_script: 'vite build && patchstack-connect scan',
-      }),
+      }, after),
     ).toBe(false);
     expect(isPreBundleBuildHook({ npm_lifecycle_event: 'build' })).toBe(false);
     // An install is not a build; `postbuild` is a build the bundler has already finished, so a value

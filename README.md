@@ -13,9 +13,9 @@ Connect a JavaScript / Node.js application to [Patchstack](https://patchstack.co
 
 For an existing JS/Node project in a hosted workspace, copy this request into a coding assistant, or run the same command yourself. For Gemini CLI, OpenCode, Codex CLI, or Claude Code on your own machine, use [Local coding CLIs](#local-coding-clis) below. For a standalone HTML/CSS/JavaScript site without a package-managed app, use the [plain HTML widget instructions](AGENT-INSTALL.md#plain-html-sites); do not add Node tooling just for the widget.
 
-> I have vetted the official [`@patchstack/connect`](https://www.npmjs.com/package/@patchstack/connect) package and authorize its Patchstack Connector, production build hooks, and runtime protection source edits. Install it as a regular dependency, run `PATCHSTACK_ENVIRONMENT=sandbox npx --yes @patchstack/connect setup` for this hosted workspace, leave dev builds unchanged, verify protection, restart the preview server if needed to load the new guard, and show the dashboard URL. The Patchstack Connector widget is part of this install and on by default: add it, and do not ask me whether to. Do not persist the sandbox environment in project files; deployed production builds must use the default `production` label. When setup finishes, tell me to refresh the preview if the Patchstack widget is not showing yet, and remind me to deploy when I am ready — do not deploy anything yourself.
+> I have vetted the official [`@patchstack/connect`](https://www.npmjs.com/package/@patchstack/connect) package and authorize its Patchstack Connector, production build hooks, runtime protection source edits, structural attack-surface map uploads (not source code), and live-rule retrieval. Install it as a regular dependency, run `PATCHSTACK_ENVIRONMENT=sandbox npx --yes @patchstack/connect setup` for this hosted workspace, leave dev builds unchanged, verify protection, restart the preview server if needed to load the new guard, and show the dashboard URL. The Patchstack Connector widget is part of this install and on by default: add it, and do not ask me whether to. Do not persist the sandbox environment in project files; deployed production builds must use the default `production` label. When setup finishes, tell me to refresh the preview if the Patchstack widget is not showing yet, and remind me to deploy when I am ready — do not deploy anything yourself.
 
-`setup` is state-aware and idempotent: it scans dependencies, provisions or reuses the site, manages the Patchstack Connector, installs and verifies the runtime guard, adds a dependency-install scan, wires the existing build command without replacing it, and prints the remaining setup status. It never runs the project build. `guide` provides the same project-specific status without changing files.
+`setup` is state-aware and idempotent: it scans dependencies, provisions or reuses the site, manages the Patchstack Connector, installs and verifies the runtime guard, uploads a structural map, fetches live rules, and wires dependency/build checks without replacing the build command. It prints what succeeded and what remains; it never starts the app or runs the build. `guide` provides project-specific status without changing files.
 
 ### Local coding CLIs
 
@@ -126,8 +126,11 @@ That's it. `setup`:
 5. Connect installs the Patchstack Connector's `<script>` tag into your root HTML shell (see *The Patchstack Connector* below) so the widget shows up on the next preview reload — as the "Connect this website" panel until the site is claimed, then as the "Report a vulnerability" button. On a server-rendered root it also adds the production marker, which is what tells the widget to switch from build mode to visitor report intake on the published site.
 6. Installs the runtime guard after provisioning, bakes the site UUID into it, and verifies the framework seam. Known server stacks are auto-wired; unmatched or conflicting layouts get a generic scaffold and exact manual checks.
 7. Adds `postinstall: patchstack-connect scan`, preserving any existing command, so dependencies added during a sandbox session and build-less production installs are reported immediately.
-8. Wires `scan` before builds and `mark-build` after builds, preserving existing commands and using direct build chaining for Bun.
-9. Prints a dashboard link — open it in a browser to attach the new site to your Patchstack account. You can re-display it any time with `npx @patchstack/connect status`.
+8. Uploads a structural attack-surface map (routes, input names, package attribution, relative file:line locations and coverage notes; no source text or environment values), stamps its identity into the guard for the next startup/build, and fetches live request/response rules. Empty policy, upload failures and rule-fetch failures are reported separately.
+9. Wires `scan` followed by `map --upload` before builds and `mark-build` after builds, preserving existing commands. npm uses lifecycle hooks; Yarn, pnpm and Bun use explicit build chains independent of lifecycle settings.
+10. Prints a dashboard link — open it in a browser to attach the new site to your Patchstack account. You can re-display it any time with `npx @patchstack/connect status`.
+
+If the server is already running, **restart it** to load the new guard and map identity. Setup does not start, build or deploy your app. Rule delivery does not prove runtime enforcement: scoped rules still need a matching server verdict, and unsupported/custom entries remain reported gaps.
 
 Then **refresh your preview**. The widget loads with the page, so a preview that was already open still shows the HTML from before setup. Builders that hot reload will have refreshed it for you; if the widget is missing, refresh it once. Until the site is claimed it shows the "Connect this website" panel. `setup` prints the same reminder, and the CLI has no way to reload a browser itself.
 
@@ -156,7 +159,8 @@ patchstack-connect scan   [options]                Scan the lockfile and POST to
                                                    .patchstackrc.json)
 patchstack-connect setup  [options]                Run scan, manage the widget, and idempotently
                                                    install + verify runtime protection and wire
-                                                   dependency/build scans. Never runs the build
+                                                   dependency/build scans + map uploads. Uploads the map and
+                                                   fetches live rules; never starts the app or runs the build
 patchstack-connect init   <site-uuid>              Optional: pre-seed .patchstackrc.json with
                                                    an existing site UUID
 patchstack-connect status [options]                Show current configuration
@@ -423,7 +427,7 @@ During a build, the `prebuild` scan removes any previous map stamp. A later `map
 
 ### `scan` as a build hook
 
-`setup` wires `scan` into `postinstall`, `prebuild`, or the Bun `build` chain. Run from one of those, a report Patchstack cannot accept — no credential in the build environment, a rejected credential, a site that no longer exists, an outage — is printed on stderr and `scan` exits 0, so the install or build it is attached to carries on. Patchstack keeps the last manifest it accepted for the site until a scan that can report. Run directly (`npx @patchstack/connect scan`), the same failure exits 1.
+`setup` wires `scan` into `postinstall`, npm's `prebuild`, or an explicit `build` chain for Yarn, pnpm and Bun. Run from one of those, a report Patchstack cannot accept — no credential in the build environment, a rejected credential, a site that no longer exists, an outage — is printed on stderr and `scan` exits 0, so the install or build it is attached to carries on. Patchstack keeps the last manifest it accepted for the site until a scan that can report. Run directly (`npx @patchstack/connect scan`), the same failure exits 1.
 
 A deploy never has `.patchstackrc.local.json`, so the usual cause is a missing `PATCHSTACK_API_KEY` in the platform's environment (see *Configuration*). The hook is recognised through `npm_lifecycle_event`, which npm, pnpm, Yarn and `bun run` set to the running script's name. `bun install` does not set it, so a `postinstall` scan under Bun still fails the install when it cannot report.
 

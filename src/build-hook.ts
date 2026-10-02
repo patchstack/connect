@@ -1,3 +1,5 @@
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
 import { SECRET_CONFIG_FILENAME } from './config.js';
 import type { Config, PatchstackError } from './types.js';
 
@@ -45,16 +47,18 @@ export function isInstallOrBuildHook(env: NodeJS.ProcessEnv = process.env): bool
  * `postbuild` is excluded for the opposite reason: it is a build, but the bundler has already run, so a
  * value written there could never reach the artifact.
  */
-export function isPreBundleBuildHook(env: NodeJS.ProcessEnv = process.env): boolean {
+export function isPreBundleBuildHook(env: NodeJS.ProcessEnv = process.env, cwd = process.cwd()): boolean {
   const event = env.npm_lifecycle_event;
   if (event === 'prebuild') return true;
   if (event !== 'build') return false;
 
-  // Bun does not run npm's `prebuild` hook, so setup places scan at the start of `build` itself. The
-  // lifecycle name alone is not enough: a manually appended scan would run after the bundler and stamp
-  // source too late to reach the artifact. npm exposes the complete running script here; accept only the
-  // exact command at its beginning.
-  return /^\s*patchstack-connect\s+scan(?:\s*(?:&&|;)|\s*$)/.test(env.npm_lifecycle_script ?? '');
+  // Lifecycle script text and manifest paths can be missing or inherited from a parent process.
+  // Read the current project's declared chain; never evaluate application configuration.
+  try {
+    const pkg = JSON.parse(readFileSync(join(cwd, 'package.json'), 'utf8')) as { scripts?: { build?: unknown } };
+    return typeof pkg.scripts?.build === 'string'
+      && /^\s*patchstack-connect\s+scan(?:\s*(?:&&|;)|\s*$)/.test(pkg.scripts.build);
+  } catch { return false; }
 }
 
 /**

@@ -347,7 +347,7 @@ async function writeAtomicFile(target: string, content: string, mode: number): P
  * there but negated further down — comes back as `ignored: false` with a reason, because the caller's next
  * line is either an assurance or a warning and it has to be the right one.
  */
-async function ensureIgnored(cwd: string, entry: string): Promise<{ ignored: boolean; reason?: string }> {
+export async function ensureIgnored(cwd: string, entry: string, label = 'Patchstack credential — never commit this'): Promise<{ ignored: boolean; reason?: string }> {
   const target = path.join(cwd, '.gitignore');
   let existing = '';
   try {
@@ -362,7 +362,7 @@ async function ensureIgnored(cwd: string, entry: string): Promise<{ ignored: boo
   if (ignoresEntry(existing, entry)) return { ignored: true };
 
   const separator = existing === '' || existing.endsWith('\n') ? '' : '\n';
-  const block = `${separator}\n# Patchstack credential — never commit this\n${entry}\n`;
+  const block = `${separator}\n# ${label}\n${entry}\n`;
   try {
     await writeAtomicFile(target, existing + block, 0o644);
   } catch (err) {
