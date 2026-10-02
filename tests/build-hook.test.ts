@@ -1,5 +1,8 @@
-import { describe, expect, it } from 'vitest';
-import { isInstallOrBuildHook, undeliveredReportLines } from '../src/build-hook.js';
+import { afterEach, describe, expect, it } from 'vitest';
+import { mkdtempSync, writeFileSync, rmSync } from 'node:fs';
+import { join, dirname } from 'node:path';
+import { tmpdir } from 'node:os';
+import { isInstallOrBuildHook, isPreBundleBuildHook, undeliveredReportLines } from '../src/build-hook.js';
 import { PatchstackError, type Config } from '../src/types.js';
 
 /**
@@ -24,6 +27,28 @@ describe('isInstallOrBuildHook', () => {
       expect(isInstallOrBuildHook({ npm_lifecycle_event: event })).toBe(false);
     }
     expect(isInstallOrBuildHook({})).toBe(false);
+  });
+});
+
+describe('build-chain lifecycle metadata', () => {
+  const dirs: string[] = [];
+  afterEach(() => dirs.splice(0).forEach(dir => rmSync(dir,{recursive:true,force:true})));
+  function manifest(contents: string) {
+    const cwd = mkdtempSync(join(tmpdir(),'ps-hook-metadata-'));
+    dirs.push(cwd);
+    const file = join(cwd,'package.json');
+    writeFileSync(file,contents);
+    return file;
+  }
+  it.each([undefined, 'node unrelated-parent.cjs'])('reads the current manifest when script metadata is %s', script => {
+    const file = manifest(JSON.stringify({scripts:{build:'patchstack-connect scan && patchstack-connect map --upload && vite build'}}));
+    expect(isPreBundleBuildHook({npm_lifecycle_event:'build',npm_package_json:'unrelated-parent/package.json',npm_lifecycle_script:script},dirname(file))).toBe(true);
+    for (const event of ['dev','postinstall','postbuild']) {
+      expect(isPreBundleBuildHook({npm_lifecycle_event:event,npm_package_json:file},dirname(file))).toBe(false);
+    }
+  });
+  it.each(['{','{}','{"scripts":{"build":true}}','{"scripts":{"build":"vite build && patchstack-connect scan"}}'])('refuses unproven build metadata: %s', contents => {
+    expect(isPreBundleBuildHook({npm_lifecycle_event:'build',npm_lifecycle_script:'patchstack-connect scan && vite build'},dirname(manifest(contents)))).toBe(false);
   });
 });
 

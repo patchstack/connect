@@ -210,22 +210,33 @@ try {
   await serve(base => probes(base, true));
 
   if (major === '16') {
-    // A real proxy build proves refusal does not leave a conflicting middleware behind.
+    // A real proxy build must preserve routing and screen requests without competing middleware.
     rmSync(path.join(app, 'src/middleware.ts'));
     const proxy = middleware.replace('function middleware(', 'function proxy(');
     put('src/proxy.ts', proxy);
-    assert.match(run(process.execPath, [...cli, 'protect']), /proxy integration requires manual wiring/);
-    assert.equal(read('src/proxy.ts'), proxy);
+    assert.match(run(process.execPath, [...cli, 'protect']), /composed src\/proxy.ts/);
+    const composedProxy = read('src/proxy.ts');
+    assert.match(composedProxy, /patchstack-next-composed/);
     assert.equal(existsSync(path.join(app, 'src/middleware.ts')), false);
-    assert.throws(() => run(process.execPath, [...cli, 'protect', '--check']), /proxy wiring requires manual verification/);
+    run(process.execPath, [...cli, 'protect']);
+    assert.equal(read('src/proxy.ts'), composedProxy);
+    assert.match(run(process.execPath, [...cli, 'protect', '--check']), /guard is wired/);
+    build();
+    await serve(base => probes(base, true));
+    console.log('PASS Next proxy: preserved routing, request screening, and no competing middleware');
+
+    // A fresh Next 16 app gets a proxy too. No application routing is invented by this scaffold.
+    rmSync(path.join(app, 'src/proxy.ts'));
+    run(process.execPath, [...cli, 'protect']);
+    assert.equal(existsSync(path.join(app, 'src/middleware.ts')), false);
+    assert.match(read('src/proxy.ts'), /export async function proxy/);
+    assert.match(run(process.execPath, [...cli, 'protect', '--check']), /guard is wired/);
     build();
     await serve(async base => {
-      assert.equal((await fetch(base + '/members', { redirect: 'manual' })).status, 307);
-      assert.match(await (await fetch(base + '/tenant')).text(), /Tenant fixture/);
-      // The unchanged proxy does not claim protection; already-composed routes still enforce rules.
-      assert.equal((await fetch(base + '/api/contact', { method: 'POST', body: 'synthetic-deny' })).status, 403);
+      assert.equal((await fetch(base)).status, 200);
+      assert.equal((await fetch(base, { method:'POST', body:'synthetic-deny' })).status, 403);
     });
-    console.log('PASS Next proxy: unchanged routing, no competing middleware, explicit manual-integration gap');
+    console.log('PASS new Next proxy: default scaffold builds and screens requests');
   }
 } catch (error) {
   console.error(String(error.stack ?? error).replaceAll(scratch, '<fixture>').replaceAll(root, '<repository>'));

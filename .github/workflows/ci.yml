@@ -102,6 +102,11 @@ jobs:
       - name: Consumer shapes against a packed tarball
         run: node scripts/compat-matrix.mjs --manager ${{ matrix.manager }}
 
+      - name: Setup hooks execute through the real package manager
+        run: npx vitest run tests/setup-build-execution.test.ts
+        env:
+          PATCHSTACK_TEST_MANAGER: ${{ matrix.manager }}
+
   # Most consumers of the runtime guard are BUNDLED — a Worker through wrangler, a Next edge middleware,
   # a SvelteKit adapter build — and all of them tree-shake. A guard that has lost the part which screens
   # requests still starts, still logs, and still looks installed, so the failure arrives through the
@@ -381,6 +386,23 @@ jobs:
           echo "consuming ${tarball} on $(node -v), engine-strict on"
           node scripts/compat-matrix.mjs --manager npm --self-contained --tarball "${tarball}"
 
+  tanstack-consumer:
+    name: TanStack Start entry and middleware types
+    needs: pack
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version-file: .node-version
+      - uses: actions/download-artifact@v8
+        with:
+          name: packed-tarball
+          path: packed
+      - name: Install and check the real TanStack framework contract
+        run: node scripts/tanstack-consumer.mjs --tarball packed/*.tgz
+
   next-consumers:
     name: Next.js ${{ matrix.next }} (${{ matrix.bundler }}) production integration
     needs: pack
@@ -430,6 +452,7 @@ jobs:
       - validate
       - production-audit
       - next-consumers
+      - tanstack-consumer
     runs-on: ubuntu-latest
 
     steps:
@@ -447,8 +470,8 @@ jobs:
           # otherwise leave a green required check that verifies nothing at all — the one failure mode a
           # gate must not have, since it is indistinguishable from a working one.
           count=$(printf '%s' "$RESULTS" | python3 -c 'import json, sys; print(len(json.load(sys.stdin)))')
-          if [ "$count" -lt 9 ]; then
-            echo "::error::This gate is standing on ${count} job(s); it is meant to require 9. A required check that verifies nothing passes exactly when something is broken."
+          if [ "$count" -lt 10 ]; then
+            echo "::error::This gate is standing on ${count} job(s); it is meant to require 10. A required check that verifies nothing passes exactly when something is broken."
             exit 1
           fi
 

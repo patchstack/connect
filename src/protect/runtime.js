@@ -1681,14 +1681,14 @@ export async function createProtection(options = {}) {
 
     // Wrap a fetch handler: screens the request, then the response (redact/block).
     fetch(handler) {
-      return async (request, ...rest) => {
+      return async function (request, ...rest) {
         // The request phase's own resolution is carried into the response phase rather than the response
         // screening making a second one. Two resolutions for one request can disagree, and a response
         // detection naming a different address than the request detection describes two clients that do
         // not exist.
         const { blocked, client } = await screenFetchRequest(request, rest);
         if (blocked) return blocked;
-        const response = await handler(request, ...rest);
+        const response = await handler.call(this, request, ...rest);
 
         return screenResp(response, reqContextFromFetch(request, client));
       };

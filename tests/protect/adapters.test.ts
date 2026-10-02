@@ -74,7 +74,7 @@ describe('Express adapter', () => {
       expect(server.indexOf('app.use(patchstackMiddleware)')).toBeLessThan(server.indexOf("app.post('/api/tasks'"));
       expect(existsSync(path.join(dir, guard))).toBe(true);
       expect(existsSync(path.join(dir, guard.replace(/\.js$/, '.ts')))).toBe(false);
-      expect(read(dir, guard)).toContain('active.express()');
+      expect(read(dir, guard)).toContain('active.express({ screenResponses: true })');
       expect(read(dir, guard)).toContain(uuid);
       expect(runVerify(dir).wired).toBe(true);
       execFileSync(process.execPath, ['--check', path.join(dir, 'server.js')]);
@@ -99,7 +99,7 @@ describe('Express adapter', () => {
       const server = read(dir, 'server.js');
       expect(server).toContain('const { patchstackMiddleware } = require("./patchstack/guard.cjs");');
       expect(existsSync(path.join(dir, 'patchstack/guard.cjs'))).toBe(true);
-      expect(read(dir, 'patchstack/guard.cjs')).toContain('active.express()');
+      expect(read(dir, 'patchstack/guard.cjs')).toContain('active.express({ screenResponses: true })');
       expect(runVerify(dir).wired).toBe(true);
       execFileSync(process.execPath, ['--check', path.join(dir, 'server.js')]);
       execFileSync(process.execPath, ['--check', path.join(dir, 'patchstack/guard.cjs')]);

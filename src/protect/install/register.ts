@@ -1,7 +1,6 @@
 // Shared "register-into-app" wiring for adapters whose framework exposes a mutable app instance you
 // hook a guard onto (Express `app.use`, Fastify `app.register`, NestJS `app.use` on main.ts). Scaffold
-// the guard, then insert the registration call right after the app instance is created — dependency-free
-// anchor + #region-marker patching, idempotent.
+// the guard, then register it after a parsed app-initialization or body-parser statement.
 
 import { existsSync } from 'node:fs';
 import { join, dirname, resolve } from 'node:path';
@@ -20,6 +19,8 @@ import {
 } from './source-scope.js';
 import type { WireOptions, WireResult, VerifyResult } from './types.js';
 import { writeProjectFileSync } from '../../safe-file.js';
+import { parsedSource, sourceCompiler, statementEndLine, statementPosition } from './syntax.js';
+import { matchesGuardTemplate } from './template-match.js';
 
 /**
  * A route or router registration — `app.get(...)`, `app.post(...)`, `app.use('/path', router)`.
@@ -31,15 +32,15 @@ import { writeProjectFileSync } from '../../safe-file.js';
 const routeRegistration = (appVar: string) =>
   new RegExp(
     `^\\s*${appVar}\\.(?:get|post|put|patch|delete|head|options|all|route)\\(|` +
-      `^\\s*${appVar}\\.use\\(\\s*['"\`]`,
+      `^\\s*${appVar}\\.use\\(\\s*(?:['"\`]|[\\w$]+(?:\\.[\\w$]+)*\\s*[,\\)])`,
     'm',
   );
 
 /**
  * Route lines that come before `guardIndex`, if any.
  *
- * `app.use('/path', router)` counts: mounting a router registers everything in it. A bare `app.use(fn)` does
- * not — that is middleware, and middleware ordering is what the parser anchor already handles.
+ * Both prefixed and bare router mounts count. An identifier passed to `app.use` can be a router, so it
+ * cannot safely be treated as a non-terminating middleware merely because the prefix is absent.
  */
 export function routesBefore(source: string, appVar: string, guardIndex: number): number[] {
   if (guardIndex < 0) return [];
@@ -160,7 +161,7 @@ function wiringState(
   );
   const appIndex = maskedLines.findIndex((line) => spec.appRe.test(line));
   const anchor = spec.callAfter ? spec.callAfter(appVar) : null;
-  const anchorIndex = anchor ? maskedLines.findIndex((line) => anchor.test(line)) : -1;
+  const anchorIndex = anchor ? maskedLines.reduce((last, line, index) => anchor.test(line) ? index : last, -1) : -1;
 
   return {
     importAtTopLevel: importIndex !== -1 && isTopLevelLine(code, importIndex),
@@ -245,8 +246,18 @@ export function wireRegister(cwd: string, opts: WireOptions, spec: RegisterSpec)
   const target = guardTarget(cwd, entry.relPath, spec);
   const { changed, dir } = scaffoldGeneric(cwd, opts, target.template, target.file);
 
+  if (!matchesGuardTemplate(cwd, `${dir}/${target.file}`, target.template)) {
+    log(`${dir}/${target.file} needs manual review; the existing helper and ${entry.relPath} were left untouched.`);
+    return { ok: false, changed };
+  }
+
   const p = join(cwd, entry.relPath);
   const s = read(p);
+  const compiler = sourceCompiler(cwd);
+  if (!compiler || !parsedSource(compiler, entry.relPath, s)) {
+    log(`${entry.relPath} left untouched: a working TypeScript parser is required for source edits; ${spec.manualHint}`);
+    return { ok: false, changed };
+  }
   const state = wiringState(s, spec, entry.appVar, entry.relPath, { cwd, guardDir: dir });
   if (state.importAtTopLevel && state.callInAppScope) {
     // Wired, but not necessarily in the right place. The guard reads a parsed body, so a registration above
@@ -291,7 +302,9 @@ export function wireRegister(cwd: string, opts: WireOptions, spec: RegisterSpec)
   // registration statement below stays top level and refers to a name that is not there.
   if (!state.importAtTopLevel) {
     const lastImport = lastTopLevelImportLine(s);
-    const importIdx = lastImport === -1 ? firstStatementLine(lines) : lastImport + 1;
+    const importEnd = lastImport === -1 ? -1 : statementEndLine(compiler, entry.relPath, s, lastImport);
+    if (importEnd === null) return { ok: false, changed };
+    const importIdx = lastImport === -1 ? firstStatementLine(lines) : importEnd + 1;
     lines.splice(importIdx, 0, importLine);
   }
 
@@ -300,13 +313,32 @@ export function wireRegister(cwd: string, opts: WireOptions, spec: RegisterSpec)
   if (appIdx !== -1 && !state.callInAppScope) {
     const preferred = spec.callAfter?.(entry.appVar);
     const preferredIdx = preferred
-      ? lines.findIndex((line, index) => index > appIdx && preferred.test(line))
+      ? lines.reduce((last, line, index) => index > appIdx && preferred.test(line)
+        && inSameBlockAfter(lines.join('\n'), appIdx, index) ? index : last, -1)
       : -1;
     const callIdx = preferredIdx === -1 ? appIdx : preferredIdx;
-    lines.splice(callIdx + 1, 0, REGION, spec.call(entry.appVar), '// #endregion patchstack');
+    if (spec.requireCallAfter && preferredIdx === -1) return { ok: false, changed };
+    const current = lines.join('\n');
+    const statement = statementPosition(compiler, entry.relPath, current, callIdx, preferredIdx === -1 ? spec.appRe : preferred!);
+    if (statement === null) return { ok: false, changed };
+    const { start, end } = statement;
+    const tail = current.slice(end);
+    const trailingComment = /^[ \t]*\/\//.test(tail);
+    const insertion = trailingComment ? current.indexOf('\n', end) : end;
+    const position = insertion === -1 ? current.length : insertion;
+    // End the statement explicitly before inserting; a following `(` must not trigger ASI continuation.
+    const separator = current.slice(0, end).trimEnd().endsWith(';') ? '' : ';';
+    const prefix = current.slice(current.lastIndexOf('\n', start - 1) + 1, start).trim();
+    const updated = current.slice(0, start) + (prefix ? '\n' : '') + current.slice(start, end) + separator + current.slice(end, position)
+      + '\n' + REGION + '\n' + spec.call(entry.appVar) + '\n// #endregion patchstack\n' + current.slice(position);
+    lines.splice(0, lines.length, ...updated.split('\n'));
   }
 
   const patched = lines.join('\n');
+  if (!parsedSource(compiler, entry.relPath, patched)) {
+    log(`${entry.relPath} would not parse after patching — left untouched; ${spec.manualHint}`);
+    return { ok: false, changed };
+  }
   writeProjectFileSync(cwd, p, patched, { encoding: 'utf8' });
 
   // Said at install time, because this is the moment somebody is looking. The guard goes after the body
@@ -367,6 +399,8 @@ function serverIsGuarded(
   server: { relPath: string; appVar: string },
   guardDir: string,
 ): boolean {
+  const target = guardTarget(cwd, server.relPath, spec);
+  if (!matchesGuardTemplate(cwd, `${guardDir}/${target.file}`, target.template)) return false;
   const source = read(join(cwd, server.relPath));
   const state = wiringState(source, spec, server.appVar, server.relPath, { cwd, guardDir });
   if (!state.importAtTopLevel || !state.callInAppScope || !state.ordered) return false;
@@ -379,6 +413,7 @@ export function verifyRegister(cwd: string, spec: RegisterSpec): VerifyResult {
   const entry = findAppInstance(cwd, spec.appRe);
   const target = entry ? guardTarget(cwd, entry.relPath, spec) : null;
   const scaffolded = target ? existsSync(join(cwd, dir, target.file)) : false;
+  const helperVerified = !!target && matchesGuardTemplate(cwd, `${dir}/${target.file}`, target.template);
   const entrySource = entry ? read(join(cwd, entry.relPath)) : '';
   const state = entry
     ? wiringState(entrySource, spec, entry.appVar, entry.relPath, { cwd, guardDir: dir })
@@ -398,9 +433,10 @@ export function verifyRegister(cwd: string, spec: RegisterSpec): VerifyResult {
     .map((other) => other.relPath);
 
   return {
-    wired: scaffolded && wired && noEarlyRoutes && unguarded.length === 0,
+    wired: scaffolded && helperVerified && wired && noEarlyRoutes && unguarded.length === 0,
     checks: [
       { label: `${spec.label} guard scaffolded`, ok: scaffolded, hint: 'run `patchstack-connect protect`' },
+      { label: 'guard helper implementation verified', ok: helperVerified, hint: 'preserved custom helpers require manual review of their exports and request/response screening' },
       { label: `guard registered on the ${spec.label}`, ok: wired, hint: spec.manualHint },
       ...(entry && entry.others.length > 0
         ? [

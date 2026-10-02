@@ -9,6 +9,7 @@
 import { classifyArchitecture } from '../../architecture.js';
 import { log } from './util.js';
 import { tanstackSupabaseAdapter } from './adapters/tanstack-supabase.js';
+import { tanstackAdapter } from './adapters/tanstack.js';
 import { nextAdapter } from './adapters/next.js';
 import { sveltekitAdapter } from './adapters/sveltekit.js';
 import { astroAdapter } from './adapters/astro.js';
@@ -25,6 +26,7 @@ import type { Adapter, VerifyCheck, WireOptions, ProtectResult, VerifyReport } f
 // bare server libraries (a SvelteKit/Astro app may also carry express/fastify as a transitive dep).
 const ADAPTERS: Adapter[] = [
   tanstackSupabaseAdapter,
+  tanstackAdapter,
   nextAdapter,
   sveltekitAdapter,
   astroAdapter,
@@ -56,7 +58,10 @@ export function runProtect(cwd: string, opts: WireOptions = {}): ProtectResult {
     adapter = ADAPTERS.find((a) => a.detect(cwd));
     if (adapter) {
       const result = adapter.wire(cwd, opts);
-      return { status: 'wired', adapter: adapter.name, changed: result.changed };
+      const verification = adapter.verify(cwd);
+      if (result.ok && verification.wired) return { status: 'wired', adapter: adapter.name, changed: result.changed };
+      const plan = verification.checks.filter(check => !check.ok).map(check => check.hint ?? check.label).join('\n');
+      return { status: 'scaffolded', adapter: adapter.name, changed: result.changed, plan };
     }
   } catch (err) {
     // A wire/detect failure (read-only FS, EACCES, a bad source file) must not crash the CLI —
@@ -85,7 +90,7 @@ export function runProtect(cwd: string, opts: WireOptions = {}): ProtectResult {
  * an environment variable in the deployment. Without it the guard runs on the rules it shipped with: it
  * screens every request, reports healthy, and never receives another rule.
  */
-const RUNTIMES_WITHOUT_CONFIG_FILE = new Set(['nextjs', 'sveltekit', 'astro', 'nuxt', 'generic']);
+const RUNTIMES_WITHOUT_CONFIG_FILE = new Set(['tanstack-start', 'nextjs', 'sveltekit', 'astro', 'nuxt', 'generic']);
 
 /**
  * A note about the deployment credential, when the stack needs one and this machine cannot confirm it.

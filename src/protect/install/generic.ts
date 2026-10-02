@@ -9,6 +9,8 @@ import { bakeSiteUuid, hasDependency, read, templatesDir } from './util.js';
 import type { WireOptions, VerifyResult } from './types.js';
 import type { GuardModuleQuery } from './source-scope.js';
 import { copyProjectFileSync, ensureProjectDirectorySync } from '../../safe-file.js';
+import { matchesGuardTemplate } from './template-match.js';
+import { installTemplate } from './template-upgrade.js';
 import {
   stripComments,
   maskStringContents,
@@ -104,10 +106,10 @@ export function scaffoldGeneric(
   const dir = genericDir(cwd);
   const dst = join(cwd, dir);
   ensureProjectDirectorySync(cwd, dst);
-  copyProjectFileSync(cwd, join(templates, guardTemplate), join(dst, guardFile));
   const guardRel = `${dir}/${guardFile}`;
-  const changed = [guardRel];
-  if (!opts.demo) bakeSiteUuid(cwd, guardRel);
+  const changed: string[] = [];
+  if (installTemplate(cwd, guardRel, guardTemplate)) changed.push(guardRel);
+  if (!opts.demo && matchesGuardTemplate(cwd, guardRel, guardTemplate)) bakeSiteUuid(cwd, guardRel);
   const rulesDst = join(dst, 'rules.json');
   if (opts.demo || !existsSync(rulesDst)) {
     copyProjectFileSync(cwd, join(templates, opts.demo ? 'demo-rules.json' : 'rules.json'), rulesDst);
@@ -318,11 +320,14 @@ export function genericVerify(cwd: string): VerifyResult {
   // `tsconfig.json` after setup ran still has the guard it was scaffolded.
   const present = GUARD_FILENAMES.find((name) => existsSync(join(cwd, dir, name)));
   const scaffolded = present !== undefined;
+  const template = present?.endsWith('.ts') ? 'generic-guard.ts' : present?.endsWith('.cjs') ? 'generic-guard.cjs' : 'generic-guard.js';
+  const helperVerified = !!present && matchesGuardTemplate(cwd, `${dir}/${present}`, template);
   const imported = scaffolded && guardIsImported(cwd, join(cwd, dir, present));
   return {
-    wired: scaffolded && imported,
+    wired: scaffolded && helperVerified && imported,
     checks: [
       { label: 'generic guard scaffolded', ok: scaffolded, hint: 'run `patchstack-connect protect`' },
+      { label: 'guard helper implementation verified', ok: helperVerified, hint: 'preserved custom helpers require manual review of their exports and request/response screening' },
       {
         label: 'guard imported and called in a server entry',
         ok: imported,

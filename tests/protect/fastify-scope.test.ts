@@ -4,6 +4,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import Fastify from 'fastify';
+import { Readable } from 'node:stream';
 import { createProtection } from '../../src/protect/runtime.js';
 
 /**
@@ -50,7 +51,7 @@ afterEach(() => {
  * substitution is one function body, and the export, the hook registration and the encapsulation marker
  * are the template's own.
  */
-async function loadPlugin(): Promise<(fastify: unknown) => Promise<void>> {
+async function loadPlugin(rules = RULES): Promise<(fastify: unknown) => Promise<void>> {
   // The protection is passed in through a global rather than imported by the generated module: the
   // template's own import of the published package cannot resolve from a temp directory, and rewriting it
   // to an absolute path is the one substitution that would let a broken relative import pass unnoticed.
@@ -69,7 +70,7 @@ async function loadPlugin(): Promise<(fastify: unknown) => Promise<void>> {
   // requests is a verification, and the seam has to behave as it does for ordinary traffic.
   const preamble = 'const sentinelAnswer = async () => null;\nconst VERIFY_HEADER = "x-patchstack-verify";\n';
 
-  const protection = await createProtection({ mode: 'block', rules: RULES as never });
+  const protection = await createProtection({ mode: 'block', rules: rules as never, reportDetections: false, reportFirewallLog: false });
   protections.push(protection);
   (globalThis as Record<string, unknown>).__psTestProtection = protection;
 
@@ -84,6 +85,40 @@ async function loadPlugin(): Promise<(fastify: unknown) => Promise<void>> {
 }
 
 describe('the scaffolded Fastify plugin', () => {
+  it('screens parsed form and JSON fields equally without mutating the route body', async () => {
+    const plugin = await loadPlugin({firewall:[{id:'synthetic-form',title:'form',rule_v2:[{parameter:'post.message',match:{type:'contains',value:'synthetic-block'}}]}],whitelists:[]});
+    const app = Fastify();
+    app.addContentTypeParser('application/x-www-form-urlencoded', {parseAs:'string'}, (_req, body, done) => done(null, Object.fromEntries(new URLSearchParams(String(body)))));
+    await app.register(plugin);
+    app.post('/contact', async req => ({ body:req.body, type:req.headers['content-type'] }));
+    try {
+      for (const type of ['application/json', 'application/x-www-form-urlencoded']) {
+        const encode = (message: string) => type === 'application/json' ? JSON.stringify({message}) : new URLSearchParams({message}).toString();
+        expect((await app.inject({method:'POST',url:'/contact',headers:{'content-type':type},payload:encode('synthetic-block')})).statusCode).toBe(403);
+        const allowed = await app.inject({method:'POST',url:'/contact',headers:{'content-type':type},payload:encode('hello')});
+        expect(allowed.statusCode).toBe(200);
+        expect(allowed.json()).toEqual({body:{message:'hello'},type});
+      }
+    } finally { await app.close(); }
+  });
+
+  it('redacts serialized output, preserves cookies and lets live streams pass through', async () => {
+    const plugin = await loadPlugin({firewall:[{id:'synthetic-response',title:'redact',phase:'response',action:'redact',rule_v2:[{parameter:'response.body',match:{type:'contains',value:'synthetic-secret'}}]}] as never,whitelists:[]});
+    const app = Fastify();
+    await app.register(plugin);
+    app.get('/text', async (_req, reply) => reply.header('set-cookie',['first=1; Path=/','second=2; Path=/']).type('text/plain').send('synthetic-secret'));
+    app.get('/stream', async (_req, reply) => reply.type('text/event-stream').send(Readable.from(['data: public\n\n'])));
+    app.get('/empty', async (_req, reply) => reply.code(204).send());
+    try {
+      const redacted = await app.inject('/text');
+      expect(redacted.statusCode).toBe(200);
+      expect(redacted.body).not.toContain('synthetic-secret');
+      expect(redacted.headers['set-cookie']).toEqual(['first=1; Path=/','second=2; Path=/']);
+      expect(Number(redacted.headers['content-length'])).toBe(Buffer.byteLength(redacted.body));
+      expect((await app.inject('/stream')).body).toBe('data: public\n\n');
+      expect((await app.inject('/empty')).statusCode).toBe(204);
+    } finally { await app.close(); }
+  });
   it('screens a route registered on the root instance', async () => {
     // The plain case, and the one encapsulation breaks: `app.get(...)` on the same instance the guard was
     // registered on is a SIBLING of the plugin's context, not a child of it.

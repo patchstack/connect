@@ -86,6 +86,7 @@ import { runMap } from './map-command.js';
 import { getStringFlag } from './flags.js';
 import { isCanonicalUuid } from './endpoint-policy.js';
 import { setupProtection, wireBuildScripts } from './setup.js';
+import { syncSetupProtection } from './setup-sync.js';
 import { isInstallOrBuildHook, isPreBundleBuildHook, undeliveredReportLines } from './build-hook.js';
 import { applyBuildStamp } from './build-stamp.js';
 import { detectStack, type StackDescriptor } from './stack.js';
@@ -109,7 +110,8 @@ Usage:
                                                      directly, the same failure exits 1
   patchstack-connect setup  [options]                Finish the bounded project setup: run scan,
                                                      manage the widget, install + verify runtime
-                                                     protection, and wire dependency/build scans.
+                                                     protection, upload the attack-surface map, pull
+                                                     live rules, and wire dependency/build scans.
                                                      Never runs the project build
   patchstack-connect map    [--dir <p>] [--out <f>] [--upload]
                                                      Map the app's attack surface: entry points, the
@@ -1308,6 +1310,24 @@ async function runSetup(args: ParsedArgs): Promise<number> {
   detail(`Build hooks: ${wired.detail}`);
 
   const config = await resolveCliConfig(args);
+  const synced = await syncSetupProtection(process.cwd(), config);
+  for (const line of synced.notices) detail(line);
+  for (const [index, warning] of synced.warnings.entries()) {
+    report.missing.push({ key: `setup-sync-${index}`, text: warning });
+  }
+  const uploaded = synced.map.upload;
+  if (uploaded?.result === 'stored' || uploaded?.result === 'unchanged') {
+    report.done.push(`Attack-surface map uploaded (revision ${uploaded.revision}; ${synced.map.endpoints ?? 0} detected entry points)`);
+    if (!synced.map.buildId) report.missing.push({ key: 'map-binding', text: 'Map is not linked to runtime protection', hint: ['Finish the reported protection integration, then rerun setup. Rules for specific inputs can only detect, not block, until linked.'] });
+  } else {
+    report.missing.push({ key: 'map-upload', text: 'Attack-surface map was not uploaded', hint: [synced.map.error ?? uploaded?.message ?? 'Check connectivity and rerun setup.'] });
+  }
+  if (synced.rules.ok) {
+    report.done.push(`Live rule lookup succeeded (${synced.rules.count} delivered rules; ${synced.rules.count === 0 ? 'no rules currently assigned' : 'not proof of runtime enforcement'})`);
+  } else {
+    report.missing.push({ key: 'rules-pull', text: 'Live rule lookup is incomplete', hint: [synced.rules.error ?? 'Check authentication and rerun setup.'] });
+  }
+  report.missing.push({ key: 'runtime-restart', text: 'Load the new protection in your running app', hint: ['Restart the preview/server if it is already running. Deploy a new build to update the live app. Setup does not start or deploy it.'] });
   const after = await collectGuideState(process.cwd());
   const missing = mergeMissing(report.missing, guideMissing(after, reported));
   const context = scanNextStepContext(config, after, after.siteUuid);
