@@ -20,6 +20,7 @@ import {
 import type { WireOptions, WireResult, VerifyResult } from './types.js';
 import { writeProjectFileSync } from '../../safe-file.js';
 import { parsedSource, sourceCompiler, statementEndLine, statementPosition } from './syntax.js';
+import { matchesGuardTemplate } from './template-match.js';
 
 /**
  * A route or router registration — `app.get(...)`, `app.post(...)`, `app.use('/path', router)`.
@@ -245,6 +246,11 @@ export function wireRegister(cwd: string, opts: WireOptions, spec: RegisterSpec)
   const target = guardTarget(cwd, entry.relPath, spec);
   const { changed, dir } = scaffoldGeneric(cwd, opts, target.template, target.file);
 
+  if (!matchesGuardTemplate(cwd, `${dir}/${target.file}`, target.template)) {
+    log(`${dir}/${target.file} needs manual review; the existing helper and ${entry.relPath} were left untouched.`);
+    return { ok: false, changed };
+  }
+
   const p = join(cwd, entry.relPath);
   const s = read(p);
   const compiler = sourceCompiler(cwd);
@@ -393,6 +399,8 @@ function serverIsGuarded(
   server: { relPath: string; appVar: string },
   guardDir: string,
 ): boolean {
+  const target = guardTarget(cwd, server.relPath, spec);
+  if (!matchesGuardTemplate(cwd, `${guardDir}/${target.file}`, target.template)) return false;
   const source = read(join(cwd, server.relPath));
   const state = wiringState(source, spec, server.appVar, server.relPath, { cwd, guardDir });
   if (!state.importAtTopLevel || !state.callInAppScope || !state.ordered) return false;
@@ -405,6 +413,7 @@ export function verifyRegister(cwd: string, spec: RegisterSpec): VerifyResult {
   const entry = findAppInstance(cwd, spec.appRe);
   const target = entry ? guardTarget(cwd, entry.relPath, spec) : null;
   const scaffolded = target ? existsSync(join(cwd, dir, target.file)) : false;
+  const helperVerified = !!target && matchesGuardTemplate(cwd, `${dir}/${target.file}`, target.template);
   const entrySource = entry ? read(join(cwd, entry.relPath)) : '';
   const state = entry
     ? wiringState(entrySource, spec, entry.appVar, entry.relPath, { cwd, guardDir: dir })
@@ -424,9 +433,10 @@ export function verifyRegister(cwd: string, spec: RegisterSpec): VerifyResult {
     .map((other) => other.relPath);
 
   return {
-    wired: scaffolded && wired && noEarlyRoutes && unguarded.length === 0,
+    wired: scaffolded && helperVerified && wired && noEarlyRoutes && unguarded.length === 0,
     checks: [
       { label: `${spec.label} guard scaffolded`, ok: scaffolded, hint: 'run `patchstack-connect protect`' },
+      { label: 'guard helper implementation verified', ok: helperVerified, hint: 'preserved custom helpers require manual review of their exports and request/response screening' },
       { label: `guard registered on the ${spec.label}`, ok: wired, hint: spec.manualHint },
       ...(entry && entry.others.length > 0
         ? [

@@ -67,6 +67,38 @@ app.post('/submit', handler);
     writeFileSync(join(cwd, file), customized);
     runProtect(cwd);
     expect(read(cwd, file)).toBe(customized);
+    expect(runVerify(cwd).wired).toBe(true);
+  });
+
+  it.each([
+    ['js', 'export function applicationGuard() {}'],
+    ['js', 'export function patchstackMiddleware(req, res, next) { next(); }'],
+    ['ts', 'export function patchstackMiddleware(req: unknown, res: unknown, next: () => void) { next(); }'],
+    ['cjs', 'module.exports = { applicationGuard() {} };'],
+    ['cjs', 'module.exports = { patchstackMiddleware(req, res, next) { next(); } };'],
+  ])('does not wire an unverified %s helper: %s', (ext, helper) => {
+    const source = ext === 'cjs'
+      ? "const express = require('express');\nconst app = express();\napp.use(express.json());\n"
+      : "import express from 'express';\nconst app = express();\napp.use(express.json());\n";
+    const file = `src/server.${ext}`;
+    const guard = `src/patchstack/guard.${ext}`;
+    const cwd = project({ express: '^5' }, { [file]: source, [guard]: helper });
+    expect(runProtect(cwd).status).toBe('scaffolded');
+    expect(read(cwd, file)).toBe(source);
+    expect(read(cwd, guard)).toBe(helper);
+    expect(runVerify(cwd).wired).toBe(false);
+  });
+
+  it('reports a helper changed after installation instead of claiming protection', () => {
+    const cwd = project({ express: '^5' }, { 'server.ts': "import express from 'express';\nconst app = express();\napp.use(express.json());\n" });
+    runProtect(cwd);
+    const entry = read(cwd, 'server.ts');
+    const helper = 'export function patchstackMiddleware(req: unknown, res: unknown, next: () => void) { next(); }';
+    writeFileSync(join(cwd, 'patchstack/guard.ts'), helper);
+    expect(runVerify(cwd).wired).toBe(false);
+    expect(runProtect(cwd).status).toBe('scaffolded');
+    expect(read(cwd, 'server.ts')).toBe(entry);
+    expect(read(cwd, 'patchstack/guard.ts')).toBe(helper);
   });
 });
 
@@ -88,6 +120,18 @@ function tanstack(startSource = start, clientSource = client) {
 }
 
 describe('TanStack paired edits', () => {
+  it('leaves both entries alone when a custom helper cannot be verified', () => {
+    const cwd = tanstack();
+    const file = 'src/integrations/patchstack/guard.ts';
+    mkdirSync(dirname(join(cwd, file)), { recursive: true });
+    const helper = 'export const GUARD_PATH = "/custom";';
+    writeFileSync(join(cwd, file), helper);
+    expect(runProtect(cwd).status).toBe('scaffolded');
+    expect(read(cwd, clientFile)).toBe(client);
+    expect(read(cwd, 'src/start.ts')).toBe(start);
+    expect(read(cwd, file)).toBe(helper);
+    expect(runVerify(cwd).wired).toBe(false);
+  });
   it('accepts formatting variations and reuses an existing request import', () => {
     const cwd = tanstack();
     expect(runProtect(cwd).status).toBe('wired');

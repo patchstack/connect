@@ -11,6 +11,7 @@ import { bakeSiteUuid, read, log, templatesDir } from '../util.js';
 import type { Adapter, WireOptions, WireResult, VerifyResult } from '../types.js';
 import { copyProjectFileSync, ensureProjectDirectorySync, writeProjectFileSync } from '../../../safe-file.js';
 import { parsedSource, sourceCompiler, type Compiler } from '../syntax.js';
+import { matchesGuardTemplate } from '../template-match.js';
 
 const CLIENT_TUNNEL = [
   '',
@@ -263,6 +264,10 @@ function wire(cwd: string, opts: WireOptions): WireResult {
     return { ok: false, changed: [] };
   }
   const changed = scaffold(cwd, opts);
+  if (!matchesGuardTemplate(cwd, GUARD_FILE, 'guard.ts')) {
+    log('Custom guard helper needs manual review; client and server entries were left untouched.');
+    return { ok: false, changed };
+  }
   // In demo mode, keep the local sample rules active — don't bake a site UUID (which would make
   // the guard fetch live Pulse rules instead of the bundled demo set).
   if (!opts.demo && bakeSiteUuid(cwd, GUARD_FILE)) changed.push(GUARD_FILE);
@@ -297,6 +302,7 @@ function verify(cwd: string): VerifyResult {
 
   const checks = [
     { label: 'guard.ts scaffolded', ok: guard.length > 0, hint: 'run `patchstack-connect protect`' },
+    { label: 'guard helper implementation verified', ok: matchesGuardTemplate(cwd, GUARD_FILE, 'guard.ts'), hint: 'preserved custom helpers require manual review before redirecting browser traffic' },
     { label: 'Supabase client tunnels through the guard', ok: client.includes('x-ps-target'), hint: 'run `patchstack-connect protect` to re-patch src/integrations/supabase/client.ts' },
     { label: 'request middleware defined + registered', ok: start.includes('const patchstackGuard =') && start.includes('requestMiddleware: [patchstackGuard'), hint: 'run `patchstack-connect protect` to re-patch src/start.ts' },
     { label: 'server-function middleware defined + registered', ok: start.includes('const patchstackFunctionGuard =') && start.includes('functionMiddleware: [patchstackFunctionGuard'), hint: 'run `patchstack-connect protect` to re-patch src/start.ts' },

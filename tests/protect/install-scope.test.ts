@@ -256,7 +256,7 @@ describe('wiring an Express entry', () => {
     });
 
     mkdirSync(join(cwd, 'src/patchstack'), { recursive: true });
-    writeFileSync(join(cwd, 'src/patchstack/guard.cjs'), 'module.exports = { patchstackMiddleware: () => {} };\n');
+    writeFileSync(join(cwd, 'src/patchstack/guard.cjs'), readFileSync(new URL('../../src/protect/templates/express-guard.cjs', import.meta.url)));
 
     expect(expressAdapter.verify(cwd).wired).toBe(false);
   });
@@ -443,7 +443,7 @@ describe('a name in a comment is not wiring', () => {
     });
 
     mkdirSync(join(cwd, 'src/patchstack'), { recursive: true });
-    writeFileSync(join(cwd, 'src/patchstack/guard.cjs'), 'module.exports = { patchstackMiddleware: () => {} };\n');
+    writeFileSync(join(cwd, 'src/patchstack/guard.cjs'), readFileSync(new URL('../../src/protect/templates/express-guard.cjs', import.meta.url)));
 
     expect(expressAdapter.verify(cwd).wired).toBe(false);
   });
@@ -467,7 +467,7 @@ describe('a name in a comment is not wiring', () => {
     });
 
     mkdirSync(join(cwd, 'src/patchstack'), { recursive: true });
-    writeFileSync(join(cwd, 'src/patchstack/guard.cjs'), 'module.exports = { patchstackMiddleware: () => {} };\n');
+    writeFileSync(join(cwd, 'src/patchstack/guard.cjs'), readFileSync(new URL('../../src/protect/templates/express-guard.cjs', import.meta.url)));
 
     expect(expressAdapter.verify(cwd).wired).toBe(false);
   });
@@ -537,7 +537,7 @@ describe('a name in a comment is not wiring', () => {
     });
 
     mkdirSync(join(cwd, 'src/patchstack'), { recursive: true });
-    writeFileSync(join(cwd, 'src/patchstack/guard.cjs'), 'module.exports = { patchstackMiddleware: () => {} };\n');
+    writeFileSync(join(cwd, 'src/patchstack/guard.cjs'), readFileSync(new URL('../../src/protect/templates/express-guard.cjs', import.meta.url)));
 
     expect(expressAdapter.verify(cwd).wired).toBe(false);
   });
@@ -614,7 +614,7 @@ describe('the module a guard binding comes from', () => {
     });
 
     mkdirSync(join(cwd, 'src/patchstack'), { recursive: true });
-    writeFileSync(join(cwd, 'src/patchstack/guard.cjs'), 'module.exports = { patchstackMiddleware: () => {} };\n');
+    writeFileSync(join(cwd, 'src/patchstack/guard.cjs'), readFileSync(new URL('../../src/protect/templates/express-guard.cjs', import.meta.url)));
 
     expect(expressAdapter.verify(cwd).wired).toBe(false);
   });
@@ -662,7 +662,7 @@ describe('the module a guard binding comes from', () => {
     });
 
     mkdirSync(join(cwd, 'src/patchstack'), { recursive: true });
-    writeFileSync(join(cwd, 'src/patchstack/guard.cjs'), 'module.exports = { patchstackMiddleware: () => {} };\n');
+    writeFileSync(join(cwd, 'src/patchstack/guard.cjs'), readFileSync(new URL('../../src/protect/templates/express-guard.cjs', import.meta.url)));
 
     expect(expressAdapter.verify(cwd).wired).toBe(false);
   });
@@ -682,7 +682,7 @@ describe('the module a guard binding comes from', () => {
     });
 
     mkdirSync(join(cwd, 'src/patchstack'), { recursive: true });
-    writeFileSync(join(cwd, 'src/patchstack/guard.cjs'), 'module.exports = { patchstackMiddleware: () => {} };\n');
+    writeFileSync(join(cwd, 'src/patchstack/guard.cjs'), readFileSync(new URL('../../src/protect/templates/express-guard.cjs', import.meta.url)));
 
     expect(expressAdapter.verify(cwd).wired).toBe(false);
   });
@@ -782,7 +782,7 @@ describe('a guard already registered in the wrong place', () => {
     });
 
     mkdirSync(join(cwd, 'src/patchstack'), { recursive: true });
-    writeFileSync(join(cwd, 'src/patchstack/guard.cjs'), 'module.exports = { patchstackMiddleware: () => {} };\n');
+    writeFileSync(join(cwd, 'src/patchstack/guard.cjs'), readFileSync(new URL('../../src/protect/templates/express-guard.cjs', import.meta.url)));
 
     const said: string[] = [];
     const original = console.log;
@@ -812,7 +812,7 @@ describe('what counts as the guard module itself', () => {
 
   function scaffoldedGuard(cwd: string): void {
     mkdirSync(join(cwd, 'src/patchstack'), { recursive: true });
-    writeFileSync(join(cwd, 'src/patchstack/guard.cjs'), 'module.exports = { patchstackMiddleware: () => {} };\n');
+    writeFileSync(join(cwd, 'src/patchstack/guard.cjs'), readFileSync(new URL('../../src/protect/templates/express-guard.cjs', import.meta.url)));
     writeFileSync(join(cwd, 'src/patchstack/rules.json'), '{"firewall":[],"whitelists":[]}\n');
   }
 
@@ -881,7 +881,7 @@ describe('what counts as the guard module itself', () => {
       ].join('\n'),
     });
     mkdirSync(join(cwd, 'src/patchstack'), { recursive: true });
-    writeFileSync(join(cwd, 'src/patchstack/guard.ts'), 'export const patchstackMiddleware = () => {};\n');
+    writeFileSync(join(cwd, 'src/patchstack/guard.ts'), readFileSync(new URL('../../src/protect/templates/express-guard.ts', import.meta.url)));
 
     expect(expressAdapter.verify(cwd).wired).toBe(true);
   });
@@ -902,7 +902,7 @@ describe('what counts as the guard module itself', () => {
       ].join('\n'),
     });
     mkdirSync(join(cwd, 'src/patchstack'), { recursive: true });
-    writeFileSync(join(cwd, 'src/patchstack/guard.js'), 'export const patchstackMiddleware = () => {};\n');
+    writeFileSync(join(cwd, 'src/patchstack/guard.js'), readFileSync(new URL('../../src/protect/templates/express-guard.js', import.meta.url)));
 
     expect(expressAdapter.verify(cwd).wired).toBe(false);
   });
@@ -926,7 +926,7 @@ describe('what counts as the guard module itself', () => {
       ].join('\n'),
     });
     mkdirSync(join(cwd, 'src/patchstack'), { recursive: true });
-    writeFileSync(join(cwd, 'src/patchstack/guard.ts'), 'export const patchstackMiddleware = () => {};\n');
+    writeFileSync(join(cwd, 'src/patchstack/guard.ts'), readFileSync(new URL('../../src/protect/templates/express-guard.ts', import.meta.url)));
 
     expect(expressAdapter.verify(cwd).wired).toBe(true);
   });
