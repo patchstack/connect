@@ -56,7 +56,10 @@ export function runProtect(cwd: string, opts: WireOptions = {}): ProtectResult {
     adapter = ADAPTERS.find((a) => a.detect(cwd));
     if (adapter) {
       const result = adapter.wire(cwd, opts);
-      return { status: 'wired', adapter: adapter.name, changed: result.changed };
+      const verification = adapter.verify(cwd);
+      if (result.ok && verification.wired) return { status: 'wired', adapter: adapter.name, changed: result.changed };
+      const plan = verification.checks.filter(check => !check.ok).map(check => check.hint ?? check.label).join('\n');
+      return { status: 'scaffolded', adapter: adapter.name, changed: result.changed, plan };
     }
   } catch (err) {
     // A wire/detect failure (read-only FS, EACCES, a bad source file) must not crash the CLI —

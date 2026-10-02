@@ -44,7 +44,7 @@ describe('guide', () => {
   const writeGenericProtection = (underSrc = false): void => {
     const root = underSrc ? path.join(cwd, 'src') : cwd;
     mkdirSync(path.join(root, 'patchstack'), { recursive: true });
-    writeFileSync(path.join(root, 'patchstack', 'guard.ts'), 'export const protectFetch = () => {};');
+    writeFileSync(path.join(root, 'patchstack', 'guard.ts'), readFileSync(new URL('../src/protect/templates/generic-guard.ts', import.meta.url)));
     // Imported AND called. An import on its own wraps no request, so a fixture that stopped at the import
     // would be describing a project the checklist should not call done.
     writeFileSync(
