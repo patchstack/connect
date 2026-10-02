@@ -283,6 +283,36 @@ Handle it in this order:
    run them, the person runs `npx @patchstack/connect claim` (or `login`) themselves and you relay the
    link from their output.
 
+### When the platform blocks the CLI outright
+
+Some hosted builders refuse any third-party CLI that contacts an outside service, and offer the person
+neither a terminal nor a way to approve it. Then none of the options above exists in that workspace, and
+running the command again, under any spelling, gets the same answer. Step 1 still applies: do not route
+around the block, and leave `package.json` and the source tree as they were.
+
+Tell the person in plain words that this platform will not run Patchstack's setup, then give them these
+choices and wait for theirs:
+
+- **Run setup on a copy of the project outside the builder.** Offer this only when the builder can export
+  the project or sync it with a git repository; if you do not know whether it can, say so. In that copy,
+  the person runs `npx @patchstack/connect setup` — without `PATCHSTACK_ENVIRONMENT=sandbox`, which is for
+  a hosted workspace; on their own machine a scan reports `local` by itself. They then bring the changes
+  back the same way. `.patchstackrc.local.json` stays behind: it holds the API key and is git-ignored. If
+  the builder's own install or build cannot reach Patchstack, the scan steps `setup` added print the error
+  and let it continue, so the app still builds and only that build's report is missing. The exception is a
+  builder that installs with `bun install`: there the `postinstall` scan fails the install, so remove that
+  one script before bringing the changes back.
+- **Add only the Patchstack Connector.** The person creates an "Application" site in the Patchstack
+  dashboard and gives you its site ID or widget snippet, and you add the tag as in steps 2 and 3 of
+  "Plain HTML sites", in the app's root HTML shell or layout. This adds the widget and nothing else: no
+  check of the app's packages, no build steps, no runtime protection. Say that when you offer it.
+- **Stop here.** Nothing else changes.
+
+If you installed `@patchstack/connect` for this attempt, it stays in `dependencies` with nothing wired to
+run it. Keep it for the first choice; for the other two, offer to remove it with the project's package
+manager. Report the result as **Patchstack setup did not run on this platform**, with the choice the person
+made, not as an installation.
+
 ## Manual setup
 
 1. **First scan** — provisions a Patchstack site automatically, writes the UUID to `.patchstackrc.json`, and installs the Patchstack Connector's `<script>` tag into the root HTML shell (`index.html`, `public/index.html`, or `src/app.html`) when one exists — or, when the root shell is JSX, the production marker instead. No signup, dashboard step, or UUID is needed up front:
@@ -512,7 +542,7 @@ AI model. A framework or hosting upgrade requires this review again.
 - The CLI never opens the dashboard link and never asks for Patchstack credentials.
 - Label hosted workspace scans with `PATCHSTACK_ENVIRONMENT=sandbox` in that process only. Leave production builds unset (a platform's own tier or production branch name, or the hosted builder the project belongs to, makes the build report `production`; a developer machine or a CI runner this does not know reports `local`) and never commit a sandbox label into files shared with production.
 - If a step fails, stop and report it. Don't proceed with placeholders.
-- If your tool refuses to execute the CLI, stop and hand the command to the person — see "When your tool will not run this CLI". Never work around a permission refusal.
+- If your tool refuses to execute the CLI, stop and hand the command to the person — see "When your tool will not run this CLI", and "When the platform blocks the CLI outright" when nobody can approve it there. Never work around a permission refusal.
 - CI never has the credential in a file: `.patchstackrc.local.json` is git-ignored by design, so set `PATCHSTACK_API_KEY` as an env var there (and `PATCHSTACK_SITE_UUID` too where `.patchstackrc.json` is also absent). Precedence for the site UUID and settings: CLI flag → env var → `.patchstackrc.json`. For the API key: env var → `.patchstackrc.local.json` → `.patchstackrc.json` (where installs made before the split still hold it). `login` is interactive and refuses to run in CI, so CI always takes its credential from the environment.
 
 ## Which build a rule belongs to

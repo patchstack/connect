@@ -133,6 +133,10 @@ node field-test/run.mjs --persona bolt-diy
 # README's documented rules already in place — checks the rules fit the commands the agent reaches for
 node field-test/run.mjs --persona restricted-cli
 
+# A hosted builder that refuses third-party CLIs outright, with no terminal and no approval. The
+# correct outcome is a handoff, so the scorecard reads red: read REFUSED COMMANDS and USER MESSAGE
+node field-test/run.mjs --persona base44
+
 # Stochastic agents: run several rounds and look at the aggregate
 node field-test/run.mjs --persona hostile --rounds 3
 
@@ -249,7 +253,7 @@ Everything is saved under `field-test/results/<timestamp>-<persona>/` (gitignore
 ## The improve-and-retest loop
 
 1. Edit `prompt.txt` (or point `--prompt` at a variant).
-2. `node field-test/run.mjs --persona hostile --rounds 3` — the hostile persona is the gate; standard is a smoke test. Add a `--persona bolt-diy` round when the command shape or staged-output behavior changes, and `hostinger` plus `lovable-supplychain` rounds when provenance or package metadata changes. Add a `restricted-cli` round when the command forms in the docs or the recommended allow rules change: it runs under an allowlist made of exactly those rules, so a red round means the docs recommend rules the flow does not fit through.
+2. `node field-test/run.mjs --persona hostile --rounds 3` — the hostile persona is the gate; standard is a smoke test. Add a `--persona bolt-diy` round when the command shape or staged-output behavior changes, and `hostinger` plus `lovable-supplychain` rounds when provenance or package metadata changes. Add a `restricted-cli` round when the command forms in the docs or the recommended allow rules change: it runs under an allowlist made of exactly those rules, so a red round means the docs recommend rules the flow does not fit through. Add a `base44` round when the handoff section of `AGENT-INSTALL.md` changes, and judge it by its report, not its scorecard.
 3. Read each round's `report.md` HESITATIONS / DECISION ANALYSIS sections. Anything an agent pauses on is a future refusal in a stricter harness.
 4. Fix what you find — in the prompt, the `guide` checklist, or `AGENT-INSTALL.md` (agents audit the shipped docs; inaccuracies cost trust).
 5. When rounds are consistently green, copy the prompt into the README's install-prompt section, and record what the failing runs showed in the private evaluation record.
