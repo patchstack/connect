@@ -102,6 +102,11 @@ jobs:
       - name: Consumer shapes against a packed tarball
         run: node scripts/compat-matrix.mjs --manager ${{ matrix.manager }}
 
+      - name: Setup hooks execute through the real package manager
+        run: npx vitest run tests/setup-build-execution.test.ts
+        env:
+          PATCHSTACK_TEST_MANAGER: ${{ matrix.manager }}
+
   # Most consumers of the runtime guard are BUNDLED — a Worker through wrangler, a Next edge middleware,
   # a SvelteKit adapter build — and all of them tree-shake. A guard that has lost the part which screens
   # requests still starts, still logs, and still looks installed, so the failure arrives through the

@@ -70,10 +70,10 @@ describe('wireBuildScripts', () => {
     );
   });
 
-  it('chains directly around a Bun build', () => {
+  it.each(['bun', 'yarn', 'pnpm'] as const)('chains directly around a %s build', manager => {
     writePackage({ scripts: { build: 'vite build' } });
 
-    const result = wireBuildScripts(cwd, 'bun');
+    const result = wireBuildScripts(cwd, manager);
 
     expect(result).toMatchObject({ changed: true, strategy: 'build-chain' });
     expect(readPackage().scripts.build).toBe(
@@ -105,8 +105,33 @@ describe('wireBuildScripts', () => {
 
     expect(second.changed).toBe(false);
     expect(readPackage().scripts.postinstall).toBe('patchstack-connect scan');
-    expect(readPackage().scripts.prebuild).toBe('patchstack-connect scan && patchstack-connect map --upload');
-    expect(readPackage().scripts.postbuild).toBe('patchstack-connect mark-build');
+    expect(readPackage().scripts.build).toBe('patchstack-connect scan && patchstack-connect map --upload && vite build && patchstack-connect mark-build');
+    expect(readPackage().scripts.prebuild).toBeUndefined();
+    expect(readPackage().scripts.postbuild).toBeUndefined();
+  });
+
+  it.each(['yarn', 'pnpm'] as const)('upgrades a lifecycle-only %s setup without removing custom commands', manager => {
+    writePackage({scripts:{build:'vite build',prebuild:'patchstack-connect scan && node generate.js',postbuild:'node report.js && patchstack-connect mark-build'}});
+    wireBuildScripts(cwd,manager);
+    expect(readPackage().scripts.build).toBe('patchstack-connect scan && patchstack-connect map --upload && vite build && patchstack-connect mark-build');
+    expect(readPackage().scripts.prebuild).toBe('patchstack-connect scan && node generate.js');
+    expect(readPackage().scripts.postbuild).toBe('node report.js && patchstack-connect mark-build');
+    expect(wireBuildScripts(cwd,manager).changed).toBe(false);
+  });
+
+  it.each([
+    'node -e "console.log(\'a&&b\')"',
+    "node -e 'console.log(\"a&&b\")'",
+    '(node first.js && node second.js)',
+    'node script.js a\\&\\&b',
+    'node script.js "$(node -e "console.log(\'a&&b\')")"',
+    'node script.js "${VALUE:-"a&&b"}"',
+    'node script.js "`node -e "console.log(\'a&&b\')"`"',
+  ])('preserves shell arguments and grouped commands: %s', build => {
+    writePackage({scripts:{build}});
+    wireBuildScripts(cwd,'yarn');
+    expect(readPackage().scripts.build).toBe(`patchstack-connect scan && patchstack-connect map --upload && ${build} && patchstack-connect mark-build`);
+    expect(wireBuildScripts(cwd,'yarn').changed).toBe(false);
   });
 
   it('does not duplicate a scan already first in a semicolon hook', () => {

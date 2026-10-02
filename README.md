@@ -127,7 +127,7 @@ That's it. `setup`:
 6. Installs the runtime guard after provisioning, bakes the site UUID into it, and verifies the framework seam. Known server stacks are auto-wired; unmatched or conflicting layouts get a generic scaffold and exact manual checks.
 7. Adds `postinstall: patchstack-connect scan`, preserving any existing command, so dependencies added during a sandbox session and build-less production installs are reported immediately.
 8. Uploads a structural attack-surface map (routes, input names, package attribution, relative file:line locations and coverage notes; no source text or environment values), stamps its identity into the guard for the next startup/build, and fetches live request/response rules. Empty policy, upload failures and rule-fetch failures are reported separately.
-9. Wires `scan` followed by `map --upload` before builds and `mark-build` after builds, preserving existing commands and using direct build chaining for Bun.
+9. Wires `scan` followed by `map --upload` before builds and `mark-build` after builds, preserving existing commands. npm uses lifecycle hooks; Yarn, pnpm and Bun use explicit build chains independent of lifecycle settings.
 10. Prints a dashboard link — open it in a browser to attach the new site to your Patchstack account. You can re-display it any time with `npx @patchstack/connect status`.
 
 If the server is already running, **restart it** to load the new guard and map identity. Setup does not start, build or deploy your app. Rule delivery does not prove runtime enforcement: scoped rules still need a matching server verdict, and unsupported/custom entries remain reported gaps.
@@ -427,7 +427,7 @@ During a build, the `prebuild` scan removes any previous map stamp. A later `map
 
 ### `scan` as a build hook
 
-`setup` wires `scan` into `postinstall`, `prebuild`, or the Bun `build` chain. Run from one of those, a report Patchstack cannot accept — no credential in the build environment, a rejected credential, a site that no longer exists, an outage — is printed on stderr and `scan` exits 0, so the install or build it is attached to carries on. Patchstack keeps the last manifest it accepted for the site until a scan that can report. Run directly (`npx @patchstack/connect scan`), the same failure exits 1.
+`setup` wires `scan` into `postinstall`, npm's `prebuild`, or an explicit `build` chain for Yarn, pnpm and Bun. Run from one of those, a report Patchstack cannot accept — no credential in the build environment, a rejected credential, a site that no longer exists, an outage — is printed on stderr and `scan` exits 0, so the install or build it is attached to carries on. Patchstack keeps the last manifest it accepted for the site until a scan that can report. Run directly (`npx @patchstack/connect scan`), the same failure exits 1.
 
 A deploy never has `.patchstackrc.local.json`, so the usual cause is a missing `PATCHSTACK_API_KEY` in the platform's environment (see *Configuration*). The hook is recognised through `npm_lifecycle_event`, which npm, pnpm, Yarn and `bun run` set to the running script's name. `bun install` does not set it, so a `postinstall` scan under Bun still fails the install when it cannot report.
 

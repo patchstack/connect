@@ -59,11 +59,48 @@ function prependHook(existing: string | undefined, command: string): string {
   if (new RegExp(`^\\s*${escaped}\\s*(?:;|\\|\\|)`).test(existing)) return existing;
 
   // A second scan after a map upload would clear the identity the upload just stamped.
-  const remaining = existing
-    .split(/\s*&&\s*/)
+  const remaining = splitAndChain(existing)
     .filter((part) => part.trim() !== command && part.trim().length > 0);
 
   return [command, ...remaining].join(' && ');
+}
+
+/** Only standalone commands may be reordered; quoted text and shell groups stay intact. */
+function splitAndChain(source: string): string[] {
+  const parts: string[] = [];
+  let start = 0;
+  let quote = '';
+  const groups: {close: string; quote: string}[] = [];
+  for (let i = 0; i < source.length; i++) {
+    const char = source[i]!;
+    if (char === '\\' && quote !== "'") { i++; continue; }
+    if (quote === "'" || quote === '`') {
+      if (char === quote) quote = quote === '`' ? groups.pop()!.quote : '';
+      continue;
+    }
+    if (char === '`') { groups.push({close:'`',quote}); quote = '`'; continue; }
+    if (char === '$' && (source[i + 1] === '(' || source[i + 1] === '{')) {
+      groups.push({close:source[++i] === '(' ? ')' : '}',quote});
+      quote = '';
+      continue;
+    }
+    if (quote) { if (char === quote) quote = ''; continue; }
+    if (char === '"' || char === "'") { quote = char; continue; }
+    if (char === '#' && (i === 0 || /\s/.test(source[i - 1]!))) {
+      const newline = source.indexOf('\n', i);
+      if (newline === -1) break;
+      i = newline;
+      continue;
+    }
+    if (char === '(' || char === '{') groups.push({close:char === '(' ? ')' : '}',quote:''});
+    if (char === groups.at(-1)?.close) quote = groups.pop()!.quote;
+    if (groups.length === 0 && char === '&' && source[i + 1] === '&') {
+      parts.push(source.slice(start, i).trim());
+      start = ++i + 1;
+    }
+  }
+  parts.push(source.slice(start).trim());
+  return parts;
 }
 
 /** Map after source-generating prebuild commands, including when an older map step came first. */
@@ -74,8 +111,8 @@ function finishWithMap(existing: string): string {
 
 /**
  * Wire a scan after dependency installs and around the project's build without
- * invoking a shell. Bun skips npm-style pre/post build hooks, so Bun projects get
- * a direct build chain; other package managers get lifecycle hooks. Existing
+ * invoking a shell. Only npm is assumed to run pre/post build hooks. Other managers
+ * get a direct build chain, independent of their version and lifecycle settings. Existing
  * commands are preserved and the operation is idempotent.
  */
 export function wireBuildScripts(
@@ -98,7 +135,7 @@ export function wireBuildScripts(
       };
     }
     scripts.postinstall = postinstall;
-  } else if (packageManager === 'bun') {
+  } else if (packageManager !== 'npm') {
     let nextBuild = prependHook(build, SCAN_COMMAND);
     if (!/^\s*patchstack-connect scan\s*&&\s*patchstack-connect map --upload(?:\s*(?:&&|;)|\s*$)/.test(nextBuild)) {
       nextBuild = nextBuild.replace(SCAN_COMMAND, `${SCAN_COMMAND} && ${MAP_COMMAND}`);
@@ -150,7 +187,7 @@ export function wireBuildScripts(
     };
   }
 
-  return packageManager === 'bun'
+  return packageManager !== 'npm'
     ? {
         changed: true,
         strategy: 'build-chain',
