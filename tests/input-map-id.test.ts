@@ -54,6 +54,22 @@ describe('the input-map identity', () => {
     );
   });
 
+  it('identifies the uploaded JSON form, where an undefined property is absent', () => {
+    const map = { version: 3, endpoints: [{ file: 'src/server.ts', inputs: [] }], coverage: { filesParsed: 2 } };
+    const withUndefined = {
+      ...map,
+      endpoints: [{ ...map.endpoints[0], route: undefined }],
+      coverage: { ...map.coverage, note: undefined },
+    };
+
+    expect(inputMapBuildId(withUndefined)).toBe(inputMapBuildId(map));
+    expect(inputMapBuildId(withUndefined)).toBe(inputMapBuildId(JSON.parse(JSON.stringify(withUndefined))));
+  });
+
+  it('refuses an undefined array element, which the upload would rewrite as null', () => {
+    expect(() => inputMapBuildId({ version: 3, endpoints: [undefined] })).toThrow(NonCanonicalInputMap);
+  });
+
   it('excludes the transport field that carries the digest', () => {
     const map = { version: 3, endpoints: [], coverage: {} };
 

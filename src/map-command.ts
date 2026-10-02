@@ -7,7 +7,7 @@ import { isProvenFlow } from './map/coordinates.js';
 import { type Flags, getStringFlag } from './flags.js';
 import { applyBuildStamp } from './build-stamp.js';
 import { isPreBundleBuildHook } from './build-hook.js';
-import { inputMapBuildId } from './input-map-id.js';
+import { inputMapBuildId, NonCanonicalInputMap } from './input-map-id.js';
 import { atomicWriteFileSync } from './safe-file.js';
 import type { Config } from './types.js';
 
@@ -138,9 +138,21 @@ export async function runMapDetailed(flags: Flags, options: MapOptions = {}): Pr
     // identity of THIS map into the imported rules file. A standalone manual map remains unbound.
     let buildId: string | null = null;
     if (options.setup || isPreBundleBuildHook()) {
-      const candidate = inputMapBuildId(map);
-      const stamp = applyBuildStamp(cwd, candidate);
-      if (stamp.kind === 'stamped' || stamp.kind === 'unchanged') {
+      let candidate: string | null = null;
+      let identityError: string | null = null;
+      try {
+        candidate = inputMapBuildId(map);
+      } catch (err) {
+        if (!(err instanceof NonCanonicalInputMap)) throw err;
+        identityError = err.message;
+      }
+      const stamp = candidate === null ? null : applyBuildStamp(cwd, candidate);
+      if (candidate === null || stamp === null) {
+        log(
+          `patchstack: could not bind this map to the runtime guard — ${identityError}. ` +
+            'Rules generated from these coordinates will detect only, not block.',
+        );
+      } else if (stamp.kind === 'stamped' || stamp.kind === 'unchanged') {
         buildId = candidate;
         log(`patchstack: bound this map to ${stamp.file} (${candidate.slice(0, 12)}).`);
       } else {

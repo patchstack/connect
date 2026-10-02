@@ -22,7 +22,9 @@ function canonicalString(value: string): string {
  *
  * Objects sort keys as text; arrays retain order; strings escape only quote, backslash and control
  * characters; numbers are safe integers written in decimal. The bound avoids language-specific float
- * and large-integer spellings. Empty objects stay distinct from empty arrays.
+ * and large-integer spellings. Empty objects stay distinct from empty arrays. An object property whose
+ * value is `undefined` is absent, as it is in the uploaded JSON body, so the digest names the document
+ * the server receives.
  */
 function canonicalText(value: unknown): string {
   if (value === null) return 'null';
@@ -39,7 +41,9 @@ function canonicalText(value: unknown): string {
   if (Array.isArray(value)) return `[${value.map(canonicalText).join(',')}]`;
   if (value !== null && typeof value === 'object') {
     const record = value as Record<string, unknown>;
-    const keys = Object.keys(record).sort();
+    const keys = Object.keys(record)
+      .filter((key) => record[key] !== undefined)
+      .sort();
 
     return `{${keys.map((key) => `${canonicalString(key)}:${canonicalText(record[key])}`).join(',')}}`;
   }
