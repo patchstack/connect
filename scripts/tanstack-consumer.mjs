@@ -1,5 +1,6 @@
 // Synthetic source against the real public framework and the package artifact; no live API calls.
-import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, existsSync, rmSync } from 'node:fs';
+import assert from 'node:assert/strict';
 import { join, dirname, resolve } from 'node:path';
 import { tmpdir } from 'node:os';
 import { execFileSync } from 'node:child_process';
@@ -20,6 +21,26 @@ try {
   const cli = join(scratch,'node_modules/@patchstack/connect/dist/cli.js');
   const tsc = join(scratch,'node_modules/typescript/bin/tsc');
   const flags = ['--noEmit','--strict','--skipLibCheck','--module','ESNext','--moduleResolution','Bundler','--target','ES2022','--resolveJsonModule','--esModuleInterop','--lib','ES2022,DOM'];
+  const config = `import {defineConfig} from 'vite';
+import {tanstackStart} from '@tanstack/react-start/plugin/vite';
+export default defineConfig({plugins:[tanstackStart()]});`;
+  write('vite.config.ts', config);
+  for (const extension of ['mts', 'mjs']) {
+    const file = `src/server.${extension}`;
+    const source = 'export default {fetch() {return new Response("Unauthorized", {status:401});}};';
+    write(file, source);
+    run(process.execPath,[cli,'protect']);
+    assert.equal(existsSync(join(scratch,'src/server.ts')), false, 'must not shadow the existing server');
+    assert.equal(readFileSync(join(scratch,file),'utf8'), source);
+    assert.throws(() => run(process.execPath,[cli,'protect','--check']));
+    rmSync(join(scratch,file));
+  }
+  write('start-options.ts','export default {srcDirectory:"web"};');
+  write('vite.config.ts',"import options from './start-options';\n" + config.replace('tanstackStart()', 'tanstackStart(options)'));
+  run(process.execPath,[cli,'protect']);
+  assert.equal(existsSync(join(scratch,'src/server.ts')), false, 'must not assume an imported configuration uses src/server.ts');
+  assert.throws(() => run(process.execPath,[cli,'protect','--check']));
+  write('vite.config.ts',config);
   run(process.execPath,[cli,'protect']);
   run(process.execPath,[cli,'protect','--check']);
   run(process.execPath,[tsc,...flags,'src/server.ts']);

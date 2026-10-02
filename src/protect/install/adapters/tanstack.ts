@@ -6,7 +6,7 @@ import { sourceCompiler, parsedSource, type Compiler } from '../syntax.js';
 import { installTemplate } from '../template-upgrade.js';
 import { copyProjectFileSync, ensureProjectDirectorySync, writeProjectFileSync } from '../../../safe-file.js';
 import type { Adapter } from '../types.js';
-import { templateWiringPresent } from '../seam.js';
+import { matchesGuardTemplate } from '../template-match.js';
 
 const ENTRY = 'src/server.ts';
 const GUARD = 'src/patchstack/guard.ts';
@@ -14,6 +14,54 @@ const IMPORT = 'import { protectFetch } from "./patchstack/guard";';
 const DEFAULT = `import handler, { createServerEntry } from '@tanstack/react-start/server-entry';
 export default createServerEntry({ fetch: handler.fetch.bind(handler) });
 `;
+const EXTENSIONS = ['ts', 'js', 'mts', 'mjs', 'tsx', 'jsx', 'cts', 'cjs'];
+
+/** Prove the default entry from literal configuration without executing application code. */
+function defaultEntryConfig(ts: Compiler, file: string, source: string): boolean {
+  const tree = parsedSource(ts, file, source);
+  if (!tree) return false;
+  const binding = (module: string, name: string) => tree.statements.filter(ts.isImportDeclaration)
+    .filter(n => ts.isStringLiteral(n.moduleSpecifier) && n.moduleSpecifier.text === module && !n.importClause?.isTypeOnly)
+    .flatMap(n => n.importClause?.namedBindings && ts.isNamedImports(n.importClause.namedBindings)
+      ? n.importClause.namedBindings.elements.filter(e => !e.isTypeOnly && (e.propertyName ?? e.name).text === name).map(e => e.name.text) : []);
+  const defineConfig = binding('vite', 'defineConfig');
+  const start = binding('@tanstack/react-start/plugin/vite', 'tanstackStart');
+  const unwrap = (expression: import('typescript').Expression): import('typescript').Expression => {
+    while (ts.isParenthesizedExpression(expression) || ts.isAsExpression(expression) || ts.isSatisfiesExpression(expression)) expression = expression.expression;
+    return expression;
+  };
+  const exports = tree.statements.filter(ts.isExportAssignment);
+  if (exports.length !== 1 || exports[0]!.isExportEquals) return false;
+  let config = unwrap(exports[0]!.expression);
+  if (ts.isCallExpression(config)) {
+    if (!ts.isIdentifier(config.expression) || !defineConfig.includes(config.expression.text) || config.arguments.length !== 1) return false;
+    config = unwrap(config.arguments[0]!);
+  }
+  if (!ts.isObjectLiteralExpression(config)) return false;
+  let unsafe = false;
+  const visit = (node: import('typescript').Node) => {
+    if (ts.isSpreadAssignment(node) || ts.isSpreadElement(node) || ts.isComputedPropertyName(node)) unsafe = true;
+    if (ts.isObjectLiteralExpression(node)) {
+      const names = new Set<string>();
+      for (const property of node.properties) {
+        if (!ts.isPropertyAssignment(property) || (!ts.isIdentifier(property.name) && !ts.isStringLiteral(property.name))) { unsafe = true; continue; }
+        const name = property.name.text;
+        if (names.has(name) || ['srcDirectory', 'serverEntry', 'entry', 'server', 'root'].includes(name)) unsafe = true;
+        names.add(name);
+      }
+    }
+    ts.forEachChild(node, visit);
+  };
+  visit(config);
+  if (unsafe) return false;
+  const plugins = config.properties.find(p => ts.isPropertyAssignment(p) && (ts.isIdentifier(p.name) || ts.isStringLiteral(p.name)) && p.name.text === 'plugins');
+  if (!plugins || !ts.isPropertyAssignment(plugins) || !ts.isArrayLiteralExpression(plugins.initializer)) return false;
+  const calls = plugins.initializer.elements.map(unwrap).filter(n => ts.isCallExpression(n) && ts.isIdentifier(n.expression) && start.includes(n.expression.text));
+  if (calls.length !== 1) return false;
+  const call = calls[0]!;
+  return ts.isCallExpression(call) && (call.arguments.length === 0
+    || (call.arguments.length === 1 && ts.isObjectLiteralExpression(unwrap(call.arguments[0]!))));
+}
 
 function entryProblem(cwd: string): string | null {
   try {
@@ -21,14 +69,18 @@ function entryProblem(cwd: string): string | null {
     if (!JSON.parse(read(file)).exports?.['./server-entry']) return 'the installed TanStack Start version does not expose server-entry';
   }
   catch { return 'the installed TanStack Start version must expose its server-entry contract'; }
-  if (['src/server.js', 'src/server.tsx', 'src/server.jsx', 'server.ts', 'server.js'].some(file => existsSync(join(cwd, file)))) {
+  const entries = ['src/server', 'server', ...EXTENSIONS.flatMap(ext => [`src/server.${ext}`, `server.${ext}`])];
+  if (entries.some(file => file !== ENTRY && existsSync(join(cwd, file)))) {
     return 'non-default or competing server entries require manual integration';
   }
-  // A custom source directory or server entry can make src/server.ts an unused file.
-  for (const file of ['vite.config.ts', 'vite.config.js', 'vite.config.mts', 'app.config.ts']) {
-    if (!existsSync(join(cwd, file))) continue;
-    const source = read(join(cwd, file));
-    if (/\b(?:srcDirectory|serverEntry|entry|server|root)\s*:|\.\.\./.test(source)) return 'custom Vite/Start entry configuration requires manual integration';
+  const configs = ['vite', 'app', 'rsbuild'].flatMap(name => EXTENSIONS.map(ext => `${name}.config.${ext}`))
+    .filter(file => existsSync(join(cwd, file)));
+  if (configs.length) {
+    const ts = sourceCompiler(cwd);
+    if (configs.length !== 1 || !configs[0]!.startsWith('vite.') || !ts
+      || !defaultEntryConfig(ts, configs[0]!, read(join(cwd, configs[0]!)))) {
+      return 'the default server entry cannot be established from this configuration; integrate it manually';
+    }
   }
   return null;
 }
@@ -97,6 +149,10 @@ export const tanstackAdapter: Adapter = {
     const changed: string[] = [];
     ensureProjectDirectorySync(cwd, join(cwd, 'src/patchstack'));
     if (installTemplate(cwd, GUARD, 'fetch-guard.ts')) changed.push(GUARD);
+    if (!matchesGuardTemplate(cwd, GUARD, 'fetch-guard.ts')) {
+      log('Custom Fetch helper needs manual review; the server entry was left untouched.');
+      return {ok:false,changed};
+    }
     const rules = 'src/patchstack/rules.json';
     if (opts.demo || !existsSync(join(cwd,rules))) {
       copyProjectFileSync(cwd, join(templatesDir(),opts.demo ? 'demo-rules.json' : 'rules.json'),join(cwd,rules));
@@ -114,7 +170,7 @@ export const tanstackAdapter: Adapter = {
     const ts = sourceCompiler(cwd);
     const problem = entryProblem(cwd);
     const wired = !problem && !!ts && existsSync(join(cwd,ENTRY)) && wiredEntry(ts,read(join(cwd,ENTRY)))
-      && existsSync(join(cwd,GUARD)) && templateWiringPresent(cwd,GUARD,'fetch-guard.ts') && existsSync(join(cwd,'src/patchstack/rules.json'));
+      && matchesGuardTemplate(cwd,GUARD,'fetch-guard.ts') && existsSync(join(cwd,'src/patchstack/rules.json'));
     return {wired,checks:[{label:'TanStack server Fetch boundary wired',ok:wired,hint:problem ?? 'run protect; manually review unsupported custom server entries'},
       {label:'browser-direct services and separately deployed functions are not covered by this entry',ok:true,unverifiable:true,hint:'install protection at each independently exposed backend; retain backend authorization and RLS'}]};
   },

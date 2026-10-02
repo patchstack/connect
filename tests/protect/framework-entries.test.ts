@@ -21,6 +21,9 @@ function tanstack() {
   put(cwd,'node_modules/@tanstack/react-start/package.json',JSON.stringify({name:'@tanstack/react-start',exports:{'./package.json':'./package.json','./server-entry':{import:'./server.js'}}}));
   return cwd;
 }
+const viteConfig = (options = '') => `import {defineConfig} from 'vite';
+import {tanstackStart} from '@tanstack/react-start/plugin/vite';
+export default defineConfig({plugins:[tanstackStart(${options})]});`;
 afterEach(()=>{ dirs.splice(0).forEach(cwd=>rmSync(cwd,{recursive:true,force:true})); vi.restoreAllMocks(); });
 
 describe('native TanStack server boundary',()=>{
@@ -58,8 +61,82 @@ describe('native TanStack server boundary',()=>{
     put(cwd,'vite.config.ts','export default { server: { entry: "custom.ts" } };');
     expect(runProtect(cwd).status).toBe('scaffolded');
     expect(existsSync(join(cwd,'src/server.ts'))).toBe(false);
-    put(cwd,'vite.config.ts','export default {};'); runProtect(cwd);
+    put(cwd,'vite.config.ts',viteConfig()); runProtect(cwd);
     put(cwd,'src/server.ts',read(cwd,'src/server.ts').replace('fetch: protectFetch(handler.fetch.bind(handler))','fetch: handler.fetch.bind(handler)'));
+    expect(runVerify(cwd).wired).toBe(false);
+  });
+
+  it.each(['js','mts','mjs','tsx','jsx','cts','cjs'])('never shadows an existing server.%s entry', ext => {
+    const cwd = tanstack();
+    const source = 'export default { fetch() { return new Response("Unauthorized", {status:401}); } };';
+    put(cwd, `src/server.${ext}`, source);
+    put(cwd, 'vite.config.ts', viteConfig());
+    expect(runProtect(cwd).status).toBe('scaffolded');
+    expect(existsSync(join(cwd, 'src/server.ts'))).toBe(false);
+    expect(read(cwd, `src/server.${ext}`)).toBe(source);
+    expect(runVerify(cwd).wired).toBe(false);
+  });
+
+  it.each([
+    viteConfig('options'),
+    viteConfig('getOptions()'),
+    viteConfig('{...options}'),
+    viteConfig('{srcDirectory}'),
+    viteConfig('{"srcDirectory":"web"}'),
+    viteConfig('{[key]:"web"}'),
+    viteConfig('{server:{entry:"custom"}}'),
+    viteConfig().replace('defineConfig({plugins:[tanstackStart()]})', 'defineConfig(config)'),
+    viteConfig().replace('defineConfig({plugins:[tanstackStart()]})', 'defineConfig(() => ({plugins:[tanstackStart()]}))'),
+    viteConfig().replace('plugins:[tanstackStart()]', '...config,plugins:[tanstackStart()]'),
+    viteConfig().replace('plugins:[tanstackStart()]', 'plugins:plugins'),
+    viteConfig().replace('plugins:[tanstackStart()]', 'plugins:[...plugins,tanstackStart()]'),
+    'export {default} from "./shared-config";',
+  ])('does not assume default entries from dynamic configuration: %s', config => {
+    const cwd = tanstack();
+    put(cwd, 'vite.config.ts', "import options from './start-options';\n" + config);
+    put(cwd, 'start-options.ts', 'export default {srcDirectory:"web"};');
+    const source = 'export default {fetch(){ return new Response("custom"); }};';
+    put(cwd, 'web/server.ts', source);
+    expect(runProtect(cwd).status).toBe('scaffolded');
+    expect(existsSync(join(cwd, 'src/server.ts'))).toBe(false);
+    expect(read(cwd, 'web/server.ts')).toBe(source);
+    expect(runVerify(cwd).wired).toBe(false);
+  });
+
+  it.each(['ts','js','mts','mjs'])('accepts literal defaults and import aliases in vite.config.%s', ext => {
+    const cwd = tanstack();
+    const config = viteConfig('{}').replace('{defineConfig}', '{defineConfig as config}').replace('defineConfig(', 'config(')
+      .replace('{tanstackStart}', '{tanstackStart as start}').replace('tanstackStart(', 'start(');
+    put(cwd, `vite.config.${ext}`, config);
+    expect(runProtect(cwd).status).toBe('wired');
+    expect(runVerify(cwd).wired).toBe(true);
+  });
+
+  it.each(['vite.config.cjs','vite.config.cts','app.config.ts','rsbuild.config.ts'])('preserves unsupported configuration in %s', file => {
+    const cwd = tanstack();
+    put(cwd, file, 'module.exports = require("./options");');
+    expect(runProtect(cwd).status).toBe('scaffolded');
+    expect(existsSync(join(cwd, 'src/server.ts'))).toBe(false);
+  });
+
+  it('invalidates verification if configuration changes after wiring', () => {
+    const cwd = tanstack();
+    put(cwd, 'vite.config.ts', viteConfig());
+    expect(runProtect(cwd).status).toBe('wired');
+    const entry = read(cwd, 'src/server.ts');
+    put(cwd, 'vite.config.ts', viteConfig('options'));
+    expect(runVerify(cwd).wired).toBe(false);
+    expect(runProtect(cwd).status).toBe('scaffolded');
+    expect(read(cwd, 'src/server.ts')).toBe(entry);
+  });
+
+  it('does not create an entry that imports a custom Fetch helper', () => {
+    const cwd = tanstack();
+    const helper = 'export const protectFetch = (handler: unknown) => handler;';
+    put(cwd, 'src/patchstack/guard.ts', helper);
+    expect(runProtect(cwd).status).toBe('scaffolded');
+    expect(existsSync(join(cwd, 'src/server.ts'))).toBe(false);
+    expect(read(cwd, 'src/patchstack/guard.ts')).toBe(helper);
     expect(runVerify(cwd).wired).toBe(false);
   });
 });
