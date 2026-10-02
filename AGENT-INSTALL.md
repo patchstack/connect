@@ -290,6 +290,13 @@ neither a terminal nor a way to approve it. Then none of the options above exist
 running the command again, under any spelling, gets the same answer. Step 1 still applies: do not route
 around the block, and leave `package.json` and the source tree as they were.
 
+That includes rebuilding by hand what `setup` would have done. Do not write a build plugin or script that
+imitates a Patchstack step, do not set `window.__PATCHSTACK_PROD__` or `window.__PATCHSTACK_ENV__`
+yourself, and do not call the Patchstack API in place of the CLI. A hosted builder can serve the same build
+at its preview address and at the published one, so a marker decided at build time cannot be right for
+both. A hand-set live-site flag tells the widget that the builder's preview is the live site, and the
+person loses the "Connect this website" panel in the one place they would look for it.
+
 Tell the person in plain words that this platform will not run Patchstack's setup, then give them these
 choices and wait for theirs:
 
@@ -304,8 +311,10 @@ choices and wait for theirs:
   one script before bringing the changes back.
 - **Add only the Patchstack Connector.** The person creates an "Application" site in the Patchstack
   dashboard and gives you its site ID or widget snippet, and you add the tag as in steps 2 and 3 of
-  "Plain HTML sites", in the app's root HTML shell or layout. This adds the widget and nothing else: no
-  check of the app's packages, no build steps, no runtime protection. Say that when you offer it.
+  "Plain HTML sites", in the app's root HTML shell or layout. Add the tag only, with no production marker
+  and no build step: the widget then works out from the page's address whether it is on a preview or the
+  live site. This adds the widget and nothing else: no check of the app's packages, no build steps, no
+  runtime protection. Say that when you offer it.
 - **Stop here.** Nothing else changes.
 
 If you installed `@patchstack/connect` for this attempt, it stays in `dependencies` with nothing wired to
@@ -542,7 +551,7 @@ AI model. A framework or hosting upgrade requires this review again.
 - The CLI never opens the dashboard link and never asks for Patchstack credentials.
 - Label hosted workspace scans with `PATCHSTACK_ENVIRONMENT=sandbox` in that process only. Leave production builds unset (a platform's own tier or production branch name, or the hosted builder the project belongs to, makes the build report `production`; a developer machine or a CI runner this does not know reports `local`) and never commit a sandbox label into files shared with production.
 - If a step fails, stop and report it. Don't proceed with placeholders.
-- If your tool refuses to execute the CLI, stop and hand the command to the person — see "When your tool will not run this CLI", and "When the platform blocks the CLI outright" when nobody can approve it there. Never work around a permission refusal.
+- If your tool refuses to execute the CLI, stop and hand the command to the person — see "When your tool will not run this CLI", and "When the platform blocks the CLI outright" when nobody can approve it there. Never work around a permission refusal, and never stand in for the CLI with a build step, a production marker or API calls of your own.
 - CI never has the credential in a file: `.patchstackrc.local.json` is git-ignored by design, so set `PATCHSTACK_API_KEY` as an env var there (and `PATCHSTACK_SITE_UUID` too where `.patchstackrc.json` is also absent). Precedence for the site UUID and settings: CLI flag → env var → `.patchstackrc.json`. For the API key: env var → `.patchstackrc.local.json` → `.patchstackrc.json` (where installs made before the split still hold it). `login` is interactive and refuses to run in CI, so CI always takes its credential from the environment.
 
 ## Which build a rule belongs to
