@@ -68,12 +68,14 @@ const CASES: Array<{ phase: string; category: string; raise: Raise }> = [
     phase: 'egress',
     category: 'ssrf',
     raise: async (onDetect) => {
-      // Egress screening wraps the global fetch, so the call has to be made through it.
+      // Egress screening wraps the global fetch, so the call has to be made through it. The hostname rule
+      // is what this case raises; address screening would resolve the host over the network first.
       const original = globalThis.fetch;
       globalThis.fetch = (async () => ({ marker: 'stub' })) as any;
       const protection: any = await createProtection({
         egress: true,
         mode: 'dry-run',
+        screenDns: false,
         egressRules: [{
           id: 'cat-egress',
           phase: 'egress',
