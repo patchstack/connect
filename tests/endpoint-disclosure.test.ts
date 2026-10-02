@@ -47,6 +47,7 @@ const DISCLOSED_AS: Record<string, { doc: RegExp; files?: string[] }> = {
   'monitor/pulse/build': { doc: /monitor\/pulse\/build/i, files: ['src/client.ts'] },
   'monitor/widget/settings': { doc: /monitor\/widget\/settings/i },
   'monitor/claim': { doc: /claim/i },
+  'monitor/claim/preview': { doc: /monitor\/claim\/preview/i },
   'oauth/token': { doc: /oauth\/token/i },
   'api/logs/log': { doc: /logs\/log/i },
   'api/get-rules/3': { doc: /get-rules/i },

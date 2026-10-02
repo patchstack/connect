@@ -360,7 +360,7 @@ describe('guide', () => {
       expect(output).toContain(`Open http`);
       expect(output).toContain(`/monitor/claim?site=${VALID_UUID}`);
       expect(output).toContain('anyone who opens your app can connect it to their own account');
-      // Nothing on disk says the site has an owner, so the checklist never marks it connected.
+      // Nothing on disk says the site has an owner, so the checklist does not mark it connected.
       expect(output).not.toContain('✔ Connect');
       expect(output).not.toMatch(/^ {5}✘/m);
     });
@@ -376,6 +376,28 @@ describe('guide', () => {
       expect(output).not.toContain('anyone who opens your app');
       expect(output).toContain('PATCHSTACK_API_KEY');
       expect(output).not.toContain('/monitor/claim?site=');
+    });
+
+    it('marks the site connected when .patchstackrc.json records the claim, with no caller answer', async () => {
+      wiredProject();
+      writeJson('.patchstackrc.json', { siteUuid: VALID_UUID, claimed: true });
+
+      const output = renderGuideChecklist(await collectGuideState(cwd), false);
+
+      expect(output).toContain('✔ Connect project to Patchstack account');
+      expect(output).toContain('Next: deploy your project to protect the live app');
+      expect(output).not.toContain('anyone who opens your app');
+      expect(output).not.toContain('/monitor/claim?site=');
+    });
+
+    it('lets a caller that just heard from Patchstack overrule the note on disk', async () => {
+      wiredProject();
+      writeJson('.patchstackrc.json', { siteUuid: VALID_UUID, claimed: true });
+
+      const output = renderGuideChecklist(await collectGuideState(cwd), false, { connected: false });
+
+      expect(output).toContain('✘ Connect project to Patchstack account');
+      expect(output).toContain('anyone who opens your app can connect it to their own account');
     });
 
     it('says all done only when every step is', async () => {

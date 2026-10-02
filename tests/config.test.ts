@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
-import { persistApiKey, persistSiteUuid, resolveConfig, writeConfigFile } from '../src/config.js';
+import { persistApiKey, persistClaimState, persistSiteUuid, resolveConfig, writeConfigFile } from '../src/config.js';
 import { readFile } from 'node:fs/promises';
 import { DEFAULT_ENDPOINT, DEFAULT_TIMEOUT_MS } from '../src/client.js';
 import { PatchstackError } from '../src/types.js';
@@ -80,6 +80,37 @@ describe('resolveConfig', () => {
     const parsed = JSON.parse(raw) as { siteUuid?: string; endpoint?: string };
     expect(parsed.siteUuid).toBe(VALID_UUID);
     expect(parsed.endpoint).toBe('https://custom.example.com/monitor/pulse/manifest');
+  });
+
+  it('persistSiteUuid saves the claim link with the UUID when given one', async () => {
+    const claimUrl = `https://app.example.com/monitor/claim?site=${VALID_UUID}`;
+    await persistSiteUuid(cwd, VALID_UUID, claimUrl);
+    const parsed = JSON.parse(await readFile(path.join(cwd, '.patchstackrc.json'), 'utf8')) as Record<string, unknown>;
+    expect(parsed).toEqual({ siteUuid: VALID_UUID, claimUrl });
+  });
+
+  it('persistClaimState swaps the claim link for the claimed note, and back', async () => {
+    const claimUrl = `https://app.example.com/monitor/claim?site=${VALID_UUID}`;
+    await writeConfigFile(cwd, { siteUuid: VALID_UUID, claimUrl, widget: true });
+    const read = async () => JSON.parse(await readFile(path.join(cwd, '.patchstackrc.json'), 'utf8')) as Record<string, unknown>;
+
+    await expect(persistClaimState(cwd, true, claimUrl)).resolves.toBe(true);
+    expect(await read()).toEqual({ siteUuid: VALID_UUID, widget: true, claimed: true });
+    await expect(resolveConfig({ cwd })).resolves.toMatchObject({ claimed: true });
+
+    await expect(persistClaimState(cwd, false, claimUrl)).resolves.toBe(true);
+    expect(await read()).toEqual({ siteUuid: VALID_UUID, widget: true, claimUrl });
+    await expect(resolveConfig({ cwd })).resolves.toMatchObject({ claimed: false });
+  });
+
+  it('persistClaimState leaves the file alone when nothing changed or no site exists', async () => {
+    await writeConfigFile(cwd, { siteUuid: VALID_UUID, claimed: true });
+    await expect(persistClaimState(cwd, true)).resolves.toBe(false);
+
+    await writeConfigFile(cwd, { widget: false });
+    await expect(persistClaimState(cwd, true)).resolves.toBe(false);
+    const parsed = JSON.parse(await readFile(path.join(cwd, '.patchstackrc.json'), 'utf8')) as Record<string, unknown>;
+    expect(parsed).toEqual({ widget: false });
   });
 
   it('throws on invalid UUID', async () => {

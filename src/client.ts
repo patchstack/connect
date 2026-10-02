@@ -352,6 +352,44 @@ export async function fetchSiteStatus(config: Config): Promise<SiteStatus> {
   }
 }
 
+/** Whether the site has an owner on Patchstack, or `unknown` when that could not be learned. */
+export type ClaimState = 'claimed' | 'unclaimed' | 'unknown';
+
+/**
+ * Ask the public claim page whether this site has an owner yet.
+ *
+ * The same lookup the claim link's page makes before it renders: `claimable` means nobody owns the
+ * site, and either owned state means somebody does. It sends no credential and nothing about the
+ * project — the site UUID in the query is the whole request. Any other answer, a non-2xx response or
+ * a network failure is `unknown`; never throws.
+ */
+export async function fetchClaimState(config: Config): Promise<ClaimState> {
+  if (config.siteUuid === null) return 'unknown';
+
+  const url = new URL('/monitor/claim/preview', new URL(config.endpoint).origin);
+  url.searchParams.set('site', config.siteUuid);
+
+  try {
+    assertConnectableEndpoint(config, url.toString());
+    const response = await fetch(url.toString(), {
+      method: 'GET',
+      headers: {
+        Accept: 'application/json',
+        'Cache-Control': 'no-cache',
+        'User-Agent': '@patchstack/connect',
+      },
+      signal: AbortSignal.timeout(config.timeoutMs),
+    });
+    if (!response.ok) return 'unknown';
+    const body = (await readBoundedJson(response)) as { state?: unknown } | null;
+    if (body?.state === 'claimable') return 'unclaimed';
+    if (body?.state === 'owned-by-other' || body?.state === 'owned-by-you') return 'claimed';
+    return 'unknown';
+  } catch {
+    return 'unknown';
+  }
+}
+
 /**
  * The whole body of a manifest push.
  *

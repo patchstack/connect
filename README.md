@@ -374,6 +374,8 @@ Two files, because one value is public and the other is not.
 
 `"widget"` is optional and defaults to `true`; set it to `false` to stop Connect from managing the Patchstack Connector tag (see *The Patchstack Connector*).
 
+Connect also keeps two fields there itself. `"claimUrl"` is the link that connects the site to your Patchstack account, saved when the site is created so it is not lost with the terminal output. Once `scan`, `status` or `claim` sees the site connected, the link is removed and `"claimed": true` takes its place, which is how `guide` knows without asking Patchstack.
+
 **You do not write `apiKey` yourself.** The first `scan` provisions the site and Connect saves it, so setup needs no manual step.
 
 The site UUID identifies the site and is **not** a secret — the Patchstack Connector ships the same UUID in client-side HTML.
