@@ -12,6 +12,7 @@ import type { Adapter, WireOptions, WireResult, VerifyResult } from '../types.js
 import { copyProjectFileSync, ensureProjectDirectorySync, writeProjectFileSync } from '../../../safe-file.js';
 import { parsedSource, sourceCompiler, type Compiler } from '../syntax.js';
 import { matchesGuardTemplate } from '../template-match.js';
+import { installTemplate } from '../template-upgrade.js';
 
 const CLIENT_TUNNEL = [
   '',
@@ -120,10 +121,7 @@ function scaffold(cwd: string, opts: WireOptions): string[] {
   const dst = join(cwd, 'src/integrations/patchstack');
   ensureProjectDirectorySync(cwd, dst);
   const changed: string[] = [];
-  if (!existsSync(join(dst, 'guard.ts'))) {
-    copyProjectFileSync(cwd, join(templates, 'guard.ts'), join(dst, 'guard.ts'));
-    changed.push(GUARD_FILE);
-  }
+  if (installTemplate(cwd, GUARD_FILE, 'guard.ts')) changed.push(GUARD_FILE);
   const rulesDst = join(dst, 'rules.json');
   // Default: the high-precision starter, written only if absent (don't clobber the user's rules on
   // re-run). --demo: (re)seed the broad multi-class sample bundle for a self-contained demonstration.

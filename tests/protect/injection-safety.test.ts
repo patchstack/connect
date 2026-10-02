@@ -4,6 +4,7 @@ import { join, dirname } from 'node:path';
 import { tmpdir } from 'node:os';
 import ts from 'typescript';
 import { runProtect, runVerify } from '../../src/protect/install/index.js';
+import { installTemplate } from '../../src/protect/install/template-upgrade.js';
 
 const dirs: string[] = [];
 afterEach(() => { for (const dir of dirs.splice(0)) rmSync(dir, { recursive: true, force: true }); vi.restoreAllMocks(); });
@@ -99,6 +100,22 @@ app.post('/submit', handler);
     expect(runProtect(cwd).status).toBe('scaffolded');
     expect(read(cwd, 'server.ts')).toBe(entry);
     expect(read(cwd, 'patchstack/guard.ts')).toBe(helper);
+  });
+
+  it('upgrades a recognized unchanged helper and retains its baked site identity', () => {
+    const template = readFileSync(new URL('../../src/protect/templates/next-guard.ts', import.meta.url),'utf8');
+    const previous = template
+      .replace(/\(typeof process === "undefined" \? undefined : process.env.(PATCHSTACK_\w+)\)/g, 'process.env.$1')
+      .replace(/  const refreshMs =[^\n]*\n/, '').replace('mode, egress: true, refreshMs','mode, egress: true')
+      .replace('__PATCHSTACK_SITE_UUID__','00000000-0000-4000-8000-000000000001');
+    const cwd = project({}, {'helper.ts':previous});
+    expect(installTemplate(cwd,'helper.ts','next-guard.ts')).toBe(true);
+    expect(read(cwd,'helper.ts')).toContain('300000');
+    expect(read(cwd,'helper.ts')).toContain('00000000-0000-4000-8000-000000000001');
+    expect(installTemplate(cwd,'helper.ts','next-guard.ts')).toBe(false);
+    writeFileSync(join(cwd,'helper.ts'),previous+'\n// Custom application policy.\n');
+    expect(installTemplate(cwd,'helper.ts','next-guard.ts')).toBe(false);
+    expect(read(cwd,'helper.ts')).toContain('// Custom application policy.');
   });
 });
 

@@ -10,6 +10,7 @@ import type { WireOptions, VerifyResult } from './types.js';
 import type { GuardModuleQuery } from './source-scope.js';
 import { copyProjectFileSync, ensureProjectDirectorySync } from '../../safe-file.js';
 import { matchesGuardTemplate } from './template-match.js';
+import { installTemplate } from './template-upgrade.js';
 import {
   stripComments,
   maskStringContents,
@@ -107,10 +108,7 @@ export function scaffoldGeneric(
   ensureProjectDirectorySync(cwd, dst);
   const guardRel = `${dir}/${guardFile}`;
   const changed: string[] = [];
-  if (!existsSync(join(dst, guardFile))) {
-    copyProjectFileSync(cwd, join(templates, guardTemplate), join(dst, guardFile));
-    changed.push(guardRel);
-  }
+  if (installTemplate(cwd, guardRel, guardTemplate)) changed.push(guardRel);
   if (!opts.demo && matchesGuardTemplate(cwd, guardRel, guardTemplate)) bakeSiteUuid(cwd, guardRel);
   const rulesDst = join(dst, 'rules.json');
   if (opts.demo || !existsSync(rulesDst)) {

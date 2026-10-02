@@ -4,6 +4,7 @@ import { bakeSiteUuid, hasDependency, read, log, templatesDir } from '../util.js
 import type { Adapter, WireOptions, WireResult, VerifyResult } from '../types.js';
 import { copyProjectFileSync, ensureProjectDirectorySync, writeProjectFileSync } from '../../../safe-file.js';
 import { composeNextMiddleware, composeNextRoute, nextCompiler, nextSourceWired, standardNextRouting, NEXT_MARKER, ROUTE_MARKER } from './next-source.js';
+import { installTemplate } from '../template-upgrade.js';
 
 function middlewareInfo(cwd: string) {
   const candidates = ['middleware.ts', 'middleware.js', 'src/middleware.ts', 'src/middleware.js'];
@@ -85,7 +86,10 @@ function wire(cwd: string, opts: WireOptions): WireResult {
   const guardPath = join(cwd, mw.guard);
   const guardConflict = existsSync(guardPath) && !sharedGuardPresent(guardPath);
   const ensureGuard = () => {
-    if (existsSync(guardPath)) return;
+    if (existsSync(guardPath)) {
+      if (mw.guard.endsWith('.ts') && installTemplate(cwd, mw.guard, 'next-guard.ts')) changed.push(mw.guard);
+      return;
+    }
     const source = read(join(templates, 'next-guard.ts'));
     writeProjectFileSync(cwd, guardPath, mw.guard.endsWith('.js')
       ? ts!.transpileModule(source, { compilerOptions: { target: ts!.ScriptTarget.ES2022, module: ts!.ModuleKind.ESNext } }).outputText
@@ -101,6 +105,7 @@ function wire(cwd: string, opts: WireOptions): WireResult {
     changed.push(mw.relFile);
     log(`scaffolded ${mw.relFile} (request-phase guard)`);
   } else if (existing.includes(NEXT_MARKER) || existing.includes('#region patchstack-next (')) {
+    if (existing.includes('#region patchstack-next (') && installTemplate(cwd, mw.relFile, 'next-middleware.ts')) changed.push(mw.relFile);
     log(`${mw.relFile} already has a Patchstack guard — left as-is`);
     if (ts && existing.includes(NEXT_MARKER)) ensureGuard();
   } else {

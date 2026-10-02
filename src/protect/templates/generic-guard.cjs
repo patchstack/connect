@@ -31,10 +31,11 @@ async function getProtection() {
 }
 
 async function buildProtection() {
-  const mode = process.env.PATCHSTACK_MODE === "dry-run" ? "dry-run" : "block";
-  const token = process.env.PATCHSTACK_WAF_TOKEN;
-  const siteUuid = PS_SITE_UUID.startsWith("__") ? process.env.PATCHSTACK_SITE_UUID : PS_SITE_UUID;
-  const common = { mode, egress: true };
+  const mode = (typeof process === "undefined" ? undefined : process.env.PATCHSTACK_MODE) === "dry-run" ? "dry-run" : "block";
+  const token = (typeof process === "undefined" ? undefined : process.env.PATCHSTACK_WAF_TOKEN);
+  const siteUuid = PS_SITE_UUID.startsWith("__") ? (typeof process === "undefined" ? undefined : process.env.PATCHSTACK_SITE_UUID) : PS_SITE_UUID;
+  const refreshMs = (typeof process === "undefined" ? undefined : process.env.PATCHSTACK_ENVIRONMENT) === "sandbox" ? 15000 : 300000;
+  const common = { mode, egress: true, refreshMs };
   return createProtection(
     siteUuid
       ? { ...common, siteUuid, rules: fallbackRules, cacheDir: ".patchstack" }
@@ -105,7 +106,7 @@ function patchstackMiddleware(req, res, next) {
   // there is nothing to answer and the request is screened as normal.
   const screen = () => {
     getProtection().then(
-      (active) => active.node()(req, res, carryOn),
+      (active) => active.node({ screenResponses: true })(req, res, carryOn),
       (err) => {
         psStepAside(err);
         carryOn();
