@@ -72,7 +72,7 @@ describe('runProtect scaffolder', () => {
     expect(start).toContain('const patchstackFunctionGuard =');
     // response screening is wired on the non-tunnel path
     // With the request: a response rule scoped to a route or method cannot apply that scope without it.
-    expect(start).toContain('return screenResponse(await next(), request);');
+    expect(start).toContain('response: await screenResponse(result.response, request)');
     // guards registered FIRST, existing middleware kept
     expect(start).toContain('requestMiddleware: [patchstackGuard, errorMiddleware]');
     expect(start).toContain('functionMiddleware: [patchstackFunctionGuard, attachSupabaseAuth]');
@@ -87,11 +87,11 @@ describe('runProtect scaffolder', () => {
     expect(guard).toContain('export async function screenResponse<T>(response: T, request?: Request): Promise<T>');
   });
 
-  it('scaffolds the opt-in route-level WAF (gated on PATCHSTACK_ROUTE_WAF)', () => {
+  it('screens native routes without requiring an extra environment switch', () => {
     runProtect(dir);
     const start = read(dir, 'src/start.ts');
     const guard = read(dir, 'src/integrations/patchstack/guard.ts');
-    expect(start).toContain('process.env.PATCHSTACK_ROUTE_WAF === "1"');
+    expect(start).not.toContain('PATCHSTACK_ROUTE_WAF');
     expect(start).toContain('const blocked = await guardRequest(request);');
     expect(guard).toContain('export async function guardRequest(');
   });
@@ -164,7 +164,7 @@ export const startInstance = createStart(() => ({
     const start = read(dir, 'src/start.ts');
     // upgraded in place: route-WAF hook + guardRequest import now present, wrapped in markers
     expect(start).toContain('// #region patchstack-guard ');
-    expect(start).toContain('process.env.PATCHSTACK_ROUTE_WAF === "1"');
+    expect(start).not.toContain('PATCHSTACK_ROUTE_WAF');
     expect(start).toContain('const blocked = await guardRequest(request);');
     expect(start).toMatch(/import \{[^}]*guardRequest[^}]*\} from "@\/integrations\/patchstack\/guard";/);
     // no duplication, old comment header gone, registrations intact
