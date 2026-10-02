@@ -28,7 +28,10 @@ describe('setup hooks under the real package manager', () => {
       writeFileSync(join(cwd,'.yarnrc.yml'),'nodeLinker: node-modules\n');
       const version = spawnSync(manager,['--version'],{encoding:'utf8'}).stdout?.trim() ?? '';
       if (!version.startsWith('1.')) {
-        const installed = spawnSync(manager,['install','--mode=skip-build'],{cwd,encoding:'utf8',env:{...process.env,YARN_ENABLE_NETWORK:'0'}});
+        // This new local-only fixture needs its initial lockfile, including on CI.
+        const installed = spawnSync(manager,['install','--mode=skip-build'],{cwd,encoding:'utf8',env:{
+          ...process.env,CI:'true',YARN_ENABLE_NETWORK:'0',YARN_ENABLE_IMMUTABLE_INSTALLS:'false',
+        }});
         expect(installed.status).toBe(0);
       }
     }
