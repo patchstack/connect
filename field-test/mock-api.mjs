@@ -13,16 +13,36 @@ import { randomUUID } from 'node:crypto';
  */
 export function startMockApi({ port = 0, uuid = randomUUID() } = {}) {
   const requests = [];
+  let mappedBuild = null;
 
   const server = createServer((req, res) => {
     let body = '';
     req.on('data', (chunk) => (body += chunk));
     req.on('end', () => {
-      requests.push({ method: req.method, url: req.url, body: body.slice(0, 4000) });
+      requests.push({ method: req.method, url: req.url, body: body.slice(0, 4000), buildId: req.headers['x-patchstack-build'] ?? null });
+
+      if (req.method === 'POST' && req.url === '/monitor/pulse/token') {
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ access_token: 'synthetic-field-token', expires_in: 3600 }));
+        return;
+      }
+      if (req.method === 'POST' && req.url === `/monitor/pulse/input-map/${uuid}`) {
+        try { mappedBuild = JSON.parse(body).build_id ?? null; } catch { mappedBuild = null; }
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ result: 'stored', revision: 1 }));
+        return;
+      }
+      if (req.method === 'GET' && req.url === `/monitor/pulse/rules/${uuid}`) {
+        const matching = mappedBuild && req.headers['x-patchstack-build'] === mappedBuild;
+        res.writeHead(200, { 'Content-Type': 'application/json',
+          ...(matching ? { 'X-Patchstack-Build-Match': 'match', 'X-Patchstack-Build-ID': mappedBuild } : {}) });
+        res.end(JSON.stringify({ firewall: [], whitelists: [], whitelist_keys: {} }));
+        return;
+      }
 
       if (req.method === 'POST' && req.url === '/monitor/pulse/manifest') {
         res.writeHead(200, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ uuid, stored: true, manifest_id: 101, checksum: 'deadbeefcafe' }));
+        res.end(JSON.stringify({ uuid, stored: true, manifest_id: 101, checksum: 'deadbeefcafe', api_key: 'synthetic-field-secret-1' }));
         return;
       }
       if (req.method === 'POST' && req.url?.startsWith('/monitor/pulse/manifest/')) {

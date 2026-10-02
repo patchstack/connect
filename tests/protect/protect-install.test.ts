@@ -13,7 +13,7 @@ beforeEach(() => {
     'import { createStart, createMiddleware } from "@tanstack/react-start";\n' +
     'export const startInstance = createStart(() => ({ functionMiddleware: [], requestMiddleware: [] }));\n');
   writeFileSync(join(dir, 'src/integrations/supabase/client.ts'),
-    "const headers = new Headers();\n    headers.set('apikey', supabaseKey);\n");
+    "function createSupabaseFetch(supabaseKey: string) { return (input: RequestInfo, init?: RequestInit) => {\nconst headers = new Headers();\nheaders.set('apikey', supabaseKey);\nreturn fetch(input, { ...init, headers });\n}; }\n");
   // A real site UUID, matching what `patchstack-connect scan` actually writes.
   writeFileSync(join(dir, '.patchstackrc.json'), JSON.stringify({ siteUuid: '3f1a9c2e-1b4d-4c8a-9e2f-7a6b5c4d3e2f' }));
 });

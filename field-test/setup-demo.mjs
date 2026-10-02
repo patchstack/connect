@@ -59,6 +59,7 @@ try {
 
   mock = await startMockApi();
   const env = { ...process.env, PATCHSTACK_ENDPOINT: mock.endpoint, NO_COLOR: '1' };
+  for (const name of ['PATCHSTACK_SITE_UUID','PATCHSTACK_API_KEY','PATCHSTACK_PULSE_AUTH','PATCHSTACK_CLAIM_TOKEN','PATCHSTACK_PULSE_RULES_URL']) delete env[name];
 
   console.log('\n2. Run the single bounded setup command');
   if ((await run('npx', ['--no-install', 'patchstack-connect', 'setup'], { cwd: fixture, env })) !== 0) {
@@ -83,6 +84,11 @@ try {
     ['one site provisioned and reused', rc.siteUuid === mock.uuid && mock.requests[0]?.url === '/monitor/pulse/manifest'],
     ['scan wired once', count(scanScript, 'patchstack-connect scan') === 1],
     ['mark-build wired once', count(markScript, 'patchstack-connect mark-build') === 1],
+    ['map upload wired once', count(scanScript, 'patchstack-connect map --upload') === 1],
+    ['map uploaded on both setups', mock.requests.filter(r => r.url === `/monitor/pulse/input-map/${mock.uuid}`).length === 2],
+    ['rules pulled after both uploads', mock.requests.filter(r => r.url === `/monitor/pulse/rules/${mock.uuid}`).length === 2],
+    ['rule cache saved', existsSync(path.join(fixture,'.patchstack/patchstack-rules.json'))],
+    ['rule lookup presented the new map identity', template !== 'express-npm' || mock.requests.filter(r => r.url === `/monitor/pulse/rules/${mock.uuid}`).every(r => /^[a-f0-9]{64}$/.test(r.buildId ?? ''))],
     ['widget installed once with the site UUID', count(html, 'patchstack-widget.js') === 1 && html.includes(mock.uuid)],
     ...Object.entries(verdict.checks)
       .filter(([name]) => name !== 'claimUrlSurfaced' && name !== 'noProductionLeak')

@@ -18,10 +18,11 @@ async function getProtection() {
 }
 
 async function buildProtection() {
-  const mode = process.env.PATCHSTACK_MODE === "dry-run" ? "dry-run" : "block";
-  const siteUuid = PS_SITE_UUID.startsWith("__") ? process.env.PATCHSTACK_SITE_UUID : PS_SITE_UUID;
-  const token = process.env.PATCHSTACK_WAF_TOKEN;
-  const common = { mode, egress: true } as const;
+  const mode = (typeof process === "undefined" ? undefined : process.env.PATCHSTACK_MODE) === "dry-run" ? "dry-run" : "block";
+  const siteUuid = PS_SITE_UUID.startsWith("__") ? (typeof process === "undefined" ? undefined : process.env.PATCHSTACK_SITE_UUID) : PS_SITE_UUID;
+  const token = (typeof process === "undefined" ? undefined : process.env.PATCHSTACK_WAF_TOKEN);
+  const refreshMs = (typeof process === "undefined" ? undefined : process.env.PATCHSTACK_ENVIRONMENT) === "sandbox" ? 15000 : 300000;
+  const common = { mode, egress: true, refreshMs } as const;
   return createProtection(
     siteUuid
       ? { ...common, siteUuid, rules: fallbackRules as never, cacheDir: ".patchstack" }

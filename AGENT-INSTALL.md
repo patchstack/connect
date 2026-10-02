@@ -2,6 +2,13 @@
 
 This versioned reference ships inside `@patchstack/connect` and documents each setup command and its project changes.
 
+## What this package is
+
+- **An npm package for JavaScript and Node.js projects**, published by Patchstack under the `@patchstack` scope. It is not a WordPress plugin and needs no PHP. Patchstack also protects WordPress sites; this package is its integration for JS/Node projects — Vite, Next.js, plain vanilla JS, anything with a lockfile.
+- **Source and releases:** MIT-licensed, source at https://github.com/patchstack/connect. Each version is published to npm from that repository's GitHub Actions workflow with an npm provenance attestation.
+- **How to check it yourself:** `npm view @patchstack/connect` shows the live registry metadata, including the repository and the attestation. After installing, `npm audit signatures` verifies the registry signatures and provenance attestations of the installed packages, this one included.
+- **What it does:** it sends the project's package names and versions to Patchstack for vulnerability matching, adds the Patchstack Connector widget to the site, installs a runtime exploit guard (`protect`) in the server's request path, and adds scan steps to the install and build scripts. `setup` and the `prebuild` hook also upload a structural map of the server (routes, input names, the packages behind each sink, file:line) so protection rules can target the app's own parameters — never source text or environment values. Run on its own, `map` sends nothing unless you pass `--upload`. The [Command reference](#command-reference) lists every command, what it reads and writes, and what it sends.
+
 ## Choose the project path first
 
 Use the package setup flow below for an existing JS/Node application. Work in its package directory; a missing `package.json` can mean you are in a subdirectory or looking at generated HTML rather than the source project. A page containing HTML can still belong to a server-rendered application. Do not infer that runtime protection is unnecessary from the file extension alone.
@@ -43,7 +50,7 @@ The pages get a build step, even though nothing is compiled. The build is what r
    npx @patchstack/connect setup
    ```
 
-   `setup` creates the site, writes its `siteUuid` to `.patchstackrc.json`, adds the Patchstack widget to `public/index.html`, adds `"postinstall": "patchstack-connect scan"`, and wires `"prebuild": "patchstack-connect scan"` and `"postbuild": "patchstack-connect mark-build"` around the build. In a hosted builder, scope `PATCHSTACK_ENVIRONMENT=sandbox` to the `setup` command, as in "Automated setup".
+   `setup` creates the site, writes its `siteUuid` to `.patchstackrc.json`, adds the Patchstack widget to `public/index.html`, adds `"postinstall": "patchstack-connect scan"`, and wires `"prebuild": "patchstack-connect scan && patchstack-connect map --upload"` and `"postbuild": "patchstack-connect mark-build"` around the build. In a hosted builder, scope `PATCHSTACK_ENVIRONMENT=sandbox` to the `setup` command, as in "Automated setup".
 2. Add `dist` to `.gitignore` next to the entries `setup` wrote.
 3. Put the widget on the other pages. `setup` adds the tag only to `index.html`, `public/index.html` or `src/app.html`. For any other page it lists the widget under `Missing` and prints the tag to add. Add one tag before `</body>` on each page, or in the shared layout, exactly as printed — no `data-build-mode`.
 4. When the person names where the site is published, add that host's build settings so it publishes `dist/` and runs the build. See "Deploying" below; for Netlify that is a `netlify.toml` with `command = "npm run build"` and `publish = "dist"`.
@@ -69,8 +76,8 @@ Every command at a glance — what it does, whether it reads your source, what i
 | Command | What it does | Reads your source? | Writes to your project | Sends over the network |
 |---|---|---|---|---|
 | `scan` | Provision (or reuse) the site and POST the dependency list for vulnerability matching. Also runs automatically via `setup` and the install/build hooks. | No source analysis — lockfile only; `node_modules/` is enumerated when no lockfile can be read (e.g. `bun.lockb`) or when the lockfiles present disagree. It also reads the `<title>` of the root `index.html` and the `name` in `package.json`, to report what the site is called. During `prebuild` only, it reads the scaffolded guard and its co-located rules JSON to remove a previous map stamp. | `.patchstackrc.json` (public: site UUID + settings, the link to connect the site, and whether it is connected yet); `.patchstackrc.local.json` (the API key, created owner-only) and a `.gitignore` entry for it — the CLI says so if it could not add one; during `prebuild`, removal of a previous `_patchstack.build_id` from the guard's own rules file so a later build cannot carry stale coordinates; the widget `<script>` tag in the root HTML shell — only after a successful post; the production marker in a code root shell — before the post, since it needs no site UUID | Package names + versions; this site's public address and name, where the project or build environment states them; the site UUID, to check whether the site is connected to an account yet (skipped once `.patchstackrc.json` records that it is) |
-| `setup` | One bounded command: `scan` → manage the widget → install + verify `protect` → wire the install/build scans. Never runs the project build. | Local integration reads via `scan` and `protect` | Config, widget tag, production marker, guard/framework/route files, `package.json` scripts | Package names + versions and the site's public address and name (via `scan`); a claim token as a request header, only when you pass one |
-| `map` | Local attack-surface analysis (entry points → inputs → sinks → evidence-backed flows). Never run by another command. | **Yes** — via the app's own TypeScript; a pre-bundle `--upload` also locates the co-located rules file imported by the scaffolded guard | Only the file named by `--out`; during a pre-bundle `--upload`, `_patchstack.build_id` in that existing rules file | Nothing — **unless `--upload`**: structure only (routes, parameter names, the package behind each sink, file:line) plus a SHA-256 identity derived from its policy content. Never source code or env values |
+| `setup` | One bounded command: scan, widget, install + verify guard, upload map, pull live rules, wire build hooks. Never starts the app or runs a build. | Local integration and structural source analysis | Config, widget, guard/framework files, scripts, map identity in the guard rules JSON, git-ignored `.patchstack/` cache | Package inventory and site identity; structural map (routes, input names, packages, file:line, identity); authenticated Pulse rules lookup. No source code or environment values |
+| `map` | Local attack-surface analysis; setup invokes it with upload, and wires prebuild uploads. | Server source parsed with TypeScript (app compiler or CLI dependency) | `--out` file if requested; an uploaded map is stamped into the guard rules JSON during setup or a pre-bundle build hook | Standalone command sends nothing unless `--upload`. Setup and its build hook upload structure only, never source text or environment values |
 | `protect` | Install the always-on runtime guard; auto-wire known stacks, or scaffold a generic guard + print a wiring plan. `--check` verifies the guard is wired (exit 1 if not); `--demo` seeds a broad sample rule set. Runs automatically **only** via `setup` — never by `scan`, `guide`, `status`, or `mark-build`. | Reads local wiring/route source for integration; does not produce an attack-surface map | Guard/framework files (e.g. `middleware.ts`, `src/patchstack/`, supported Next App Router handlers) | Nothing |
 | `demo node-serialize` | Production-backed walkthrough: confirm the vulnerable package is present, scan, wait for live rule `18843`, install + verify the guard, print test requests. Does not install the package or start/restart the app. | Local integration reads via `scan` and `protect` | Same files as `scan` + `protect` | `scan` payload; polls the public Pulse rules endpoint (never the printed test requests) |
 | `demo-guide node-serialize` | Read-only companion: explains the prepare/run/prove/cleanup sequence and prints the next command. | Reads local protection wiring for verification | Nothing | Nothing |
@@ -82,29 +89,27 @@ Every command at a glance — what it does, whether it reads your source, what i
 | `login` | Recover a lost credential for an existing site: print an owner-approval link and poll (10 min). Approving **rotates** the credential. Not usable in CI. | No | New credential into `.patchstackrc.local.json` on approval | Device-code request + approval poll |
 | `uninstall` | Signal Patchstack that the package is being removed: an unclaimed record is deleted, a claimed one is flagged. Does **not** touch local files. | No | Nothing local | Removal signal |
 
-Only `map` produces an attack-surface analysis, and only `map --upload` sends that description. `protect` reads and edits local source to integrate the guard; its verifier, also used by setup guides, reads the wiring without executing the app. These integration reads transmit nothing. `scan` additionally reads two declarations the project makes about itself — the `<title>` in the root `index.html` and the `name` in `package.json` — to report what the site is called; during `prebuild` it also reads the scaffolded guard and its co-located rules JSON solely to remove a previous map stamp. `scan` transmits package names + versions, plus the site's own public address and name where the project states them — never source code, file paths, git history, or any environment variable value other than the published URL of this site. `scan --install-paths` additionally sends where each package sits in the dependency tree; it is off unless you pass it.
+`setup` uploads a structural attack-surface map after installing the guard; the build hooks it installs upload a fresh map before bundling. Standalone `map` remains local without `--upload`. `protect` reads and edits integration source but transmits nothing. `scan` sends package names + versions and the declared public site identity, not source text. Map uploads additionally include routes, parameter names, package attribution, relative file:line locations, coverage limitations, and a policy-map digest. `scan --install-paths` remains separately opt-in for package installation locations.
 
 ## Package and command behavior
 
-- Package: [`@patchstack/connect`](https://www.npmjs.com/package/@patchstack/connect), MIT-licensed, source at https://github.com/patchstack/connect. `npm view @patchstack/connect` shows the live registry metadata.
-- **What is sent to Patchstack is the dependency list, plus this site's public address and name** — the dependencies are read from the lockfile (`package-lock.json`, `pnpm-lock.yaml`, `yarn.lock`) or, on bun projects (`bun.lock`/`bun.lockb`), by enumerating the installed packages under `node_modules/` — package names + versions, for vulnerability matching. No source code, no file paths, no git history is ever transmitted.
+- **`scan` sends the dependency list plus this site's public address and name** — read from lockfiles or installed package metadata. It sends no source code or git history. Setup additionally uploads the structural map described below.
   - **`scan --install-paths` is the one exception, and it is opt-in.** It adds where each package sits in the dependency tree — repo-relative paths made of `node_modules` segments, plus a workspace directory name when a workspace pins its own copy. They are read from the lockfile's own keys or from the `node_modules` walk, **never from your source tree**: no path to a file you wrote is sent by either form of `scan`.
   - Why it exists: the same package is routinely installed twice at different versions, and without the locations an advisory affecting only one of them cannot be matched to the copy your code actually loads. Node resolves an import by walking up from the importing file, so the location is what distinguishes "you are running the vulnerable copy" from "the vulnerable copy is installed but nothing reaches it". Absent them, every installed version has to be treated as if the app used it — warnings about code you never call, and protection rules pinned to routes that run the safe copy.
   - Why it is off by default: it widens what leaves the machine, so it is your explicit choice and not a consequence of upgrading the package. (`mark-build` additionally stamps built HTML with a coarse stack descriptor that may include hosting-related env variable *names* — e.g. `VERCEL`, `CF_PAGES` — never their values.)
 - **Only `scan` looks for the address and the name.** They are resolved in the one code path that reports them, so `guide`, `status`, `login`, `uninstall`, `mark-build`, `init`, `protect`, `demo-guide` and `map` neither read the host's URL variables nor open `index.html` or `package.json` for this. `setup` and `demo` do, because both run `scan`.
 - **The address is the one your visitors use, and, apart from the tool's own `PATCHSTACK_*` settings, it is the only env var value read.** A site provisioned by a scan from a developer machine has no address, so the dashboard shows a placeholder and Patchstack cannot check that the published page still carries what was scanned. `scan` therefore sends `url` when — and only when — it can know it: `url` in `.patchstackrc.json` or `PATCHSTACK_SITE_URL` if you set one, otherwise the single variable a host publishes to name its own **production** URL (`VERCEL_PROJECT_PRODUCTION_URL` on a Vercel production deployment, Netlify's `URL` in the production context, `RENDER_EXTERNAL_URL`, `RAILWAY_PUBLIC_DOMAIN` in a production environment). Preview and branch deployments are excluded, as are hosts that publish no production signal. An address that is not how the public reaches a website is dropped: any IP address (in either family, however it is written), any single-label host such as `localhost` or `production`, and the reserved suffixes (`.local`, `.internal`, `.test`, `.invalid`, `.home.arpa`, …). A `url` you set explicitly that fails those checks is refused with an error rather than replaced by a guess. When nothing qualifies, `url` is omitted from the payload rather than guessed. Patchstack only ever applies it to a site that still has no address; it never re-points a site whose address is already real.
 - **The name is read from your project, never from the host environment.** `name` in `.patchstackrc.json` (or `PATCHSTACK_SITE_NAME`) if you set one; otherwise the `<title>` of the project's root `index.html` (`public/index.html` if there is no root one), read from the file as text — a title your app sets from script is not seen; otherwise the `name` in `package.json`, unless it is a template placeholder such as `vite_react_shadcn_ts`. It is omitted when nothing qualifies, and it only ever fills in a site that has no name yet — a name set in the dashboard is never replaced.
-- **Only `map` produces an attack-surface analysis.** It parses your server source to report your app's attack surface. It runs only when you invoke it and prints to stdout. It transmits nothing unless you explicitly pass `--upload`, which sends that description of your app's structure to your own site's Patchstack endpoint — never source code, and never without that flag. `protect` separately parses supported wiring and route files for local integration, without producing or uploading a map. A `prebuild` scan reads the scaffolded guard and rules JSON only to identify and clear the reserved map stamp; it does not analyse them or transmit their contents.
+- **Mapping is automatic in `setup`, and in its prebuild hook.** It parses server source and sends structure, not source text. A standalone `map` command prints locally and uploads only with `--upload`. `protect`, `scan`, `guide`, `status` and `mark-build` do not invoke mapping.
 - **`scan` makes up to three source edits:** the Patchstack Connector's `<script>` tag, the production marker, and — during `prebuild` only — removal of a previous `_patchstack.build_id` from the existing guard rules file. None runs on `--dry-run`; all are idempotent. `"widget": false` disables the first two, while stale-stamp removal is independent because it prevents old coordinates being attributed to a new build.
   - The **widget tag** goes in the root HTML shell — the first of `index.html`, `public/index.html`, or `src/app.html` that exists — and only after a successful post, because it carries the site UUID.
-  - The **production marker** goes in a root shell that is JSX rather than HTML (e.g. `src/routes/__root.tsx`, `app/layout.tsx`), inside a `{/* #region patchstack */}` block placed above the widget tag. It is written *before* the post: it carries no site UUID and needs no network, and build scripts commonly chain `patchstack-connect scan || true`, where waiting on the server would mean an offline build silently ships without the flag. The marker is guarded by the framework's own production expression (`import.meta.env.PROD`, or `process.env.NODE_ENV === 'production'`), so it is inert in dev and preview builds. Without it a server-rendered site has no built HTML for `mark-build` to stamp, and the widget treats the published site as build mode. `mark-build` writes to build output only (`dist/`, `build/`, `out/`, `.output/public`), never to source. `guide` writes nothing, `init` writes only its own `.patchstackrc.json`, and `status` writes only the connected note in `.patchstackrc.json`. `guide` sends nothing either: it reports a site as connected from that note, which `scan`, `status` and `claim` keep current.
-- **`setup` runs `scan`, then `protect`, then edits `package.json` scripts:** provisioning happens first so the runtime guard can bake the real site UUID. It verifies the resulting framework seam, preserves existing commands, adds `scan` after dependency installs and before builds, adds `mark-build` after builds, and uses a direct build chain for Bun. It never runs the project build. If the widget or runtime guard needs a framework-specific manual merge, it prints the exact remaining step instead of overwriting user code.
-- The package also exposes **`protect`** directly (runtime exploit guard; its templates live under `dist/protect/`). `setup` invokes it automatically; `scan`, `guide`, `status`, and `mark-build` do not. It writes only local files and auto-wires known stacks — **TanStack Start + Supabase** (patches the Supabase client + `src/start.ts`), **Next.js** (scaffolds or composes middleware and adds request/response checks to supported App Router handlers), **SvelteKit** (`src/hooks.server.ts`), **Astro** (`src/middleware.ts`), **Nuxt** (`server/middleware/`), **NestJS** (`app.use(patchstackMiddleware)` in the bootstrap), **Fastify** (`app.register(patchstackFastify)`), and **Express** (`app.use(patchstackMiddleware)`). On **any other stack** it scaffolds a framework-agnostic guard under `src/patchstack/` and prints a wiring plan — then you finish the install by importing that guard into your server entry (`protectFetch(handler)` for a Web-Fetch server, or `app.use(patchstackMiddleware)` for Node/Express) and running `patchstack-connect protect --check` to confirm it is wired (exit 1 until it is). Passing `--demo` seeds a broad sample rule set (for demonstrations, not production).
+  - The **production marker** goes in a root shell that is JSX rather than HTML (e.g. `src/routes/__root.tsx`, `app/layout.tsx`), inside a `{/* #region patchstack */}` block placed above the widget tag. It is written *before* the post: it carries no site UUID and needs no network, and build scripts commonly chain `patchstack-connect scan || true`, where waiting on the server would mean an offline build silently ships without the flag. The marker is guarded by the framework's own production expression (`import.meta.env.PROD`, or `process.env.NODE_ENV === 'production'`), so it is inert in dev and preview builds. Without it a server-rendered site has no built HTML for `mark-build` to stamp, and the widget treats the published site as build mode. `mark-build` writes to build output only (`dist/`, `build/`, `out/`, `.output/public/`, `_site/`), never to source. `guide` writes nothing, `init` writes only its own `.patchstackrc.json`, and `status` writes only the connected note in `.patchstackrc.json`. `guide` sends nothing either: it reports a site as connected from that note, which `scan`, `status` and `claim` keep current.
+- **`setup` runs `scan` → `protect` → map upload → live-rule lookup**, then reports the outcome. Provisioning precedes guard installation. The map is stamped into the guard source for the NEXT startup/build; restart an already-running preview/server to load it. The rule lookup uses the runtime validator and source-scoped local cache without creating a running guard or installing global hooks. A successful empty policy is reported as zero assigned rules, not proof of protection. Failed uploads/pulls appear under Missing and can be retried by rerunning setup. It also wires install scans, prebuild scans + map uploads, and postbuild marking (explicit build chains for Yarn, pnpm and Bun), preserving existing commands. It never starts, builds or deploys the app. Ambiguous/custom integration code still requires review rather than being overwritten.
+- The package also exposes **`protect`** directly (runtime exploit guard; its templates live under `dist/protect/`). `setup` invokes it automatically; `scan`, `guide`, `status`, and `mark-build` do not. It writes only local files and auto-wires known stacks — **TanStack Start + Supabase** (patches the Supabase client + `src/start.ts`), **TanStack Start** (documented server Fetch entry without requiring Supabase), **Next.js** (scaffolds or composes middleware/proxy and adds request/response checks to supported App Router handlers), **SvelteKit** (`src/hooks.server.ts`), **Astro** (`src/middleware.ts`), **Nuxt** (`server/middleware/`), **NestJS** (`app.use(patchstackMiddleware)` in the bootstrap), **Fastify** (`app.register(patchstackFastify)`), and **Express** (`app.use(patchstackMiddleware)`). On **any other stack** it scaffolds a framework-agnostic guard under `src/patchstack/` and prints a wiring plan — then you finish the install by importing that guard into your server entry (`protectFetch(handler)` for a Web-Fetch server, or `app.use(patchstackMiddleware)` for Node/Express) and running `patchstack-connect protect --check` to confirm it is wired (exit 1 until it is). Passing `--demo` seeds a broad sample rule set (for demonstrations, not production).
 - **`demo node-serialize` is an explicit production-backed walkthrough.** It requires `node-serialize@0.0.4` to already be present in the lockfile; it does not install the vulnerable dependency. It runs the same production `scan`, polls the configured site's public Pulse rules endpoint until rule `18843` is served, runs `protect`, verifies the generated guard, and prints exploit/benign test requests. It writes the same manifest/widget and guard files as those underlying commands. It does not start/restart the app and does not send the printed requests.
-- **`map` is local unless you pass `--upload`.** It walks the project's server source (skipping `node_modules`, build output and dot-directories; it does not follow symlinks out of the project unless you pass `--follow-symlinks`), parses it with the project's **own** `typescript`, and prints JSON describing the attack surface: entry points, the inputs each reads, the sinks they can reach (database / file system / process / outbound HTTP) with the npm package behind each, and evidence-backed input→sink flows, each labelled with how the link was established — from an exact read at the sink's own call site, through a transformed or cross-module link, down to the two being present together with no proven link. Static analysis is best-effort, so the output reports the *detected* surface with coverage counters — not a completeness guarantee. Without `--upload` it writes nothing except the file named by `--out`, and it is never invoked by `scan`, `setup`, `guide`, `protect`, or `mark-build`.
-- **`map --upload` is the only command that sends a description of your source.** (The runtime guard can also report rule detections, which carry route paths and parameter names — see "Runtime guard reporting" below.) It POSTs the same JSON document to `monitor/pulse/input-map/<your site uuid>` so Patchstack can pin protection rules to your app's own parameter names instead of guessing them. During a pre-bundle build hook it hashes the policy-relevant document (all fields except analyser timing and memory observations), writes the SHA-256 value as `_patchstack.build_id` in the existing rules file imported by the scaffolded guard, and sends the same value as `build_id`. Outside that lifecycle it sends no identity and changes no file, so any generated scoped rule remains detect-only. **No source code, no file contents, no environment variable values.** A map with no recognised entry points is still uploaded because its import inventory and coverage limits are evidence; a failure to reach Patchstack is reported and ignored rather than failing your build. Omit the flag and the command stays entirely local.
+- **Standalone `map` is local unless you pass `--upload`.** It skips dependencies, build output and hidden directories and does not follow external symlinks by default. It reports detected entry points, inputs, sinks, dependency calls and evidence tiers with coverage limitations. Static analysis is best-effort, not a completeness guarantee. `setup` runs this analysis after guard integration and uploads it automatically.
+- **`map --upload` and `setup` send structural analysis** to `monitor/pulse/input-map/<your site uuid>`. The upload includes no source code, file contents or environment variable values. Setup and pre-bundle uploads derive `_patchstack.build_id` from the policy map and write it into the existing guard rules file. A standalone upload outside a build remains unbound and changes no guard file. No recognized routes still means useful import/coverage evidence and is uploaded. API failures are reported without failing a production build. Setup then retrieves Pulse rules, including delivered response-phase policies, using the same build identity. Only a matching server verdict permits scoped enforcement. The local cache is not a client bundle or a replacement for runtime rule refresh; filesystem-less deployments fetch at runtime and need server-side credentials.
 - **`demo-guide node-serialize` is the read-only companion.** It checks the Host-created site configuration and vulnerable lockfile entry, explains the complete local prepare/run/restart/prove/cleanup sequence, and prints the next exact command. It does not require a deployment and does not change files or contact Patchstack.
-- Patchstack is not WordPress-only. Connect monitors any JS/Node project — Vite, Next.js, plain vanilla JS, anything with a lockfile.
 
 ## Before you start — never install twice
 
@@ -278,6 +283,36 @@ Handle it in this order:
    run them, the person runs `npx @patchstack/connect claim` (or `login`) themselves and you relay the
    link from their output.
 
+### When the platform blocks the CLI outright
+
+Some hosted builders refuse any third-party CLI that contacts an outside service, and offer the person
+neither a terminal nor a way to approve it. Then none of the options above exists in that workspace, and
+running the command again, under any spelling, gets the same answer. Step 1 still applies: do not route
+around the block, and leave `package.json` and the source tree as they were.
+
+Tell the person in plain words that this platform will not run Patchstack's setup, then give them these
+choices and wait for theirs:
+
+- **Run setup on a copy of the project outside the builder.** Offer this only when the builder can export
+  the project or sync it with a git repository; if you do not know whether it can, say so. In that copy,
+  the person runs `npx @patchstack/connect setup` — without `PATCHSTACK_ENVIRONMENT=sandbox`, which is for
+  a hosted workspace; on their own machine a scan reports `local` by itself. They then bring the changes
+  back the same way. `.patchstackrc.local.json` stays behind: it holds the API key and is git-ignored. If
+  the builder's own install or build cannot reach Patchstack, the scan steps `setup` added print the error
+  and let it continue, so the app still builds and only that build's report is missing. The exception is a
+  builder that installs with `bun install`: there the `postinstall` scan fails the install, so remove that
+  one script before bringing the changes back.
+- **Add only the Patchstack Connector.** The person creates an "Application" site in the Patchstack
+  dashboard and gives you its site ID or widget snippet, and you add the tag as in steps 2 and 3 of
+  "Plain HTML sites", in the app's root HTML shell or layout. This adds the widget and nothing else: no
+  check of the app's packages, no build steps, no runtime protection. Say that when you offer it.
+- **Stop here.** Nothing else changes.
+
+If you installed `@patchstack/connect` for this attempt, it stays in `dependencies` with nothing wired to
+run it. Keep it for the first choice; for the other two, offer to remove it with the project's package
+manager. Report the result as **Patchstack setup did not run on this platform**, with the choice the person
+made, not as an installation.
+
 ## Manual setup
 
 1. **First scan** — provisions a Patchstack site automatically, writes the UUID to `.patchstackrc.json`, and installs the Patchstack Connector's `<script>` tag into the root HTML shell (`index.html`, `public/index.html`, or `src/app.html`) when one exists — or, when the root shell is JSX, the production marker instead. No signup, dashboard step, or UUID is needed up front:
@@ -293,16 +328,16 @@ Handle it in this order:
    ```jsonc
    {
      "scripts": {
-     "prebuild": "patchstack-connect scan",
+      "prebuild": "patchstack-connect scan && patchstack-connect map --upload",
       "postbuild": "patchstack-connect mark-build",
       "postinstall": "patchstack-connect scan"
      }
    }
    ```
 
-   If a lifecycle hook already exists, chain instead of replacing it, e.g. `"prebuild": "existing-command && patchstack-connect scan"`. The `postinstall` scan reports dependencies added during an iterative sandbox session and covers applications with no build command.
+   If a lifecycle hook already exists, chain instead of replacing it, e.g. `"prebuild": "patchstack-connect scan && existing-command && patchstack-connect map --upload"`. The `postinstall` scan reports dependencies added during an iterative sandbox session and covers applications with no build command.
 
-   **Bun-managed projects:** `bun run` does not execute npm-style `pre`/`post` scripts, so wire the build script directly instead: `"build": "patchstack-connect scan && <existing build command> && patchstack-connect mark-build"`.
+   **Yarn, pnpm and Bun projects:** use an explicit build chain instead of assuming npm-style `pre`/`post` hooks run: `"build": "patchstack-connect scan && patchstack-connect map --upload && <existing build command> && patchstack-connect mark-build"`. Modern Yarn and Bun skip those hooks; pnpm behavior depends on version and configuration. `setup` uses this chain for all three managers, including Yarn Classic, and preserves existing custom hooks.
 
    **Checking a build yourself:** run it through the package manager (`npm run build`), never the framework's own CLI (`astro build`, `vite build`, `next build`). Calling the CLI directly skips the `prebuild`/`postbuild` hooks, so the build is not scanned, not marked and not reported, and it tells you nothing about what the deployed build will carry.
 
@@ -336,13 +371,28 @@ It is server-only. Never put it in the widget tag, client bundles, or public env
    check requests and filter returned responses. It writes a shared server-only `patchstack.next`
    helper alongside `patchstack.rules.json`. Unsupported exports, complex matchers or handlers are
    left unchanged and reported by `--check`; re-run `protect` after adding routes. An existing
-   `proxy.ts`/`proxy.js` requires manual integration: no competing middleware is scaffolded and
-   `--check` reports the gap. Middleware alone
+   `proxy.ts`/`proxy.js` is composed on Next 16+ using the same conservative export/matcher rules;
+   a new Next 16+ install uses `proxy.ts`. Conflicting entries stay untouched. Middleware/proxy alone
    cannot filter downstream page bodies. Rendered pages, Server Actions and Pages API response
    filtering are not verified by this adapter. Keep Next.js patched: a framework middleware bypass
    also bypasses a guard in middleware. Edge middleware needs `PATCHSTACK_API_KEY` in the server
    environment; it cannot read `.patchstackrc.local.json`. Do not put credentials in public variables
    or commit them. Source checks do not verify rule delivery or blocking in the running deployment.
+
+   **TanStack Start:** the documented `src/server.ts` Fetch entry can be scaffolded without Supabase
+   or `src/start.ts`. Supported literal `createServerEntry({ fetch: ... })` configurations are wrapped
+   without changing host arguments or application error handling. The installed framework must expose
+   `server-entry`; custom entry paths, spreads, getters and competing files need manual integration.
+   The existing TanStack/Supabase adapter screens native requests by default and filters the response
+   inside TanStack's middleware result. No `PATCHSTACK_ROUTE_WAF` switch is needed. Browser-direct
+   services and separately deployed functions are not protected by guarding the frontend server;
+   keep backend authorization/RLS and install a guard at each independently exposed backend.
+
+   Generated guards refresh live rules every five minutes (15 seconds in an explicit sandbox).
+   Express/Node guards enable bounded response filtering; Fastify filters buffered `onSend` output,
+   leaving streams and bodyless replies untouched. Unmodified recognized helpers can be upgraded;
+   customized helpers are preserved and flagged for manual review. Wiring checks inspect executable
+   statements, not just marker comments, and cannot establish live delivery or complete coverage.
 
    `--check` reads the app's source. It can establish that the guard is imported and called on a request
    path; it cannot establish that a request ever reaches it — an app can wire the guard onto one server
@@ -449,13 +499,13 @@ which integration API is available.
 | [Solid](https://docs.solidjs.com/quick-start) | Separate the UI library from SolidStart or a custom server; keep protection out of client components. |
 | [Qwik](https://qwik.dev/docs/qwikcity/) | Inspect Qwik City and the deployment adapter; component resumability does not identify the request entry. |
 | [Ember](https://guides.emberjs.com/release/getting-started/quick-start/) | Inspect the deployed backend or SSR host separately; browser routes and the development server are not production coverage. |
-| [Next.js](https://nextjs.org/docs/app/api-reference/file-conventions/proxy) | Inspect root or `src/` middleware/proxy, matchers, APIs and Server Actions. Next 16 renamed middleware to proxy; Connect scaffolds `middleware.ts`. Do not leave competing files or assume its source check validates `proxy.ts`. |
+| [Next.js](https://nextjs.org/docs/app/api-reference/file-conventions/proxy) | Inspect root or `src/` middleware/proxy, matchers, APIs and Server Actions. Connect uses `proxy.ts` for new Next 16+ installs and composes supported existing proxies. Conflicting entries and complex routing require manual review. |
 | [Nuxt](https://nuxt.com/docs/4.x/directory-structure/server) | Inspect the configured server directory and Nitro server middleware, not client navigation middleware. Distinguish a server deployment from generated static output. |
 | [SvelteKit](https://svelte.dev/docs/kit/hooks) | Compose the existing server `handle` hook; check endpoints, actions, prerendering and the deployed adapter. |
 | [Astro](https://docs.astro.build/en/guides/middleware/) | Compose `onRequest` in server middleware; distinguish execution during prerendering from on-demand routes behind an adapter. |
 | [Remix](https://v2.remix.run/docs/discussion/runtimes/) | Inspect the adapter around `createRequestHandler`; cover document requests, loaders, actions and resource routes, not only `entry.server` rendering. |
 | [React Router](https://reactrouter.com/how-to/middleware) | Determine library versus framework/SSR mode. Inspect the server adapter and version-specific server middleware; client middleware cannot guard loaders/actions on the server. |
-| [TanStack Start](https://tanstack.com/start/latest/docs/framework/react/guide/middleware) | Inspect the server entry and global request middleware, including server functions. The automatic TanStack/Supabase adapter matches a particular project layout, not every Start app. |
+| [TanStack Start](https://tanstack.com/start/latest/docs/framework/react/guide/middleware) | Inspect the server entry and global request middleware, including server functions. The native Fetch-entry adapter does not require Supabase. Custom entry paths need manual review; the separate TanStack/Supabase adapter matches a specific layout. |
 | [SolidStart](https://docs.solidjs.com/solid-start/v1/advanced/middleware) | Inspect configured server middleware and adapter; verify API and server action paths separately rather than assuming rendering middleware covers them. |
 | [Qwik City](https://qwik.dev/docs/middleware/) | Inspect deployment entry and request middleware, including endpoints, loaders and actions. Confirm route/layout scope and static output. |
 | [Gatsby](https://www.gatsbyjs.com/docs/reference/functions/) | Static pages need no request guard, but `src/api` functions and SSR deployments need their own server entry review. |
@@ -492,7 +542,7 @@ AI model. A framework or hosting upgrade requires this review again.
 - The CLI never opens the dashboard link and never asks for Patchstack credentials.
 - Label hosted workspace scans with `PATCHSTACK_ENVIRONMENT=sandbox` in that process only. Leave production builds unset (a platform's own tier or production branch name, or the hosted builder the project belongs to, makes the build report `production`; a developer machine or a CI runner this does not know reports `local`) and never commit a sandbox label into files shared with production.
 - If a step fails, stop and report it. Don't proceed with placeholders.
-- If your tool refuses to execute the CLI, stop and hand the command to the person — see "When your tool will not run this CLI". Never work around a permission refusal.
+- If your tool refuses to execute the CLI, stop and hand the command to the person — see "When your tool will not run this CLI", and "When the platform blocks the CLI outright" when nobody can approve it there. Never work around a permission refusal.
 - CI never has the credential in a file: `.patchstackrc.local.json` is git-ignored by design, so set `PATCHSTACK_API_KEY` as an env var there (and `PATCHSTACK_SITE_UUID` too where `.patchstackrc.json` is also absent). Precedence for the site UUID and settings: CLI flag → env var → `.patchstackrc.json`. For the API key: env var → `.patchstackrc.local.json` → `.patchstackrc.json` (where installs made before the split still hold it). `login` is interactive and refuses to run in CI, so CI always takes its credential from the environment.
 
 ## Which build a rule belongs to
@@ -503,7 +553,7 @@ read from: rename the field two deploys later and the rule addresses something t
 while still reporting as active protection. Coverage that is not there is worse than a known gap.
 
 Such a rule carries a `build_scope` naming the policy map its coordinate came from, and it blocks only
-when Patchstack **confirms** those coordinates belong to the map carried by the guard now running. Three moving
+when Patchstack **confirms** those coordinates belong to the map carried by the guard now running. Setup performs mapping and rule retrieval for the next startup too; it does not update an already-running process. Three moving
 parts:
 
 - **`scan`, during `prebuild`**, removes any previous `_patchstack.build_id` from the guard's own rules
@@ -536,7 +586,7 @@ rule locally establishes that you intend it, not that its coordinate still descr
 A scoped rule you supply blocks when it names the map identity this guard reports (`buildId`), or when you
 set **`trustLocalRuleScope: true`** to take responsibility for the match.
 
-Nothing here is sent unless you have already opted into `map --upload`. The identifier is a one-way
+Running `setup` authorizes this workflow, including its prebuild map uploads. Standalone mapping sends nothing without `--upload`. The identifier is a one-way
 digest of the map — never a message, an author, a diff, a branch name, source text, or environment value.
 
 ## Runtime guard reporting
@@ -795,7 +845,7 @@ Three more endpoints the package can call, for completeness:
 - `npx @patchstack/connect protect --check` verifies from the source that the runtime guard is connected to the request path. It does not run the app.
 - `npx @patchstack/connect protect --check --runtime` additionally **starts the app** on a loopback port and sends it one request, to establish that a request reaches the guard seam. Opt-in, and the only command that runs the application; exit `0`/`1`/`2` as described in step 4.
 - Load the site in a browser — the widget should appear, as the "Connect this website" panel while the site is unclaimed. Refresh a page that was already open before the tag was added: the widget only loads with the page.
-- On the deployed site, the button appears only after a deploy that includes these source changes.
+- On the deployed site, the widget appears only after a deploy that includes these source changes.
 
 ## Answering "is Patchstack installed?" / "is Patchstack removed?"
 
@@ -905,7 +955,7 @@ You cannot complete this alone. It is deliberately a human-in-the-loop step: sta
 | Situation | What happens | What to do |
 |---|---|---|
 | Site was never claimed | `409` — no owner exists to approve | Ask the user to claim the site in the dashboard first, or, if the site is disposable, delete `.patchstackrc.json` **and** `.patchstackrc.local.json` and `scan` to provision a fresh one — leaving the old credential behind means the next scan starts out holding one that belongs to a different site |
-| Running in CI | Refuses to start | CI takes its credential from `PATCHSTACK_PULSE_AUTH`; `login` is for a developer machine |
+| Running in CI | Refuses to start | CI takes its credential from `PATCHSTACK_API_KEY`; `login` is for a developer machine |
 | No `siteUuid` configured | Refuses to start | There is no site to recover — run `scan` |
 | Code expired | `--wait` ends after 10 minutes | Start again from step 1 for a new code |
 | `--wait` with nothing pending | "No login is waiting for approval" | Run step 1 first; `--wait` resumes a request, it does not start one |

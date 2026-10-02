@@ -111,7 +111,11 @@ describe('every scaffolded guard', () => {
       if (!/createProtection\(/.test(source)) continue;
 
       expect(source, name).not.toMatch(/\b_?protection\s*=\s*await createProtection\(/);
-      expect(source, name).toMatch(/\b_?protection\s*=\s*buildProtection\(\)/);
+      if (name === 'fetch-guard.ts') {
+        expect(source).toContain('pending = createProtection(');
+        expect(source).toContain('policies.set(env, pending)');
+        expect(source).toContain('policies.delete(env)');
+      } else expect(source, name).toMatch(/\b_?protection\s*=\s*buildProtection\(\)/);
     }
   });
 

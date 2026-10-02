@@ -1,19 +1,44 @@
 import { existsSync, lstatSync, readdirSync } from 'node:fs';
 import { dirname, join, relative } from 'node:path';
+import { createRequire } from 'node:module';
 import { bakeSiteUuid, hasDependency, read, log, templatesDir } from '../util.js';
 import type { Adapter, WireOptions, WireResult, VerifyResult } from '../types.js';
 import { copyProjectFileSync, ensureProjectDirectorySync, writeProjectFileSync } from '../../../safe-file.js';
 import { composeNextMiddleware, composeNextRoute, nextCompiler, nextSourceWired, standardNextRouting, NEXT_MARKER, ROUTE_MARKER } from './next-source.js';
+import { installTemplate } from '../template-upgrade.js';
 
 function middlewareInfo(cwd: string) {
-  const candidates = ['middleware.ts', 'middleware.js', 'src/middleware.ts', 'src/middleware.js'];
+  const candidates = entryFiles(cwd);
+  const name = (nextMajor(cwd) ?? 0) >= 16 ? 'proxy' : 'middleware';
   const relFile = candidates.find(rel => existsSync(join(cwd, rel)))
-    ?? (existsSync(join(cwd, 'src')) ? 'src/middleware.ts' : 'middleware.ts');
+    ?? (existsSync(join(cwd, 'src')) ? `src/${name}.ts` : `${name}.ts`);
   return { relFile, relDir: dirname(relFile), exists: existsSync(join(cwd, relFile)) };
 }
 
-function proxyFiles(cwd: string): string[] {
-  return ['proxy.ts', 'proxy.js', 'src/proxy.ts', 'src/proxy.js'].filter(file => existsSync(join(cwd, file)));
+function nextMajor(cwd: string): number | null {
+  try {
+    const file = createRequire(join(cwd, 'package.json')).resolve('next/package.json');
+    return Number(JSON.parse(read(file)).version.split('.')[0]);
+  } catch {
+    try {
+      const pkg = JSON.parse(read(join(cwd, 'package.json')));
+      const version = pkg.dependencies?.next ?? pkg.devDependencies?.next;
+      const match = typeof version === 'string' && /^[~^]?(\d+)\./.exec(version);
+      return match ? Number(match[1]) : null;
+    } catch { return null; }
+  }
+}
+
+function entryFiles(cwd: string): string[] {
+  return ['middleware.ts', 'middleware.js', 'src/middleware.ts', 'src/middleware.js',
+    'proxy.ts', 'proxy.js', 'src/proxy.ts', 'src/proxy.js'].filter(file => existsSync(join(cwd, file)));
+}
+
+function entryProblem(cwd: string): string | null {
+  const files = entryFiles(cwd);
+  if (files.length > 1) return `multiple Next.js middleware/proxy entries (${files.join(', ')}); select one manually`;
+  if (files.some(file => /proxy\.[jt]s$/.test(file)) && (nextMajor(cwd) ?? 0) < 16) return `${files.join(', ')} requires a verified Next.js 16+ installation`;
+  return null;
 }
 
 function paths(cwd: string) {
@@ -68,9 +93,9 @@ function sharedGuardPresent(file: string): boolean {
 }
 
 function wire(cwd: string, opts: WireOptions): WireResult {
-  const proxies = proxyFiles(cwd);
-  if (proxies.length) {
-    log(`left ${proxies.join(', ')} untouched: Next.js proxy integration requires manual wiring. Do not add middleware alongside a proxy; protect --check reports this gap.`);
+  const problem = entryProblem(cwd);
+  if (problem) {
+    log(`Next.js entries left untouched: ${problem}. Do not add middleware alongside a proxy.`);
     return { ok: false, changed: [] };
   }
   const templates = templatesDir();
@@ -85,7 +110,10 @@ function wire(cwd: string, opts: WireOptions): WireResult {
   const guardPath = join(cwd, mw.guard);
   const guardConflict = existsSync(guardPath) && !sharedGuardPresent(guardPath);
   const ensureGuard = () => {
-    if (existsSync(guardPath)) return;
+    if (existsSync(guardPath)) {
+      if (mw.guard.endsWith('.ts') && installTemplate(cwd, mw.guard, 'next-guard.ts')) changed.push(mw.guard);
+      return;
+    }
     const source = read(join(templates, 'next-guard.ts'));
     writeProjectFileSync(cwd, guardPath, mw.guard.endsWith('.js')
       ? ts!.transpileModule(source, { compilerOptions: { target: ts!.ScriptTarget.ES2022, module: ts!.ModuleKind.ESNext } }).outputText
@@ -96,11 +124,17 @@ function wire(cwd: string, opts: WireOptions): WireResult {
 
   const existing = mw.exists ? read(join(cwd, mw.relFile)) : '';
   if (!mw.exists) {
-    copyProjectFileSync(cwd, join(templates, 'next-middleware.ts'), join(cwd, mw.relFile));
+    if (/proxy\.[jt]s$/.test(mw.relFile)) {
+      const composed = ts && !guardConflict && composeNextMiddleware(ts, mw.relFile, 'export function proxy(request: Request) {}\nexport const config = { matcher: "/:path*" };\n', importFrom(mw.relFile, mw.guard));
+      if (!composed) return {ok:false,changed};
+      ensureGuard();
+      writeProjectFileSync(cwd, join(cwd, mw.relFile), composed);
+    } else copyProjectFileSync(cwd, join(templates, 'next-middleware.ts'), join(cwd, mw.relFile));
     if (!opts.demo) bakeSiteUuid(cwd, mw.relFile);
     changed.push(mw.relFile);
     log(`scaffolded ${mw.relFile} (request-phase guard)`);
   } else if (existing.includes(NEXT_MARKER) || existing.includes('#region patchstack-next (')) {
+    if (existing.includes('#region patchstack-next (') && installTemplate(cwd, mw.relFile, 'next-middleware.ts')) changed.push(mw.relFile);
     log(`${mw.relFile} already has a Patchstack guard — left as-is`);
     if (ts && existing.includes(NEXT_MARKER)) ensureGuard();
   } else {
@@ -140,11 +174,10 @@ function wire(cwd: string, opts: WireOptions): WireResult {
 }
 
 function verify(cwd: string): VerifyResult {
-  const proxies = proxyFiles(cwd);
-  if (proxies.length) return {
+  const problem = entryProblem(cwd);
+  if (problem) return {
     wired: false,
-    checks: [{ label: 'Next.js proxy wiring requires manual verification', ok: false,
-      hint: `review ${proxies.join(', ')}; automatic proxy integration is not supported. Next.js cannot use middleware and proxy together.` }],
+    checks: [{ label: 'Next.js request entry needs review', ok: false, hint: problem }],
   };
   const mw = paths(cwd);
   const ts = nextCompiler(cwd);

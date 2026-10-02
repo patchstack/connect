@@ -406,12 +406,12 @@ export async function collectGuideState(cwd: string): Promise<GuideState> {
     hasBuildScript: Boolean(pkg?.scripts?.build?.trim()),
     installScanWired: (pkg?.scripts?.postinstall ?? '').includes('patchstack-connect scan'),
     // The scan has to run first: a later prebuild command may upload and stamp the map that the bundle
-    // must retain. Bun skips npm-style pre/post scripts, so its build chain follows the same order.
+    // must retain. Non-npm managers use explicit chains independent of lifecycle settings.
     prebuildWired:
-      /^\s*patchstack-connect\s+scan(?:\s*(?:&&|;)|\s*$)/.test(pkg?.scripts?.prebuild ?? '') ||
+      (packageManager === 'npm' && /^\s*patchstack-connect\s+scan(?:\s*(?:&&|;)|\s*$)/.test(pkg?.scripts?.prebuild ?? '')) ||
       /^\s*patchstack-connect\s+scan(?:\s*(?:&&|;)|\s*$)/.test(pkg?.scripts?.build ?? ''),
     postbuildWired:
-      (pkg?.scripts?.postbuild ?? '').includes('patchstack-connect mark-build') ||
+      (packageManager === 'npm' && (pkg?.scripts?.postbuild ?? '').includes('patchstack-connect mark-build')) ||
       (pkg?.scripts?.build ?? '').includes('patchstack-connect mark-build'),
     widgetInstalled: widget.found,
     widgetTokenMatches: widget.uuidMatches,
@@ -515,11 +515,10 @@ function buildScriptLines(state: GuideState): string[] {
   const lines: string[] = [];
   if (!state.installScanWired) lines.push('"postinstall": "patchstack-connect scan"');
   if (state.hasBuildScript && !(state.prebuildWired && state.postbuildWired)) {
-    if (state.packageManager === 'bun') {
-      // bun run skips npm-style pre/post scripts, so the hooks chain inside the build script.
-      lines.push('"build": "patchstack-connect scan && <existing build command> && patchstack-connect mark-build"');
+    if (state.packageManager !== 'npm') {
+      lines.push('"build": "patchstack-connect scan && patchstack-connect map --upload && <existing build command> && patchstack-connect mark-build"');
     } else {
-      if (!state.prebuildWired) lines.push('"prebuild": "patchstack-connect scan"');
+      if (!state.prebuildWired) lines.push('"prebuild": "patchstack-connect scan && patchstack-connect map --upload"');
       if (!state.postbuildWired) lines.push('"postbuild": "patchstack-connect mark-build"');
     }
   }

@@ -10,17 +10,21 @@ import { join } from 'node:path';
 import { bakeSiteUuid, read, log, templatesDir } from '../util.js';
 import type { Adapter, WireOptions, WireResult, VerifyResult } from '../types.js';
 import { copyProjectFileSync, ensureProjectDirectorySync, writeProjectFileSync } from '../../../safe-file.js';
+import { parsedSource, sourceCompiler, type Compiler } from '../syntax.js';
+import { matchesGuardTemplate } from '../template-match.js';
+import { installTemplate } from '../template-upgrade.js';
 
 const CLIENT_TUNNEL = [
   '',
   "    // PATCHSTACK: in the browser, tunnel Supabase traffic through the app's own server guard",
   '    // (same-origin) so payloads are inspected before they reach Supabase.',
   "    if (typeof window !== 'undefined') {",
-  "      const target = typeof input === 'string' ? input : input instanceof Request ? input.url : String(input);",
-  "      const method = init?.method ?? (input instanceof Request ? input.method : 'GET');",
-  "      headers.set('x-ps-target', target);",
+  '      const original = new Request(input, init);',
   "      const guardUrl = new URL('/_patchstack/guard', window.location.origin).toString();",
-  '      return fetch(guardUrl, { ...init, method, headers });',
+  '      const forwarded = new Request(guardUrl, original);',
+  '      headers.forEach((value, key) => forwarded.headers.set(key, value));',
+  "      forwarded.headers.set('x-ps-target', original.url);",
+  '      return fetch(forwarded);',
   '    }',
   '',
 ].join('\n');
@@ -36,19 +40,19 @@ const START_IMPORTS = ['import { getRequest } from "@tanstack/react-start/server
 // reconcileBlock() keys off them.
 const REQUEST_MIDDLEWARE_BLOCK = [
   '// #region patchstack-guard (managed by patchstack-connect protect — do not edit)',
-  '// Browser→Supabase tunnel + response screening; optional route WAF via PATCHSTACK_ROUTE_WAF=1.',
+  '// Screen native requests and responses as well as the browser→Supabase tunnel.',
   'const patchstackGuard = createMiddleware().server(async ({ next }) => {',
   '  const request = getRequest();',
   '  if (request) {',
   '    const { pathname } = new URL(request.url);',
   '    if (pathname === GUARD_PATH) return handleGuardRequest(request);',
-  '    if (process.env.PATCHSTACK_ROUTE_WAF === "1") {',
-  '      const blocked = await guardRequest(request);',
-  '      if (blocked) return blocked;',
-  '    }',
+  '    const blocked = await guardRequest(request);',
+  '    if (blocked) return blocked;',
   '  }',
   '  // The request is passed so route/method-scoped response rules can apply their scope.',
-  '  return screenResponse(await next(), request);',
+  '  const result = await next();',
+  '  if (result instanceof Response) return screenResponse(result, request);',
+  '  return { ...result, response: await screenResponse(result.response, request) };',
   '});',
   '// #endregion patchstack-guard',
 ].join('\n');
@@ -116,8 +120,8 @@ function scaffold(cwd: string, opts: WireOptions): string[] {
   const templates = templatesDir();
   const dst = join(cwd, 'src/integrations/patchstack');
   ensureProjectDirectorySync(cwd, dst);
-  copyProjectFileSync(cwd, join(templates, 'guard.ts'), join(dst, 'guard.ts')); // guard.ts is managed — always refreshed
-  const changed = [GUARD_FILE];
+  const changed: string[] = [];
+  if (installTemplate(cwd, GUARD_FILE, 'guard.ts')) changed.push(GUARD_FILE);
   const rulesDst = join(dst, 'rules.json');
   // Default: the high-precision starter, written only if absent (don't clobber the user's rules on
   // re-run). --demo: (re)seed the broad multi-class sample bundle for a self-contained demonstration.
@@ -135,43 +139,103 @@ function scaffold(cwd: string, opts: WireOptions): string[] {
   return changed;
 }
 
-function patchClient(cwd: string): boolean {
-  const p = join(cwd, 'src/integrations/supabase/client.ts');
-  const s = read(p);
+function patchClient(ts: Compiler, s: string): string | null {
+  const tree = parsedSource(ts, 'client.ts', s);
+  if (!tree) return null;
+  const anchors: number[] = [];
+  const visit = (node: import('typescript').Node) => {
+    if (ts.isExpressionStatement(node) && ts.isCallExpression(node.expression)) {
+      const call = node.expression;
+      if (call.expression.getText(tree) === 'headers.set'
+        && call.arguments[0] && ts.isStringLiteral(call.arguments[0]) && call.arguments[0].text === 'apikey'
+        && call.arguments[1]?.getText(tree) === 'supabaseKey') {
+        const block = node.parent;
+        const fn = block.parent;
+        if (ts.isBlock(block) && ts.isArrowFunction(fn) && fn.parameters.length === 2
+          && fn.parameters[0]!.name.getText(tree) === 'input' && fn.parameters[1]!.name.getText(tree) === 'init'
+          && block.statements.some(statement => ts.isVariableStatement(statement) && statement.declarationList.declarations.some(d =>
+            ts.isIdentifier(d.name) && d.name.text === 'headers' && d.initializer && ts.isNewExpression(d.initializer)
+            && d.initializer.expression.getText(tree) === 'Headers'))) anchors.push(node.end);
+      }
+    }
+    ts.forEachChild(node, visit);
+  };
+  visit(tree);
+  if (anchors.length !== 1) return null;
   if (s.includes('x-ps-target')) {
-    log('client.ts already wired');
-    return false;
+    // Existing custom tunnels are not replaced automatically. A marker alone is not a tunnel.
+    const code = ts.createPrinter({removeComments:true}).printFile(tree);
+    return /\.set\(['"]x-ps-target['"],/.test(code) && /return fetch\(/.test(code) ? s : null;
   }
-  const anchor = "headers.set('apikey', supabaseKey);";
-  if (!s.includes(anchor)) {
-    log('client.ts anchor not found — skipping (template changed?)');
-    return false;
-  }
-  writeProjectFileSync(cwd, p, s.replace(anchor, anchor + '\n' + CLIENT_TUNNEL), { encoding: 'utf8' });
-  log('patched client.ts (tunnel Supabase through the guard)');
-  return true;
+  return s.slice(0, anchors[0]) + '\n' + CLIENT_TUNNEL + s.slice(anchors[0]);
 }
 
-function patchStart(cwd: string): boolean {
-  const p = join(cwd, 'src/start.ts');
-  let s = read(p);
+function patchStart(ts: Compiler, original: string): string | null {
+  let s = original;
   const importAnchor = 'import { createStart, createMiddleware } from "@tanstack/react-start";';
   const exportAnchor = 'export const startInstance';
   const rmAnchor = 'requestMiddleware: [';
-  if (!s.includes(importAnchor) || !s.includes(exportAnchor)) {
-    log('start.ts anchors not found — skipping (template changed?)');
-    return false;
+  const tree = parsedSource(ts, 'start.ts', s);
+  if (!tree) return null;
+  const startImport = tree.statements.find(node => ts.isImportDeclaration(node)
+    && ts.isStringLiteral(node.moduleSpecifier) && node.moduleSpecifier.text === '@tanstack/react-start'
+    && !node.importClause?.isTypeOnly && !node.importClause?.name
+    && node.importClause?.namedBindings && ts.isNamedImports(node.importClause.namedBindings)
+    && node.importClause.namedBindings.elements.length === 2
+    && node.importClause.namedBindings.elements.every(e => !e.propertyName && !e.isTypeOnly
+      && ['createStart', 'createMiddleware'].includes(e.name.text)));
+  if (!startImport) return null;
+  const declaration = tree.statements.filter(ts.isVariableStatement)
+    .filter(node => node.modifiers?.some(m => m.kind === ts.SyntaxKind.ExportKeyword))
+    .flatMap(node => [...node.declarationList.declarations])
+    .find(node => ts.isIdentifier(node.name) && node.name.text === 'startInstance');
+  const call = declaration?.initializer;
+  if (!call || !ts.isCallExpression(call) || call.expression.getText(tree) !== 'createStart' || call.arguments.length !== 1) return null;
+  const factory = call.arguments[0]!;
+  if (!ts.isArrowFunction(factory) || factory.parameters.length) return null;
+  let config = factory.body;
+  while (ts.isParenthesizedExpression(config)) config = config.expression;
+  if (!ts.isObjectLiteralExpression(config)) return null;
+  if (config.properties.some(p => !ts.isPropertyAssignment(p) || !ts.isIdentifier(p.name))) return null;
+  const edits = [{ start: startImport.getStart(tree), end: startImport.end, text: importAnchor }];
+  for (const name of ['requestMiddleware', 'functionMiddleware']) {
+    const properties = config.properties.filter(p => p.name?.getText(tree) === name);
+    if (properties.length > 1 || (name === 'requestMiddleware' && !properties.length)) return null;
+    const property = properties[0];
+    if (!property || !ts.isPropertyAssignment(property)) continue;
+    if (!ts.isArrayLiteralExpression(property.initializer)) return null;
+    edits.push({ start: property.getStart(tree), end: property.initializer.getStart(tree) + 1, text: `${name}: [` });
   }
+  const guardImports = tree.statements.filter(node => ts.isImportDeclaration(node)
+    && ts.isStringLiteral(node.moduleSpecifier) && node.moduleSpecifier.text === '@/integrations/patchstack/guard');
+  if (guardImports.length > 1) return null;
+  const guardImport = guardImports[0];
+  if (guardImport) {
+    if (!ts.isImportDeclaration(guardImport) || !guardImport.importClause?.namedBindings
+      || !ts.isNamedImports(guardImport.importClause.namedBindings)
+      || guardImport.importClause.namedBindings.elements.some(e => e.propertyName || e.isTypeOnly
+        || !['GUARD_PATH', 'handleGuardRequest', 'inspectServerFn', 'screenResponse', 'guardRequest'].includes(e.name.text))) return null;
+    edits.push({ start: guardImport.getStart(tree), end: guardImport.end, text: GUARD_IMPORT });
+  }
+  for (const edit of edits.sort((a, b) => b.start - a.start)) s = s.slice(0, edit.start) + edit.text + s.slice(edit.end);
+  if (!s.includes(importAnchor) || !s.includes(exportAnchor)) {
+    return null;
+  }
+  if (!s.includes(rmAnchor)) return null;
 
   // Each step reconciles idempotently: a re-run (including after a connect upgrade) refreshes the
   // managed blocks in place — never duplicates, never leaves a stale version behind.
-  const original = s;
 
   // Imports — refresh the managed guard import line wholesale (upgrade), else insert both imports.
   if (GUARD_IMPORT_RE.test(s)) {
     s = s.replace(GUARD_IMPORT_RE, GUARD_IMPORT);
   } else {
-    s = s.replace(importAnchor, importAnchor + '\n' + START_IMPORTS);
+    const requestImport = tree.statements.some(node => ts.isImportDeclaration(node)
+      && ts.isStringLiteral(node.moduleSpecifier) && node.moduleSpecifier.text === '@tanstack/react-start/server'
+      && !node.importClause?.isTypeOnly && node.importClause?.namedBindings && ts.isNamedImports(node.importClause.namedBindings)
+      && node.importClause.namedBindings.elements.some(e => !e.propertyName && !e.isTypeOnly && e.name.text === 'getRequest'));
+    if (!requestImport && /\bgetRequest\b/.test(original)) return null;
+    s = s.replace(importAnchor, importAnchor + '\n' + (requestImport ? GUARD_IMPORT : START_IMPORTS));
   }
 
   // Middleware blocks — upgrade a marked region / migrate a legacy block / insert fresh.
@@ -193,22 +257,42 @@ function patchStart(cwd: string): boolean {
     }
   }
 
-  if (s === original) {
-    log('start.ts already wired');
-    return false;
-  }
-  writeProjectFileSync(cwd, p, s, { encoding: 'utf8' });
-  log('patched start.ts (guard registered as request + function middleware)');
-  return true;
+  return parsedSource(ts, 'start.ts', s) ? s : null;
 }
 
 function wire(cwd: string, opts: WireOptions): WireResult {
+  const ts = sourceCompiler(cwd);
+  const clientPath = join(cwd, 'src/integrations/supabase/client.ts');
+  const startPath = join(cwd, 'src/start.ts');
+  const oldClient = read(clientPath);
+  const oldStart = read(startPath);
+  const client = ts && patchClient(ts, oldClient);
+  const start = ts && patchStart(ts, oldStart);
+  if (!ts || !client || !start || !parsedSource(ts, 'client.ts', client)) {
+    log('TanStack wiring needs manual integration: client and server left untouched; no browser traffic was redirected.');
+    return { ok: false, changed: [] };
+  }
   const changed = scaffold(cwd, opts);
+  if (!matchesGuardTemplate(cwd, GUARD_FILE, 'guard.ts')) {
+    log('Custom guard helper needs manual review; client and server entries were left untouched.');
+    return { ok: false, changed };
+  }
   // In demo mode, keep the local sample rules active — don't bake a site UUID (which would make
   // the guard fetch live Pulse rules instead of the bundled demo set).
   if (!opts.demo && bakeSiteUuid(cwd, GUARD_FILE)) changed.push(GUARD_FILE);
-  if (patchClient(cwd)) changed.push('src/integrations/supabase/client.ts');
-  if (patchStart(cwd)) changed.push('src/start.ts');
+  try {
+    if (start !== oldStart) {
+      writeProjectFileSync(cwd, startPath, start);
+      changed.push('src/start.ts');
+    }
+    if (client !== oldClient) {
+      writeProjectFileSync(cwd, clientPath, client);
+      changed.push('src/integrations/supabase/client.ts');
+    }
+  } catch (error) {
+    if (start !== oldStart) writeProjectFileSync(cwd, startPath, oldStart);
+    throw error;
+  }
   log(
     opts.demo
       ? 'done — guard wired with the demo sample rules (blocks by default). Set PATCHSTACK_MODE=dry-run for log-only.'
@@ -224,10 +308,12 @@ function verify(cwd: string): VerifyResult {
   const guard = existsSync(guardPath) ? read(guardPath) : '';
   const client = existsSync(clientPath) ? read(clientPath) : '';
   const start = existsSync(startPath) ? read(startPath) : '';
+  const ts = sourceCompiler(cwd);
 
   const checks = [
     { label: 'guard.ts scaffolded', ok: guard.length > 0, hint: 'run `patchstack-connect protect`' },
-    { label: 'Supabase client tunnels through the guard', ok: client.includes('x-ps-target'), hint: 'run `patchstack-connect protect` to re-patch src/integrations/supabase/client.ts' },
+    { label: 'guard helper implementation verified', ok: matchesGuardTemplate(cwd, GUARD_FILE, 'guard.ts'), hint: 'preserved custom helpers require manual review before redirecting browser traffic' },
+    { label: 'Supabase client tunnels through the guard', ok: !!ts && client.includes('x-ps-target') && patchClient(ts, client) === client, hint: 'run `patchstack-connect protect` to re-patch src/integrations/supabase/client.ts' },
     { label: 'request middleware defined + registered', ok: start.includes('const patchstackGuard =') && start.includes('requestMiddleware: [patchstackGuard'), hint: 'run `patchstack-connect protect` to re-patch src/start.ts' },
     { label: 'server-function middleware defined + registered', ok: start.includes('const patchstackFunctionGuard =') && start.includes('functionMiddleware: [patchstackFunctionGuard'), hint: 'run `patchstack-connect protect` to re-patch src/start.ts' },
   ];

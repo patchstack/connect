@@ -3,7 +3,6 @@ import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { persistApiKey, persistClaimState, persistSiteUuid, resolveConfig, writeConfigFile } from '../src/config.js';
-import { inferEnvironment } from '../src/environment.js';
 import { readFile } from 'node:fs/promises';
 import { DEFAULT_ENDPOINT, DEFAULT_TIMEOUT_MS } from '../src/client.js';
 import { PatchstackError } from '../src/types.js';
@@ -16,31 +15,8 @@ describe('resolveConfig', () => {
 
   beforeEach(async () => {
     cwd = await mkdtemp(path.join(tmpdir(), 'patchstack-connect-'));
-    delete process.env.PATCHSTACK_SITE_UUID;
-    delete process.env.PATCHSTACK_ENDPOINT;
-    delete process.env.PATCHSTACK_TIMEOUT_MS;
-    delete process.env.PATCHSTACK_ENVIRONMENT;
-    delete process.env.PATCHSTACK_SITE_URL;
-    // The build-environment variables the site URL is inferred from, so a developer's own shell (or a
-    // CI runner that happens to be one of these platforms) cannot decide what these tests see.
-    for (const key of [
-      'VERCEL_ENV',
-      'VERCEL',
-      'VERCEL_TARGET_ENV',
-      'VERCEL_PROJECT_PRODUCTION_URL',
-      'NETLIFY',
-      'NETLIFY_PREVIEW_SERVER',
-      'NETLIFY_DEV',
-      'CONTEXT',
-      'URL',
-      'RENDER',
-      'RENDER_EXTERNAL_URL',
-      'IS_PULL_REQUEST',
-      'RAILWAY_ENVIRONMENT_NAME',
-      'RAILWAY_PUBLIC_DOMAIN',
-    ]) {
-      delete process.env[key];
-    }
+    // Each config fixture supplies its own hosting signals, independent of the test runner's host.
+    process.env = {};
   });
 
   afterEach(async () => {
@@ -164,10 +140,10 @@ describe('resolveConfig', () => {
   });
 
   it('infers the environment from where it runs when nothing states it', async () => {
-    // Under CI this process is a build and infers production; on a laptop it is local. Either way
-    // the answer is the inference's, never a fixed default that calls a laptop a deployment.
     const config = await resolveConfig({ cwd, cliSiteUuid: VALID_UUID });
-    expect(config.environment).toBe(inferEnvironment(process.env).environment);
+    expect(config.environment).toBe('local');
+    expect(config.environmentSource).toBeNull();
+    expect(config.environmentEvidence).toEqual([]);
   });
 
   it('reads a stated local environment', async () => {
@@ -263,6 +239,46 @@ describe('resolveConfig', () => {
     const config = await resolveConfig({ cwd, cliSiteUuid: VALID_UUID });
     expect(config.environment).toBe('sandbox');
     expect(config.ignoredFileEnvironment).toBeNull();
+  });
+
+  describe.each([
+    { event: 'workflow_dispatch', refType: 'branch', refName: 'main', production: true },
+    { event: 'push', refType: 'branch', refName: 'main', production: true },
+    { event: 'release', refType: 'tag', refName: 'v1.2.3', production: true },
+    { event: 'push', refType: 'branch', refName: 'feature-example', production: false },
+    { event: 'pull_request', refType: 'branch', refName: '12/merge', production: false },
+    { event: 'pull_request_target', refType: 'branch', refName: 'main', production: false },
+  ])('GitHub $event on $refType $refName', ({ event, refType, refName, production }) => {
+    beforeEach(() => {
+      Object.assign(process.env, {
+        GITHUB_ACTIONS: 'true', GITHUB_EVENT_NAME: event,
+        GITHUB_REF_TYPE: refType, GITHUB_REF_NAME: refName,
+      });
+    });
+
+    it.each(['sandbox', 'local'] as const)('resolves a committed %s label without changing the file', async label => {
+      await writeConfigFile(cwd, { siteUuid: VALID_UUID, environment: label });
+      const file = path.join(cwd, '.patchstackrc.json');
+      const original = await readFile(file, 'utf8');
+      const config = await resolveConfig({ cwd });
+      expect(config).toMatchObject({
+        environment: production ? 'production' : label,
+        environmentSource: production ? 'platform' : 'override',
+        ignoredFileEnvironment: production ? label : null,
+      });
+      expect(config.environmentEvidence.length > 0).toBe(production);
+      expect(await readFile(file, 'utf8')).toBe(original);
+    });
+
+    it('keeps the process override authoritative', async () => {
+      await writeConfigFile(cwd, { siteUuid: VALID_UUID, environment: 'sandbox' });
+      for (const environment of ['local', 'sandbox', 'production'] as const) {
+        process.env.PATCHSTACK_ENVIRONMENT = environment;
+        expect(await resolveConfig({ cwd })).toMatchObject({
+          environment, environmentSource: 'override', environmentEvidence: [], ignoredFileEnvironment: null,
+        });
+      }
+    });
   });
 
   it('throws CONFIG_INVALID when the environment is not production or sandbox', async () => {

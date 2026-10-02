@@ -44,7 +44,7 @@ describe('guide', () => {
   const writeGenericProtection = (underSrc = false): void => {
     const root = underSrc ? path.join(cwd, 'src') : cwd;
     mkdirSync(path.join(root, 'patchstack'), { recursive: true });
-    writeFileSync(path.join(root, 'patchstack', 'guard.ts'), 'export const protectFetch = () => {};');
+    writeFileSync(path.join(root, 'patchstack', 'guard.ts'), readFileSync(new URL('../src/protect/templates/generic-guard.ts', import.meta.url)));
     // Imported AND called. An import on its own wraps no request, so a fixture that stopped at the import
     // would be describing a project the checklist should not call done.
     writeFileSync(
@@ -145,7 +145,20 @@ describe('guide', () => {
       const state = await collectGuideState(cwd);
 
       expect(state.prebuildWired).toBe(false);
-      expect(renderGuideChecklist(state, false, {}, { verbose: true })).toContain('"prebuild": "patchstack-connect scan"');
+      expect(renderGuideChecklist(state, false, {}, { verbose: true })).toContain('"prebuild": "patchstack-connect scan && patchstack-connect map --upload"');
+    });
+
+    it.each(['yarn', 'pnpm', 'bun'])('requires an explicit build chain for %s', async manager => {
+      const scripts = {build:'vite build',prebuild:'patchstack-connect scan && patchstack-connect map --upload',postbuild:'patchstack-connect mark-build'};
+      writeJson('package.json', {packageManager:`${manager}@1.0.0`,scripts});
+      const before = await collectGuideState(cwd);
+      expect(before.prebuildWired).toBe(false);
+      expect(before.postbuildWired).toBe(false);
+      scripts.build = 'patchstack-connect scan && patchstack-connect map --upload && vite build && patchstack-connect mark-build';
+      writeJson('package.json', {packageManager:`${manager}@1.0.0`,scripts});
+      const after = await collectGuideState(cwd);
+      expect(after.prebuildWired).toBe(true);
+      expect(after.postbuildWired).toBe(true);
     });
 
     it('survives a project with no package.json', async () => {
@@ -278,12 +291,12 @@ describe('guide', () => {
       const output = renderGuideChecklist(await collectGuideState(cwd), false, {}, { verbose: true });
 
       expect(output).toContain(
-        '"build": "patchstack-connect scan && <existing build command> && patchstack-connect mark-build"',
+        '"build": "patchstack-connect scan && patchstack-connect map --upload && <existing build command> && patchstack-connect mark-build"',
       );
       expect(output).not.toContain('"prebuild"');
     });
 
-    it('suggests prebuild/postbuild hooks on non-bun projects', async () => {
+    it('suggests prebuild/postbuild hooks on npm projects', async () => {
       writeJson('package.json', { name: 'npm-app', scripts: { build: 'vite build' } });
       writeJson('.patchstackrc.json', { siteUuid: VALID_UUID });
 
@@ -292,7 +305,7 @@ describe('guide', () => {
       );
       const output = renderGuideChecklist(await collectGuideState(cwd), false, {}, { verbose: true });
 
-      expect(output).toContain('"prebuild": "patchstack-connect scan"');
+      expect(output).toContain('"prebuild": "patchstack-connect scan && patchstack-connect map --upload"');
       expect(output).toContain('"postbuild": "patchstack-connect mark-build"');
     });
 

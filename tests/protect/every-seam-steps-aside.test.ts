@@ -71,6 +71,7 @@ const nodeSeam: Seam = async (api, _served, ran) =>
 const fastifySeam: Seam = async (api, _served, ran) => (ran(), throughFastifyHooks(api));
 
 const SEAMS: Record<string, Seam> = {
+  'fetch-guard.ts#protectFetch': fetchSeam,
   'generic-guard.ts#protectFetch': fetchSeam,
   'generic-guard.js#protectFetch': fetchSeam,
   'generic-guard.cjs#protectFetch': fetchSeam,
