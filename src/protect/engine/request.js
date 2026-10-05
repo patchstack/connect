@@ -1,5 +1,5 @@
 import { parseCookieHeader } from './cookies.js';
-import { decodeHtmlEntities, safeUrlDecode } from './normalizer.js';
+import { decodeHtmlEntities, safeUrlDecode, REQUEST_PATH } from './normalizer.js';
 import { setOwn } from './own.js';
 
 // Resolvable DATA attributes of an uploaded file part (files.<name>.<attr>). The engine only exposes
@@ -342,6 +342,9 @@ export class RequestResolver {
     switch (key) {
       case 'REQUEST_URI':
         return [req.originalUrl ?? req.url ?? '/'];
+      case 'REQUEST_PATH':
+        return Object.hasOwn(req, REQUEST_PATH) && typeof req[REQUEST_PATH] === 'string'
+          ? [req[REQUEST_PATH]] : [];
       case 'REQUEST_METHOD':
         return [req.method ?? 'GET'];
       case 'HTTP_USER_AGENT':

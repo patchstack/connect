@@ -1,6 +1,6 @@
 {
   "$comment": "Generated from src/protect/rules/contract.js by scripts/emit-rule-contract.mjs. Do not edit.",
-  "version": "2.11",
+  "version": "2.12",
   "sources": {
     "raw": {
       "keyed": false
@@ -49,6 +49,7 @@
       "keyed": true,
       "keys": [
         "REQUEST_URI",
+        "REQUEST_PATH",
         "REQUEST_METHOD",
         "HTTP_USER_AGENT",
         "HTTP_REFERER",

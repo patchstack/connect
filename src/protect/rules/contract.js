@@ -12,7 +12,7 @@
 // `rule-contract.json` is the published form. `tests/protect/rule-contract.test.ts` reads the engine's own
 // source and asserts these descriptions match what it implements.
 
-export const CONTRACT_VERSION = '2.11';
+export const CONTRACT_VERSION = '2.12';
 
 /**
  * Every parameter source, and what it accepts after the dot.
@@ -47,7 +47,7 @@ export const SOURCES = Object.freeze({
   server: Object.freeze({
     keyed: true,
     keys: Object.freeze([
-      'REQUEST_URI', 'REQUEST_METHOD', 'HTTP_USER_AGENT', 'HTTP_REFERER', 'HTTP_HOST',
+      'REQUEST_URI', 'REQUEST_PATH', 'REQUEST_METHOD', 'HTTP_USER_AGENT', 'HTTP_REFERER', 'HTTP_HOST',
       'REMOTE_ADDR', 'ip', 'CONTENT_TYPE', 'CONTENT_LENGTH',
     ]),
     key_prefixes: Object.freeze(['HTTP_']),

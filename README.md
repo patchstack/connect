@@ -484,6 +484,23 @@ console.log(result.response.stored ? 'Reported' : 'Unchanged');
 
 Lower-level pieces are also exported: `scanLockfile`, `buildWirePayload`, `postManifest`, `resolveConfig`.
 
+### Path-only rule matching
+
+Rule contract 2.12 adds `server.REQUEST_PATH`: the path is separated from the query and fragment
+**before one percent-decoding pass**. Encoded `?` and `#` remain path data. Unlike `server.REQUEST_URI`,
+this source does not apply iterative decoding, HTML decoding, comment stripping, whitespace changes,
+or dot-segment normalization. Invalid percent encoding and unsupported request-target forms yield no
+value. Additional decoding requires an explicit rule mutation justified by the application's behavior.
+
+The Node adapter preserves the original request target; Fetch-based runtimes expose only the URL
+provided by their platform, so earlier URL canonicalization cannot be reversed. `when.path` and
+existing URI rules are unchanged. For path-sensitive signatures, match the route prefix and payload
+together against `server.REQUEST_PATH`.
+
+Authenticated rules requests advertise `X-Patchstack-Request-Path: 1`. The rules service must withhold
+rules using this source from clients without that capability, and vary its response and ETag by the
+resulting bundle. Update the rules service before distributing rules that require the new source.
+
 ## What gets sent
 
 ```json
