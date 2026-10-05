@@ -8,6 +8,7 @@ const DEFAULT_CACHE_TTL = 300_000;
 const BUILD_VERDICT_HEADER = 'X-Patchstack-Build-Match';
 const BUILD_IDENTITY_HEADER = 'X-Patchstack-Build-ID';
 const PER_RULE_DRY_RUN_HEADER = 'X-Patchstack-Per-Rule-Dry-Run';
+const REQUEST_PATH_HEADER = 'X-Patchstack-Request-Path';
 // Randomly shorten the effective TTL by up to this fraction so many long-lived clients don't all
 // revalidate on the same tick (spreads load / avoids a thundering herd against the rules API).
 const JITTER_FRACTION = 0.1;
@@ -104,9 +105,10 @@ export class PulseRuleClient {
       if (this.#buildId !== null && typeof auth.Authorization === 'string') {
         headers['X-Patchstack-Build'] = this.#buildId;
       }
-      // The rules service may include detect-only rules only when this guard can honor their own mode.
+      // Advertise the optional rule semantics this guard can honor to the authenticated rules service.
       if (typeof auth.Authorization === 'string') {
         headers[PER_RULE_DRY_RUN_HEADER] = '1';
+        headers[REQUEST_PATH_HEADER] = '1';
       }
       if (this.#etag) headers['If-None-Match'] = this.#etag;
       const response = await fetch(url, { method: 'GET', headers, signal: AbortSignal.timeout(this.#timeoutMs) });

@@ -8,6 +8,27 @@
 import { setOwn } from './own.js';
 import { parseCookieHeader } from './cookies.js';
 
+// Adapters preserve the transport's target before URL parsing can collapse dot segments.
+export const REQUEST_TARGET = Symbol('requestTarget');
+export const REQUEST_PATH = Symbol('requestPath');
+
+/** Path only, split before one percent-decoding pass. No filesystem or text normalization. */
+export function requestPath(target) {
+    if (typeof target !== 'string') return undefined;
+    if (/^https?:\/\//i.test(target)) {
+        target = target.replace(/^https?:\/\/[^/?#]+/i, '');
+        if (target === '' || target.startsWith('?') || target.startsWith('#')) target = '/' + target;
+    }
+    if (!target.startsWith('/')) return undefined;
+    const path = target.split(/[?#]/, 1)[0];
+    try {
+        return decodeURIComponent(path);
+    } catch {
+        // An invalid encoded path has no decoded representation. Do not invent a partial one.
+        return undefined;
+    }
+}
+
 
 const HTML_ENTITIES = {
     '&amp;': '&',
@@ -392,6 +413,8 @@ export function normalizeRequest(req, options = {}) {
     const headers = requestField(req, 'headers') || {};
 
     return {
+        [REQUEST_PATH]: requestPath(requestField(req, REQUEST_TARGET)
+            ?? requestField(req, 'originalUrl') ?? url),
         query: normalizeObject(requestField(req, 'query') || {}, options),
         body: normalizeObject(body || {}, options),
         headers: normalizeObject(headers, options),

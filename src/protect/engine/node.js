@@ -12,6 +12,7 @@ import { parseBody } from './fetch.js';
 import { notify } from '../notify.js';
 import { parseCookieHeader } from './cookies.js';
 import { appendOwn, setOwn } from './own.js';
+import { REQUEST_TARGET, requestField } from './normalizer.js';
 
 /**
  * Read a Node request body, keeping at most `maxBytes` of it.
@@ -125,6 +126,7 @@ export function fromNodeRequest(req, rawBody = '', options = {}) {
   });
 
   return {
+    [REQUEST_TARGET]: requestField(req, 'originalUrl') ?? requestField(req, 'url'),
     method,
     url: uri,
     originalUrl: uri,
