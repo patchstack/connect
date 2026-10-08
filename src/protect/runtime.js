@@ -502,7 +502,9 @@ export async function createProtection(options = {}) {
   // are served to detect until a probe or a human has justified them, WITHOUT holding back the
   // hand-authored rules on the same site. A rule with no `enforcement` follows the bundle exactly as
   // before, so an older server that never sends the field behaves identically.
-  const ruleMode = (rule) => (rule?.enforcement === 'dry-run' ? 'dry-run' : mode);
+  const ruleMode = (rule) => (rule?.enforcement === 'dry-run'
+    || (rule && 'build_scope' in rule && typeof process !== 'undefined' && process.env.PATCHSTACK_DEV_SYNC === '1')
+    ? 'dry-run' : mode);
 
   // Plans derived once per rule, and only ever consulted where there is somewhere for evidence to go.
   const planCache = createPlanCache();

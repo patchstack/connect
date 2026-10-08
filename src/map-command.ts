@@ -17,13 +17,17 @@ export interface MapResult {
   buildId?: string | null;
   upload?: Awaited<ReturnType<typeof postInputMap>>;
   error?: string;
+  unchangedLocal?: boolean;
 }
 
-interface MapOptions {
+export interface MapOptions {
   config?: Config;
   /** Setup edits source for the NEXT server start, never the already-running process. */
   setup?: boolean;
   log?: (line: string) => void;
+  /** A lifecycle coordinator must discard analysis superseded by source changes. */
+  isCurrent?: () => boolean;
+  previousBuildId?: string;
 }
 
 /**
@@ -40,7 +44,7 @@ export async function runMapDetailed(flags: Flags, options: MapOptions = {}): Pr
   const log = options.log ?? console.error;
   const cwd = getStringFlag(flags, 'dir') ?? process.cwd();
   // Setup may be rerun after a source change or an unsuccessful analysis. Never leave its old identity.
-  if (options.setup) applyBuildStamp(cwd, null);
+  if (options.setup && !options.previousBuildId) applyBuildStamp(cwd, null);
   const { map, error } = await buildInputMap(cwd, {
     followSymlinks: flags.get('follow-symlinks') === true,
   });
@@ -48,6 +52,7 @@ export async function runMapDetailed(flags: Flags, options: MapOptions = {}): Pr
     log(`patchstack: ${error}`);
     return { code: isPreBundleBuildHook() ? 0 : 1, error: error ?? 'could not analyse the project' };
   }
+  if (options.isCurrent && !options.isCurrent()) return { code: 0, error: 'Source changed during analysis; waiting for a stable map.' };
   // Human summary → stderr; the JSON → stdout (so it can be piped / written). Report PROVEN flows
   // separately from the inventories: only a proven tier is evidence that an input reaches a sink.
   const inputs = map.endpoints.reduce((n, e) => n + e.inputs.length, 0);
@@ -134,6 +139,7 @@ export async function runMapDetailed(flags: Flags, options: MapOptions = {}): Pr
       cliSiteUuid: getStringFlag(flags, 'site-uuid'),
       cliEndpoint: getStringFlag(flags, 'endpoint'),
     });
+    if (options.isCurrent && !options.isCurrent()) return { code: 0, error: 'Source changed before binding; waiting for a stable map.' };
     // Setup prepares the next startup; a prebuild upload prepares the next bundle. Both write the
     // identity of THIS map into the imported rules file. A standalone manual map remains unbound.
     let buildId: string | null = null;
@@ -167,6 +173,10 @@ export async function runMapDetailed(flags: Flags, options: MapOptions = {}): Pr
         'patchstack: no runtime binding recorded — run `map --upload` in a prebuild hook before the bundler, ' +
           'so rules generated from these coordinates can be tied to the runtime guard. Until then they detect only, not block.',
       );
+    }
+    if (options.isCurrent && !options.isCurrent()) return { code: 0, error: 'Source changed before upload; waiting for a stable map.' };
+    if (buildId && buildId === options.previousBuildId) {
+      return { code: 0, endpoints: map.endpoints.length, buildId, unchangedLocal: true };
     }
     const outcome = await postInputMap(config, map, buildId);
     if (outcome.result === 'stored') {
