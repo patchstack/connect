@@ -11,7 +11,22 @@ export interface RuleBundle {
 
 export type Phase = "request" | "response" | "egress";
 
+export interface SynchronizationStatus {
+  siteUuid: string | null;
+  buildId: string | null;
+  matched: boolean;
+  mapRules: "ready" | "pending" | "unknown";
+  etag: string | null;
+  lastCheckedAt: number | null;
+  source: {ok: boolean; origin: "api" | "cache" | "bundled" | "empty"; reason?: string};
+  mode: "block" | "dry-run";
+  devSync: boolean;
+  rules: {request: number; response: number; egress: number; scoped: number; scopedBlocking: number};
+}
+
 export interface Protection {
+  /** Snapshot of the loaded guard and its last rule resolution, not proof of whole-app coverage. */
+  readonly synchronization: SynchronizationStatus;
   mode: "block" | "dry-run";
   /** Active rules split by phase. */
   rules: { request: unknown[]; response: unknown[]; egress: unknown[] };
@@ -285,6 +300,17 @@ export interface CreateProtectionOptions {
    * meaningful with a live source (`siteUuid`/`token`).
    */
   refreshMs?: number;
+  /** Refresh stale rules on incoming requests, including after a host resumes a frozen instance.
+   * Defaults to refreshMs; 0 disables. Positive values have a 1s minimum. No manifest/source scan
+   * runs on this path. Concurrent requests share work; failures back off to at most 8x the interval. */
+  requestRefreshMs?: number;
+  /** Maximum wait for a request-triggered refresh. Default 250ms; clamped to 50–2000ms.
+   * Last-known-good rules remain in use on timeout. */
+  requestRefreshTimeoutMs?: number;
+  /** Answer a signed read-only OPTIONS activation challenge using the resolved Pulse credential.
+   * No credential is sent by the caller; ordinary requests and invalid challenges keep app routing.
+   * Set false to disable. Does not trigger a rules fetch or expose configuration/credentials. */
+  activationCheck?: boolean;
   /**
    * Shared secret gating the push refresh endpoint (`refreshHandler()`): the platform/SaaS hits the
    * endpoint with this secret to trigger an immediate refresh. Falls back to `PATCHSTACK_REFRESH_SECRET`.

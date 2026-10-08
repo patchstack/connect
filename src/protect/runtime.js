@@ -41,6 +41,9 @@ import { hardensWithoutBody, readsOnlyResponseHeaders } from './response-hardeni
 import { notify } from './notify.js';
 import { SOURCE_REQUEST } from './supabase-guard.js';
 import { createFirewallLogReporter, resolveApiBase, telemetryEnabled } from './firewall-log.js';
+import { canonicalBuildId, readBuildStamp } from '../build-id.js';
+import { activationResponse, ACTIVATION_HEADER } from './activation.js';
+import { requestRefresh } from './rules/request-refresh.js';
 
 // Supabase-tunnel guard for AI-builder apps (Lovable / TanStack Start + Supabase).
 export { createSupabaseGuard, GUARD_PATH } from './supabase-guard.js';
@@ -111,6 +114,11 @@ function listOption(value, fallback, name, onError) {
 }
 
 export async function createProtection(options = {}) {
+  const localBuildId = options.buildId != null ? canonicalBuildId(options.buildId) : readBuildStamp(options.rules);
+  // A refresh cannot acquire the identity of source files changed underneath this loaded guard.
+  options = { ...options, ...(localBuildId ? {buildId:localBuildId} : {}),
+    ...(options.rules && !Array.isArray(options.rules) ? {rules:{...options.rules,_patchstack:{...options.rules._patchstack}}} : {}),
+  };
   const onError = options.onError;
   // Every list option is read here, once. Their readers run more than once — the egress guard and the
   // request-phase check both want `allowHosts`, and the rules are rebuilt on every refresh — and a
@@ -249,6 +257,10 @@ export async function createProtection(options = {}) {
     pulseAuth,
     detectionState: preFetchState,
   });
+  let synchronization = bundle.synchronization ?? null;
+  let lastCheckedAt = bundle.source?.ok ? Date.now() : null;
+  let requestRefresher = null;
+  let refreshStopped = false;
 
   /**
    * Where the rules in force came from, and whether the last resolution was clean.
@@ -821,6 +833,10 @@ export async function createProtection(options = {}) {
     let result;
     let shaped;
     try {
+      const activated = await answerActivation(request);
+      if (activated) return {blocked:activated, client:undefined};
+      const pending = requestRefresher?.check();
+      if (pending) await pending;
       shaped = await fromFetchRequest(request, {
         peer: peerOf(request, hostArgs),
         trustedProxy: options.trustedProxy,
@@ -1644,6 +1660,37 @@ export async function createProtection(options = {}) {
     return block;
   };
 
+  const runtimeStatus = () => ({
+    siteUuid: options.siteUuid ?? null,
+    buildId: localBuildId,
+    matched: synchronization?.matched === true,
+    mapRules: synchronization?.mapRules ?? 'unknown',
+    etag: synchronization?.etag ?? null,
+    lastCheckedAt,
+    source: {...ruleSource},
+    mode,
+    devSync: typeof process !== 'undefined' && process.env.PATCHSTACK_DEV_SYNC === '1',
+    rules: {request:requestRules.length, response:responseRules.length, egress:egressRules.length,
+      scoped: [...requestRules, ...responseRules, ...egressRules].filter(rule => 'build_scope' in rule).length,
+      scopedBlocking: [...requestRules, ...responseRules, ...egressRules].filter(rule => 'build_scope' in rule && ruleMode(rule) === 'block').length},
+  });
+  const answerActivation = request => options.activationCheck === false ? null : activationResponse(request, pulseAuth, runtimeStatus);
+  const withRequestSync = handler => (req, res, next) => {
+    const proceed = () => {
+      const pending = requestRefresher?.check();
+      if (pending) pending.then(() => handler(req, res, next)).catch(next);
+      else handler(req, res, next);
+    };
+    const challenge = req.headers?.[ACTIVATION_HEADER];
+    if (!challenge || options.activationCheck === false || !pulseAuth) return proceed();
+    Promise.resolve().then(() => answerActivation({method:req.method, url:req.originalUrl || req.url || '/', headers:new Headers({[ACTIVATION_HEADER]:challenge})})).then(async response => {
+      if (!response) return proceed();
+      res.statusCode = response.status;
+      response.headers.forEach((value, key) => res.setHeader(key, value));
+      res.end(await response.text());
+    }).catch(err => { notify(onError, err, 'onError'); proceed(); });
+  };
+
   const protection = {
     get mode() {
       return mode;
@@ -1699,7 +1746,7 @@ export async function createProtection(options = {}) {
     // Express middleware (request phase; expects express-parsed req.query/req.body).
     // Pass { screenResponses: true } to also screen the outgoing response (buffers it).
     express(exprOptions = {}) {
-      return (req, res, next) => {
+      return withRequestSync((req, res, next) => {
         let result;
         // Resolved once, before evaluation, and reused by the engine, the response screening and the
         // block record below. Three consumers deriving it separately could attribute one request to
@@ -1729,7 +1776,7 @@ export async function createProtection(options = {}) {
           },
           () => nodeRequestMeta(req, client),
         );
-      };
+      });
     },
 
     // Node / Connect middleware — buffers the body itself (request phase). Register it BEFORE any body
@@ -1738,7 +1785,7 @@ export async function createProtection(options = {}) {
     // Pass { screenResponses: true } to also screen the outgoing response (buffers it).
     node(nodeOptions = {}) {
       const maxBytes = nodeOptions.maxBodyBytes ?? 1024 * 1024;
-      return (req, res, next) => {
+      return withRequestSync((req, res, next) => {
         // Registered after a body parser, the stream is already at its end: 'data' and 'end' will not fire
         // again, and waiting for them would hold the request open for as long as the client allows. Screen
         // the body the parser left instead — a guard that stops serving the app is a worse outcome than the
@@ -1759,7 +1806,7 @@ export async function createProtection(options = {}) {
           if (read.failed) recordSkip('request', 'read-failed', { bytes: read.size });
           screenNodeRequest(req, res, next, read.text, undefined, read.overflow || read.failed);
         });
-      };
+      });
 
       // `parsedBody`, when given, is a body somebody else already parsed: it replaces the shaped body
       // rather than being re-serialized, because re-encoding it would have to guess a format and a form
@@ -1843,8 +1890,12 @@ export async function createProtection(options = {}) {
   }
 
   let recovery = null;
-  const runRefreshTick = async () => {
-    if (reporter) {
+  const requestInterval = options.requestRefreshMs ?? options.refreshMs ?? 0;
+  const requestBudget = Number.isFinite(options.requestRefreshTimeoutMs) ? Math.max(50, Math.min(options.requestRefreshTimeoutMs, 2000)) : 250;
+  let activeRefresh = null;
+  const performRefresh = async (fromRequest = false) => {
+    if (refreshStopped) return {ok:false};
+    if (reporter && !fromRequest) {
       try {
         await reporter(cwd);
       } catch (err) {
@@ -1856,10 +1907,13 @@ export async function createProtection(options = {}) {
     // in a binding because the acknowledgement below compares against exactly what this request carried.
     const declaredState = stateFor(currentOrigin).state;
     const next = await resolveRules(options, store, {
-      timeoutMs: options.refreshTimeoutMs,
+      timeoutMs: fromRequest ? requestBudget : options.refreshTimeoutMs,
       pulseAuth,
       detectionState: declaredState,
     });
+    if (refreshStopped) return {ok:false};
+    synchronization = next.synchronization ?? null;
+    if (next.source?.ok) lastCheckedAt = Date.now();
     mode = resolveMode(options, next);
     applyBundle(next);
     noteRuleSource(next.source);
@@ -1879,10 +1933,22 @@ export async function createProtection(options = {}) {
     // a scheduler that only counts THROWN errors reads a fleet-wide outage as a healthy poll and keeps
     // knocking at the normal interval. Reported, not thrown — a caller's manual `refresh()` must not
     // start failing because the platform is down and the cached rules held.
+    if (!fromRequest) requestRefresher?.note(next.source?.ok !== false);
     return next.source ?? { ok: true };
   };
+  const runRefreshTick = (fromRequest = false) => {
+    if (activeRefresh) return fromRequest ? activeRefresh : activeRefresh.catch(() => {}).then(() => runRefreshTick());
+    activeRefresh = performRefresh(fromRequest).finally(() => { activeRefresh = null; });
+    return activeRefresh;
+  };
 
-  // Every trigger below goes through this, so no two refreshes ever run at once.
+  requestRefresher = requestRefresh(() => runRefreshTick(true), {
+    intervalMs: live && (options.token || pulseAuth) && Number.isFinite(requestInterval) && requestInterval > 0 ? Math.max(1000, requestInterval) : 0,
+    timeoutMs: requestBudget,
+  });
+
+  // Explicit triggers queue one follow-up tick. Requests instead share any active work, without
+  // queuing another fetch for every visitor. Both paths use the same underlying single flight.
   const refreshTick = serialise(runRefreshTick);
 
   if (live) {
@@ -1914,6 +1980,8 @@ export async function createProtection(options = {}) {
   // await it rather than racing the last batch against process exit. Bounded and best-effort — a runtime
   // that terminates regardless still wins — and ignoring the return behaves exactly as before.
   protection.stop = () => {
+    refreshStopped = true;
+    requestRefresher.stop();
     loop?.stop();
     recovery?.stop();
     // This protection's outbound screen leaves the shared guard; other protections keep theirs.
@@ -1930,6 +1998,7 @@ export async function createProtection(options = {}) {
   // The rule refresh only: the poll loop and the recovery retries. The reporters and this protection's
   // outbound screen keep running; `stop()` ends those as well.
   protection.stopRefresh = () => {
+    requestRefresher.stop();
     loop?.stop();
     recovery?.stop();
 
@@ -1943,6 +2012,7 @@ export async function createProtection(options = {}) {
     get: () => ({ ...ruleSource }),
     enumerable: true,
   });
+  Object.defineProperty(protection, 'synchronization', {get:runtimeStatus, enumerable:true});
   Object.defineProperty(protection, 'detectionReporting', {
     get: () => detectionReporting,
     enumerable: true,
