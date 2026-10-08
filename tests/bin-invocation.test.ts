@@ -60,6 +60,20 @@ describe.skipIf(!built)('the packaged bin, invoked as npm invokes it', () => {
     expect(stdout).toContain('Usage:');
   });
 
+  it.each([
+    ['protect','--check','--runtime-url'],
+    ['setup','--runtime-url='],
+    ['scan','--runtime-url','https://preview.example.test'],
+    ['protect','--runtime-url','https://preview.example.test'],
+    ['protect','--check','--runtime','--runtime-url','https://preview.example.test'],
+    ['scan','--dev-sync'],
+  ])('refuses invalid activation/development flag combinations before doing work: %s', (...args) => {
+    const result=spawnSync(process.execPath,[bin,...args],{encoding:'utf8'});
+    expect(result.status).toBe(1);
+    expect(result.stdout).toBe('');
+    expect(result.stderr).toMatch(/--runtime-url|--dev-sync/);
+  });
+
   it('runs a real command through a symlinked path', () => {
     // `--help` could conceivably be handled before whatever gates the rest, so exercise a command that
     // does work and emits a document.

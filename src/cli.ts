@@ -89,6 +89,7 @@ import { getStringFlag } from './flags.js';
 import { isCanonicalUuid } from './endpoint-policy.js';
 import { setupProtection, wireBuildScripts, wireDevelopmentScript } from './setup.js';
 import { runDevelopment } from './dev-command.js';
+import { checkActivation } from './activation-check.js';
 import { syncSetupProtection } from './setup-sync.js';
 import { isInstallOrBuildHook, isPreBundleBuildHook, undeliveredReportLines } from './build-hook.js';
 import { applyBuildStamp } from './build-stamp.js';
@@ -222,6 +223,8 @@ Global:
 Options (for scan, setup, status, and uninstall):
   --dev-sync             (setup only) Opt in to continuous development synchronization
                          for a recognizable single-command dev script.
+  --runtime-url <url>    (setup / protect --check) Signed read-only check of an already
+                         running URL. Does not start, restart or deploy the application.
   --site-uuid <uuid>      Override the configured site UUID
   --endpoint <url>        Override the API endpoint
   --dry-run               (scan only) Show the payload without posting
@@ -275,7 +278,7 @@ Examples:
   npx @patchstack/connect demo-guide node-serialize
 `;
 
-const VALUE_FLAGS = new Set(['site-uuid', 'endpoint', 'dir', 'url', 'out', 'claim-token']);
+const VALUE_FLAGS = new Set(['site-uuid', 'endpoint', 'dir', 'url', 'out', 'claim-token', 'runtime-url']);
 
 /** Set from `--verbose`. The default output is a plain status report; this adds the technical lines. */
 let verbose = false;
@@ -1073,6 +1076,11 @@ function reportSourceMarker(framework: string | null, checksum: string | null, r
 
 async function runProtectCommand(args: ParsedArgs): Promise<number> {
   const runtime = args.flags.get('runtime') === true;
+  const runtimeUrl = getStringFlag(args.flags, 'runtime-url');
+  if (runtimeUrl && (runtime || args.flags.get('check') !== true)) {
+    console.error('Use --runtime-url with protect --check, without --runtime. It checks an already-running app.');
+    return 1;
+  }
   // A stray `--runtime` would otherwise scaffold quietly while the caller believed their app had been
   // started and probed — a false green about the one check that exists to prevent false greens.
   if (runtime && args.flags.get('check') !== true) {
@@ -1118,6 +1126,11 @@ async function runProtectCommand(args: ParsedArgs): Promise<number> {
     // The structural verdict comes first either way: an app whose guard is not wired has nothing to
     // gain from being started, and its runtime result would only be a second way of saying the same no.
     if (!report.wired) return 1;
+    if (runtimeUrl) {
+      const activation = await checkActivation(runtimeUrl, await resolveCliConfig(args), process.cwd());
+      console.log(activation.message);
+      return activation.ok ? 0 : 1;
+    }
     if (!runtime) return 0;
 
     console.log('');
@@ -1378,7 +1391,14 @@ async function runSetup(args: ParsedArgs): Promise<number> {
   } else {
     report.missing.push({ key: 'rules-pull', text: 'Live rule lookup is incomplete', hint: [synced.rules.error ?? 'Check authentication and rerun setup.'] });
   }
-  report.missing.push({ key: 'runtime-restart', text: 'Load the new protection in your running app', hint: ['Restart the preview/server if it is already running. Deploy a new build to update the live app. Setup does not start or deploy it.'] });
+  const runtimeUrl = getStringFlag(args.flags, 'runtime-url');
+  if (runtimeUrl) {
+    const activation = await checkActivation(runtimeUrl, config, process.cwd(), synced.map.buildId ?? null);
+    if (activation.ok) report.done.push(activation.message);
+    else report.missing.push({key:'runtime-activation', text:activation.message});
+  } else {
+    report.missing.push({ key: 'runtime-activation', text: 'Runtime protection has not been checked in the running app', hint: ['Your app may reload these changes automatically. Check it: npx @patchstack/connect protect --check --runtime-url <URL>. Restart/rebuild/deploy only if the new protection has not loaded. Setup does not start or deploy it.'] });
+  }
   const after = await collectGuideState(process.cwd());
   const missing = mergeMissing(report.missing, guideMissing(after, reported));
   const context = scanNextStepContext(config, after, after.siteUuid);
@@ -1772,6 +1792,16 @@ async function main(): Promise<number> {
   if (args.flags.has('help') || args.command === 'help' || args.command === null) {
     console.log(HELP);
     return 0;
+  }
+
+  if (args.flags.has('runtime-url') && (!getStringFlag(args.flags, 'runtime-url')?.trim()
+    || !['setup', 'protect'].includes(args.command))) {
+    console.error('--runtime-url requires an explicit URL and applies only to setup or protect --check.');
+    return 1;
+  }
+  if (args.flags.has('dev-sync') && args.command !== 'setup') {
+    console.error('--dev-sync applies only to setup. To run a development server, use dev -- <command>.');
+    return 1;
   }
 
   switch (args.command) {
