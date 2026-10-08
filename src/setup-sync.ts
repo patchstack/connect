@@ -13,6 +13,7 @@ export interface SetupSyncResult {
     ok: boolean;
     count: number;
     origin: string;
+    mapRules: 'ready' | 'pending' | 'unknown';
     error?: string;
   };
   notices: string[];
@@ -20,7 +21,7 @@ export interface SetupSyncResult {
 }
 
 /** The explicit setup workflow: source edits first, mapping second, authenticated rule pull last. */
-export async function syncSetupProtection(cwd: string, config: Config): Promise<SetupSyncResult> {
+export async function syncSetupProtection(cwd: string, config: Config, { waitMs = 10_000 } = {}): Promise<SetupSyncResult> {
   const notices: string[] = [];
   const warnings: string[] = [];
   let map: MapResult;
@@ -32,7 +33,7 @@ export async function syncSetupProtection(cwd: string, config: Config): Promise<
     map = { code: 1, error: 'Could not analyse or bind the map; check the project files and permissions.' };
   }
   const unavailable = (error: string): SetupSyncResult => ({
-    map, rules: { ok: false, count: 0, origin: 'empty', error }, notices, warnings,
+    map, rules: { ok: false, count: 0, origin: 'empty', mapRules: 'unknown', error }, notices, warnings,
   });
   if (!isCanonicalUuid(config.siteUuid)) return unavailable('No site UUID is configured.');
   if (!config.pulseAuth) return unavailable('Set PATCHSTACK_API_KEY or run patchstack-connect login to fetch live rules.');
@@ -58,12 +59,24 @@ export async function syncSetupProtection(cwd: string, config: Config): Promise<
     // Use the runtime's validator, source-scoped cache and build-verdict handling without creating a
     // running guard: setup must not install global hooks, start refresh timers, or execute the app.
     const store = makeStore({ ...options, pulseRulesUrl: rulesUrl === defaultRules ? undefined : base });
-    const bundle = await resolveRules(options, store, {
+    let bundle = await resolveRules(options, store, {
       pulseAuth: config.pulseAuth, timeoutMs: Math.min(config.timeoutMs, 10_000),
     });
+    // A successful empty lookup can mean generation is still pending. Wait only for an explicit
+    // pending response; old services remain usable without being described as synchronized.
+    const deadline = Date.now() + Math.max(0, Math.min(waitMs, 30_000));
+    while (bundle.source.ok && bundle.synchronization?.mapRules === 'pending' && Date.now() < deadline) {
+      await new Promise(resolve => setTimeout(resolve, Math.min(1000, deadline - Date.now())));
+      const remaining = deadline - Date.now();
+      if (remaining <= 0) break;
+      bundle = await resolveRules(options, store, {
+        pulseAuth: config.pulseAuth, timeoutMs: Math.min(config.timeoutMs, remaining),
+      });
+    }
     return {
       map, notices, warnings,
       rules: { ok: bundle.source.ok, origin: bundle.source.origin, count: bundle.firewall.length,
+        mapRules: bundle.synchronization?.mapRules ?? 'unknown',
         ...(bundle.source.ok ? {} : { error: bundle.source.reason ?? 'Live rules could not be fetched.' }) },
     };
   } catch {

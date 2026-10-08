@@ -235,7 +235,8 @@ export async function resolveRules(options, store, ctx = {}) {
         buildId: identity.id,
         matchedBuildId: confirmed,
       });
-      return fromSource(served(normalizeBundle(prior.bundle, options), confirmed), 'cache');
+      return { ...fromSource(served(normalizeBundle(prior.bundle, options), confirmed), 'cache'),
+        synchronization: { buildId: identity.id, matched: confirmed !== null, mapRules: confirmed === null ? 'unknown' : res.mapRules, etag: res.etag ?? prior.etag ?? null } };
     }
     if (res.success && !res.notModified) {
       const confirmed = confirmedBy(res, identity.id);
@@ -252,7 +253,8 @@ export async function resolveRules(options, store, ctx = {}) {
       // The verdict is stored, not the claim: `matchedBuildId` is what the platform confirmed, so a
       // later run cannot read this cache as a corroboration the platform never gave.
       await store.write({ bundle, etag: res.etag ?? null, buildId: identity.id, matchedBuildId: confirmed });
-      return fromSource(served(bundle, confirmed), 'api');
+      return { ...fromSource(served(bundle, confirmed), 'api'),
+        synchronization: { buildId: identity.id, matched: confirmed !== null, mapRules: confirmed === null ? 'unknown' : res.mapRules, etag: res.etag ?? null } };
     }
     if (prior?.bundle) {
       notify(options.onError, new Error(`pulse rule fetch failed (${res.error ?? 'no usable response'}); using cached bundle`), 'onError');

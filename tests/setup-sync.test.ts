@@ -21,6 +21,7 @@ let mapStatus: number;
 let ruleStatus: number;
 let delivered: unknown;
 let confirm: boolean;
+let readiness: string | null;
 
 beforeEach(() => {
   clearPulseToken();
@@ -31,13 +32,17 @@ beforeEach(() => {
   expect(setupProtection(cwd).verification.wired).toBe(true);
   config = { siteUuid: uuid, endpoint: `${base}/manifest`, endpointTrusted: true, pulseAuth: 'synthetic-secret-1', apiKey: 'synthetic-secret-1', timeoutMs: 1000, environment: 'local', widget: true } as Config;
   calls = []; mapStatus = 200; ruleStatus = 200; delivered = bundle([rule]); confirm = true;
+  readiness = null;
   vi.stubGlobal('fetch', async (url: unknown, init: RequestInit = {}) => {
     calls.push({url: String(url), init});
     if (String(url).endsWith('/token')) return Response.json({access_token:'synthetic-token', expires_in:3600});
     if (String(url).includes('/input-map/')) return Response.json({result:'stored', revision:1}, {status:mapStatus});
     if (String(url).includes('/rules/')) {
       const id = new Headers(init.headers).get('X-Patchstack-Build');
-      return Response.json(delivered, {status:ruleStatus, headers: id && confirm ? {'X-Patchstack-Build-Match':'match', 'X-Patchstack-Build-ID':id} : {}});
+      return Response.json(delivered, {status:ruleStatus, headers: {
+        ...(id && confirm ? {'X-Patchstack-Build-Match':'match', 'X-Patchstack-Build-ID':id} : {}),
+        ...(readiness ? {'X-Patchstack-Map-Rules':readiness} : {}),
+      }});
     }
     throw new Error('unexpected network path');
   });
@@ -48,6 +53,33 @@ function cache() { return JSON.parse(readFileSync(join(cwd,'.patchstack/patchsta
 function uploaded() { return JSON.parse(String(calls.find(c => c.url.includes('/input-map/'))!.init.body)); }
 
 describe('one-command setup synchronization', () => {
+  it('distinguishes pending, ready-empty, and an older service without readiness', async () => {
+    delivered = bundle();
+    readiness = 'pending';
+    expect((await syncSetupProtection(cwd, config, {waitMs:0})).rules).toMatchObject({ok:true, count:0, mapRules:'pending'});
+    readiness = 'ready';
+    expect((await syncSetupProtection(cwd, config)).rules).toMatchObject({ok:true, count:0, mapRules:'ready'});
+    readiness = null;
+    expect((await syncSetupProtection(cwd, config)).rules.mapRules).toBe('unknown');
+  });
+
+  it('does not accept readiness without confirmation of the requested map', async () => {
+    readiness = 'ready'; confirm = false;
+    expect((await syncSetupProtection(cwd, config)).rules.mapRules).toBe('unknown');
+  });
+
+  it('waits for explicitly pending generation without requiring another map upload', async () => {
+    readiness = 'pending';
+    const respond = globalThis.fetch;
+    vi.stubGlobal('fetch', async (...args: Parameters<typeof fetch>) => {
+      const response = await respond(...args);
+      if (String(args[0]).includes('/rules/')) readiness = 'ready';
+      return response;
+    });
+    expect((await syncSetupProtection(cwd, config, {waitMs:1500})).rules.mapRules).toBe('ready');
+    expect(calls.filter(c => c.url.includes('/input-map/'))).toHaveLength(1);
+    expect(calls.filter(c => c.url.includes('/rules/'))).toHaveLength(2);
+  });
   it('uploads after scaffolding, then fetches request and response rules using the same identity', async () => {
     delivered = bundle([rule, {...rule, id:'synthetic-output', phase:'response', rule_v2:[{parameter:'response.body', match:{type:'contains',value:'synthetic-output'}}]}]);
     const result = await syncSetupProtection(cwd, config);
