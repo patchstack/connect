@@ -35,6 +35,8 @@ export interface MissingItem {
 
 export interface StatusReport {
   done: string[];
+  /** Short verified outcomes that stay visible in concise output and the assistant summary. */
+  confirmed?: string[];
   missing: MissingItem[];
   /** How many packages this run checked, when it checked any. */
   checked?: number;
@@ -154,6 +156,10 @@ function renderConcise(
     lines.push(`   ${paint(ANSI.green, `${rules} protection ${rules === 1 ? 'rule' : 'rules'} available`)}`);
   }
   if (findings.length > 0 || (report.rules ?? 0) > 0) lines.push('');
+
+  if (protectionPossible(report) && report.confirmed?.length) {
+    lines.push(...report.confirmed.map((text) => ` ${paint(ANSI.green, '✔')} ${text}`), '');
+  }
 
   for (const item of report.missing.filter((entry) => entry.note === true)) {
     lines.push(`  ${paint(ANSI.dim, 'ℹ')} ${item.plain?.text ?? item.text}`);
@@ -288,13 +294,17 @@ export function renderSummary(report: StatusReport, progress: Progress, context:
     todo.push(item.plain?.text ?? item.text);
   }
   const outdated = findings?.outdated ?? 0;
-  const steps = todo.slice(0, 3);
+  const steps = todo;
   if (steps.length > 0) {
     lines.push('#### 👉 What to do now');
     // A single step needs no number; its link goes in a paragraph of its own so it renders on its own line.
     if (steps.length === 1) lines.push(...steps[0]!.split('\n').flatMap((line, index) => (index === 0 ? [line] : ['', line.trimStart()])));
     else lines.push(...steps.flatMap((entry, index) => `${index + 1}. ${entry}`.split('\n')));
     lines.push('');
+  }
+
+  if (canProtect && report.confirmed?.length) {
+    lines.push('#### Protection checks', ...report.confirmed, '');
   }
 
   // With nothing found, the headline already says it all.

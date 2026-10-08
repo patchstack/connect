@@ -113,6 +113,13 @@ describe('renderStatus concise', () => {
     expect(lines.some((line) => line.includes('Restart your app'))).toBe(false);
   });
 
+  it('keeps verified readiness visible without claiming that rules are blocking', () => {
+    const confirmed = 'Rules for this app are ready (none currently apply). This does not confirm active blocking.';
+    const lines = renderStatus('Patchstack setup', report({ confirmed: [confirmed], rules: 0 }), notConnected, context, { useColor: false, concise: true });
+
+    expect(lines).toContain(` ✔ ${confirmed}`);
+  });
+
   it('prints the full report with --verbose', () => {
     const lines = renderStatus('Patchstack setup', report(), notConnected, context, {
       useColor: false,
@@ -202,7 +209,8 @@ describe('renderSummary', () => {
   });
 
   it('makes no protection claims for an app with no server', () => {
-    const text = renderSummary(report({ rules: 12, missing: [noServerItem] }), notConnected, context, { widgetOnPage: false }).join('\n');
+    const input = report({ rules: 12, confirmed: ['Rules for this app are ready.'], missing: [noServerItem] });
+    const text = renderSummary(input, notConnected, context, { widgetOnPage: false }).join('\n');
 
     expect(text).not.toMatch(/protection rules|turn on protection|Restart your app/);
     expect(text).toContain('No server was found in this project');
@@ -210,6 +218,8 @@ describe('renderSummary', () => {
     expect(text).not.toContain('Deploy to protect');
     expect(text).not.toContain("Don't forget to republish");
     expect(text).not.toContain('widget now shows');
+    expect(text).not.toContain('Rules for this app are ready');
+    expect(renderStatus('Patchstack setup', input, notConnected, context, { useColor: false, concise: true }).join('\n')).not.toContain('Rules for this app are ready');
     expect(text).toContain('**Add the Patchstack widget to my app**');
     expect(text).toContain('**Help me put my app live**');
   });
@@ -254,6 +264,20 @@ describe('renderSummary', () => {
   it('offers only what is still left: no connection check once connected, no go-live once live', () => {
     const done: Progress = { installed: true, connected: true, synced: true, deployed: true };
     expect(summaryReplies(report(), done, { widgetOnPage: true }).map((reply) => reply.reply)).toEqual(['Show me the vulnerabilities']);
+  });
+
+  it('includes verified readiness and every outstanding action', () => {
+    const confirmed = 'Rules for this app are ready (none currently apply). This does not confirm active blocking.';
+    const missing = [
+      { key: 'map-upload', text: 'Could not upload the map' },
+      { key: 'map-binding', text: 'Could not link the map' },
+      { key: 'map-rules', text: 'Rules are still being prepared' },
+      { key: 'runtime-activation', text: 'The running app could not be checked' },
+    ];
+    const text = renderSummary(report({ confirmed: [confirmed], missing }), notConnected, context, { widgetOnPage: false }).join('\n');
+
+    expect(text).toContain(confirmed);
+    for (const item of missing) expect(text).toContain(item.text);
   });
 
   it('lists every reply it offers in AGENT-INSTALL.md with its command, so an assistant knows what to run', () => {

@@ -1458,7 +1458,15 @@ async function runSetup(args: ParsedArgs): Promise<number> {
   if (synced.rules.ok) {
     // Rules are enforced by protection in a server; an app without one has nothing to apply them.
     if (!noServer) report.rules = synced.rules.count;
-    report.done.push(`Live rule lookup succeeded (${synced.rules.count} delivered rules; ${synced.rules.count === 0 ? 'no rules currently assigned' : 'not proof of runtime enforcement'})`);
+    report.done.push(`Live rule lookup succeeded (${synced.rules.count} delivered rules; not proof of runtime enforcement)`);
+    if (!noServer) {
+      if (synced.rules.mapRules === 'ready') {
+        report.done.push(`Rules for this map are ready${synced.rules.count === 0 ? ' (no applicable rules)' : ''}`);
+        report.confirmed = [`Rules for this app are ready${synced.rules.count === 0 ? ' (none currently apply)' : ''}. This does not confirm active blocking.`];
+      } else {
+        report.missing.push({ key: 'map-rules', text: synced.rules.mapRules === 'pending' ? 'Rules for this map are still being prepared' : 'Rules readiness for this map is not confirmed', hint: ['The running guard will refresh automatically. Broad and hardening rules do not depend on map generation.'], plain: { text: synced.rules.mapRules === 'pending' ? 'Rules for this app are still being prepared' : 'Could not confirm whether rules for this app are ready', hint: ['Your running app will check again automatically.'] } });
+      }
+    }
   } else {
     report.missing.push({ key: 'rules-pull', text: 'Live rule lookup is incomplete', hint: [synced.rules.error ?? 'Check authentication and rerun setup.'], plain: { text: 'Could not fetch protection rules', hint: ['Run setup again.'] } });
   }
