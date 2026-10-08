@@ -282,6 +282,13 @@ function scan(): { importers: string[]; sites: Site[] } {
  */
 const DECLARED: Array<{ file: string; call: string; times: number; executesProjectCode: boolean; what: string }> = [
   {
+    file: 'src/dev-command.ts',
+    call: 'spawn',
+    times: 1,
+    executesProjectCode: true,
+    what: '`dev -- <command>` runs only the development command explicitly supplied by the user',
+  },
+  {
     file: 'src/protect/install/source-scope.ts',
     call: 'execFileSync',
     times: 1,
@@ -306,6 +313,7 @@ const DECLARED: Array<{ file: string; call: string; times: number; executesProje
 
 /** Files allowed to reference the module, including ones that launch nothing themselves. */
 const ALLOWED_IMPORTERS: Record<string, string> = {
+  'src/dev-command.ts': 'the explicit development command above',
   'src/protect/install/source-scope.ts': 'the syntax check above',
   'src/protect/install/runtime/probe.ts': 'the runtime check above',
   'src/protect/install/runtime/report-listeners.cjs':
@@ -341,8 +349,9 @@ describe('every process this package can start', () => {
     expect(Object.keys(ALLOWED_IMPORTERS).filter((file) => !importers.has(file))).toEqual([]);
   });
 
-  it('says of exactly one site that it runs the project’s own code', () => {
+  it('declares both explicit ways to run the project’s own code', () => {
     expect(DECLARED.filter((entry) => entry.executesProjectCode).map((entry) => entry.file)).toEqual([
+      'src/dev-command.ts',
       'src/protect/install/runtime/probe.ts',
     ]);
   });
@@ -451,8 +460,10 @@ describe('the docs', () => {
   });
 
   it('say which commands do not start it, since that is the question an auditor asks', () => {
-    expect(readme).toMatch(/No other command runs your application/);
-    expect(agentInstall).toMatch(/Nothing else runs the application/);
+    for (const text of [readme, agentInstall]) {
+      expect(text).toContain('The explicit `dev -- <command>` wrapper also runs your selected application command.');
+      expect(text).toContain('`protect`, `protect --check`, `setup`, `guide`, `scan`,');
+    }
   });
 
   it('claim only traversal for a pass, in both places', () => {

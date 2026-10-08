@@ -2,7 +2,7 @@ import { join } from 'node:path';
 import { buildRulesUrl, DEFAULT_ENDPOINT } from './client.js';
 import { ensureIgnored } from './config.js';
 import { assertConnectableEndpoint, isCanonicalUuid } from './endpoint-policy.js';
-import { runMapDetailed, type MapResult } from './map-command.js';
+import { runMapDetailed, type MapResult, type MapOptions } from './map-command.js';
 import { resolveRules } from './protect/rules/source.js';
 import { makeStore } from './protect/rules/store.js';
 import type { Config } from './types.js';
@@ -21,13 +21,15 @@ export interface SetupSyncResult {
 }
 
 /** The explicit setup workflow: source edits first, mapping second, authenticated rule pull last. */
-export async function syncSetupProtection(cwd: string, config: Config, { waitMs = 10_000 } = {}): Promise<SetupSyncResult> {
+export async function syncSetupProtection(cwd: string, config: Config, { waitMs = 10_000, mapOptions = {} }: {
+  waitMs?: number; mapOptions?: Pick<MapOptions, 'isCurrent' | 'previousBuildId'>;
+} = {}): Promise<SetupSyncResult> {
   const notices: string[] = [];
   const warnings: string[] = [];
   let map: MapResult;
   try {
     map = await runMapDetailed(new Map<string, string | true>([['dir', cwd], ['upload', true]]), {
-      config, setup: true, log: line => notices.push(line),
+      ...mapOptions, config, setup: true, log: line => notices.push(line),
     });
   } catch {
     map = { code: 1, error: 'Could not analyse or bind the map; check the project files and permissions.' };

@@ -87,7 +87,8 @@ import { formatRuntimeCheck, runRuntimeCheck, runtimeExitCode } from './protect/
 import { runMap } from './map-command.js';
 import { getStringFlag } from './flags.js';
 import { isCanonicalUuid } from './endpoint-policy.js';
-import { setupProtection, wireBuildScripts } from './setup.js';
+import { setupProtection, wireBuildScripts, wireDevelopmentScript } from './setup.js';
+import { runDevelopment } from './dev-command.js';
 import { syncSetupProtection } from './setup-sync.js';
 import { isInstallOrBuildHook, isPreBundleBuildHook, undeliveredReportLines } from './build-hook.js';
 import { applyBuildStamp } from './build-stamp.js';
@@ -98,6 +99,9 @@ import { buildWidgetTag, ensureSourceWidget, ensureWidgetInHtml } from './widget
 const HELP = `@patchstack/connect — scan your lockfile and report packages to Patchstack.
 
 Usage:
+  patchstack-connect dev -- <command> [args]         Run an explicitly requested dev server with
+                                                     coalesced structural map uploads and rule pulls.
+                                                     Map-specific rules detect only during hot reload.
   patchstack-connect scan   [options]                Scan lockfile and POST to Patchstack.
                                                      If no UUID is configured, the server
                                                      provisions one and we persist it. After a
@@ -216,6 +220,8 @@ Global:
                           environment and why, files written, installer steps
 
 Options (for scan, setup, status, and uninstall):
+  --dev-sync             (setup only) Opt in to continuous development synchronization
+                         for a recognizable single-command dev script.
   --site-uuid <uuid>      Override the configured site UUID
   --endpoint <url>        Override the API endpoint
   --dry-run               (scan only) Show the payload without posting
@@ -1343,6 +1349,12 @@ async function runSetup(args: ParsedArgs): Promise<number> {
   report.done.push(buildStepsLine(wired));
   detail(`Build hooks: ${wired.detail}`);
 
+  if (args.flags.get('dev-sync') === true) {
+    const development = wireDevelopmentScript(process.cwd());
+    if (development.wired) report.done.push('Development map synchronization wired (starts with your dev command)');
+    else report.missing.push({ key: 'development-sync', text: 'Development command needs manual sync integration', hint: ['The existing dev script was preserved. Run: patchstack-connect dev -- <server-command> [arguments]'] });
+  }
+
   const config = await resolveCliConfig(args);
   const synced = await syncSetupProtection(process.cwd(), config);
   for (const line of synced.notices) detail(line);
@@ -1744,6 +1756,9 @@ function plainErrorMessage(err: PatchstackError): string | null {
 }
 
 async function main(): Promise<number> {
+  if (process.argv[2] === 'dev') {
+    return runDevelopment(process.argv[3] === '--' ? process.argv.slice(4) : []);
+  }
   const args = parseArgs(process.argv);
   verbose = args.flags.get('verbose') === true;
 

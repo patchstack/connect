@@ -134,6 +134,12 @@ If the server is already running, **restart it** to load the new guard and map i
 
 The authenticated rules response may include `X-Patchstack-Map-Rules: pending | ready` alongside `X-Patchstack-Build-Match` and `X-Patchstack-Build-ID`, including on a `304`. Readiness applies only when the response confirms the exact map identity requested. An absent or unrecognized readiness value means **unknown**, not ready. The ETag identifies the delivered policy, not map-generation completion. Broad and hardening rules remain usable while map-specific rules are pending.
 
+For continuous preview mapping, opt in once with `patchstack-connect setup --dev-sync`. Setup wraps recognizable single-command `dev` scripts (Vite/TanStack, Next.js, Astro, Nuxt, tsx watch, Node watch, and nodemon); it preserves custom shell scripts and reports the manual integration instead. Then use your ordinary package-manager dev command. Alternatively, run `patchstack-connect dev -- vite` or `patchstack-connect dev -- next dev` explicitly. Setup never starts or restarts a server itself.
+
+The wrapper polls source/config/lockfile metadata, debounces edits, and coalesces uploads to at most one attempt every three minutes. It skips dependency directories, hidden files, build output, and symlinks, discards superseded analysis, and retries offline work without stopping the app. Each successful cycle reports packages, uploads changed structural maps, and refreshes the local rule cache. The running guard still performs its own rule retrieval; a cache update does not replace a loaded guard's identity.
+
+During this hot-reload session, **map-specific rules detect only**: a changed file and the handler loaded by the framework are not an atomic pair. Broad and hardening rules retain their normal modes. To prove exact-match blocking, build and run the production artifact with its bundled map identity. The wrapper's `PATCHSTACK_DEV_SYNC=1` applies only to its child process; do not persist it in deployment configuration. Separate apps/environments with different dependency inventories need separate site identities.
+
 Then **refresh your preview**. The widget loads with the page, so a preview that was already open still shows the HTML from before setup. Builders that hot reload will have refreshed it for you; if the widget is missing, refresh it once. Until the site is claimed it shows the "Connect this website" panel. `setup` prints the same reminder, and the CLI has no way to reload a browser itself.
 
 Then **deploy**. These are source changes, so your live site keeps serving its previous build — visitors get the widget, and a server-rendered root gets the production marker, only after the next deploy.
@@ -334,7 +340,7 @@ file — the check reports which entry it used and where it came from.
 Windows reports exit `2` without starting anything: the cleanup this relies on is a POSIX process
 group, and a verification that can leave a server running is worse than an unanswered question.
 
-No other command runs your application. `protect`, `protect --check`, `setup`, `guide`, `scan`,
+The explicit `dev -- <command>` wrapper also runs your selected application command. `protect`, `protect --check`, `setup`, `guide`, `scan`,
 `status` and `mark-build` only read and write files, and — for `scan` and `mark-build` — report the
 dependency manifest they read, or only its checksum from a production build that has no API key.
 
