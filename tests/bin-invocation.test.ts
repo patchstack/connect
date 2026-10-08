@@ -8,6 +8,7 @@ import { fileURLToPath } from 'node:url';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { readBuildStamp } from '../src/build-id.js';
+import { activationResponse } from '../src/protect/activation.js';
 
 /**
  * The published `bin` has to actually run, invoked the way npm invokes it.
@@ -58,6 +59,21 @@ describe.skipIf(!built)('the packaged bin, invoked as npm invokes it', () => {
     expect(stdout.length).toBeGreaterThan(200);
     expect(stdout).toContain('@patchstack/connect');
     expect(stdout).toContain('Usage:');
+  });
+
+  it.each([
+    ['--runtime-url','https://preview.example.test'],
+    ['protect','--check','--runtime-url'],
+    ['setup','--runtime-url='],
+    ['scan','--runtime-url','https://preview.example.test'],
+    ['protect','--runtime-url','https://preview.example.test'],
+    ['protect','--check','--runtime','--runtime-url','https://preview.example.test'],
+    ['scan','--dev-sync'],
+  ])('refuses invalid activation/development flag combinations before doing work: %s', (...args) => {
+    const result=spawnSync(process.execPath,[bin,...args],{encoding:'utf8'});
+    expect(result.status).toBe(1);
+    expect(result.stdout).toBe('');
+    expect(result.stderr).toMatch(/--runtime-url|--dev-sync/);
   });
 
   it('runs a real command through a symlinked path', () => {
@@ -331,6 +347,67 @@ describe.skipIf(!built)('the packaged bin, invoked as npm invokes it', () => {
       });
       return stdout;
     }
+
+    it.each(['current', 'stale', 'unchecked'] as const)('keeps map readiness and %s activation visible in setup and its summary', async activation => {
+      const secret = 'synthetic-setup-report-key-1234';
+      let buildId: string | null = null;
+      const server = createServer((req, res) => {
+        req.resume();
+        req.on('end', () => {
+          void (async () => {
+            if (req.url === '/preview') {
+              const response = await activationResponse(new Request('http://localhost/preview', {
+                method: req.method, headers: req.headers as Record<string, string>,
+              }), secret, () => ({ siteUuid: SITE, buildId: activation === 'stale' ? 'b'.repeat(64) : buildId,
+                mapRules: 'pending', matched: true, source: { ok: true }, rules: { request: 0, response: 0, scopedBlocking: 0 },
+              }));
+              res.writeHead(response?.status ?? 400, response ? Object.fromEntries(response.headers) : {});
+              res.end(response ? await response.text() : '');
+              return;
+            }
+            res.setHeader('Content-Type', 'application/json');
+            if (req.url?.endsWith('/token')) res.end(JSON.stringify({ access_token: 'synthetic-token', expires_in: 3600 }));
+            else if (req.url?.includes('/input-map/')) res.end(JSON.stringify({ result: 'stored', revision: 1 }));
+            else if (req.url?.includes('/rules/')) {
+              buildId = typeof req.headers['x-patchstack-build'] === 'string' ? req.headers['x-patchstack-build'] : null;
+              if (buildId) {
+                res.setHeader('X-Patchstack-Build-Match', 'match');
+                res.setHeader('X-Patchstack-Build-ID', buildId);
+                res.setHeader('X-Patchstack-Map-Rules', 'ready');
+              }
+              res.end(JSON.stringify({ firewall: [], whitelists: [], whitelist_keys: {} }));
+            } else res.end(JSON.stringify({ uuid: SITE, stored: true, manifest_id: 7, checksum: 'abc' }));
+          })().catch(() => { res.statusCode = 500; res.end(); });
+        });
+      });
+      await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve));
+      const base = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
+      const dir = freshProject();
+      try {
+        writeFileSync(path.join(dir, 'package.json'), JSON.stringify({ type: 'module', dependencies: { '@patchstack/connect': '^0.5.0', express: '^4.21.2' } }));
+        writeFileSync(path.join(dir, 'server.js'), "import express from 'express';\nconst app = express();\napp.use(express.json());\napp.post('/contact', (req, res) => res.json({message:req.body.message}));\napp.listen(3000);\n");
+        const output = await run(dir, `${base}/monitor/pulse/manifest`, ['setup', ...(activation === 'unchecked' ? [] : ['--runtime-url', `${base}/preview`])], { PATCHSTACK_API_KEY: secret });
+        const sections = output.split('──── Summary ────');
+        expect(sections).toHaveLength(2);
+        expect(buildId, output).not.toBeNull();
+        expect(buildId).toMatch(/^[a-f0-9]{64}$/);
+        for (const section of sections) {
+          expect(section).toContain('Rules for this app are ready (none currently apply). This does not confirm active blocking.');
+          expect(section).not.toContain('Restart your app to turn protection on');
+          if (activation === 'current') {
+            expect(section).toContain('Protection answered at the checked URL with the current app map. Rules: pending');
+            expect(section).toContain('This does not prove blocking or protection on other URLs.');
+          } else {
+            expect(section).not.toContain('Protection answered at the checked URL');
+            expect(section).toContain(activation === 'stale' ? 'its loaded map is absent or different' : 'Check protection in your running app');
+          }
+        }
+      } finally {
+        server.closeAllConnections();
+        await new Promise<void>(resolve => server.close(() => resolve()));
+        rmSync(dir, { recursive: true, force: true });
+      }
+    });
 
     it('marks the local sync done and names connecting as the one next step', async () => {
       const server = await acceptingServer();
