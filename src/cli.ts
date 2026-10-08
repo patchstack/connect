@@ -1357,7 +1357,12 @@ async function runSetup(args: ParsedArgs): Promise<number> {
     report.missing.push({ key: 'map-upload', text: 'Attack-surface map was not uploaded', hint: [synced.map.error ?? uploaded?.message ?? 'Check connectivity and rerun setup.'] });
   }
   if (synced.rules.ok) {
-    report.done.push(`Live rule lookup succeeded (${synced.rules.count} delivered rules; ${synced.rules.count === 0 ? 'no rules currently assigned' : 'not proof of runtime enforcement'})`);
+    report.done.push(`Live rule lookup succeeded (${synced.rules.count} delivered rules; not proof of runtime enforcement)`);
+    if (synced.rules.mapRules === 'ready') {
+      report.done.push(`Rules for this map are ready${synced.rules.count === 0 ? ' (no applicable rules)' : ''}`);
+    } else {
+      report.missing.push({ key: 'map-rules', text: synced.rules.mapRules === 'pending' ? 'Rules for this map are still being prepared' : 'Rules readiness for this map is not confirmed', hint: ['The running guard will refresh automatically. Broad and hardening rules do not depend on map generation.'] });
+    }
   } else {
     report.missing.push({ key: 'rules-pull', text: 'Live rule lookup is incomplete', hint: [synced.rules.error ?? 'Check authentication and rerun setup.'] });
   }

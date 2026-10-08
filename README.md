@@ -7,7 +7,7 @@ Connect a JavaScript / Node.js application to [Patchstack](https://patchstack.co
 - **Patchstack Connector** — a floating control that Connect adds to *your* site. Until the site is claimed it shows a "Connect this website" panel; once claimed it becomes a **"Report a vulnerability"** button, so visitors who spot a security problem have somewhere to send it. This is a channel for reports about your site; it is not how you report a bug in this package. See *[The Patchstack Connector](#the-patchstack-connector)*.
 - **Attack-surface map** — a description of your server's entry points and the sinks they can reach, built by reading your source locally. See *[`map`](#cli)*.
 
-`setup` installs the first three in one command. `map` is never run for you — see the [CLI](#cli) section for what each command does and what it touches.
+`setup` installs the first three in one command and uploads the structural map — see the [CLI](#cli) section for what each command does and what it touches.
 
 ## Agent-assisted setup
 
@@ -126,11 +126,13 @@ That's it. `setup`:
 5. Connect installs the Patchstack Connector's `<script>` tag into your root HTML shell (see *The Patchstack Connector* below) so the widget shows up on the next preview reload — as the "Connect this website" panel until the site is claimed, then as the "Report a vulnerability" button. On a server-rendered root it also adds the production marker, which is what tells the widget to switch from build mode to visitor report intake on the published site.
 6. Installs the runtime guard after provisioning, bakes the site UUID into it, and verifies the framework seam. Known server stacks are auto-wired; unmatched or conflicting layouts get a generic scaffold and exact manual checks.
 7. Adds `postinstall: patchstack-connect scan`, preserving any existing command, so dependencies added during a sandbox session and build-less production installs are reported immediately.
-8. Uploads a structural attack-surface map (routes, input names, package attribution, relative file:line locations and coverage notes; no source text or environment values), stamps its identity into the guard for the next startup/build, and fetches live request/response rules. Empty policy, upload failures and rule-fetch failures are reported separately.
+8. Uploads a structural attack-surface map (routes, input names, package attribution, relative file:line locations and coverage notes; no source text or environment values), stamps its identity into the guard for the next startup/build, and fetches live request/response rules. Map acceptance, pending rule generation, ready-but-empty policy, and fetch failures are reported separately. Setup waits briefly for explicitly pending generation; the running guard continues refreshing afterward.
 9. Wires `scan` followed by `map --upload` before builds and `mark-build` after builds, preserving existing commands. npm uses lifecycle hooks; Yarn, pnpm and Bun use explicit build chains independent of lifecycle settings.
 10. Prints a dashboard link — open it in a browser to attach the new site to your Patchstack account. You can re-display it any time with `npx @patchstack/connect status`.
 
 If the server is already running, **restart it** to load the new guard and map identity. Setup does not start, build or deploy your app. Rule delivery does not prove runtime enforcement: scoped rules still need a matching server verdict, and unsupported/custom entries remain reported gaps.
+
+The authenticated rules response may include `X-Patchstack-Map-Rules: pending | ready` alongside `X-Patchstack-Build-Match` and `X-Patchstack-Build-ID`, including on a `304`. Readiness applies only when the response confirms the exact map identity requested. An absent or unrecognized readiness value means **unknown**, not ready. The ETag identifies the delivered policy, not map-generation completion. Broad and hardening rules remain usable while map-specific rules are pending.
 
 Then **refresh your preview**. The widget loads with the page, so a preview that was already open still shows the HTML from before setup. Builders that hot reload will have refreshed it for you; if the widget is missing, refresh it once. Until the site is claimed it shows the "Connect this website" panel. `setup` prints the same reminder, and the CLI has no way to reload a browser itself.
 

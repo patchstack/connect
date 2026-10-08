@@ -6,5 +6,6 @@ export function resolveRules(
   context?: { timeoutMs?: number; pulseAuth?: string | null },
 ): Promise<{
   firewall: Array<Record<string, unknown>>;
+  synchronization?: { buildId: string | null; matched: boolean; mapRules: 'ready' | 'pending' | 'unknown'; etag: string | null };
   source: { ok: boolean; origin: 'api' | 'cache' | 'bundled' | 'empty'; reason?: string };
 }>;
