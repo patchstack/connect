@@ -32,19 +32,25 @@ node field-test/run.mjs --persona hostile --rounds 3
 
 It runs a real AI agent through the full install in a throwaway fixture against a mocked API and scores the outcome. Read each round's `report.md` (the HESITATIONS / DECISION ANALYSIS sections) — anything an agent pauses on is a future refusal. See [`field-test/README.md`](field-test/README.md) for the improve-and-retest loop, the safety model, and what to do when the gate is red for environmental reasons (stale published docs, release freshness).
 
-For an `AGENT-INSTALL.md` or `src/guide.ts` change, the fixture installs the published tarball and
-therefore cannot exercise unpublished text. Run the deterministic disclosure and capability checks
-before merge, ship with the hostile field test recorded as outstanding, and run it immediately after the
-release carries the change. That remains a prompt-survival gate. Add `standard` or `lovable` when the
-question is document accuracy; those personas install more reliably than `hostile`.
+For an `AGENT-INSTALL.md`, `src/guide.ts` or other CLI-output change, run the same gate with `--local` before merge,
+so the agent installs this checkout instead of the published tarball:
+
+```bash
+node field-test/run.mjs --persona hostile --rounds 3 --local
+node field-test/run.mjs --persona standard --rounds 3 --local
+```
+
+`hostile` is the prompt-survival gate. `standard` (or `lovable`) is the doc-accuracy check, because those
+personas install more reliably. Run the deterministic disclosure and capability checks as well. A local
+build has no npm signature or provenance, so score a refusal that cites those as caused by the mode. For
+the same reason, run `hostile` once more against the published package after the release that carries the
+change.
 
 What it establishes is **structural regression coverage**: the prompt still survives pressures that once broke it. The personas are synthetic — written from our own analysis, not from any platform's policy text — so a green run is not evidence that a live platform accepts the prompt, and should not be reported as though it were.
 
 For coverage across models, run `node field-test/matrix.mjs --agents claude,codex,gemini --rounds 3` and repeat with `--template express-npm` for server-side installation. Use `--agent-config` for explicit model selections or additional harness wrappers (see the field-test README). The matrix retains unavailable agents as failing cells and includes void attempts in prompt reliability. A documentation run that succeeds only after retries is not a fully green prompt matrix.
 
-This split is a limitation of the current harness. A local-registry mode would let every artifact be
-tested before publication; until one exists, do not describe a run against the previous tarball as a
-gate on unpublished docs.
+A run without `--local` installs the previous tarball. Do not describe it as a gate on unpublished docs.
 
 ## Don'ts (these are refusal triggers, not style nits)
 

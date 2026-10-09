@@ -22,8 +22,11 @@ import { META_OPEN } from './persona.mjs';
  * Throwing rather than stripping here: stripping would make the seam silently tolerate a caller that
  * skipped the composer, and the next such caller would pass a persona whose OTHER handling — the
  * substitutions — had also been skipped. The composer is the one place that decides what an agent sees.
+ *
+ * `extraEnv` is added to the agent's environment (`run.mjs --local` uses it to set the package registry).
+ * `PATCHSTACK_ENDPOINT` is applied last, so nothing in it can point the agent away from the mock API.
  */
-export function runAgent(agentCmd, promptText, fixtureDir, endpoint, timeoutMs) {
+export function runAgent(agentCmd, promptText, fixtureDir, endpoint, timeoutMs, extraEnv = {}) {
   if (typeof promptText !== 'string' || promptText.length === 0) {
     throw new Error('runAgent: refusing to run with an empty prompt — an agent given nothing produces a refusal that looks like a finding.');
   }
@@ -37,7 +40,7 @@ export function runAgent(agentCmd, promptText, fixtureDir, endpoint, timeoutMs) 
   return new Promise((resolve) => {
     const child = spawn('sh', ['-c', agentCmd], {
       cwd: fixtureDir,
-      env: { ...process.env, PATCHSTACK_ENDPOINT: endpoint },
+      env: { ...process.env, ...extraEnv, PATCHSTACK_ENDPOINT: endpoint },
       stdio: ['pipe', 'pipe', 'pipe'],
       detached: process.platform !== 'win32',
     });

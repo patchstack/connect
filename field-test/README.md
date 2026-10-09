@@ -82,8 +82,9 @@ Two consequences for how to use it:
 
 - For a docs-only change, prefer a persona that reliably installs (`standard`, or `lovable`, which has
   completed rounds). `hostile` measures prompt survival; it is a poor instrument for doc accuracy.
-- Re-run after publication. Until the change is published, the tarball an agent installs and audits does
-  not contain it, so even a conclusive round is auditing the previous docs.
+- Without `--local`, an unpublished change is not under test: the tarball an agent installs and audits is
+  the published one, so even a conclusive round is auditing the previous docs. Use `--local` (below) for a
+  change that has not been released.
 
 Self-testing the two paths costs no agent tokens:
 
@@ -108,7 +109,7 @@ the agent from starting and leave the round void.
 
 ## Prerequisites
 
-- Node ≥ 20, network access (fixtures run a real `npm install`; the agent installs the real published `@patchstack/connect`).
+- Node ≥ 20, network access (fixtures run a real `npm install`; the agent installs the real published `@patchstack/connect`, or this checkout with `--local`).
 - An agent CLI. Default: [Claude Code](https://claude.com/claude-code) headless (`claude -p`). Any CLI that reads a prompt from stdin and prints the agent's final message to stdout works via `--agent-cmd`.
 
 ## Safety model — read before running
@@ -153,9 +154,41 @@ grep -c 'field-test:meta' /tmp/captured.txt   # must be 0
 
 # Exercise the published install (scripted stub, no AI, ~1 min); setup limitations remain failures
 node field-test/run.mjs --agent-cmd "node '$PWD/field-test/stub-compliant.mjs'"
+
+# The same, against this checkout instead of the published package
+node field-test/run.mjs --local --template express-npm --agent-cmd "node '$PWD/field-test/stub-compliant.mjs'"
 ```
 
-Flags: `--persona <name>` (any `personas/<name>.md`), `--template lovable-bun|vite-npm|express-npm`, `--prompt <file>`, `--rounds N`, `--agent-cmd "<cmd>"`, `--keep` (don't delete the fixture), `--timeout <minutes>`, `--confirm` (see below), `--confirm-reply <file>` (override the confirmation text).
+Flags: `--persona <name>` (any `personas/<name>.md`), `--template lovable-bun|vite-npm|express-npm`, `--prompt <file>`, `--rounds N`, `--agent-cmd "<cmd>"`, `--keep` (don't delete the fixture), `--timeout <minutes>`, `--local` (see below), `--confirm` (see below), `--confirm-reply <file>` (override the confirmation text).
+
+### `--local` — test an unreleased build
+
+`--local` makes the agent install this checkout rather than the published package, without changing the
+prompt or anything in the fixture. Before the first round the harness runs `npm pack` (which runs the
+build through `prepare`), stamps the tarball as the patch release after the published `latest`, and serves
+it from a registry on `127.0.0.1`. Every other request is forwarded to `registry.npmjs.org`, without the
+caller's `Authorization` or cookies. The agent's environment points npm, npx, pnpm and bun at that registry,
+with a fresh cache per round so a cached published copy cannot be resolved instead. Like
+`PATCHSTACK_ENDPOINT`, this is set in the environment, not in a project file. `matrix.mjs --local` passes
+the flag to every cell.
+
+A round counts as audited only if the unpacked `AGENT-INSTALL.md` is byte-identical to the packed one. A
+round that installed some other copy is void, with `installed` reading "unpacked package docs are not the
+local build under test". Each round also writes `registry-requests.json`, showing which requests the local
+registry answered and which it forwarded. `summary.json` records the build under `packageSource`: version,
+git SHA, and whether the tree had uncommitted changes.
+
+What `--local` cannot reproduce:
+
+- **Registry signatures and provenance.** The local tarball has neither, so `npm audit signatures` and
+  provenance checks report it as unsigned. Score a refusal that cites this as caused by the mode, not the
+  docs. Release-age signals do not match either: the registry reports the build as published just now.
+- **The npmjs.com page.** An agent that looks the package up on the web sees the published release.
+- **Yarn.** Its registry setting is not overridden, so a Yarn install fetches the published package. The
+  docs check then voids the round rather than scoring it.
+
+`--local` makes doc and CLI changes testable before release. It does not replace a run against the
+published package once the release is out, which is the only run that includes the signals above.
 
 ### `--confirm` — legacy two-turn prompt experiments
 
@@ -165,7 +198,7 @@ Do not use `--confirm` to make the canonical prompt look green; a hosted staged-
 
 ### Local `setup` demonstration
 
-The agent harness installs the published package, so use the local demo to exercise an unpublished `setup` implementation against the working tree:
+Without an agent, the local demo exercises an unpublished `setup` implementation against the working tree directly (use `run.mjs --local` to put the same build in front of an agent):
 
 ```bash
 npm run build
@@ -269,14 +302,14 @@ The agent audits the *published* tarball, so the gate's pass rate is a function 
 
 Until a publish lands and ages, use this ladder instead of burning hostile rounds on a known-red gate:
 
-1. **Stub self-test** — `node field-test/run.mjs --agent-cmd "node '$PWD/field-test/stub-compliant.mjs'"`. Validates the harness, mock, and scoring in ~1 min. No AI; this installs the published package and requires registry access. The offline scorer/process regressions run with `npx vitest run tests/field-test-verify.test.ts tests/field-test-outcomes.test.ts`.
+1. **Stub self-test** — `node field-test/run.mjs --agent-cmd "node '$PWD/field-test/stub-compliant.mjs'"`. Validates the harness, mock, and scoring in ~1 min. No AI; this installs the published package (add `--local` for this checkout) and requires registry access. The offline scorer/process regressions run with `npx vitest run tests/field-test-verify.test.ts tests/field-test-outcomes.test.ts`.
 2. **Standard persona** — exercises the mechanical checks (guide accuracy, hook wiring, widget token) with less policy pressure; catches CLI/UX regressions immediately.
 3. **Hostile rounds scored by refusal *reason*, not exit code.** Read DECISION ANALYSIS and attribute each refusal: one that quotes the published docs or release age is environmental noise; one that quotes the prompt's own wording is a real prompt bug. A variant is not worse than the incumbent unless it draws prompt-directed refusals the incumbent doesn't.
-4. **(Not built) local-registry mode** — run a local registry (e.g. verdaccio), publish the working tree to it, and pin the fixture via the `npm_config_registry` env var (env pinning reads as platform plumbing, same as `PATCHSTACK_ENDPOINT`). This is the only way to exercise unpublished doc/CLI changes end-to-end. Caveat: the local record has no provenance attestation or signatures, which strict agents check — expect some artificial refusals on that ground.
+4. **`--local`** — run the same personas against this checkout (see "`--local` — test an unreleased build"). It takes stale shipped docs out of the picture. Score refusals that cite missing signatures or provenance as caused by the mode.
 
 ## Known limitations
 
 - The personas are synthetic and the matrix covers multiple model families, but a hosted platform is still (prompt × model × runtime × UI) — and neither the real policy text, the runtime, nor the UI layer is reproduced here. A green harness is necessary and not sufficient, and this is not hypothetical: a refusal has been found by a real user after this harness passed a prompt. Treat a real-world refusal report as a new persona — encode the pressure it applied into `personas/`, in your own words, so the regression stays covered. Do not describe a green run as evidence about a platform's policy.
-- The fixture installs the *published* package. An unpublished `guide`/CLI change can't be exercised end-to-end by the agent (it will install the registry version); publish first or accept that the run validates the prompt shape only.
+- Without `--local`, the fixture installs the *published* package, and an unpublished `guide`/CLI change is not exercised. With `--local`, registry signatures, provenance, release age and the npmjs.com page are not reproduced (see the `--local` section).
 - The compliant stub executes the published package without repairing failed setup steps. A release that cannot complete `protect --check` fails the stricter scorecard. Plain Vite projects currently produce an unknown runtime classification and an uncompleted generic guard in both the working tree and the published flow; a failed cell on that fixture is not necessarily a model refusal. Use the local setup demo to distinguish working-tree behavior from registry behavior; do not weaken the score to make the release pass.
 - The fixtures cover a browser-only React/Vite project and an Express server, with npm installation and a Bun lockfile marker. They do not reproduce native package-manager execution for every manager, SSR frameworks, monorepos, or a hosted UI's persistence and command-approval behavior.

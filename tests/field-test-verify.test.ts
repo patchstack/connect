@@ -59,6 +59,14 @@ describe('field-test install evidence', () => {
     expect(score()).toMatchObject({ audited: false, checks: { installed: { pass: false } } });
   });
 
+  it('counts a local-build round only when the unpacked docs are the build under test', () => {
+    const local = (expectedDocs: string) => verify(dir, mock, dashboard, baselineScripts, { expectedDocs });
+    expect(local('Synthetic package documentation.').audited).toBe(true);
+    const other = local('Different documentation.');
+    expect(other.audited).toBe(false);
+    expect(other.checks.installed).toMatchObject({ pass: false, detail: 'unpacked package docs are not the local build under test' });
+  });
+
   it.each([0, 2])('requires exactly one provisioning request (%s)', (count) => {
     mock.requests = Array.from({ length: count }, () => ({ method: 'POST', url: '/monitor/pulse/manifest' }));
     expect(score().checks.provisionedOnce.pass).toBe(false);
