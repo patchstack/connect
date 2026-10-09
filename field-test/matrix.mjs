@@ -2,7 +2,7 @@
 //
 //   node field-test/matrix.mjs [--personas bolt-diy,lovable,replit] [--agents claude,codex,gemini]
 //                              [--rounds N] [--prompt <file>] [--template lovable-bun|vite-npm|express-npm]
-//                              [--timeout <minutes>]
+//                              [--timeout <minutes>] [--local]
 //
 // Personas are files in personas/<name>.md. Agents are named entries in the
 // AGENTS table below — each must be a CLI that reads the composed prompt from
@@ -57,6 +57,7 @@ export function parseArgs(argv) {
     template: null,
     timeoutMinutes: null,
     agentConfig: null,
+    local: false,
   };
   for (let i = 2; i < argv.length; i++) {
     const arg = argv[i];
@@ -67,6 +68,7 @@ export function parseArgs(argv) {
     else if (arg === '--prompt') opts.prompt = path.resolve(argv[++i]);
     else if (arg === '--template') opts.template = argv[++i];
     else if (arg === '--timeout') opts.timeoutMinutes = positiveNumber(argv[++i], '--timeout');
+    else if (arg === '--local') opts.local = true;
     else {
       console.error(`Unknown argument: ${arg}`);
       process.exit(1);
@@ -110,6 +112,7 @@ function runCell(persona, agentName, opts, agents) {
     if (opts.prompt) args.push('--prompt', opts.prompt);
     if (opts.template) args.push('--template', opts.template);
     if (opts.timeoutMinutes) args.push('--timeout', String(opts.timeoutMinutes));
+    if (opts.local) args.push('--local');
 
     const child = spawn(process.execPath, args, { stdio: ['ignore', 'pipe', 'inherit'] });
     let out = '';

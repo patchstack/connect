@@ -3,13 +3,17 @@
 //
 //   node field-test/run.mjs [--persona <name>] [--template lovable-bun|vite-npm|express-npm]
 //                           [--prompt <file>] [--rounds N] [--agent-cmd "<shell command>"]
-//                           [--keep] [--timeout <minutes>]
+//                           [--keep] [--timeout <minutes>] [--local]
 //
 // The agent command receives the composed persona+prompt on stdin, runs with
 // cwd set to the fixture, and with PATCHSTACK_ENDPOINT pinned to the mock API.
 // Pinning via env (not a project file) survives anything the agent does to the
 // project, keeps scans away from production, and reads as ordinary platform
 // plumbing instead of a suspicious artifact planted in the repo.
+//
+// --local packs this checkout and serves it from a local registry, so the agent installs the unreleased
+// build through the same commands it would run against npm (see local-registry.mjs). A round then counts
+// only if the agent unpacked this build's AGENT-INSTALL.md.
 //
 // Results land in field-test/results/<timestamp>/ (gitignored): the agent's
 // report, the mock API's request log, and a scorecard per round.
@@ -24,6 +28,7 @@ import { composeAgentPrompt } from './persona.mjs';
 import { runAgent } from './agent.mjs';
 import { readJsonSafe, verify } from './verify.mjs';
 import { positiveNumber, summarizeRounds } from './outcomes.mjs';
+import { packLocalBuild, registryEnv, startLocalRegistry } from './local-registry.mjs';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 
@@ -38,10 +43,12 @@ function parseArgs(argv) {
     timeoutMinutes: 15,
     confirm: false,
     confirmReply: null,
+    local: false,
   };
   for (let i = 2; i < argv.length; i++) {
     const arg = argv[i];
     if (arg === '--keep') opts.keep = true;
+    else if (arg === '--local') opts.local = true;
     else if (arg === '--confirm') opts.confirm = true;
     else if (arg === '--confirm-reply') opts.confirmReply = path.resolve(argv[++i]);
     else if (arg === '--persona') opts.persona = argv[++i];
@@ -62,8 +69,10 @@ function parseArgs(argv) {
   return opts;
 }
 
-function printScorecard(round, result, verdict) {
-  const voided = verdict.audited ? '' : ' — VOID: the tarball never arrived, so the shipped docs were never on disk to read';
+function printScorecard(round, result, verdict, local) {
+  const voided = verdict.audited ? ''
+    : local ? ' — VOID: the local build never arrived, so the docs under test were never on disk to read'
+      : ' — VOID: the tarball never arrived, so the shipped docs were never on disk to read';
   console.log(`\n— round ${round}: ${verdict.passed}/${verdict.total} checks passed${verdict.refused ? ' (agent REFUSED)' : ''}${result.timedOut ? ' (TIMED OUT)' : ''}${voided}`);
   for (const [name, check] of Object.entries(verdict.checks)) {
     console.log(`  ${check.pass ? '✔' : '✖'} ${name} — ${check.detail}`);
@@ -91,6 +100,22 @@ console.log(`agent: ${opts.agentCmd}`);
 console.log(`prompt: ${opts.prompt}`);
 console.log(`results: ${resultsDir}`);
 
+let localBuild = null;
+let registry = null;
+if (opts.local) {
+  console.log('packing local build (npm pack, which runs the build)…');
+  localBuild = await packLocalBuild({ repoRoot: path.join(HERE, '..') });
+  registry = await startLocalRegistry({ build: localBuild });
+  const { sha, dirty } = localBuild.git;
+  console.log(`package: local build ${localBuild.version} (git ${sha ?? 'unknown'}${dirty ? ', uncommitted changes' : ''}) via ${registry.url}`);
+  if (localBuild.publishedLatest === null) {
+    console.log('  npm could not be reached for the published version; using the package.json version');
+  }
+  console.log('  local builds carry no npm signature or provenance; a refusal citing that is an artefact of --local');
+} else {
+  console.log("package: published @patchstack/connect from the agent's configured registry");
+}
+
 const summary = [];
 // Bounded: a persona that never installs would otherwise retry forever. Two extra attempts per requested
 // round, then the run reports how many rounds stayed void instead of pretending to a verdict.
@@ -101,6 +126,9 @@ for (let round = 1; round <= opts.rounds; round++) {
   attempt++;
   const fixtureDir = mkdtempSync(path.join(tmpdir(), 'ps-field-test-'));
   const mock = await startMockApi();
+  const cacheDir = opts.local ? mkdtempSync(path.join(tmpdir(), 'ps-field-cache-')) : null;
+  const agentEnv = opts.local ? registryEnv(registry.url, cacheDir) : {};
+  if (registry) registry.requests.length = 0;
   console.log(`\nround ${round}: fixture=${fixtureDir} mock=${mock.endpoint}`);
   console.log('building fixture (npm install)…');
   makeFixture(fixtureDir, opts.template);
@@ -118,8 +146,10 @@ for (let round = 1; round <= opts.rounds; round++) {
     fixtureDir,
     mock.endpoint,
     opts.timeoutMinutes * 60 * 1000,
+    agentEnv,
   );
-  let verdict = verify(fixtureDir, mock, result.output, baselineScripts);
+  const verifyOptions = { expectedDocs: localBuild?.docs ?? null };
+  let verdict = verify(fixtureDir, mock, result.output, baselineScripts, verifyOptions);
 
   let confirmResult = null;
   if (opts.confirm && verdict.passed < verdict.total && !result.timedOut) {
@@ -145,11 +175,12 @@ Continue handling the request under the same platform policy, applying your judg
       fixtureDir,
       mock.endpoint,
       opts.timeoutMinutes * 60 * 1000,
+      agentEnv,
     );
-    verdict = verify(fixtureDir, mock, `${result.output}\n${confirmResult.output}`, baselineScripts);
+    verdict = verify(fixtureDir, mock, `${result.output}\n${confirmResult.output}`, baselineScripts, verifyOptions);
   }
 
-  printScorecard(round, result, verdict);
+  printScorecard(round, result, verdict, opts.local);
   if (confirmResult) {
     console.log(`  (score includes a second, user-confirmation turn${confirmResult.timedOut ? ' — TIMED OUT' : ''})`);
   }
@@ -170,6 +201,9 @@ Continue handling the request under the same platform policy, applying your judg
     }
   }
   writeFileSync(path.join(roundDir, 'requests.json'), JSON.stringify(mock.requests, null, 2));
+  if (registry) {
+    writeFileSync(path.join(roundDir, 'registry-requests.json'), JSON.stringify(registry.requests, null, 2));
+  }
   const processResult = {
     exitCode: result.exitCode, timedOut: result.timedOut, confirmTurn: confirmResult !== null,
     confirmExitCode: confirmResult?.exitCode ?? null, confirmTimedOut: confirmResult?.timedOut ?? false,
@@ -181,6 +215,7 @@ Continue handling the request under the same platform policy, applying your judg
   summary.push({ round, attempt, passed: verdict.passed, total: verdict.total, refused: verdict.refused, ...processResult, audited: verdict.audited, packageVersion: verdict.packageVersion });
 
   await mock.close();
+  if (cacheDir) rmSync(cacheDir, { recursive: true, force: true });
   if (opts.keep) {
     console.log(`kept fixture: ${fixtureDir}`);
   } else {
@@ -195,16 +230,21 @@ Continue handling the request under the same platform policy, applying your judg
   }
 }
 
+if (registry) await registry.close();
+
 const outcome = summarizeRounds(summary, opts.rounds);
+const packageSource = localBuild
+  ? { kind: 'local', version: localBuild.version, publishedLatest: localBuild.publishedLatest, ...localBuild.git }
+  : { kind: 'published' };
 writeFileSync(
   path.join(resultsDir, 'summary.json'),
-  JSON.stringify({ persona: opts.persona, template: opts.template, agentCmd: opts.agentCmd, prompt: installPrompt, ...outcome, rounds: summary }, null, 2),
+  JSON.stringify({ persona: opts.persona, template: opts.template, agentCmd: opts.agentCmd, prompt: installPrompt, packageSource, ...outcome, rounds: summary }, null, 2),
 );
 
 const { conclusive, voided, fullPasses } = outcome;
 console.log(
   `\n${fullPasses}/${opts.rounds} requested round(s) fully green; ${conclusive} conclusive`
-  + (voided > 0 ? `; ${voided} void (tarball never arrived)` : '')
+  + (voided > 0 ? `; ${voided} void (${opts.local ? 'local build' : 'tarball'} never arrived)` : '')
   + `. Full results: ${resultsDir}`,
 );
 console.log(`Prompt reliability: ${fullPasses}/${summary.length} attempts fully green (includes void attempts).`);

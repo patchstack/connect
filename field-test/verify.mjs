@@ -36,8 +36,14 @@ function verifyProtection(fixtureDir, endpoint) {
   };
 }
 
-/** Score the files and API requests left by an agent in the HTML-shell fixtures. */
-export function verify(fixtureDir, mock, agentOutput, baselineScripts) {
+/**
+ * Score the files and API requests left by an agent in the HTML-shell fixtures.
+ *
+ * `expectedDocs`, when given, is the AGENT-INSTALL.md of the build under test (`run.mjs --local`). A round
+ * then counts as audited only if the agent unpacked exactly that text: docs from any other copy of the
+ * package, such as the published one, say nothing about the change being tested.
+ */
+export function verify(fixtureDir, mock, agentOutput, baselineScripts, { expectedDocs = null } = {}) {
   const pkg = readJsonSafe(path.join(fixtureDir, 'package.json')) ?? {};
   const rc = readJsonSafe(path.join(fixtureDir, '.patchstackrc.json')) ?? {};
   const scripts = pkg.scripts ?? {};
@@ -60,7 +66,8 @@ export function verify(fixtureDir, mock, agentOutput, baselineScripts) {
     const stat = statSync(shippedDocs);
     if (stat.isFile()) unpackedBytes = stat.size;
   } catch { /* Missing or unreadable docs cannot establish an unpacked package. */ }
-  const unpacked = unpackedBytes > 0;
+  const docsMatch = expectedDocs === null || (unpackedBytes > 0 && readText(shippedDocs) === expectedDocs);
+  const unpacked = unpackedBytes > 0 && docsMatch;
 
   // These fixtures render index.html; a UUID in configuration or a README is not widget wiring.
   const html = readText(path.join(fixtureDir, 'index.html')).replace(/<!--[\s\S]*?-->/g, '');
@@ -77,7 +84,8 @@ export function verify(fixtureDir, mock, agentOutput, baselineScripts) {
   const checks = {
     installed: {
       pass: typeof dep === 'string' && dep.length > 0 && devDep === undefined && unpacked,
-      detail: !unpacked ? 'package docs were not unpacked'
+      detail: unpackedBytes > 0 && !docsMatch ? 'unpacked package docs are not the local build under test'
+        : !unpacked ? 'package docs were not unpacked'
         : devDep !== undefined ? 'package must be in dependencies, not devDependencies'
           : dep === undefined ? 'missing regular dependency declaration'
             : `regular dependency declared; package docs unpacked (${unpackedBytes}B)`,
