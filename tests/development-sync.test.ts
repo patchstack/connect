@@ -2,6 +2,8 @@ import { mkdtempSync, mkdirSync, readFileSync, rmSync, symlinkSync, writeFileSyn
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, expect, it, vi } from 'vitest';
+import ts from 'typescript';
+import { extractInputMap } from '../src/map/extract.js';
 import { sourceSnapshot, startDevelopmentSync, type SyncAttempt } from '../src/development-sync.js';
 import { wireDevelopmentScript } from '../src/setup.js';
 import { createProtection, createServerFnGuard } from '../src/protect/runtime.js';
@@ -55,6 +57,29 @@ it('ignores dependency trees, outputs, hidden files and symlinks but tracks sour
   const changed = sourceSnapshot(cwd); expect(changed).not.toBe(initial);
   writeFileSync(join(cwd,'package-lock.json'),'{}');
   expect(sourceSnapshot(cwd)).not.toBe(changed);
+});
+
+it.each(['vue', 'svelte', 'astro'])('tracks %s component additions, edits and removals that change import evidence', async extension => {
+  const cwd = root();
+  const file = join(cwd, `page.${extension}`);
+  const component = (pkg: string) => extension === 'astro'
+    ? `---\nimport thing from '${pkg}';\n---\n<p>Example</p>`
+    : `<script>import thing from '${pkg}';</script><p>Example</p>`;
+  const empty = sourceSnapshot(cwd);
+  writeFileSync(file, component('synthetic-old-package'));
+  const before = sourceSnapshot(cwd);
+  expect(before).not.toBe(empty);
+  expect(JSON.stringify(await extractInputMap(cwd, ts))).toContain('synthetic-old-package');
+  writeFileSync(file, component('synthetic-new-longer-package'));
+  expect(sourceSnapshot(cwd)).not.toBe(before);
+  expect(JSON.stringify(await extractInputMap(cwd, ts))).toContain('synthetic-new-longer-package');
+  rmSync(file);
+  expect(sourceSnapshot(cwd)).toBe(empty);
+  for (const directory of ['node_modules', 'dist', '.nuxt', '.svelte-kit']) {
+    mkdirSync(join(cwd, directory));
+    writeFileSync(join(cwd, directory, `generated.${extension}`), component('ignored-package'));
+  }
+  expect(sourceSnapshot(cwd)).toBe(empty);
 });
 
 it.each(['vite --host 0.0.0.0','next dev --port 3000','tsx watch src/server.ts','node --watch server.mjs','astro dev','nuxt dev','nodemon server.js'])('wires the explicitly opted-in single command: %s', dev => {

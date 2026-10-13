@@ -4,6 +4,7 @@ import { join, relative, sep } from 'node:path';
 import { resolveConfig } from './config.js';
 import { syncSetupProtection } from './setup-sync.js';
 import { reportManifest } from './protect/refresh-manifest.js';
+import { isComponentFile } from './map/sources.js';
 
 const ignored = new Set(['node_modules', 'dist', 'build', 'out', 'coverage', 'vendor']);
 
@@ -18,7 +19,7 @@ export function sourceSnapshot(cwd: string): string {
       if (++entries > 20_000) throw new Error('Source tree exceeds the development watcher entry limit.');
       const file = join(directory, entry.name);
       if (entry.isDirectory()) { visit(file, depth + 1); continue; }
-      if (!entry.isFile() || !/\.(?:[cm]?[jt]sx?|json|ya?ml|lock|lockb)$/.test(entry.name)) continue;
+      if (!entry.isFile() || (!isComponentFile(entry.name) && !/\.(?:[cm]?[jt]sx?|json|ya?ml|lock|lockb)$/.test(entry.name))) continue;
       if (/^(?:patchstack\.)?rules\.json$/.test(entry.name)) continue;
       const stat = statSync(file);
       hash.update(`${relative(cwd, file).split(sep).join('/')}\0${stat.mtimeMs}\0${stat.ctimeMs}\0${stat.size}\n`);
@@ -29,6 +30,7 @@ export function sourceSnapshot(cwd: string): string {
 }
 
 export interface SyncAttempt { current: () => boolean; previousBuildId?: string }
+/** buildId acknowledges an accepted map, even when the package report still needs a retry. */
 export interface SyncOutcome { ok: boolean; buildId?: string }
 
 /** One in-flight analysis/upload, coalesced source changes, bounded retry cadence, no app restarts. */
@@ -43,14 +45,18 @@ export function startDevelopmentSync(cwd: string, options: {
   const snapshot = options.snapshot ?? (() => sourceSnapshot(cwd));
   const log = options.log ?? console.error;
   const sync = options.sync ?? (async (attempt: SyncAttempt): Promise<SyncOutcome> => {
-    await reportManifest(cwd).catch(() => log('patchstack: package sync unavailable; continuing with map sync.'));
+    let manifestOk = true;
+    await reportManifest(cwd).catch(() => {
+      manifestOk = false;
+      log('patchstack: package sync unavailable; continuing with map sync and retrying packages after the sync interval.');
+    });
     const config = await resolveConfig({ cwd });
     const result = await syncSetupProtection(cwd, config, { waitMs: 0,
       mapOptions: { isCurrent: attempt.current, previousBuildId: attempt.previousBuildId },
     });
-    const ok = result.map.unchangedLocal === true || ['stored', 'unchanged'].includes(result.map.upload?.result ?? '');
-    log(`patchstack: development map ${ok ? 'uploaded or unchanged' : 'not synchronized'}; rules ${result.rules.ok ? result.rules.mapRules : 'unavailable'}.`);
-    return { ok, buildId: result.map.buildId ?? undefined };
+    const mapOk = result.map.unchangedLocal === true || ['stored', 'unchanged'].includes(result.map.upload?.result ?? '');
+    log(`patchstack: packages ${manifestOk ? 'synchronized' : 'pending retry'}; development map ${mapOk ? 'uploaded or unchanged' : 'not synchronized'}; rules ${result.rules.ok ? result.rules.mapRules : 'unavailable'}.`);
+    return { ok: manifestOk && mapOk, buildId: mapOk ? result.map.buildId ?? undefined : undefined };
   });
   let stopped = false;
   let running = false;
@@ -76,9 +82,9 @@ export function startDevelopmentSync(cwd: string, options: {
       nextAttempt = now + interval;
       const isCurrent = () => !stopped && snapshot() === current;
       const result = await sync({ current: isCurrent, previousBuildId });
-      if (isCurrent() && result.ok) {
-        completed = current;
-        previousBuildId = result.buildId;
+      if (isCurrent()) {
+        if (result.ok) completed = current;
+        if (result.buildId) previousBuildId = result.buildId;
       }
       warned = false;
     } catch {
