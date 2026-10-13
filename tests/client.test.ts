@@ -5,6 +5,7 @@ import {
   buildPackageRemovedUrl,
   buildRulesUrl,
   buildSettingsUrl,
+  fetchClaimPreview,
   fetchClaimState,
   fetchSiteStatus,
   postManifest,
@@ -220,6 +221,30 @@ describe('fetchClaimState', () => {
 
     await expect(fetchClaimState({ ...config, siteUuid: null })).resolves.toBe('unknown');
     expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it('returns the package summary an unclaimed site comes with', async () => {
+    const package_summary = {
+      vulnerable: 3,
+      outdated: 12,
+      vulnerabilities: 5,
+      total: 89,
+      severity: { high: 1, medium: 3, low: 1, unknown: 0 },
+    };
+    vi.stubGlobal('fetch', answering({ state: 'claimable', package_summary }));
+
+    await expect(fetchClaimPreview(config)).resolves.toEqual({
+      state: 'unclaimed',
+      summary: { vulnerable: 3, outdated: 12, total: 89, severity: { high: 1, medium: 3, low: 1, unknown: 0 } },
+    });
+  });
+
+  it('returns no summary when a count is missing or malformed', async () => {
+    vi.stubGlobal('fetch', answering({ state: 'claimable' }));
+    await expect(fetchClaimPreview(config)).resolves.toEqual({ state: 'unclaimed', summary: null });
+
+    vi.stubGlobal('fetch', answering({ state: 'claimable', package_summary: { vulnerable: '3', outdated: 0, total: 9, severity: {} } }));
+    await expect(fetchClaimPreview(config)).resolves.toEqual({ state: 'unclaimed', summary: null });
   });
 
   it('asks the claim page on the endpoint origin, with the site UUID and no credential', async () => {

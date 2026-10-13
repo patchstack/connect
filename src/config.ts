@@ -482,6 +482,19 @@ export async function persistClaimState(
 }
 
 /**
+ * Record whether this project wants the Patchstack widget. Written to the committed config so the build
+ * hooks, which add the widget on every scan unless told otherwise, follow the same choice everywhere.
+ */
+export async function hasWidgetChoice(cwd: string): Promise<boolean> {
+  return typeof (await readConfigFile(cwd)).widget === 'boolean';
+}
+
+export async function persistWidgetChoice(cwd: string, widget: boolean): Promise<string> {
+  const existing = await readConfigFile(cwd);
+  return writeConfigFile(cwd, { ...existing, widget });
+}
+
+/**
  * Persist a request timeout that a report has been seen to need.
  *
  * Written to the committed config, deliberately: the build that runs in CI reads the same file, and a

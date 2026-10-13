@@ -1,0 +1,138 @@
+import { describe, expect, it } from 'vitest';
+
+import type { PackageSummary } from '../src/client.js';
+import { renderStatus, type StatusReport } from '../src/report.js';
+import type { NextStepContext, Progress } from '../src/progress.js';
+
+const context: NextStepContext = {
+  installCommand: 'npm install --save @patchstack/connect',
+  siteUuid: '550e8400-e29b-41d4-a716-446655440000',
+  claimUrl: 'https://app.example.com/monitor/claim?site=550e8400-e29b-41d4-a716-446655440000',
+  environment: 'local',
+  environmentSource: null,
+};
+
+const notConnected: Progress = { installed: true, connected: false, synced: true, deployed: false };
+
+const summary = (overrides: Partial<PackageSummary> = {}): PackageSummary => ({
+  vulnerable: 3,
+  outdated: 12,
+  total: 89,
+  severity: { high: 1, medium: 3, low: 1, unknown: 0 },
+  ...overrides,
+});
+
+const report = (overrides: Partial<StatusReport> = {}): StatusReport => ({
+  done: ['Checked 89 packages', 'Added this project to Patchstack'],
+  missing: [
+    { key: 'not-connected', text: 'Not connected to your Patchstack account', hint: ['Until it is, anyone can connect it.'] },
+    {
+      key: 'runtime-restart',
+      text: 'Load the new protection in your running app',
+      hint: ['Restart the preview/server.'],
+      plain: { text: 'Restart your app to turn protection on', hint: ['Your live app gets it on your next deploy.'] },
+    },
+  ],
+  checked: 89,
+  findings: summary(),
+  ...overrides,
+});
+
+describe('renderStatus concise', () => {
+  it('puts what to do first, then the checklist, the link in a box, the findings and the menu', () => {
+    const lines = renderStatus('Patchstack setup', report({ rules: 12 }), notConnected, context, {
+      useColor: false,
+      concise: true,
+      menu: [{ command: 'npx @patchstack/connect vulns', does: 'vulnerability details' }],
+    });
+    const title = '➜ Next: connect your Patchstack account to see the details and turn on protection';
+    const url = `  ${context.claimUrl}`;
+    const inner = Math.max(title.length, url.length);
+
+    expect(lines).toEqual([
+      'Patchstack checked 89 packages',
+      '',
+      'To do',
+      ' ✘ Restart your app to turn protection on',
+      '   Your live app gets it on your next deploy.',
+      '',
+      ' ✔ Patchstack installed',
+      ' ✘ Connect your Patchstack account',
+      ' ✔ Packages checked on this computer',
+      ' ✘ Deploy to protect your live app',
+      '',
+      `╭${'─'.repeat(inner + 2)}╮`,
+      `│ ${title.padEnd(inner)} │`,
+      `│ ${url.padEnd(inner)} │`,
+      `╰${'─'.repeat(inner + 2)}╯`,
+      '  Already connected? Run: npx @patchstack/connect go-live',
+      '',
+      ' ⚠ 5 vulnerabilities in 3 packages',
+      '',
+      '   High     ███████░░░░░░░░░░░░░  1',
+      '   Medium   ████████████████████  3',
+      '   Low      ███████░░░░░░░░░░░░░  1',
+      '',
+      '   12 packages are outdated',
+      '   12 protection rules available',
+      '',
+      'More  npx @patchstack/connect vulns  vulnerability details',
+    ]);
+  });
+
+  it('keeps the usual next step when nothing vulnerable was found', () => {
+    const lines = renderStatus(
+      'Patchstack setup',
+      report({ findings: null }),
+      notConnected,
+      context,
+      { useColor: false, concise: true },
+    );
+
+    expect(lines.some((line) => line.includes('➜ Next: connect your Patchstack account to turn on protection'))).toBe(true);
+    expect(lines.some((line) => line.includes('⚠'))).toBe(false);
+  });
+
+  it('leaves out the restart while protection is not in place yet', () => {
+    const lines = renderStatus(
+      'Patchstack setup',
+      report({
+        missing: [
+          ...report().missing,
+          { key: 'runtime-protection', text: 'Runtime protection: no server file found', plain: { text: 'Protection needs to know where your server starts' } },
+        ],
+      }),
+      notConnected,
+      context,
+      { useColor: false, concise: true },
+    );
+
+    expect(lines).toContain(' ✘ Protection needs to know where your server starts');
+    expect(lines.some((line) => line.includes('Restart your app'))).toBe(false);
+  });
+
+  it('prints the full report with --verbose', () => {
+    const lines = renderStatus('Patchstack setup', report(), notConnected, context, {
+      useColor: false,
+      concise: true,
+      verbose: true,
+    });
+
+    expect(lines[0]).toBe('Patchstack setup');
+    expect(lines).toContain('Done');
+    expect(lines).toContain(' ✘ Not connected to your Patchstack account');
+  });
+
+  it('leaves the default report unchanged', () => {
+    const lines = renderStatus('Patchstack setup', report(), notConnected, context, { useColor: false });
+
+    expect(lines.slice(0, 5)).toEqual([
+      'Patchstack setup',
+      '',
+      'Done',
+      ' ✔ Checked 89 packages',
+      ' ✔ Added this project to Patchstack',
+    ]);
+    expect(lines.some((line) => line.includes('⚠'))).toBe(false);
+  });
+});

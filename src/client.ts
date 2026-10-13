@@ -364,7 +364,31 @@ export type ClaimState = 'claimed' | 'unclaimed' | 'unknown';
  * a network failure is `unknown`; never throws.
  */
 export async function fetchClaimState(config: Config): Promise<ClaimState> {
-  if (config.siteUuid === null) return 'unknown';
+  return (await fetchClaimPreview(config)).state;
+}
+
+/**
+ * What Patchstack found in this site's packages, as aggregate counts. The claim page publishes only
+ * counts, never package names, because anyone holding the public site UUID can ask for it.
+ */
+export interface PackageSummary {
+  /** Packages with at least one known vulnerability. */
+  vulnerable: number;
+  outdated: number;
+  total: number;
+  severity: { high: number; medium: number; low: number; unknown: number };
+}
+
+export interface ClaimPreview {
+  state: ClaimState;
+  /** Present only for a site nobody owns yet; the claim page says nothing about an owned site. */
+  summary: PackageSummary | null;
+}
+
+/** The claim state plus the package summary the same public lookup returns for an unclaimed site. */
+export async function fetchClaimPreview(config: Config): Promise<ClaimPreview> {
+  const unknown: ClaimPreview = { state: 'unknown', summary: null };
+  if (config.siteUuid === null) return unknown;
 
   const url = new URL('/monitor/claim/preview', new URL(config.endpoint).origin);
   url.searchParams.set('site', config.siteUuid);
@@ -380,14 +404,39 @@ export async function fetchClaimState(config: Config): Promise<ClaimState> {
       },
       signal: AbortSignal.timeout(config.timeoutMs),
     });
-    if (!response.ok) return 'unknown';
-    const body = (await readBoundedJson(response)) as { state?: unknown } | null;
-    if (body?.state === 'claimable') return 'unclaimed';
-    if (body?.state === 'owned-by-other' || body?.state === 'owned-by-you') return 'claimed';
-    return 'unknown';
+    if (!response.ok) return unknown;
+    const body = (await readBoundedJson(response)) as { state?: unknown; package_summary?: unknown } | null;
+    if (body?.state === 'claimable') return { state: 'unclaimed', summary: readPackageSummary(body.package_summary) };
+    if (body?.state === 'owned-by-other' || body?.state === 'owned-by-you') return { state: 'claimed', summary: null };
+    return unknown;
   } catch {
-    return 'unknown';
+    return unknown;
   }
+}
+
+/** A summary only when every count is a non-negative integer; anything else is no summary at all. */
+function readPackageSummary(value: unknown): PackageSummary | null {
+  const count = (raw: unknown): number | null =>
+    typeof raw === 'number' && Number.isInteger(raw) && raw >= 0 ? raw : null;
+  if (typeof value !== 'object' || value === null) return null;
+  const raw = value as Record<string, unknown>;
+  const severity = (typeof raw.severity === 'object' && raw.severity !== null ? raw.severity : {}) as Record<string, unknown>;
+  const fields = {
+    vulnerable: count(raw.vulnerable),
+    outdated: count(raw.outdated),
+    total: count(raw.total),
+    high: count(severity.high),
+    medium: count(severity.medium),
+    low: count(severity.low),
+    unknown: count(severity.unknown),
+  };
+  if (Object.values(fields).some((field) => field === null)) return null;
+  return {
+    vulnerable: fields.vulnerable!,
+    outdated: fields.outdated!,
+    total: fields.total!,
+    severity: { high: fields.high!, medium: fields.medium!, low: fields.low!, unknown: fields.unknown! },
+  };
 }
 
 /**

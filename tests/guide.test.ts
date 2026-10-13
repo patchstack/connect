@@ -248,10 +248,10 @@ describe('guide', () => {
 
       const output = renderGuideChecklist(await collectGuideState(cwd), false);
       const positions = [
-        ' ✘ Install the Patchstack connector',
-        ' ✘ Connect project to Patchstack account',
-        ' ✘ Sync and monitor in local environment',
-        ' ✘ Deploy project to protect live app',
+        ' ✘ Install Patchstack',
+        ' ✘ Connect your Patchstack account',
+        ' ✘ Check your packages',
+        ' ✘ Deploy to protect your live app',
       ].map((line) => output.indexOf(line));
 
       expect(PROGRESS_STEPS.map(({ label }) => label)).toEqual([
@@ -278,8 +278,9 @@ describe('guide', () => {
 
       const output = renderGuideChecklist(await collectGuideState(cwd), false);
 
-      expect(output).toContain('Next: install the Patchstack connector');
-      expect(output).toContain(`Run: ${installCommand('bun')}\n  Then run: npx @patchstack/connect setup`);
+      expect(output).toContain('Next: install Patchstack');
+      expect(output).toMatch(new RegExp(`│ +Run: ${installCommand('bun').replace(/[.*+?^${}()|[\]\\]/g, '\\$&')} +│`));
+      expect(output).toContain('  Then run: npx @patchstack/connect setup');
       expect(output).not.toContain('\u001B[');
     });
 
@@ -301,7 +302,7 @@ describe('guide', () => {
       writeJson('.patchstackrc.json', { siteUuid: VALID_UUID });
 
       expect(renderGuideChecklist(await collectGuideState(cwd), false)).toContain(
-        'Run: npx @patchstack/connect setup (it adds the build steps to package.json)',
+        'Run: npx @patchstack/connect setup (it adds the check to your build)',
       );
       const output = renderGuideChecklist(await collectGuideState(cwd), false, {}, { verbose: true });
 
@@ -319,8 +320,8 @@ describe('guide', () => {
       const output = renderGuideChecklist(state, false);
 
       expect(state.installed?.section).toBe('devDependencies');
-      expect(output).toContain('✔ Install the Patchstack connector');
-      expect(output).toContain('installed as a development tool only, so your live app cannot load it');
+      expect(output).toContain('✔ Patchstack installed');
+      expect(output).toContain('Patchstack is installed for development only, so your live app cannot use it');
       expect(output).toContain(`Run: ${installCommand('npm')}`);
     });
 
@@ -353,13 +354,13 @@ describe('guide', () => {
 
       const output = renderGuideChecklist(await collectGuideState(cwd), false);
 
-      expect(output).toContain('✔ Install the Patchstack connector');
-      expect(output).toContain('✘ Connect project to Patchstack account');
-      expect(output).toContain('✔ Sync and monitor in local environment');
-      expect(output).toContain('Next: connect this project to your Patchstack account');
-      expect(output).toContain(`Open http`);
-      expect(output).toContain(`/monitor/claim?site=${VALID_UUID}`);
-      expect(output).toContain('anyone who opens your app can connect it to their own account');
+      expect(output).toContain('✔ Patchstack installed');
+      expect(output).toContain('✘ Connect your Patchstack account');
+      expect(output).toContain('✔ Packages checked on this computer');
+      expect(output).toContain('Next: connect your Patchstack account');
+      expect(output).toMatch(new RegExp(`│ +http\\S+/monitor/claim\\?site=${VALID_UUID} +│`));
+      // The checklist already says to connect, so the report does not say it twice.
+      expect(output).not.toContain('Not connected to your Patchstack account');
       // Nothing on disk says the site has an owner, so the checklist does not mark it connected.
       expect(output).not.toContain('✔ Connect');
       expect(output).not.toMatch(/^ {5}✘/m);
@@ -370,11 +371,11 @@ describe('guide', () => {
 
       const output = renderGuideChecklist(await collectGuideState(cwd), false, { connected: true });
 
-      expect(output).toContain('✔ Connect project to Patchstack account');
-      expect(output).toContain('Next: deploy your project to protect the live app');
-      expect(output).toContain('Never commit .patchstackrc.local.json');
+      expect(output).toContain('✔ Connected to your Patchstack account');
+      expect(output).toContain('Next: deploy to protect your live app');
+      expect(output).toMatch(/│ +Run: npx @patchstack\/connect go-live +│/);
+      expect(output).toContain('It shows how to add your key to your host and deploy.');
       expect(output).not.toContain('anyone who opens your app');
-      expect(output).toContain('PATCHSTACK_API_KEY');
       expect(output).not.toContain('/monitor/claim?site=');
     });
 
@@ -384,8 +385,8 @@ describe('guide', () => {
 
       const output = renderGuideChecklist(await collectGuideState(cwd), false);
 
-      expect(output).toContain('✔ Connect project to Patchstack account');
-      expect(output).toContain('Next: deploy your project to protect the live app');
+      expect(output).toContain('✔ Connected to your Patchstack account');
+      expect(output).toContain('Next: deploy to protect your live app');
       expect(output).not.toContain('anyone who opens your app');
       expect(output).not.toContain('/monitor/claim?site=');
     });
@@ -396,8 +397,8 @@ describe('guide', () => {
 
       const output = renderGuideChecklist(await collectGuideState(cwd), false, { connected: false });
 
-      expect(output).toContain('✘ Connect project to Patchstack account');
-      expect(output).toContain('anyone who opens your app can connect it to their own account');
+      expect(output).toContain('✘ Connect your Patchstack account');
+      expect(output).toContain('Next: connect your Patchstack account');
     });
 
     it('says all done only when every step is', async () => {
@@ -458,7 +459,8 @@ describe('guide', () => {
 
       const output = renderGuideChecklist(await collectGuideState(cwd), false);
 
-      expect(output).toContain('Next: connect this project to your Patchstack account\n  Run: npx @patchstack/connect setup');
+      expect(output).toContain('Next: connect your Patchstack account');
+      expect(output).toMatch(/│ +Run: npx @patchstack\/connect setup +│/);
       expect(output).not.toContain(installCommand('npm'));
       expect(output).not.toContain('Missing');
     });
@@ -587,7 +589,7 @@ describe('guide', () => {
 
       const output = renderGuideChecklist(await collectGuideState(cwd), false);
 
-      expect(output).toContain('Already connected? Then commit, set PATCHSTACK_API_KEY on your host, and deploy.');
+      expect(output).toContain('Already connected? Run: npx @patchstack/connect go-live');
     });
 
     it('still names it when the widget is opted out, because the rest still ships', async () => {
@@ -597,8 +599,8 @@ describe('guide', () => {
       const output = renderGuideChecklist(await collectGuideState(cwd), false, { connected: true });
 
       expect(output).not.toContain('Reload the preview');
-      expect(output).toContain('Next: deploy your project to protect the live app');
-      expect(output).toContain('The live site keeps its old version until you do.');
+      expect(output).toContain('Next: deploy to protect your live app');
+      expect(output).toContain('It shows how to add your key to your host and deploy.');
     });
 
     it('stays quiet before the first scan, when nothing has been wired yet', async () => {
@@ -622,6 +624,15 @@ describe('guide', () => {
     };
 
     const widgetTag = `<script src="https://cdn.patchstack.com/patchstack-widget.js" data-site-uuid="${VALID_UUID}"></script>`;
+
+    it('still asks for the marker with the widget off, because Patchstack needs it to recognise the live build', async () => {
+      tanstackProject('export const Root = () => <html></html>;');
+      writeJson('.patchstackrc.json', { siteUuid: VALID_UUID, widget: false });
+      const state = await collectGuideState(cwd);
+
+      expect(state.widgetOptOut).toBe(true);
+      expect(needsSourceProductionMarker(state)).toBe(true);
+    });
 
     it('asks for the marker when the root is code and does not have it', async () => {
       tanstackProject(`export const Root = () => <html>${widgetTag}</html>;`);

@@ -441,7 +441,7 @@ const ANSI = {
  * `mark-build`'s HTML pass has nothing to stamp.
  */
 export function needsSourceProductionMarker(state: GuideState): boolean {
-  if (state.siteUuid === null || state.widgetOptOut || state.widgetFileHint === null) {
+  if (state.siteUuid === null || state.widgetFileHint === null) {
     return false;
   }
   return !state.widgetFileHint.toLowerCase().endsWith('.html');
@@ -505,8 +505,9 @@ export function guideNextStepContext(state: GuideState): NextStepContext {
  */
 export function notConnectedItem(why: string[] = []): MissingItem {
   return {
+    key: 'not-connected',
     text: 'Not connected to your Patchstack account',
-    hint: [...why, 'Until it is, anyone who opens your app can connect it to their own account.'],
+    hint: [...why, 'Connect it to see the details and turn on protection.'],
   };
 }
 
@@ -539,6 +540,7 @@ export function guideMissing(state: GuideState, known: Partial<Progress> = {}): 
     missing.push({
       text: 'Patchstack is installed as a development tool only, so your live app cannot load it',
       hint: [`Run: ${installCommand(state.packageManager)}`],
+      plain: { text: 'Patchstack is installed for development only, so your live app cannot use it', hint: [`Run: ${installCommand(state.packageManager)}`] },
     });
   }
   if (state.siteUuid === null) return missing;
@@ -565,6 +567,10 @@ export function guideMissing(state: GuideState, known: Partial<Progress> = {}): 
     const generic = state.protectionStack === 'generic';
     missing.push({
       key: 'runtime-protection',
+      plain: {
+        text: generic ? 'Add protection to your server' : 'Finish adding protection to your server',
+        hint: generic ? ['Run npx @patchstack/connect protect to see where to add it.'] : ['Run: npx @patchstack/connect protect'],
+      },
       text: generic
         ? 'Runtime protection: not added to your server yet'
         : `Runtime protection: not finished for ${state.protectionStack}`,
@@ -580,6 +586,7 @@ export function guideMissing(state: GuideState, known: Partial<Progress> = {}): 
     missing.push({
       text: 'Patchstack does not check your packages on install and build yet',
       hint: ['Run: npx @patchstack/connect setup (it adds the build steps to package.json)'],
+      plain: { text: 'Your builds do not run the Patchstack check yet', hint: ['Run: npx @patchstack/connect setup (it adds the check to your build)'] },
       detail: [
         state.packageManager === 'bun' ? 'Add to package.json scripts:' : 'Add to package.json scripts (chain with && if one exists):',
         ...scripts.map((line) => `  ${line}`),
@@ -645,7 +652,7 @@ export function renderGuideChecklist(
     { done: [], missing: guideMissing(state, known) },
     guideProgress(state, known),
     guideNextStepContext(state),
-    { useColor, verbose: options.verbose },
+    { useColor, verbose: options.verbose, concise: true },
   );
 
   if (options.verbose === true) {

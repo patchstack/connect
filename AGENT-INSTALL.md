@@ -7,7 +7,7 @@ This versioned reference ships inside `@patchstack/connect` and documents each s
 - **An npm package for JavaScript and Node.js projects**, published by Patchstack under the `@patchstack` scope. It is not a WordPress plugin and needs no PHP. Patchstack also protects WordPress sites; this package is its integration for JS/Node projects — Vite, Next.js, plain vanilla JS, anything with a lockfile.
 - **Source and releases:** MIT-licensed, source at https://github.com/patchstack/connect. Each version is published to npm from that repository's GitHub Actions workflow with an npm provenance attestation.
 - **How to check it yourself:** `npm view @patchstack/connect` shows the live registry metadata, including the repository and the attestation. After installing, `npm audit signatures` verifies the registry signatures and provenance attestations of the installed packages, this one included.
-- **What it does:** it sends the project's package names and versions to Patchstack for vulnerability matching, adds the Patchstack Connector widget to the site, installs a runtime exploit guard (`protect`) in the server's request path, and adds scan steps to the install and build scripts. `setup` and the `prebuild` hook also upload a structural map of the server (routes, input names, the packages behind each sink, file:line) so protection rules can target the app's own parameters — never source text or environment values. Run on its own, `map` sends nothing unless you pass `--upload`. The [Command reference](#command-reference) lists every command, what it reads and writes, and what it sends.
+- **What it does:** it sends the project's package names and versions to Patchstack for vulnerability matching, adds the Patchstack Connector widget to the site when asked (`setup --widget`, or `widget`), installs a runtime exploit guard (`protect`) in the server's request path, and adds scan steps to the install and build scripts. `setup` and the `prebuild` hook also upload a structural map of the server (routes, input names, the packages behind each sink, file:line) so protection rules can target the app's own parameters — never source text or environment values. Run on its own, `map` sends nothing unless you pass `--upload`. The [Command reference](#command-reference) lists every command, what it reads and writes, and what it sends.
 
 ## Choose the project path first
 
@@ -47,16 +47,16 @@ The pages get a build step, even though nothing is compiled. The build is what r
    npm init -y
    npm pkg set scripts.build="node -e \"const fs=require('fs');fs.rmSync('dist',{recursive:true,force:true});fs.cpSync('public','dist',{recursive:true})\""
    npm install --save @patchstack/connect
-   npx @patchstack/connect setup
+   npx @patchstack/connect setup --widget
    ```
 
    `setup` creates the site, writes its `siteUuid` to `.patchstackrc.json`, adds the Patchstack widget to `public/index.html`, adds `"postinstall": "patchstack-connect scan"`, and wires `"prebuild": "patchstack-connect scan && patchstack-connect map --upload"` and `"postbuild": "patchstack-connect mark-build"` around the build. In a hosted builder, scope `PATCHSTACK_ENVIRONMENT=sandbox` to the `setup` command, as in "Automated setup".
 2. Add `dist` to `.gitignore` next to the entries `setup` wrote.
-3. Put the widget on the other pages. `setup` adds the tag only to `index.html`, `public/index.html` or `src/app.html`. For any other page it lists the widget under `Missing` and prints the tag to add. Add one tag before `</body>` on each page, or in the shared layout, exactly as printed — no `data-build-mode`.
+3. Put the widget on the other pages. `setup` adds the tag only to `index.html`, `public/index.html` or `src/app.html`. For any other page it lists the widget under `To do` and prints the tag to add. Add one tag before `</body>` on each page, or in the shared layout, exactly as printed — no `data-build-mode`.
 4. When the person names where the site is published, add that host's build settings so it publishes `dist/` and runs the build. See "Deploying" below; for Netlify that is a `netlify.toml` with `command = "npm run build"` and `publish = "dist"`.
 5. Two `✘` lines are expected and need no fix:
-   - `Runtime protection: no server file found`. A plain HTML site has no server to guard. Do not add one. `setup` leaves a generic guard in `patchstack/`, which nothing loads until a server does.
-   - `Deploy project to protect live app`. Publishing the pages is the person's step.
+   - `Protection needs to know where your server starts`. A plain HTML site has no server to guard. Do not add one. `setup` leaves a generic guard in `patchstack/`, which nothing loads until a server does.
+   - `Deploy to protect your live app`. Publishing the pages is the person's step.
 6. End as in "The message you end on", with the dashboard link from the `Next:` line. Say that the widget, and a check of the packages the site installs, are active, and that runtime protection is not. To preview it on their own machine, serve `public/` (for example `python3 -m http.server -d public`). Do not publish anything yourself.
 
 ### JS/Node applications — the usual path
@@ -64,8 +64,8 @@ The pages get a build step, even though nothing is compiled. The build is what r
 1. Check what is already done with `npx @patchstack/connect guide` (read-only). If the project is already provisioned, reuse it — see "Before you start — never install twice".
 2. Install `@patchstack/connect` as a runtime dependency with the project's package manager.
 3. Run `npx @patchstack/connect setup`. In a hosted builder, scope `PATCHSTACK_ENVIRONMENT=sandbox` to that command — see "Automated setup".
-4. Finish any `✘` line under `Missing` in the report at the end of `setup`. "Automated setup" names each one.
-5. Tell the person the dashboard link, which parts are active and which are not, to refresh their preview, and to deploy when they are ready.
+4. Finish any `✘` line under `To do` in the report at the end of `setup`. "Automated setup" names each one.
+5. End as in "The message you end on": the dashboard link, what Patchstack found, what is left to do, and a reminder to deploy when they are ready.
 
 If your tool will not run the command, see "When your tool will not run this CLI". The sections below describe what each command reads, writes, and sends.
 
@@ -83,6 +83,9 @@ Every command at a glance — what it does, whether it reads your source, what i
 | `demo-guide node-serialize` | Read-only companion: explains the prepare/run/prove/cleanup sequence and prints the next command. | Reads local protection wiring for verification | Nothing | Nothing |
 | `guide` | Print this project's live setup status (done/missing, with tailored commands), then the full guide. `--full` prints it even when setup is complete. | Reads local protection wiring for verification | Nothing | Nothing |
 | `status` | Re-print the site UUID + dashboard URL and check whether the site still exists (active / removed / could not verify) and whether it is connected to an account. | No | The connected note in `.patchstackrc.json`, when it changed | Site-existence and connection checks |
+| `vulns` | Show what Patchstack found in this project's packages: vulnerabilities by severity and outdated packages, as counts, with the link that shows the details. Package names are shown in the dashboard once the site is connected. | No | Nothing | The site UUID, to the public claim page that returns the counts |
+| `go-live [--host <name>]` | Show how to add the project's API key to its host and deploy, in three steps. The host is read from project files (`vercel.json`, `netlify.toml`, `wrangler.toml`, `fly.toml`, `render.yaml`, `railway.json`, `amplify.yml`, `Procfile`, `.replit`, a Lovable project's packages) or named with `--host`. The commands it prints read the key from `.patchstackrc.local.json` as they run; it never prints the key. | Reads those project files only | Nothing | Nothing |
+| `widget [--remove]` | Add the Patchstack Connector widget tag to the root page, or take the tag Connect added out with `--remove` (a tag added by hand is left alone). Saves the choice as `"widget"` in `.patchstackrc.json`, which `scan` and `mark-build` follow; `setup --widget` saves the same choice. | Reads the root page to find where the tag goes | `.patchstackrc.json`; the widget `<script>` tag in the root HTML shell or framework root | Nothing |
 | `init <site-uuid>` | Optional: pre-seed `.patchstackrc.json` with an existing UUID. | No | `.patchstackrc.json` only | Nothing |
 | `mark-build` | Ensure the widget tag in built pages, and — **on a production build only** — stamp the live-site flag + build fingerprint. A local or preview build is stamped with neither, and has a stale marker removed; `--production` forces it for a build published by hand. Run as a `postbuild` step. | No | Build output only (`dist/ build/ out/ .output/public/ _site/`) — never source | The same manifest `scan` sent, plus one word for what it did with the marker — and only for a site already registered |
 | `claim` | Attach the site to a Patchstack account from the terminal: print a link the user opens to sign in (or sign up) and poll (10 min). Whoever approves becomes the owner. Does **not** rotate the credential. Same result as opening the dashboard link `scan` prints. Not usable in CI. | No | The connected note in `.patchstackrc.json`; and, if the server issues a credential for a checkout that had none, `.patchstackrc.local.json` | Device-code request + approval poll |
@@ -101,7 +104,7 @@ Every command at a glance — what it does, whether it reads your source, what i
 - **The address is the one your visitors use, and, apart from the tool's own `PATCHSTACK_*` settings, it is the only env var value read.** A site provisioned by a scan from a developer machine has no address, so the dashboard shows a placeholder and Patchstack cannot check that the published page still carries what was scanned. `scan` therefore sends `url` when — and only when — it can know it: `url` in `.patchstackrc.json` or `PATCHSTACK_SITE_URL` if you set one, otherwise the single variable a host publishes to name its own **production** URL (`VERCEL_PROJECT_PRODUCTION_URL` on a Vercel production deployment, Netlify's `URL` in the production context, `RENDER_EXTERNAL_URL`, `RAILWAY_PUBLIC_DOMAIN` in a production environment). Preview and branch deployments are excluded, as are hosts that publish no production signal. An address that is not how the public reaches a website is dropped: any IP address (in either family, however it is written), any single-label host such as `localhost` or `production`, and the reserved suffixes (`.local`, `.internal`, `.test`, `.invalid`, `.home.arpa`, …). A `url` you set explicitly that fails those checks is refused with an error rather than replaced by a guess. When nothing qualifies, `url` is omitted from the payload rather than guessed. Patchstack only ever applies it to a site that still has no address; it never re-points a site whose address is already real.
 - **The name is read from your project, never from the host environment.** `name` in `.patchstackrc.json` (or `PATCHSTACK_SITE_NAME`) if you set one; otherwise the `<title>` of the project's root `index.html` (`public/index.html` if there is no root one), read from the file as text — a title your app sets from script is not seen; otherwise the `name` in `package.json`, unless it is a template placeholder such as `vite_react_shadcn_ts`. It is omitted when nothing qualifies, and it only ever fills in a site that has no name yet — a name set in the dashboard is never replaced.
 - **Mapping is automatic in `setup`, and in its prebuild hook.** It parses server source and sends structure, not source text. A standalone `map` command prints locally and uploads only with `--upload`. `protect`, `scan`, `guide`, `status` and `mark-build` do not invoke mapping.
-- **`scan` makes up to three source edits:** the Patchstack Connector's `<script>` tag, the production marker, and — during `prebuild` only — removal of a previous `_patchstack.build_id` from the existing guard rules file. None runs on `--dry-run`; all are idempotent. `"widget": false` disables the first two, while stale-stamp removal is independent because it prevents old coordinates being attributed to a new build.
+- **`scan` makes up to three source edits:** the Patchstack Connector's `<script>` tag, the production marker, and — during `prebuild` only — removal of a previous `_patchstack.build_id` from the existing guard rules file. None runs on `--dry-run`; all are idempotent. `"widget": false` disables only the first; the production marker and stale-stamp removal are independent, the marker because Patchstack needs it to recognise the live build and stamp removal because it prevents old coordinates being attributed to a new build.
   - The **widget tag** goes in the root HTML shell — the first of `index.html`, `public/index.html`, or `src/app.html` that exists — and only after a successful post, because it carries the site UUID.
   - The **production marker** goes in a root shell that is JSX rather than HTML (e.g. `src/routes/__root.tsx`, `app/layout.tsx`), inside a `{/* #region patchstack */}` block placed above the widget tag. It is written *before* the post: it carries no site UUID and needs no network, and build scripts commonly chain `patchstack-connect scan || true`, where waiting on the server would mean an offline build silently ships without the flag. The marker is guarded by the framework's own production expression (`import.meta.env.PROD`, or `process.env.NODE_ENV === 'production'`), so it is inert in dev and preview builds. Without it a server-rendered site has no built HTML for `mark-build` to stamp, and the widget treats the published site as build mode. `mark-build` writes to build output only (`dist/`, `build/`, `out/`, `.output/public/`, `_site/`), never to source. `guide` writes nothing, `init` writes only its own `.patchstackrc.json`, and `status` writes only the connected note in `.patchstackrc.json`. `guide` sends nothing either: it reports a site as connected from that note, which `scan`, `status` and `claim` keep current.
 - **`setup` runs `scan` → `protect` → map upload → live-rule lookup**, then reports the outcome. Provisioning precedes guard installation. The map is stamped into the guard source for the NEXT startup/build; restart an already-running preview/server to load it. The rule lookup uses the runtime validator and source-scoped local cache without creating a running guard or installing global hooks. A successful empty policy is reported as zero assigned rules, not proof of protection. Failed uploads/pulls appear under Missing and can be retried by rerunning setup. It also wires install scans, prebuild scans + map uploads, and postbuild marking (explicit build chains for Yarn, pnpm and Bun), preserving existing commands. It never starts, builds or deploys the app. Ambiguous/custom integration code still requires review rather than being overwritten.
@@ -113,7 +116,7 @@ Every command at a glance — what it does, whether it reads your source, what i
 
 ## Before you start — never install twice
 
-- `npx @patchstack/connect guide` prints a read-only live checklist of the four steps (install, connect, sync, deploy) and the one next step, with any missing build hook, widget tag or runtime protection wiring listed under `Missing`. Add `--verbose` to `guide`, `scan` or `setup` for the technical detail (site UUID, endpoint, environment and what decided it, checksum, files written, the exact package.json lines and the runtime protection checks).
+- `npx @patchstack/connect guide` prints a read-only live checklist of the four steps (install, connect, sync, deploy) and the one next step, with any missing build hook, widget tag or runtime protection wiring listed under `To do`. Add `--verbose` to `guide`, `scan` or `setup` for the technical detail (site UUID, endpoint, environment and what decided it, checksum, files written, the exact package.json lines and the runtime protection checks).
 - If `.patchstackrc.json` contains a `siteUuid` key, the project is already provisioned. Reuse that UUID; run `npx @patchstack/connect status` to re-print it and the dashboard URL. **Do not delete the file and provision a second site.** (A `.patchstackrc.json` with other keys — e.g. an `endpoint` override — but no `siteUuid` is *not* provisioned yet; scan normally.)
 - If `@patchstack/connect` is already in `dependencies`, skip the install command. If it is only in `devDependencies`, move it with the matching package manager so production runtimes that prune dev dependencies can load the generated guard.
 - If the widget script tag (`cdn.patchstack.com/patchstack-widget.js`) is already in the layout, don't add a second one — `scan` also respects an existing tag: it updates its own managed tag in place and leaves a manual one untouched.
@@ -134,20 +137,49 @@ This is a request, not a mechanism: nothing in the install depends on it. Do it 
 
 ### The message you end on
 
-When setup is finished, the person reads one short message, not a transcript of the install. Keep it to about ten lines, in this order:
+When setup is finished, the person reads one short message, not a transcript of the install. Write it in Markdown, in this layout, filled in from the `setup` output:
 
-1. **One sentence on the result.** "Patchstack is now watching your site." If something did not finish, say what, in one line.
-2. **The four steps**, copied from the end of the `setup` output with their `✔` and `✘`.
-3. **The next step**, from the `Next:` line, in plain words, with its link or command.
-4. **Refresh and deploy.** Refresh the preview to see the Patchstack Connector, and deploy when ready. Say how, in one line: "When you want it live, ask me to deploy it — I'll run the build so Patchstack can recognise the live site."
+```markdown
+### 🛡️ Patchstack is set up
 
-**When the person later asks you to deploy, re-read "Deploying" below before running anything.** A deploy that skips the build, or uploads the project folder, publishes the API key and leaves the live site unrecognised.
+**Found 5 vulnerabilities in 3 of your 69 packages** (1 high severity) · 12 protection rules available
+
+#### 👉 What to do now
+1. **Connect your Patchstack account** to see the details and turn on protection
+   https://app.patchstack.com/monitor/claim?site=…
+2. **Restart your app** to turn protection on.
+
+#### Progress
+✅ Patchstack installed
+⬜ Connect your Patchstack account
+✅ Packages checked on this computer
+⬜ Deploy to protect your live app
+
+#### What Patchstack found
+🔴 High **1** · 🟠 Medium **3** · 🔵 Low **1** · 12 packages outdated · 12 protection rules available
+
+Want more? Ask me to **show the vulnerabilities**, or to **add the Patchstack widget** to your app.
+Don't forget to republish or redeploy the app so the protection rules protect your live app.
+```
+
+Fill each part from the output, and leave out a part the output gives you nothing for:
+
+- **Headline.** When the output counts vulnerabilities, lead with that count, and add the protection rules when it lists them. When it says there are none, write "No known vulnerabilities in your 69 packages". When it gives no counts, write "Patchstack is now watching your app." Never estimate a count the output did not print.
+- **What to do now.** First the next step from the `Next:` line, in plain words, with its link or command on its own line, written out in full so it can be clicked and copied. Then each item under `To do`, one line each, at most three in all.
+- **Progress.** The four steps from the end of the output, in its words, with ✅ for `✔` and ⬜ for `✘`.
+- **What Patchstack found.** The severity counts, outdated packages and protection rules exactly as the output lists them. Leave this part out when the output lists none.
+- **Want more.** `vulns` shows the counts again with the link to the details; `widget` adds the Patchstack Connector. Offer the widget only when the output's `More` list offers it. If setup added the widget, say instead: "**Vulnerability overview:** a Patchstack widget now appears in the pre-production version of your app. Refresh the preview if it did not appear."
+- **Going live.** One line: "Don't forget to republish or redeploy the app so the protection rules protect your live app." Do not deploy anything yourself.
+
+Say only what the output says. Do not explain why setup could not finish a part, and do not add steps the output did not print — adding an API key to a builder, for example. `go-live` prints the steps for the person's host when they are ready.
 
 Leave out the files you changed, the commands you ran, settings, and anything that worked as expected. If the person asks for the detail, give it then. `--verbose` prints it.
 
+**When the person later asks you to deploy, re-read "Deploying" below before running anything.** A deploy that skips the build, or uploads the project folder, publishes the API key and leaves the live site unrecognised.
+
 ## Deploying
 
-Only when the person asks you to publish the site. Two things decide whether Patchstack recognises the deploy: the build has to run, and it has to know it is the production build.
+Only when the person asks you to publish the site. Start with `npx @patchstack/connect go-live`: it prints the steps for the host this project uses. The rest of this section covers what it does not. Two things decide whether Patchstack recognises the deploy: the build has to run, and it has to know it is the production build.
 
 - **Deploy through the build, and publish only its output.** Never pass `--no-build`, and never upload the project folder itself: it holds `node_modules` and `.patchstackrc.local.json`, which contains the site's API key. Publish `dist/` for a plain HTML site, or whatever the framework builds.
 - **A deploy that builds on this machine** (`netlify deploy --prod --build`, a static folder uploaded by hand) has nothing that says "production" to Patchstack. Prefix that command, and only the production one, with `PATCHSTACK_ENVIRONMENT=production`:
@@ -194,7 +226,7 @@ Only when the person asks you to publish the site. Two things decide whether Pat
    npx @patchstack/connect setup
    ```
 
-   This provisions or reuses the site, manages the widget, installs and verifies runtime protection, wires dependency-install and build scans, prints a dashboard link, and finishes with the same status shown by `guide`. Re-running it reuses existing configuration, widget tags, guards, and commands rather than duplicating them.
+   This provisions or reuses the site, installs and verifies runtime protection, wires dependency-install and build scans, prints a dashboard link, and finishes with the same status shown by `guide`. Re-running it reuses existing configuration, widget tags, guards, and commands rather than duplicating them. On a project it sets up for the first time it adds the widget only with `--widget`; see "The widget" below.
 
    **If the request you were given includes a claim token**, pass it exactly as given: `npx @patchstack/connect setup --claim-token <token>`. The site is then created in the person's own Patchstack account and `setup` prints their dashboard link for it — there is no sign-in step to relay. The token comes only from the person's Patchstack dashboard; never invent one, never write it to a file, never print it back. If `setup` reports that the token had expired or was not recognised, the site is not connected: hand over the dashboard link it prints instead, and tell the person they can copy a fresh prompt from the dashboard.
 
@@ -213,15 +245,15 @@ Only when the person asks you to publish the site. Two things decide whether Pat
 
    **What runtime protection can report:** a positively identified static build reports runtime protection as not applicable. A bundler-only project, including plain Vite, can remain runtime unknown and receive a generic scaffold with incomplete wiring. Report that limitation; do not add an artificial server merely to make the check pass, and never describe a widget or an unwired scaffold as runtime protection.
 
-   **A `✘` line under `Missing` is yours to finish, not a result to report.** `setup` applies what it can apply safely and prints the exact edit (or the command that prints it) for anything it would have had to overwrite user code to do. They are: moving `@patchstack/connect` out of `devDependencies`, the widget tag in a root layout `setup` could not edit, the production marker on a server-rendered root, and wiring a generic guard into the server entry. The last three are steps 3 and 4 of "Manual setup" below; after the guard one, `npx @patchstack/connect protect --check` must exit 0.
+   **A `✘` line under `To do` is yours to finish, not a result to report.** `setup` applies what it can apply safely and prints the exact edit (or the command that prints it) for anything it would have had to overwrite user code to do. They are: moving `@patchstack/connect` out of `devDependencies`, the widget tag in a root layout `setup` could not edit, the production marker on a server-rendered root, and wiring a generic guard into the server entry. The last three are steps 3 and 4 of "Manual setup" below; after the guard one, `npx @patchstack/connect protect --check` must exit 0.
 
-   **Read the report.** `setup` and `scan` start with `Done` (what this run did) and `Missing` (what is still missing, each with the one thing to do); `guide` shows `Missing` only. All three end on the same four steps — `Install the Patchstack connector`, `Connect project to Patchstack account`, `Sync and monitor in local environment`, `Deploy project to protect live app` — each marked `✔` (done) or `✘` (not yet), followed by the one next step. A part the project cannot carry (no build script, no request path for runtime protection) is simply not listed. The CLI does not store whether the site has an owner, so `Connect` stays `✘` until a scan hears otherwise from Patchstack; do not report the site as connected from that line alone, and do not report it as unconnected once the person has signed in. In the message you end on, name only the parts that are not active — dependency scans, the Patchstack Connector, the build hooks, runtime protection — and why, one line each; the four steps already say what is done.
+   **Read the report.** `setup` and `scan` print, in order: `To do` (what is left, each with the one thing to do); the four steps, each marked `✔` (done) or `✘` (not yet) — `Patchstack installed`, `Connect your Patchstack account`, `Packages checked` on this computer, in your preview or in your live build, and `Deploy to protect your live app`; the one next step in a box, with its link or command; what Patchstack found, as vulnerabilities by severity and outdated packages, once Patchstack has counted them; and a `More` list of follow-up commands. `guide` prints the same without the findings. What a run did is printed only with `--verbose`. A part the project cannot carry (no build script, no request path for runtime protection) is simply not listed. The CLI does not store whether the site has an owner, so the connect step stays `✘` until a scan hears otherwise from Patchstack; do not report the site as connected from that line alone, and do not report it as unconnected once the person has signed in.
 
-   **The widget is part of the install.** It is on by default; add it without asking the person whether to. Honour `"widget": false` in `.patchstackrc.json` only when the person set it themselves. If it is there and they did not ask for it, remove it, run `setup` again, and tell them the widget is back on.
+   **The widget.** `setup --widget` adds it and saves `"widget": true` in `.patchstackrc.json`. Without `--widget`, `setup` leaves it out of a project it sets up for the first time, saves `"widget": false`, and lists `npx @patchstack/connect widget` under `More`. A project that already has a site keeps what it has. When the request you were given asks for the widget, run `setup --widget` (or `widget` after setup) without asking the person again; otherwise offer it in the message you end on. Leave a `"widget"` value you did not write as it is.
 
-   **Finish by telling the user to refresh their preview.** The widget loads with the page, so a preview that was already open still shows the HTML from before setup — the widget is missing there until it reloads. Tell them what to expect after the refresh: a site that is not yet connected to an account shows the "Connect this website" panel. A freshly set up site is unclaimed unless setup ran with a claim token. Nothing in the CLI can reach the user's browser, so relaying this is your job. Phrase it as a check rather than a required step: a builder that hot reloads, or a preview server you restarted, may have refreshed it already.
+   **When the widget was added, tell the person to refresh their preview.** The widget loads with the page, so a preview that was already open still shows the HTML from before setup until it reloads. After the refresh, a site that is not yet connected to an account shows the "Connect this website" panel. A freshly set up site is unclaimed unless setup ran with a claim token. Nothing in the CLI can reach the person's browser, so relaying this is your job. Phrase it as a check rather than a required step: a builder that hot reloads, or a preview server you restarted, may have refreshed it already.
 
-   **Then tell them to deploy.** Setup changes source files, and the deployed site keeps serving its previous build until the next deploy — so visitors get no widget, and on a server-rendered root no production marker, until the user deploys (or hits Publish) again. Say it as a reminder; do not deploy anything yourself.
+   **Then tell them to deploy.** Setup changes source files, and the deployed site keeps serving its previous build until the next deploy — so the live site gets no protection, no widget and, on a server-rendered root, no production marker until the person deploys (or hits Publish) again. Say it as a reminder; do not deploy anything yourself.
 
 ## When your tool will not run this CLI
 
@@ -238,7 +270,7 @@ Handle it in this order:
 
 2. **Hand the person the ways forward, with the exact text.** Say what the command does in plain words —
    it registers the site with Patchstack, writes two small config files, adds the Patchstack widget to the
-   page, and adds the protection files and build steps described above — then give them:
+   page when asked with `--widget`, and adds the protection files and build steps described above — then give them:
 
    - **Run it themselves, in this session.** In Claude Code a line that starts with `!` runs in their shell
      and its output lands in the conversation: `! npx @patchstack/connect setup`. Other tools have a
@@ -330,7 +362,7 @@ made, not as an installation.
    npx @patchstack/connect scan
    ```
 
-   It prints a dashboard link but never opens it. Open that link in a browser to view reports. It also prints what it did about the widget — if it added the tag, reload the preview and confirm the widget appears (the "Connect this website" panel while the site is unclaimed).
+   It prints a dashboard link but never opens it. Open that link in a browser to view reports. `--verbose` prints what it did about the widget. If it added the tag, reload the preview and confirm the widget appears (the "Connect this website" panel while the site is unclaimed).
 
 2. **Wire builds** in `package.json`:
 
