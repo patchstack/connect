@@ -282,9 +282,15 @@ export function renderSummary(report: StatusReport, progress: Progress, context:
     if (key === 'runtime-restart' && !canProtect) continue;
     todo.push(item.plain?.text ?? item.text);
   }
-  if (todo.length > 0) {
-    lines.push('#### 👉 What to do now', ...todo.slice(0, 3).flatMap((entry, index) => `${index + 1}. ${entry}`.split('\n')), '');
-  }
+  // The commands sit in the steps themselves, the part of the message every assistant keeps, so the
+  // person always learns what they can run next.
+  const commands = [
+    '**See the vulnerabilities:** `npx @patchstack/connect vulns`',
+    ...(options.widgetOnPage ? [] : ['**Add the Patchstack widget (optional):** `npx @patchstack/connect widget`']),
+    '**Go live on your host:** `npx @patchstack/connect go-live`',
+  ];
+  const steps = [...todo.slice(0, 3), ...commands];
+  lines.push('#### 👉 What to do now', ...steps.flatMap((entry, index) => `${index + 1}. ${entry}`.split('\n')), '');
 
   if (counted) {
     const severity = (
@@ -317,13 +323,6 @@ export function renderSummary(report: StatusReport, progress: Progress, context:
   for (const item of report.missing.filter((entry) => entry.note === true)) {
     lines.push(item.plain?.text ?? item.text, '');
   }
-  lines.push(
-    '#### Want more?',
-    '- **See the vulnerabilities again:** `npx @patchstack/connect vulns`',
-    ...(options.widgetOnPage ? [] : ['- **Add the Patchstack widget to your app:** `npx @patchstack/connect widget`']),
-    '- **Go live on your host:** `npx @patchstack/connect go-live`',
-    '',
-  );
   lines.push(
     canProtect
       ? "Don't forget to republish or redeploy the app so the protection rules protect your live app."

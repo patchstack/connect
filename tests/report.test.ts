@@ -173,6 +173,8 @@ describe('renderSummary', () => {
       '1. **Connect your Patchstack account** to see the details and turn on protection',
       `   ${context.claimUrl}`,
       '2. Restart your app to turn protection on',
+      '3. **See the vulnerabilities:** `npx @patchstack/connect vulns`',
+      '4. **Go live on your host:** `npx @patchstack/connect go-live`',
       '',
       '#### What Patchstack found',
       '🔴 High **1** · 🟠 Medium **3** · 🔵 Low **1** · 12 packages outdated · 12 protection rules available',
@@ -185,10 +187,6 @@ describe('renderSummary', () => {
       '',
       '**Vulnerability overview:** a Patchstack widget now appears in the pre-production version of your app. Refresh the preview if it did not appear.',
       '',
-      '#### Want more?',
-      '- **See the vulnerabilities again:** `npx @patchstack/connect vulns`',
-      '- **Go live on your host:** `npx @patchstack/connect go-live`',
-      '',
       "Don't forget to republish or redeploy the app so the protection rules protect your live app.",
     ].join('\n').split('\n'));
   });
@@ -200,7 +198,7 @@ describe('renderSummary', () => {
     expect(text).toContain('Blocking attacks needs a server, and none was found');
     expect(text).toContain("Don't forget to republish or redeploy the app when you're ready.");
     expect(text).not.toContain('Vulnerability overview');
-    expect(text).toContain('- **Add the Patchstack widget to your app:** `npx @patchstack/connect widget`');
+    expect(text).toContain('**Add the Patchstack widget (optional):** `npx @patchstack/connect widget`');
   });
 
   it('lists every command it offers in AGENT-INSTALL.md, so an assistant knows what each one does', () => {
