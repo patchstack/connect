@@ -1,7 +1,9 @@
 import { describe, expect, it } from 'vitest';
 
 import type { PackageSummary } from '../src/client.js';
-import { renderStatus, renderSummary, type StatusReport } from '../src/report.js';
+import { readFileSync } from 'node:fs';
+
+import { renderStatus, renderSummary, SUMMARY_HEADING, type StatusReport } from '../src/report.js';
 import type { NextStepContext, Progress } from '../src/progress.js';
 
 const context: NextStepContext = {
@@ -196,5 +198,16 @@ describe('renderSummary', () => {
   it('never states a count the run did not get', () => {
     const lines = renderSummary(report({ findings: null }), notConnected, context, { widgetOnPage: false });
     expect(lines[2]).toBe('**Checked 89 packages.** Patchstack is now watching them.');
+  });
+});
+
+describe('the summary heading', () => {
+  it('is the one AGENT-INSTALL.md tells an assistant to pass on, in the usual path and the plain HTML path', () => {
+    const doc = readFileSync(new URL('../AGENT-INSTALL.md', import.meta.url), 'utf8');
+    const usualPath = doc.slice(doc.indexOf('### JS/Node applications — the usual path'), doc.indexOf('## Before you start'));
+    const plainHtml = doc.slice(doc.indexOf('#### Creating a Node project for a plain HTML site'), doc.indexOf('### JS/Node applications — the usual path'));
+    for (const section of [doc.slice(0, doc.indexOf('## Choose the project path first')), usualPath, plainHtml]) {
+      expect(section).toContain(`\`${SUMMARY_HEADING}\``);
+    }
   });
 });

@@ -222,6 +222,9 @@ export function renderHookSummary(report: StatusReport, progress: Progress, cont
   return lines;
 }
 
+/** The line the summary starts after. AGENT-INSTALL.md names it, so an assistant knows what to pass on. */
+export const SUMMARY_HEADING = '──── Summary ────';
+
 export interface SummaryOptions {
   /** The widget tag is on the page, so the summary says where to see it. */
   widgetOnPage: boolean;

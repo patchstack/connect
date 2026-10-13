@@ -8,6 +8,7 @@ This versioned reference ships inside `@patchstack/connect` and documents each s
 - **Source and releases:** MIT-licensed, source at https://github.com/patchstack/connect. Each version is published to npm from that repository's GitHub Actions workflow with an npm provenance attestation.
 - **How to check it yourself:** `npm view @patchstack/connect` shows the live registry metadata, including the repository and the attestation. After installing, `npm audit signatures` verifies the registry signatures and provenance attestations of the installed packages, this one included.
 - **What it does:** it sends the project's package names and versions to Patchstack for vulnerability matching, adds the Patchstack Connector widget to the site when asked (`setup --widget`, or `widget`), installs a runtime exploit guard (`protect`) in the server's request path, and adds scan steps to the install and build scripts. `setup` and the `prebuild` hook also upload a structural map of the server (routes, input names, the packages behind each sink, file:line) so protection rules can target the app's own parameters — never source text or environment values. Run on its own, `map` sends nothing unless you pass `--upload`. The [Command reference](#command-reference) lists every command, what it reads and writes, and what it sends.
+- **How setup ends:** run outside a terminal, as you run it, `setup` ends with `──── Summary ────` and a short message for the person: what Patchstack found, the link to connect the site, what is left to do and the next step. Pass that message on as your final message. "The message you end on" below has the details.
 
 ## Choose the project path first
 
@@ -53,7 +54,7 @@ The pages get a build step, even though nothing is compiled. The build is what r
 4. Two lines are expected and need no fix:
    - The note `Blocking attacks needs a server, and none was found`. A plain HTML site has no server to protect. Do not add one, and do not offer to. `setup` leaves a generic guard in `patchstack/`, which nothing loads until a server does.
    - `✘ Deploy to protect your live app`. Publishing the pages is the person's step.
-5. End as in "The message you end on", with the dashboard link from the `Next:` line. Say that the widget, and a check of the packages the site installs, are active, and that runtime protection is not. To preview it on their own machine, serve the folder (for example `python3 -m http.server`). Do not publish anything yourself.
+5. End by passing on the `──── Summary ────` that `setup` prints, as in "The message you end on". It already says that the widget and the package checks are active and that blocking attacks needs a server. To preview it on their own machine, serve the folder (for example `python3 -m http.server`). Do not publish anything yourself.
 
 ### JS/Node applications — the usual path
 
@@ -61,7 +62,7 @@ The pages get a build step, even though nothing is compiled. The build is what r
 2. Install `@patchstack/connect` as a runtime dependency with the project's package manager. If it is missing, `setup` adds it itself.
 3. Run `npx @patchstack/connect setup`. In a hosted builder, scope `PATCHSTACK_ENVIRONMENT=sandbox` to that command — see "Automated setup".
 4. Finish any `✘` line under `To do` in the report at the end of `setup`. "Automated setup" names each one.
-5. End as in "The message you end on": the dashboard link, what Patchstack found, what is left to do, and a reminder to deploy when they are ready.
+5. End by passing on the `──── Summary ────` that `setup` prints: what Patchstack found, the link, what is left to do and the next step, with a reminder to deploy when they are ready. See "The message you end on".
 
 If your tool will not run the command, see "When your tool will not run this CLI". The sections below describe what each command reads, writes, and sends.
 
@@ -304,8 +305,9 @@ Handle it in this order:
    developer's machine the sandbox label is not needed anyway: a scan there reports `local` on its own.
 
 4. **Resume from the output.** `setup` prints the same checklist, next step and dashboard link whoever
-   ran it, and re-running it changes nothing that is already done. If the person ran it, relay the
-   checklist and the next step from their output as they are. If your tool still will not run
+   ran it, and re-running it changes nothing that is already done. If the person ran it, pass on the
+   `──── Summary ────` at the end of their output; when there is none (a terminal shows the coloured
+   report instead), relay the checklist and the next step as they are. If your tool still will not run
    `guide` or `status` for you, verify from the files instead of guessing: `siteUuid` in
    `.patchstackrc.json` means the site is provisioned; `patchstack-connect scan` and
    `patchstack-connect mark-build` in the `package.json` scripts mean the hooks are wired;
