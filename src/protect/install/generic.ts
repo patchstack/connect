@@ -148,7 +148,7 @@ export function wiringPlan(cwd: string, dir: string): string {
     entries.length
       ? `Likely server ${entries.length === 1 ? 'entry' : 'entries'}: ${entries.join(', ')}${express ? '  (Express detected)' : ''}.`
       : 'Could not locate a server entry — wire it wherever requests enter your app.',
-    'Then confirm it is hooked up:  npx patchstack-connect protect --check',
+    'Then confirm it is hooked up:  npx @patchstack/connect protect --check',
   ];
   return lines.join('\n');
 }

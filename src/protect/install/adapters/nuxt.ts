@@ -10,7 +10,7 @@ const SPEC: SeamSpec = {
   candidates: ['server/middleware/patchstack.ts', 'server/middleware/patchstack.js'],
   target: 'server/middleware/patchstack.ts',
   marker: 'patchstack-nuxt',
-  planHint: 'add a `server/middleware/` handler that runs the guard, then: npx patchstack-connect protect --check',
+  planHint: 'add a `server/middleware/` handler that runs the guard, then: npx @patchstack/connect protect --check',
   seamLabel: 'Nuxt server middleware',
 };
 

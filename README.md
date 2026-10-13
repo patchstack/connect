@@ -174,9 +174,9 @@ patchstack-connect widget [--remove]               Add the Patchstack widget to 
 patchstack-connect mark-build [--production]       Stamp built HTML with a production flag +
                                                    build fingerprint and ensure the widget tag
                                                    in built pages (run as a postbuild step)
-patchstack-connect guide                           Show this project's setup status (what's done,
-                                                   what's missing, with tailored commands), then
-                                                   print the full setup guide
+patchstack-connect guide [--full]                  Show this project's setup status: what is left
+                                                   to do and the four steps. --full adds the full
+                                                   setup reference (AGENT-INSTALL.md)
 patchstack-connect protect                         Install/reconcile the always-on runtime exploit
                                                    guard. Auto-wires supported server stacks;
                                                    use --check to verify or --demo for local rules.

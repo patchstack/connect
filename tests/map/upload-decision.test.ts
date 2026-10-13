@@ -153,3 +153,27 @@ describe('a map with entry points', () => {
     expect(sent[0].body).not.toHaveProperty('build_id');
   });
 });
+
+describe('inside a build', () => {
+  it('keeps the analysis figures out of the build log unless asked for with --verbose', async () => {
+    const files = {
+      'package.json': JSON.stringify({ name: 'x', dependencies: { express: '4.18.0' } }),
+      'src/server.ts':
+        "import express from 'express';\nconst app = express();\napp.post('/report', (req, res) => res.end(String(req.body.sql)));\n",
+    };
+    vi.stubEnv('npm_lifecycle_event', 'prebuild');
+    captureUploads();
+    const said = vi.spyOn(console, 'error').mockImplementation(() => {});
+
+    await upload(project(files));
+    const quiet = said.mock.calls.map((c) => String(c[0])).join('\n');
+    said.mockClear();
+    await runMap(new Map<string, string | true>([['dir', project(files)], ['upload', true], ['verbose', true]]));
+    const verbose = said.mock.calls.map((c) => String(c[0])).join('\n');
+    said.mockRestore();
+
+    expect(quiet).not.toMatch(/entry point\(s\)|file\(s\) found/);
+    expect(quiet).toContain('uploaded the attack surface');
+    expect(verbose).toMatch(/entry point\(s\)/);
+  });
+});

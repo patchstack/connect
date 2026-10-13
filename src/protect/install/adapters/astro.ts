@@ -8,7 +8,7 @@ const SPEC: SeamSpec = {
   candidates: ['src/middleware.ts', 'src/middleware.js', 'src/middleware/index.ts', 'src/middleware/index.js'],
   target: 'src/middleware.ts',
   marker: 'patchstack-astro',
-  planHint: 'add the guard to your `onRequest` (compose with `sequence()` from "astro:middleware"), then: npx patchstack-connect protect --check',
+  planHint: 'add the guard to your `onRequest` (compose with `sequence()` from "astro:middleware"), then: npx @patchstack/connect protect --check',
   seamLabel: 'Astro middleware',
 };
 
