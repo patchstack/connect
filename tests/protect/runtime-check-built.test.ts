@@ -10,7 +10,7 @@
 // the structural check — while the server that actually listens has no guard on it. `--check` says wired;
 // only a request can say otherwise.
 import { execFileSync, spawn, spawnSync } from 'node:child_process';
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -80,6 +80,42 @@ writeFileSync(new URL('./started', import.meta.url), 'the app ran');
 createServer((req, res) => {
   patchstackMiddleware(req, res, () => { res.writeHead(200); res.end('app'); });
 }).listen(3000);`;
+
+/** The fields /proc reports after a process's command name (state, ppid, pgrp, …), or null without /proc. */
+function procFields(pid: string): string[] | null {
+  try {
+    const stat = readFileSync(`/proc/${pid}/stat`, 'utf8');
+    return stat.slice(stat.lastIndexOf(')') + 2).split(' ');
+  } catch {
+    return null;
+  }
+}
+
+/** What /proc says about a process, for a failure message: its state letter, or that /proc cannot say. */
+function describeProcess(pid: number): string {
+  const fields = procFields(String(pid));
+  return fields === null ? 'no /proc entry to read' : `state ${fields[0]}, parent ${fields[1]}, group ${fields[2]}`;
+}
+
+/**
+ * Whether a process (positive id) or any process in a group (negative id) is still running. A zombie
+ * ("Z") is not running. Without /proc, anything `kill(id, 0)` still finds counts as running.
+ */
+function stillRunning(id: number): boolean {
+  try {
+    process.kill(id, 0);
+  } catch {
+    return false;
+  }
+  if (!existsSync('/proc/self/stat')) return true;
+  if (id > 0) return procFields(String(id))?.[0] !== 'Z';
+  return readdirSync('/proc')
+    .filter((name) => /^\d+$/.test(name))
+    .some((name) => {
+      const fields = procFields(name);
+      return fields !== null && fields[2] === String(-id) && fields[0] !== 'Z';
+    });
+}
 
 describe.skipIf(!built)('the built CLI', SLOW, () => {
   it('proves traversal for an app whose serving path holds the guard', () => {
@@ -185,21 +221,19 @@ server.listen(3000, () => {
     cli.kill('SIGINT');
     await new Promise<void>((resolve) => cli.on('exit', () => resolve()));
 
-    // Both the app and its group, polled: whoever reaps it decides when the pid disappears.
+    // Both the app and its group, polled. A killed process stays in the process table as a zombie until
+    // whoever inherited it reaps it, and on a busy CI runner that can take longer than the window below.
+    // A zombie runs nothing, so where /proc says what a process is doing, a zombie counts as gone.
     const gone = async (pid: number) => {
       const until = Date.now() + 5_000;
       for (;;) {
-        try {
-          process.kill(pid, 0);
-        } catch {
-          return true;
-        }
+        if (!stillRunning(pid)) return true;
         if (Date.now() > until) return false;
         await new Promise((resolve) => setTimeout(resolve, 25));
       }
     };
-    expect(await gone(appPid)).toBe(true);
-    expect(await gone(-appPid)).toBe(true);
+    expect(await gone(appPid), `the app (pid ${appPid}) is still running: ${describeProcess(appPid)}`).toBe(true);
+    expect(await gone(-appPid), `a process in the app's group (${appPid}) is still running`).toBe(true);
   });
 
   it('refuses --runtime without --check rather than scaffolding quietly', () => {
