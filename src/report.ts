@@ -226,7 +226,7 @@ export function renderHookSummary(report: StatusReport, progress: Progress, cont
 export const SUMMARY_HEADING = '──── Summary ────';
 
 /** The line printed just before the summary, saying what it is for. */
-export const SUMMARY_INTRO = 'Setup is finished. The summary below is written for the person: show it as your final message.';
+export const SUMMARY_INTRO = 'Setup is finished. The summary below is written for the person: show it as your final message, exactly as written, with every section.';
 
 export interface SummaryOptions {
   /** The widget tag is on the page, so the summary says where to see it. */
