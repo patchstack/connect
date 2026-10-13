@@ -15,12 +15,12 @@ Use the package setup flow below for an existing JS/Node application. Work in it
 
 ### Plain HTML sites
 
-For a standalone site made of HTML, CSS, and browser JavaScript, with no package-managed application or server request handler, use the Patchstack Connector directly. Do not create `package.json`, install a framework, invent build hooks, or add a server just to run Connect, unless the person chooses that in step 1. `setup` requires an existing `package.json`; it is not a standalone HTML installer.
+For a standalone site made of HTML, CSS, and browser JavaScript, with no package-managed application or server request handler, use the Patchstack Connector directly. Do not install a framework, invent build hooks, or add a server just to run Connect. `setup` gives a plain HTML folder the small Node project it needs only when the person chooses that in step 1.
 
 1. Use the public site UUID or widget snippet for the correct site in the Patchstack dashboard. An existing `.patchstackrc.json` can also supply `siteUuid`. Never invent a UUID or use a claim token or API key as the widget identifier. If neither is available, stop before editing the page and give the person these options in plain words, then wait for their choice:
 
    - **Add the widget with a site from the dashboard.** They create an "Application" site in the Patchstack dashboard and paste its site ID or widget snippet. You add the tag in step 2. Nothing else is added to their folder. They get the widget only.
-   - **Create a Node project in the folder and let Connect set it up.** No trip to the dashboard first: `setup` creates the site and prints the link that connects it to their account. It adds `package.json`, a lockfile and `node_modules` to their folder. Packages they add later are checked for known security problems. A page with no packages of its own has little to check at first, and there is still no runtime protection without a server. Follow "Creating a Node project for a plain HTML site" below.
+   - **Create a Node project in the folder and let Connect set it up.** No trip to the dashboard first: `setup` creates the site and prints the link that connects it to their account. One command adds `package.json`, a lockfile and `node_modules` to their folder; their pages stay where they are. Packages they add later are checked for known security problems. A page with no packages of its own has little to check at first, and there is still no runtime protection without a server. Follow "Creating a Node project for a plain HTML site" below.
    - **Stop here.** Nothing is changed.
 
    Do not pick for them, and do not create the Node project unless they choose it. **A request to install or set up `@patchstack/connect` is that choice**: follow "Creating a Node project for a plain HTML site" without asking.
@@ -39,30 +39,26 @@ Report this as **Patchstack Connector installed**, with any remaining preview or
 
 Only when the person chose this option in step 1 above. Work in the folder that holds the site's pages.
 
-The pages get a build step, even though nothing is compiled. The build is what runs `scan` before and `mark-build` after, and `mark-build` is what tells a visitor's browser that a page is the live site. Without it the live site is never recognised as deployed. The build copies the pages to `dist/` and the stamp goes on the copy, so the pages the person edits stay as they are and their own machine keeps showing the owner panels.
+The pages get a build step, even though nothing is compiled. The build is what runs `scan` before and `mark-build` after, and `mark-build` is what tells a visitor's browser that a page is the live site. Without it the live site is never recognised as deployed. The build copies the site to `dist/` and the stamp goes on the copy, so the pages the person edits stay as they are and their own machine keeps showing the owner panels.
 
-1. Move the pages (every `.html` file, plus the CSS, scripts and images they use) into `public/` if they are not there already. Then create the project with its build script **before** running `setup`, so `setup` wires the hooks around it:
+1. Run one command in that folder:
 
    ```
-   npm init -y
-   npm pkg set scripts.build="node -e \"const fs=require('fs');fs.rmSync('dist',{recursive:true,force:true});fs.cpSync('public','dist',{recursive:true})\""
-   npm install --save @patchstack/connect
    npx @patchstack/connect setup --widget
    ```
 
-   `setup` creates the site, writes its `siteUuid` to `.patchstackrc.json`, adds the Patchstack widget to `public/index.html`, adds `"postinstall": "patchstack-connect scan"`, and wires `"prebuild": "patchstack-connect scan && patchstack-connect map --upload"` and `"postbuild": "patchstack-connect mark-build"` around the build. In a hosted builder, scope `PATCHSTACK_ENVIRONMENT=sandbox` to the `setup` command, as in "Automated setup".
-2. Add `dist` to `.gitignore` next to the entries `setup` wrote.
-3. Put the widget on the other pages. `setup` adds the tag only to `index.html`, `public/index.html` or `src/app.html`. For any other page it lists the widget under `To do` and prints the tag to add. Add one tag before `</body>` on each page, or in the shared layout, exactly as printed — no `data-build-mode`.
-4. When the person names where the site is published, add that host's build settings so it publishes `dist/` and runs the build. See "Deploying" below; for Netlify that is a `netlify.toml` with `command = "npm run build"` and `publish = "dist"`.
-5. Two `✘` lines are expected and need no fix:
+   In a folder with HTML pages and no `package.json`, `setup` first writes a `package.json` whose build script copies the site into `dist/` (leaving out `node_modules`, `dist`, the project files and dotfiles), adds `node_modules` and `dist` to `.gitignore`, and adds `@patchstack/connect` with npm. The pages are not moved. Then it creates the site, writes its `siteUuid` to `.patchstackrc.json`, adds the Patchstack widget to `index.html`, adds `"postinstall": "patchstack-connect scan"`, and wires `"prebuild"` and `"postbuild"` around the build. In a hosted builder, scope `PATCHSTACK_ENVIRONMENT=sandbox` to the `setup` command, as in "Automated setup".
+2. Put the widget on the other pages. `setup` adds the tag only to `index.html`, `public/index.html` or `src/app.html`. For any other page it lists the widget under `To do` and prints the tag to add. Add one tag before `</body>` on each page, or in the shared layout, exactly as printed — no `data-build-mode`.
+3. When the person names where the site is published, add that host's build settings so it publishes `dist/` and runs the build. See "Deploying" below; for Netlify that is a `netlify.toml` with `command = "npm run build"` and `publish = "dist"`.
+4. Two `✘` lines are expected and need no fix:
    - `Protection needs to know where your server starts`. A plain HTML site has no server to guard. Do not add one. `setup` leaves a generic guard in `patchstack/`, which nothing loads until a server does.
    - `Deploy to protect your live app`. Publishing the pages is the person's step.
-6. End as in "The message you end on", with the dashboard link from the `Next:` line. Say that the widget, and a check of the packages the site installs, are active, and that runtime protection is not. To preview it on their own machine, serve `public/` (for example `python3 -m http.server -d public`). Do not publish anything yourself.
+5. End as in "The message you end on", with the dashboard link from the `Next:` line. Say that the widget, and a check of the packages the site installs, are active, and that runtime protection is not. To preview it on their own machine, serve the folder (for example `python3 -m http.server`). Do not publish anything yourself.
 
 ### JS/Node applications — the usual path
 
 1. Check what is already done with `npx @patchstack/connect guide` (read-only). If the project is already provisioned, reuse it — see "Before you start — never install twice".
-2. Install `@patchstack/connect` as a runtime dependency with the project's package manager.
+2. Install `@patchstack/connect` as a runtime dependency with the project's package manager. If it is missing, `setup` adds it itself.
 3. Run `npx @patchstack/connect setup`. In a hosted builder, scope `PATCHSTACK_ENVIRONMENT=sandbox` to that command — see "Automated setup".
 4. Finish any `✘` line under `To do` in the report at the end of `setup`. "Automated setup" names each one.
 5. End as in "The message you end on": the dashboard link, what Patchstack found, what is left to do, and a reminder to deploy when they are ready.
@@ -76,7 +72,7 @@ Every command at a glance — what it does, whether it reads your source, what i
 | Command | What it does | Reads your source? | Writes to your project | Sends over the network |
 |---|---|---|---|---|
 | `scan` | Provision (or reuse) the site and POST the dependency list for vulnerability matching. Also runs automatically via `setup` and the install/build hooks. | No source analysis — lockfile only; `node_modules/` is enumerated when no lockfile can be read (e.g. `bun.lockb`) or when the lockfiles present disagree. It also reads the `<title>` of the root `index.html` and the `name` in `package.json`, to report what the site is called. During `prebuild` only, it reads the scaffolded guard and its co-located rules JSON to remove a previous map stamp. | `.patchstackrc.json` (public: site UUID + settings, the link to connect the site, and whether it is connected yet); `.patchstackrc.local.json` (the API key, created owner-only) and a `.gitignore` entry for it — the CLI says so if it could not add one; during `prebuild`, removal of a previous `_patchstack.build_id` from the guard's own rules file so a later build cannot carry stale coordinates; the widget `<script>` tag in the root HTML shell — only after a successful post; the production marker in a code root shell — before the post, since it needs no site UUID | Package names + versions; this site's public address and name, where the project or build environment states them; the site UUID, to check whether the site is connected to an account yet (skipped once `.patchstackrc.json` records that it is) |
-| `setup` | One bounded command: scan, widget, install + verify guard, upload map, pull live rules, wire build hooks. Never starts the app or runs a build. | Local integration and structural source analysis | Config, widget, guard/framework files, scripts, map identity in the guard rules JSON, git-ignored `.patchstack/` cache | Package inventory and site identity; structural map (routes, input names, packages, file:line, identity); authenticated Pulse rules lookup. No source code or environment values |
+| `setup` | One bounded command: scan, widget (with `--widget`), install + verify guard, upload map, pull live rules, wire build hooks. In a folder of HTML pages with no `package.json` it first writes one with a build step; when `@patchstack/connect` is missing it adds it with the project's package manager. Never starts the app or runs a build. | Local integration and structural source analysis | `package.json` and `.gitignore` for a plain HTML folder, the dependency and lockfile when it adds itself, config, widget, guard/framework files, scripts, map identity in the guard rules JSON, git-ignored `.patchstack/` cache | Package inventory and site identity; structural map (routes, input names, packages, file:line, identity); authenticated Pulse rules lookup. No source code or environment values |
 | `map` | Local attack-surface analysis; setup invokes it with upload, and wires prebuild uploads. | Server source parsed with TypeScript (app compiler or CLI dependency) | `--out` file if requested; an uploaded map is stamped into the guard rules JSON during setup or a pre-bundle build hook | Standalone command sends nothing unless `--upload`. Setup and its build hook upload structure only, never source text or environment values |
 | `protect` | Install the always-on runtime guard; auto-wire known stacks, or scaffold a generic guard + print a wiring plan. `--check` verifies the guard is wired (exit 1 if not); `--demo` seeds a broad sample rule set. Runs automatically **only** via `setup` — never by `scan`, `guide`, `status`, or `mark-build`. | Reads local wiring/route source for integration; does not produce an attack-surface map | Guard/framework files (e.g. `middleware.ts`, `src/patchstack/`, supported Next App Router handlers) | Nothing |
 | `demo node-serialize` | Production-backed walkthrough: confirm the vulnerable package is present, scan, wait for live rule `18843`, install + verify the guard, print test requests. Does not install the package or start/restart the app. | Local integration reads via `scan` and `protect` | Same files as `scan` + `protect` | `scan` payload; polls the public Pulse rules endpoint (never the printed test requests) |
@@ -268,13 +264,19 @@ Handle it in this order:
    the command the tool declined, with the person's decision taken away from them. Leave `package.json`
    and the source tree as they were.
 
-2. **Hand the person the ways forward, with the exact text.** Say what the command does in plain words —
-   it registers the site with Patchstack, writes two small config files, adds the Patchstack widget to the
-   page when asked with `--widget`, and adds the protection files and build steps described above — then give them:
+2. **Ask for the approval in a few lines, with one command.** The person reads this message, not a log. `setup` creates what a plain HTML folder needs and adds `@patchstack/connect` itself, so the one `setup` command is all they run: never hand them a chain of commands joined with `&&`. Use the command you were about to run, with `--widget` when the request asked for the widget. For example:
+
+   > Claude Code needs your OK to run Patchstack's setup. It registers this site with Patchstack and adds the protection files and build steps. Paste this line and I'll carry on from its output:
+   >
+   > `! npx @patchstack/connect setup --widget`
+   >
+   > To let me run Patchstack's commands myself from now on, add the rule below to `.claude/settings.local.json`, then ask me again.
+
+   The ways forward, for reference:
 
    - **Run it themselves, in this session.** In Claude Code a line that starts with `!` runs in their shell
-     and its output lands in the conversation: `! npx @patchstack/connect setup`. Other tools have a
-     terminal beside the chat; the command is the same without the `!`.
+     and its output lands in the conversation. Other tools have a terminal beside the chat; the command is
+     the same without the `!`.
    - **Approve it once.** In Claude Code, `/permissions` → **Recently denied** → `r` retries the command
      with a manual approval; or `Shift+Tab` switches to Manual mode, and the tool prompts them when you
      try again.
@@ -474,7 +476,8 @@ It is server-only. Never put it in the widget tag, client bundles, or public env
 
    Nothing else runs the application. `protect`, `protect --check`, `setup`, `guide`, `scan`, `status`
    and `mark-build` only read and write files; `scan` and `mark-build` also report the dependency
-   manifest they read.
+   manifest they read. One exception: when `@patchstack/connect` is not in the project yet, `setup` adds
+   it with the project's package manager, and like any install that runs the project's install scripts.
 
 5. **Commit** `.patchstackrc.json`, the updated `package.json`, the guard/framework source changes, and the layout/HTML file carrying the widget tag (and the production marker, when `scan` wrote one into a JSX root or Astro layout), so every developer and CI run reports to the same site.
 

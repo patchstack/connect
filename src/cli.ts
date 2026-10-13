@@ -50,6 +50,7 @@ import {
 } from './config.js';
 import { painter, renderBox, renderFindings } from './art.js';
 import { detectHost, HOST_NAMES, parseHost, renderGoLive } from './go-live.js';
+import { createSiteProject, installSelf, isPlainHtmlSite } from './bootstrap.js';
 import {
   buildInjectionSnippet,
   buildSandboxSnippet,
@@ -1366,17 +1367,26 @@ async function runSetup(args: ParsedArgs): Promise<number> {
     return 1;
   }
 
-  const before = await collectGuideState(process.cwd());
+  const cwd = process.cwd();
+  // One command does it all: a plain HTML folder gets the small Node project Connect needs, and a project
+  // without Connect gets it installed, so the person approves setup once instead of a chain of commands.
+  if (isPlainHtmlSite(cwd)) {
+    createSiteProject(cwd);
+    console.log('Added package.json with a build step that copies your site into dist/. Your pages stay where they are.');
+  }
+  let before = await collectGuideState(cwd);
   if (!before.hasPackageJson) {
-    console.error('No package.json here. Run setup from the folder that has your package.json.');
-    console.error('For a standalone HTML site, use the widget-only instructions in AGENT-INSTALL.md; do not create a Node project just to run setup.');
+    console.error('No package.json or HTML page here. Run setup from your project folder.');
     return 1;
   }
   if (before.installed === null) {
-    console.error(
-      `The Patchstack connector is not installed in this project yet.\nRun: ${installCommand(before.packageManager)}`,
-    );
-    return 1;
+    console.log('Adding Patchstack to this project…');
+    const installed = installSelf(cwd, before.packageManager, packageVersion());
+    before = await collectGuideState(cwd);
+    if (!installed.ok || before.installed === null) {
+      console.error(`Could not add Patchstack to this project. Run this, then run setup again:\n  ${installCommand(before.packageManager)}`);
+      return 1;
+    }
   }
 
   // The slim install: a new project gets protection first and is offered the widget at the end. A project

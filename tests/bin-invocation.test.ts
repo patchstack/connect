@@ -83,24 +83,32 @@ describe.skipIf(!built)('the packaged bin, invoked as npm invokes it', () => {
     expect(pkg['patchstack-connect']).toBe('./dist/cli.js');
   });
 
-  it('leaves a standalone HTML page unchanged and explains the widget-only path', () => {
+  it('gives a standalone HTML page the Node project it needs, keeps the page where it is, and installs itself', () => {
     const project = mkdtempSync(path.join(tmpdir(), 'ps-bin-html-'));
+    const fakeBin = mkdtempSync(path.join(tmpdir(), 'ps-bin-fake-npm-'));
     const html = '<!doctype html><html><body>Example</body></html>\n';
     try {
       writeFileSync(path.join(project, 'index.html'), html);
+      // A stand-in package manager that records what it was asked to do and fails, so no test touches the registry.
+      const record = path.join(fakeBin, 'args.txt');
+      writeFileSync(path.join(fakeBin, 'npm'), `#!/bin/sh\necho "$@" > '${record}'\nexit 1\n`, { mode: 0o755 });
       const result = spawnSync(process.execPath, [bin, 'setup'], {
         cwd: project,
         encoding: 'utf8',
-        env: { ...process.env, PATCHSTACK_ENDPOINT: 'http://127.0.0.1:1/monitor/pulse/manifest' },
+        env: { ...process.env, PATH: `${fakeBin}${path.delimiter}${process.env.PATH}`, PATCHSTACK_ENDPOINT: 'http://127.0.0.1:1/monitor/pulse/manifest' },
       });
 
+      expect(result.stdout).toContain('Added package.json');
+      expect(readFileSync(record, 'utf8')).toMatch(/^install --save @patchstack\/connect/);
       expect(result.status).toBe(1);
-      expect(result.stderr).toContain('standalone HTML site');
-      expect(result.stderr).toContain('widget-only instructions');
-      expect(readdirSync(project)).toEqual(['index.html']);
+      expect(result.stderr).toContain('Could not add Patchstack to this project');
       expect(readFileSync(path.join(project, 'index.html'), 'utf8')).toBe(html);
+      const manifest = JSON.parse(readFileSync(path.join(project, 'package.json'), 'utf8')) as { scripts: { build: string } };
+      expect(manifest.scripts.build).toContain("fs.cpSync(f,'dist/'+f");
+      expect(readFileSync(path.join(project, '.gitignore'), 'utf8')).toBe('node_modules\ndist\n');
     } finally {
       rmSync(project, { recursive: true, force: true });
+      rmSync(fakeBin, { recursive: true, force: true });
     }
   });
 

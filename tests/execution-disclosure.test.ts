@@ -296,6 +296,13 @@ const DECLARED: Array<{ file: string; call: string; times: number; executesProje
     what: "`protect --check --runtime` starts the project's entry to see whether a request reaches the guard",
   },
   {
+    file: 'src/bootstrap.ts',
+    call: 'spawnSync',
+    times: 1,
+    executesProjectCode: true,
+    what: "`setup` adds `@patchstack/connect` with the project's package manager when it is missing; like any install, that runs the project's install scripts",
+  },
+  {
     file: 'src/protect/install/runtime/report-listeners.cjs',
     call: 'child_process namespace (not called)',
     times: 2,
@@ -306,6 +313,7 @@ const DECLARED: Array<{ file: string; call: string; times: number; executesProje
 
 /** Files allowed to reference the module, including ones that launch nothing themselves. */
 const ALLOWED_IMPORTERS: Record<string, string> = {
+  'src/bootstrap.ts': 'the package-manager install above',
   'src/protect/install/source-scope.ts': 'the syntax check above',
   'src/protect/install/runtime/probe.ts': 'the runtime check above',
   'src/protect/install/runtime/report-listeners.cjs':
@@ -341,10 +349,20 @@ describe('every process this package can start', () => {
     expect(Object.keys(ALLOWED_IMPORTERS).filter((file) => !importers.has(file))).toEqual([]);
   });
 
-  it('says of exactly one site that it runs the project’s own code', () => {
+  it('says of exactly these sites that they run the project’s own code', () => {
     expect(DECLARED.filter((entry) => entry.executesProjectCode).map((entry) => entry.file)).toEqual([
       'src/protect/install/runtime/probe.ts',
+      'src/bootstrap.ts',
     ]);
+  });
+
+  it('discloses that setup installs the package with the project’s package manager', () => {
+    const readme = readFileSync(join(root, 'README.md'), 'utf8');
+    const agentInstall = readFileSync(join(root, 'AGENT-INSTALL.md'), 'utf8');
+    for (const text of [readme, agentInstall]) {
+      expect(text).toMatch(/`setup`\s+adds\s+it\s+with\s+(?:your|the\s+project's)\s+package\s+manager/);
+      expect(text).toMatch(/runs\s+the\s+project's\s+install\s+scripts/);
+    }
   });
 });
 
