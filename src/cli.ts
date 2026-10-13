@@ -68,7 +68,6 @@ import {
 } from './mark-build.js';
 import {
   collectGuideState,
-  countRemainingSteps,
   detectPackageManager,
   guideMissing,
   guideNextStepContext,
@@ -101,6 +100,26 @@ import { applyBuildStamp } from './build-stamp.js';
 import { detectStack, type StackDescriptor } from './stack.js';
 import { PatchstackError, type StoreManifestResponse } from './types.js';
 import { buildWidgetTag, ensureSourceWidget, ensureWidgetInHtml, removeSourceWidget } from './widget.js';
+
+/** What `npx @patchstack/connect` shows with no command: where to start, and the few commands that follow. */
+function startScreen(color: boolean): string[] {
+  const paint = painter(color);
+  const command = (name: string, does: string): string => `  ${paint('cyan', `npx @patchstack/connect ${name.padEnd(7)}`)}  ${paint('dim', does)}`;
+  return [
+    paint('bold', 'Patchstack Connect: find and fix vulnerable packages in your app'),
+    '',
+    'Start here. One command sets everything up:',
+    `  ${paint('cyan', 'npx @patchstack/connect setup')}`,
+    '',
+    'Then:',
+    command('vulns', 'see what was found'),
+    command('widget', 'show Patchstack inside your app (optional)'),
+    command('go-live', 'how to go live on your host'),
+    command('status', 'the link to connect your account'),
+    '',
+    paint('dim', 'All commands: npx @patchstack/connect --help'),
+  ];
+}
 
 const HELP = `@patchstack/connect — scan your lockfile and report packages to Patchstack.
 
@@ -194,10 +213,10 @@ Usage:
   patchstack-connect demo-guide node-serialize       Show a read-only, state-aware walkthrough for
                                                      preparing, running, proving, and cleaning up
                                                      the production-backed local demo.
-  patchstack-connect guide [--full]                  Show this project's setup status (what's done,
-                                                     what's missing, with tailored commands), then
-                                                     print the full setup guide. --full prints the
-                                                     guide even when setup is complete
+  patchstack-connect guide [--full]                  Show this project's setup status: what is left
+                                                     to do and the four steps, with tailored
+                                                     commands. --full adds the full setup reference
+                                                     (AGENT-INSTALL.md)
   patchstack-connect claim  [--wait]                 Attach this site to a Patchstack account from
                                                      the terminal, so its reports become visible.
                                                      Prints a link for the user to open and sign in
@@ -1284,18 +1303,15 @@ async function runGuide(args: ParsedArgs): Promise<number> {
   // The live checklist first: what this project already has and what's missing,
   // with commands tailored to it. Best-effort — a project we can't inspect
   // still gets the reference doc.
-  let allDone = false;
   try {
     const state = await collectGuideState(process.cwd());
     console.log(renderGuideChecklist(state, useColor(), {}, { verbose }));
-    allDone = countRemainingSteps(state) === 0;
   } catch {
     // fall through to the static guide
   }
 
-  // A fully green project doesn't need the ~90-line manual again on every
-  // re-run — point at it instead. `--full` always prints it.
-  if (allDone && args.flags.get('full') !== true) {
+  // The reference is long and ships in the package; the checklist is what a run needs. `--full` prints it.
+  if (args.flags.get('full') !== true) {
     console.log('');
     console.log(
       'Full reference guide: `npx @patchstack/connect guide --full` (or read node_modules/@patchstack/connect/AGENT-INSTALL.md).',
@@ -1967,7 +1983,11 @@ async function main(): Promise<number> {
     return 0;
   }
 
-  if (args.flags.has('help') || args.command === 'help' || args.command === null) {
+  if (args.command === null && !args.flags.has('help')) {
+    for (const line of startScreen(useColor())) console.log(line);
+    return 0;
+  }
+  if (args.flags.has('help') || args.command === 'help') {
     console.log(HELP);
     return 0;
   }

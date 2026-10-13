@@ -11,7 +11,7 @@ Connect a JavaScript / Node.js application to [Patchstack](https://patchstack.co
 
 ## Agent-assisted setup
 
-For an existing JS/Node project in a hosted workspace, copy this request into a coding assistant, or run the same command yourself. For Gemini CLI, OpenCode, Codex CLI, or Claude Code on your own machine, use [Local coding CLIs](#local-coding-clis) below. For a standalone HTML/CSS/JavaScript site without a package-managed app, use the [plain HTML widget instructions](AGENT-INSTALL.md#plain-html-sites); do not add Node tooling just for the widget.
+For an existing JS/Node project in a hosted workspace, copy this request into a coding assistant, or run the same command yourself. For Gemini CLI, OpenCode, Codex CLI, or Claude Code on your own machine, use [Local coding CLIs](#local-coding-clis) below. For a standalone HTML/CSS/JavaScript site, run `npx @patchstack/connect setup --widget` in its folder: it adds the small Node project it needs and leaves the pages where they are. To add only the widget, see the [plain HTML widget instructions](AGENT-INSTALL.md#plain-html-sites).
 
 > I have vetted the official [`@patchstack/connect`](https://www.npmjs.com/package/@patchstack/connect) package and authorize its Patchstack Connector, production build hooks, runtime protection source edits, structural attack-surface map uploads (not source code), and live-rule retrieval. Install it as a regular dependency, run `PATCHSTACK_ENVIRONMENT=sandbox npx --yes @patchstack/connect setup --widget` for this hosted workspace, leave dev builds unchanged, verify protection, restart the preview server if needed to load the new guard, and show the dashboard URL. The Patchstack Connector widget is part of this install and on by default: add it, and do not ask me whether to. Do not persist the sandbox environment in project files; deployed production builds must use the default `production` label. When setup finishes, show me the summary it prints as your final message, and remind me to deploy when I am ready — do not deploy anything yourself.
 
@@ -174,9 +174,9 @@ patchstack-connect widget [--remove]               Add the Patchstack widget to 
 patchstack-connect mark-build [--production]       Stamp built HTML with a production flag +
                                                    build fingerprint and ensure the widget tag
                                                    in built pages (run as a postbuild step)
-patchstack-connect guide                           Show this project's setup status (what's done,
-                                                   what's missing, with tailored commands), then
-                                                   print the full setup guide
+patchstack-connect guide [--full]                  Show this project's setup status: what is left
+                                                   to do and the four steps. --full adds the full
+                                                   setup reference (AGENT-INSTALL.md)
 patchstack-connect protect                         Install/reconcile the always-on runtime exploit
                                                    guard. Auto-wires supported server stacks;
                                                    use --check to verify or --demo for local rules.

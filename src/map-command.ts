@@ -38,6 +38,8 @@ export async function runMap(flags: Flags): Promise<number> {
 
 export async function runMapDetailed(flags: Flags, options: MapOptions = {}): Promise<MapResult> {
   const log = options.log ?? console.error;
+  // Inside a build the analysis figures are noise in a log nobody reads for them; problems still print.
+  const detail = isPreBundleBuildHook() && flags.get('verbose') !== true ? () => {} : log;
   const cwd = getStringFlag(flags, 'dir') ?? process.cwd();
   // Setup may be rerun after a source change or an unsuccessful analysis. Never leave its old identity.
   if (options.setup) applyBuildStamp(cwd, null);
@@ -54,11 +56,11 @@ export async function runMapDetailed(flags: Flags, options: MapOptions = {}): Pr
   const sinks = map.endpoints.reduce((n, e) => n + e.sinks.length, 0);
   const proven = map.endpoints.reduce((n, e) => n + e.flows.filter((f) => isProvenFlow(f.confidence)).length, 0);
   const c = map.coverage;
-  log(
+  detail(
     `patchstack: ${map.endpoints.length} entry point(s), ${inputs} input(s), ${sinks} sink(s), ` +
       `${proven} proven input→sink flow(s) [${map.framework}].`,
   );
-  log(
+  detail(
     // All three buckets, explicitly: "6/66 parsed" reads as "91% unanalysed" when the other 60 files
     // simply contain no server entry point (most of a project is client code). Only `skipped` is a
     // failure to analyse.
@@ -78,7 +80,7 @@ export async function runMapDetailed(flags: Flags, options: MapOptions = {}): Pr
     // declining to attribute `res.json()` to a package is a correct answer rather than a miss.
     const denominator = dependency + ambiguous;
     const quality = denominator > 0 ? Math.round((100 * dependency) / denominator) : 100;
-    log(
+    detail(
       `patchstack: ${invoked.length} dependency API call(s) resolved across ${new Set(invoked.map((i) => i.package)).size} package(s) ` +
         `from ${c.callsTotal ?? 0} call site(s) — ${quality}% of dependency-candidate receivers resolved ` +
         `(${c.callsLocal ?? 0} local, ${ambiguous} ambiguous). Positive evidence only: absence here never ` +
@@ -90,7 +92,7 @@ export async function runMapDetailed(flags: Flags, options: MapOptions = {}): Pr
     // The unmodelled count is the honest headline: it is how much of the dependency surface this map
     // cannot speak to at all, and a reader who only sees flows would never learn it.
     const unmodelled = imported.filter((d) => d.recognizedSinkKinds.length === 0).length;
-    log(
+    detail(
       `patchstack: ${imported.length} package(s) imported — ${unmodelled} with no recognized sink family, ` +
         `so a vulnerability in those cannot be judged reachable or unreachable from this map.`,
     );
@@ -122,7 +124,7 @@ export async function runMapDetailed(flags: Flags, options: MapOptions = {}): Pr
     // endpoint. The receiving end has always accepted it: `endpoints` is validated as `present`, with a
     // note that a project with no server entry points is legitimate.
     if (map.endpoints.length === 0) {
-      log(
+      detail(
         'patchstack: no server entry points were recognized — uploading the import inventory and ' +
           'coverage notes anyway, so a vulnerability can still be judged imported or not. Nothing here ' +
           'can decide whether a request reaches it.',
@@ -154,7 +156,7 @@ export async function runMapDetailed(flags: Flags, options: MapOptions = {}): Pr
         );
       } else if (stamp.kind === 'stamped' || stamp.kind === 'unchanged') {
         buildId = candidate;
-        log(`patchstack: bound this map to ${stamp.file} (${candidate.slice(0, 12)}).`);
+        detail(`patchstack: bound this map to ${stamp.file} (${candidate.slice(0, 12)}).`);
       } else {
         const reason = stamp.kind === 'skipped' ? stamp.reason : 'the rules file did not retain the map identity';
         log(
