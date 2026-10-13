@@ -350,3 +350,13 @@ describe('the version-only check', () => {
       .toMatch(/expected 1\.0\.1/);
   });
 });
+
+describe('the files npm version rewrites', () => {
+  // `npm version` writes package.json back as JSON.stringify(…, null, 2). Anything formatted another way
+  // is reformatted in the same commit as the version, which the check above then refuses, so the version
+  // is never recorded. Keeping the file in npm's own format is what lets that commit stay two lines.
+  it('keeps package.json in the format npm writes it in', () => {
+    const text = readFileSync(new URL('../package.json', import.meta.url), 'utf8');
+    expect(text).toBe(`${JSON.stringify(JSON.parse(text), null, 2)}\n`);
+  });
+});

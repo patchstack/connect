@@ -56,7 +56,9 @@
   },
   "typesVersions": {
     "*": {
-      "protect": ["dist/protect.d.ts"]
+      "protect": [
+        "dist/protect.d.ts"
+      ]
     }
   },
   "bin": {
