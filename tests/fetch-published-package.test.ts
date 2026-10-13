@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 // @ts-expect-error plain ESM workflow helper
-import { fetchPublishedPackage } from '../scripts/fetch-published-package.mjs';
+import { fetchPublishedPackage, MAX_ATTEMPTS } from '../scripts/fetch-published-package.mjs';
 
 function fixture() {
   return {
@@ -17,7 +17,7 @@ describe('published package retrieval', () => {
     expect(await fetchPublishedPackage('1.2.3', f)).toBe('/tmp/package-check/package/dist/protect.js');
     expect(f.run.mock.calls[0]).toEqual(['npm', expect.arrayContaining([
       'pack', '@patchstack/connect@1.2.3', '--ignore-scripts', '--prefer-online',
-      '--registry=https://registry.npmjs.org', '--cache', '/tmp/package-check/cache',
+      '--registry=https://registry.npmjs.org', '--cache', '/tmp/package-check/cache-1',
     ]), expect.objectContaining({ cwd: '/tmp/package-check', timeout: 60000 })]);
     expect(f.run.mock.calls[1][0]).toBe('tar');
   });
@@ -29,12 +29,29 @@ describe('published package retrieval', () => {
     expect(f.wait).toHaveBeenCalledWith(15000);
     expect(f.run).toHaveBeenCalledTimes(3);
   });
+  it('waits long enough for npm to show a version it has just published', async () => {
+    const f = fixture();
+    const notYet = { status: 1, stderr: 'npm error code ETARGET\nnpm error notarget No matching version found for @patchstack/connect@1.2.3.' };
+    for (let i = 0; i < 7; i++) f.run.mockReturnValueOnce(notYet);
+    await fetchPublishedPackage('1.2.3', f);
+    expect(f.run.mock.calls.filter(([command]) => command === 'npm')).toHaveLength(8);
+    // About five and a half minutes of waiting before it appeared; the old limit gave up at two and a half.
+    expect(f.wait.mock.calls.reduce((sum, [ms]) => sum + ms, 0)).toBe(330000);
+    expect(f.log).toHaveBeenCalledWith('npm does not show 1.2.3 yet; a new release can take a few minutes to appear.');
+  });
+  it('gives each attempt a cache of its own, so a miss is never read back', async () => {
+    const f = fixture();
+    f.run.mockReturnValueOnce({ status: 1, stderr: 'npm error code ETARGET' });
+    await fetchPublishedPackage('1.2.3', f);
+    const caches = f.run.mock.calls.filter(([command]) => command === 'npm').map(([, args]) => args[args.indexOf('--cache') + 1]);
+    expect(caches).toEqual(['/tmp/package-check/cache-1', '/tmp/package-check/cache-2']);
+  });
   it('bounds retries and never extracts after a failed fetch', async () => {
     const f = fixture();
     f.run.mockReturnValue({ status: 1, stderr: 'Registry unavailable' });
     await expect(fetchPublishedPackage('1.2.3', f)).rejects.toThrow('remains unverified');
-    expect(f.run).toHaveBeenCalledTimes(5);
-    expect(f.wait.mock.calls).toEqual([[15000], [30000], [45000], [60000]]);
+    expect(f.run).toHaveBeenCalledTimes(MAX_ATTEMPTS);
+    expect(f.wait.mock.calls).toEqual([[15000], [30000], [45000], [60000], [60000], [60000], [60000], [60000], [60000]]);
     expect(f.run.mock.calls.every(([command]) => command === 'npm')).toBe(true);
   });
   it.each(['', 'latest', '../1.2.3', '1.2.3\n', '01.2.3'])('refuses invalid version %j before running anything', async (version) => {
