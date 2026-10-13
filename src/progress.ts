@@ -91,7 +91,7 @@ export function plainNextStepTitle(step: ProgressStep, context: NextStepContext)
     case 'installed':
       return 'install Patchstack';
     case 'connected':
-      return 'connect your Patchstack account';
+      return 'connect your Patchstack account to turn on protection';
     case 'synced':
       return 'check your packages';
     case 'deployed':

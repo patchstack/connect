@@ -142,10 +142,10 @@ When setup is finished, the person reads one short message, not a transcript of 
 ```markdown
 ### 🛡️ Patchstack is set up
 
-**Found 5 vulnerabilities in 3 of your 69 packages** (1 high severity)
+**Found 5 vulnerabilities in 3 of your 69 packages** (1 high severity) · 12 protection rules available
 
 #### 👉 What to do now
-1. **See which packages and how to fix them**
+1. **Connect your Patchstack account** to see the details and turn on protection
    https://app.patchstack.com/monitor/claim?site=…
 2. **Restart your app** to turn protection on.
 
@@ -156,20 +156,22 @@ When setup is finished, the person reads one short message, not a transcript of 
 ⬜ Deploy to protect your live app
 
 #### What Patchstack found
-🔴 High **1** · 🟠 Medium **3** · 🔵 Low **1** · 12 packages outdated
+🔴 High **1** · 🟠 Medium **3** · 🔵 Low **1** · 12 packages outdated · 12 protection rules available
 
 Want more? Ask me to **show the vulnerabilities**, or to **add the Patchstack widget** to your app.
-When you are ready to go live, ask me to deploy it.
+Don't forget to republish or redeploy the app so the protection rules protect your live app.
 ```
 
 Fill each part from the output, and leave out a part the output gives you nothing for:
 
-- **Headline.** When the output counts vulnerabilities, lead with that count. When it says there are none, write "No known vulnerabilities in your 69 packages". When it gives no counts, write "Patchstack is now watching your app." Never estimate a count the output did not print.
+- **Headline.** When the output counts vulnerabilities, lead with that count, and add the protection rules when it lists them. When it says there are none, write "No known vulnerabilities in your 69 packages". When it gives no counts, write "Patchstack is now watching your app." Never estimate a count the output did not print.
 - **What to do now.** First the next step from the `Next:` line, in plain words, with its link or command on its own line, written out in full so it can be clicked and copied. Then each item under `To do`, one line each, at most three in all.
 - **Progress.** The four steps from the end of the output, in its words, with ✅ for `✔` and ⬜ for `✘`.
-- **What Patchstack found.** The severity counts and outdated packages exactly as the output lists them. Leave this part out when the output lists none.
-- **Want more.** `vulns` shows the counts again with the link to the details; `widget` adds the Patchstack Connector. Offer the widget only when the output's `More` list offers it. If setup added the widget, say instead: "Refresh the preview to see Patchstack in your app."
-- **Going live.** One line. Do not deploy anything yourself.
+- **What Patchstack found.** The severity counts, outdated packages and protection rules exactly as the output lists them. Leave this part out when the output lists none.
+- **Want more.** `vulns` shows the counts again with the link to the details; `widget` adds the Patchstack Connector. Offer the widget only when the output's `More` list offers it. If setup added the widget, say instead: "**Vulnerability overview:** a Patchstack widget now appears in the pre-production version of your app. Refresh the preview if it did not appear."
+- **Going live.** One line: "Don't forget to republish or redeploy the app so the protection rules protect your live app." Do not deploy anything yourself.
+
+Say only what the output says. Do not explain why setup could not finish a part, and do not add steps the output did not print — adding an API key to a builder, for example. `go-live` prints the steps for the person's host when they are ready.
 
 Leave out the files you changed, the commands you ran, settings, and anything that worked as expected. If the person asks for the detail, give it then. `--verbose` prints it.
 

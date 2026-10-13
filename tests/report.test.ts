@@ -40,13 +40,14 @@ const report = (overrides: Partial<StatusReport> = {}): StatusReport => ({
 
 describe('renderStatus concise', () => {
   it('puts what to do first, then the checklist, the link in a box, the findings and the menu', () => {
-    const lines = renderStatus('Patchstack setup', report(), notConnected, context, {
+    const lines = renderStatus('Patchstack setup', report({ rules: 12 }), notConnected, context, {
       useColor: false,
       concise: true,
       menu: [{ command: 'npx @patchstack/connect vulns', does: 'vulnerability details' }],
     });
+    const title = '➜ Next: connect your Patchstack account to see the details and turn on protection';
     const url = `  ${context.claimUrl}`;
-    const inner = url.length;
+    const inner = Math.max(title.length, url.length);
 
     expect(lines).toEqual([
       'Patchstack checked 89 packages',
@@ -61,8 +62,8 @@ describe('renderStatus concise', () => {
       ' ✘ Deploy to protect your live app',
       '',
       `╭${'─'.repeat(inner + 2)}╮`,
-      `│ ${'➜ Next: see which packages and how to fix them'.padEnd(inner)} │`,
-      `│ ${url} │`,
+      `│ ${title.padEnd(inner)} │`,
+      `│ ${url.padEnd(inner)} │`,
       `╰${'─'.repeat(inner + 2)}╯`,
       '  Already connected? Run: npx @patchstack/connect go-live',
       '',
@@ -73,6 +74,7 @@ describe('renderStatus concise', () => {
       '   Low      ███████░░░░░░░░░░░░░  1',
       '',
       '   12 packages are outdated',
+      '   12 protection rules available',
       '',
       'More  npx @patchstack/connect vulns  vulnerability details',
     ]);
@@ -87,7 +89,7 @@ describe('renderStatus concise', () => {
       { useColor: false, concise: true },
     );
 
-    expect(lines.some((line) => line.includes('➜ Next: connect your Patchstack account'))).toBe(true);
+    expect(lines.some((line) => line.includes('➜ Next: connect your Patchstack account to turn on protection'))).toBe(true);
     expect(lines.some((line) => line.includes('⚠'))).toBe(false);
   });
 
