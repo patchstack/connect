@@ -646,3 +646,37 @@ describe.skipIf(!built)('the packaged bin, invoked as npm invokes it', () => {
     });
   });
 });
+
+describe('the first thing a person sees', () => {
+  const run = (args: string[], cwd = tmpdir()) => spawnSync(process.execPath, [bin, ...args], { cwd, encoding: 'utf8' });
+
+  it('shows where to start, and the few commands that follow, when run with no command', () => {
+    const result = run([]);
+    expect(result.status).toBe(0);
+    expect(result.stdout).toContain('Start here. One command sets everything up:\n  npx @patchstack/connect setup');
+    for (const command of ['vulns', 'widget', 'go-live', 'status']) expect(result.stdout).toContain(`npx @patchstack/connect ${command}`);
+    expect(result.stdout.split('\n').length).toBeLessThan(20);
+  });
+
+  it('keeps the full command reference behind --help', () => {
+    expect(run(['--help']).stdout).toContain('Usage:');
+  });
+
+  it('prints only the checklist from guide, and the full reference with --full', () => {
+    const project = mkdtempSync(path.join(tmpdir(), 'ps-bin-guide-'));
+    try {
+      writeFileSync(path.join(project, 'package.json'), JSON.stringify({ name: 'guide-app', dependencies: { '@patchstack/connect': '^0.5.0' } }));
+      const short = run(['guide'], project).stdout;
+      expect(short).toContain('Full reference guide: `npx @patchstack/connect guide --full`');
+      expect(short).not.toContain('———— Full reference guide (ships as AGENT-INSTALL.md) ————');
+      expect(run(['guide', '--full'], project).stdout).toContain('———— Full reference guide (ships as AGENT-INSTALL.md) ————');
+    } finally {
+      rmSync(project, { recursive: true, force: true });
+    }
+  });
+
+  it('spells every command the way the allow rule and the docs do', () => {
+    const found = spawnSync('grep', ['-rln', 'npx patchstack-connect', path.join(root, 'src')], { encoding: 'utf8' });
+    expect(found.stdout.trim()).toBe('');
+  });
+});

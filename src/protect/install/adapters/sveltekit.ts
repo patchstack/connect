@@ -8,7 +8,7 @@ const SPEC: SeamSpec = {
   candidates: ['src/hooks.server.ts', 'src/hooks.server.js'],
   target: 'src/hooks.server.ts',
   marker: 'patchstack-sveltekit',
-  planHint: 'add the guard to your `handle` (compose with `sequence()` from "@sveltejs/kit/hooks"), then: npx patchstack-connect protect --check',
+  planHint: 'add the guard to your `handle` (compose with `sequence()` from "@sveltejs/kit/hooks"), then: npx @patchstack/connect protect --check',
   seamLabel: 'SvelteKit server hook',
 };
 
