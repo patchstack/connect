@@ -507,7 +507,7 @@ export function notConnectedItem(why: string[] = []): MissingItem {
   return {
     key: 'not-connected',
     text: 'Not connected to your Patchstack account',
-    hint: [...why, 'Until it is, anyone who opens your app can connect it to their own account.'],
+    hint: [...why, 'Connect it to see the details and turn on protection.'],
   };
 }
 

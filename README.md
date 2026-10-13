@@ -4,7 +4,7 @@ Connect a JavaScript / Node.js application to [Patchstack](https://patchstack.co
 
 - **Dependency inventory** — reads your lockfile and reports the installed package names and versions, so Patchstack can match them against its vulnerability database and tell you when something needs patching. See *[What gets sent](#what-gets-sent)*.
 - **Runtime guard** — an in-process guard, wired into your server, that virtually patches known vulnerabilities in those dependencies rather than waiting for you to upgrade. See *[Verifying the guard at runtime](#verifying-the-guard-at-runtime-opt-in)*.
-- **Patchstack Connector** — a floating control that Connect adds to *your* site. Until the site is claimed it shows a "Connect this website" panel; once claimed it becomes a **"Report a vulnerability"** button, so visitors who spot a security problem have somewhere to send it. This is a channel for reports about your site; it is not how you report a bug in this package. See *[The Patchstack Connector](#the-patchstack-connector)*.
+- **Patchstack Connector** — a floating control that Connect adds to *your* site. Until the site is claimed it shows a "Connect this website" panel; once claimed it shows your vulnerability overview in the pre-production version of your app. Visitors to your live site do not see it. See *[The Patchstack Connector](#the-patchstack-connector)*.
 - **Attack-surface map** — a description of your server's entry points and the sinks they can reach, built by reading your source locally. See *[`map`](#cli)*.
 
 `setup` installs the first three in one command. `map` is never run for you — see the [CLI](#cli) section for what each command does and what it touches.
@@ -463,7 +463,7 @@ Use `--url http://localhost:PORT/api/tasks` when the app does not use the defaul
 
 ## The Patchstack Connector
 
-The Patchstack Connector is a floating control whose form follows the site's claim state: a "Connect this website" panel while the site is unclaimed, then a "Report a vulnerability" button — a disclosure channel for anyone who spots a bug on the site. Connect manages its install so the UUID never has to be copied by hand:
+The Patchstack Connector is a floating control whose form follows the site's claim state: a "Connect this website" panel while the site is unclaimed, then your vulnerability overview in the pre-production version of your app. Visitors to your live site do not see it. Connect manages its install so the UUID never has to be copied by hand:
 
 - **`scan`** (after a successful post) adds this managed tag to the first root HTML shell it finds — `index.html`, `public/index.html`, or `src/app.html` — immediately before `</body>`:
 

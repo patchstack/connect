@@ -1419,6 +1419,7 @@ async function runSetup(args: ParsedArgs): Promise<number> {
     report.missing.push({ key: 'map-upload', text: 'Attack-surface map was not uploaded', hint: [synced.map.error ?? uploaded?.message ?? 'Check connectivity and rerun setup.'], plain: { text: 'Could not send your app\'s layout to Patchstack', hint: ['Check your connection and run setup again.'] } });
   }
   if (synced.rules.ok) {
+    report.rules = synced.rules.count;
     report.done.push(`Live rule lookup succeeded (${synced.rules.count} delivered rules; ${synced.rules.count === 0 ? 'no rules currently assigned' : 'not proof of runtime enforcement'})`);
   } else {
     report.missing.push({ key: 'rules-pull', text: 'Live rule lookup is incomplete', hint: [synced.rules.error ?? 'Check authentication and rerun setup.'], plain: { text: 'Could not fetch protection rules', hint: ['Run setup again.'] } });

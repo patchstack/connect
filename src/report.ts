@@ -36,6 +36,8 @@ export interface StatusReport {
   checked?: number;
   /** What Patchstack found, when it said. */
   findings?: PackageSummary | null;
+  /** Protection rules Patchstack has ready for this app, when the run looked them up. */
+  rules?: number;
 }
 
 export function emptyReport(): StatusReport {
@@ -141,7 +143,12 @@ function renderConcise(
   }
 
   const findings = renderFindings(report.findings ?? null, { useColor: options.useColor });
-  if (findings.length > 0) lines.push(...findings, '');
+  if (findings.length > 0) lines.push(...findings);
+  if ((report.rules ?? 0) > 0) {
+    const rules = report.rules!;
+    lines.push(`   ${paint(ANSI.green, `${rules} protection ${rules === 1 ? 'rule' : 'rules'} available`)}`);
+  }
+  if (findings.length > 0 || (report.rules ?? 0) > 0) lines.push('');
 
   lines.push(...renderMenu(options.menu ?? [], { useColor: options.useColor }));
   if (lines[lines.length - 1] === '') lines.pop();
@@ -161,7 +168,10 @@ function nextStepBox(
   }
   // With findings to show, connecting is how a person sees which packages they are, so the step says that.
   const vulnerable = (report.findings?.vulnerable ?? 0) > 0;
-  const title = vulnerable && next === 'connected' ? 'see which packages and how to fix them' : plainNextStepTitle(next, context);
+  const title =
+    vulnerable && next === 'connected'
+      ? 'connect your Patchstack account to see the details and turn on protection'
+      : plainNextStepTitle(next, context);
   const [first, ...rest] = plainNextStepLines(next, context);
   const action = first?.startsWith('Open ') === true ? first.slice('Open '.length) : first;
   return [
