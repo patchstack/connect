@@ -79,7 +79,7 @@ import {
   resolveWidgetFileHint,
 } from './guide.js';
 import { type NextStepContext, type Progress } from './progress.js';
-import { emptyReport, renderHookSummary, renderStatus, renderSummary, SUMMARY_HEADING, type StatusReport } from './report.js';
+import { emptyReport, renderHookSummary, renderStatus, renderSummary, SUMMARY_HEADING, SUMMARY_INTRO, type StatusReport } from './report.js';
 import { login, readPendingLogin, redeemIfApproved, startLogin, waitForApproval } from './login.js';
 import {
   claim,
@@ -1461,6 +1461,7 @@ async function runSetup(args: ParsedArgs): Promise<number> {
   // passes on. A terminal already shows the report above, and a build log is not read by a person.
   if (!process.stdout.isTTY && !isInstallOrBuildHook() && !runningInCi()) {
     console.log('');
+    console.log(SUMMARY_INTRO);
     console.log(SUMMARY_HEADING);
     for (const line of renderSummary({ ...report, missing }, guideProgress(after, reported), context, { widgetOnPage: after.widgetInstalled })) {
       console.log(line);

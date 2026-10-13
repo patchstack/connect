@@ -3,6 +3,8 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
 
+import { renderSummary } from '../src/report.js';
+
 /**
  * The install prompt exists in three places and all three must be the same text.
  *
@@ -42,11 +44,17 @@ describe('the install prompt', () => {
     expect(quotedPrompt('GETTING-STARTED.md')).toBe(tested);
   });
 
-  it('closes by asking the assistant to tell the user to refresh', () => {
-    // The install ends on a page that loaded before the widget tag existed. The CLI cannot
-    // reload the user's browser, so the assistant relaying this is the whole mechanism.
-    expect(tested).toMatch(/refresh the preview/i);
-    expect(tested).toContain('Patchstack widget is not showing');
+  it('closes by asking for the summary setup prints, which carries the refresh reminder', () => {
+    // The install ends on a page that loaded before the widget tag existed. The CLI cannot reload the
+    // user's browser, so the reminder reaches them through the summary the assistant is asked to show.
+    expect(tested).toContain('show me the summary it prints as your final message');
+    const summary = renderSummary(
+      { done: [], missing: [], checked: 3 },
+      { installed: true, connected: false, synced: true, deployed: false },
+      { installCommand: 'npm install --save @patchstack/connect', siteUuid: 's', claimUrl: 'https://example.com/claim', environment: 'sandbox' },
+      { widgetOnPage: true },
+    ).join('\n');
+    expect(summary).toMatch(/Refresh the preview if it did not appear/);
   });
 
   it('makes the widget part of the install rather than a question for the user', () => {
