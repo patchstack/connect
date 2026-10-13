@@ -5,6 +5,14 @@ import { join, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { setTimeout as delay } from 'node:timers/promises';
 
+/**
+ * A version npm has just published can take minutes to become visible from the public registry; until it
+ * does, `npm pack` answers ETARGET ("no matching version"). The attempts below wait up to about seven and
+ * a half minutes in all, which is what a release needs, and still give up on a registry that is down.
+ */
+export const MAX_ATTEMPTS = 10;
+export const waitBefore = (attempt) => Math.min(attempt * 15000, 60000);
+
 export async function fetchPublishedPackage(version, {
   run = spawnSync,
   wait = delay,
@@ -20,12 +28,14 @@ export async function fetchPublishedPackage(version, {
   const directory = makeDirectory();
   const filename = `patchstack-connect-${version}.tgz`;
   let packed = false;
-  for (let attempt = 1; attempt <= 5; attempt++) {
+  for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
+    // A cache of its own per attempt, so a "no matching version" answer one attempt received is never
+    // what the next attempt reads back.
     const result = run('npm', [
       'pack', `@patchstack/connect@${version}`, '--ignore-scripts', '--json',
       '--registry=https://registry.npmjs.org', '--prefer-online',
       '--fetch-retries=0', '--fetch-timeout=30000',
-      '--cache', join(directory, 'cache'), '--pack-destination', directory,
+      '--cache', join(directory, `cache-${attempt}`), '--pack-destination', directory,
     ], { cwd: directory, encoding: 'utf8', timeout: 60000 });
     if (result.status === 0) {
       const metadata = JSON.parse(result.stdout);
@@ -37,9 +47,11 @@ export async function fetchPublishedPackage(version, {
       packed = true;
       break;
     }
-    log(`Package fetch attempt ${attempt}/5 failed (exit ${result.status ?? result.signal ?? 'unknown'}).`);
-    log(String(result.stderr || result.stdout || result.error?.message || 'npm returned no diagnostics.').trim());
-    if (attempt < 5) await wait(attempt * 15000);
+    const diagnostics = String(result.stderr || result.stdout || result.error?.message || 'npm returned no diagnostics.').trim();
+    log(`Package fetch attempt ${attempt}/${MAX_ATTEMPTS} failed (exit ${result.status ?? result.signal ?? 'unknown'}).`);
+    if (diagnostics.includes('ETARGET')) log(`npm does not show ${version} yet; a new release can take a few minutes to appear.`);
+    log(diagnostics);
+    if (attempt < MAX_ATTEMPTS) await wait(waitBefore(attempt));
   }
   if (!packed) throw new Error(`Could not fetch @patchstack/connect@${version}; the published package remains unverified.`);
   const extracted = run('tar', ['-xzf', join(directory, filename), '-C', directory], {
