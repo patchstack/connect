@@ -174,6 +174,9 @@ describe('renderSummary', () => {
       `   ${context.claimUrl}`,
       '2. Restart your app to turn protection on',
       '',
+      '#### What Patchstack found',
+      '🔴 High **1** · 🟠 Medium **3** · 🔵 Low **1** · 12 packages outdated · 12 protection rules available',
+      '',
       '#### Progress',
       '✅ Patchstack installed',
       '⬜ Connect your Patchstack account',
@@ -181,6 +184,10 @@ describe('renderSummary', () => {
       '⬜ Deploy to protect your live app',
       '',
       '**Vulnerability overview:** a Patchstack widget now appears in the pre-production version of your app. Refresh the preview if it did not appear.',
+      '',
+      '#### Want more?',
+      '- **See the vulnerabilities again:** `npx @patchstack/connect vulns`',
+      '- **Go live on your host:** `npx @patchstack/connect go-live`',
       '',
       "Don't forget to republish or redeploy the app so the protection rules protect your live app.",
     ].join('\n').split('\n'));
@@ -193,6 +200,16 @@ describe('renderSummary', () => {
     expect(text).toContain('Blocking attacks needs a server, and none was found');
     expect(text).toContain("Don't forget to republish or redeploy the app when you're ready.");
     expect(text).not.toContain('Vulnerability overview');
+    expect(text).toContain('- **Add the Patchstack widget to your app:** `npx @patchstack/connect widget`');
+  });
+
+  it('lists every command it offers in AGENT-INSTALL.md, so an assistant knows what each one does', () => {
+    const doc = readFileSync(new URL('../AGENT-INSTALL.md', import.meta.url), 'utf8');
+    const table = doc.slice(doc.indexOf('### Commands for later'), doc.indexOf('Say only what the output says.'));
+    const summary = renderSummary(report(), notConnected, context, { widgetOnPage: false }).join('\n');
+    for (const command of summary.match(/`npx @patchstack\/connect [a-z-]+`/g) ?? []) {
+      expect(table, command).toContain(command);
+    }
   });
 
   it('never states a count the run did not get', () => {

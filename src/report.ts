@@ -286,6 +286,25 @@ export function renderSummary(report: StatusReport, progress: Progress, context:
     lines.push('#### 👉 What to do now', ...todo.slice(0, 3).flatMap((entry, index) => `${index + 1}. ${entry}`.split('\n')), '');
   }
 
+  if (counted) {
+    const severity = (
+      [
+        ['🔴 High', findings.severity.high],
+        ['🟠 Medium', findings.severity.medium],
+        ['🔵 Low', findings.severity.low],
+        ['⚪ Unrated', findings.severity.unknown],
+      ] as const
+    )
+      .filter(([, count]) => count > 0)
+      .map(([label, count]) => `${label} **${count}**`);
+    const parts = [
+      ...(severity.length > 0 ? severity : ['No known vulnerabilities']),
+      ...(findings.outdated > 0 ? [`${findings.outdated} ${findings.outdated === 1 ? 'package' : 'packages'} outdated`] : []),
+      ...(canProtect && (report.rules ?? 0) > 0 ? [`${report.rules} protection ${report.rules === 1 ? 'rule' : 'rules'} available`] : []),
+    ];
+    lines.push('#### What Patchstack found', parts.join(' · '), '');
+  }
+
   lines.push('#### Progress');
   for (const { step } of PROGRESS_STEPS) {
     lines.push(`${progress[step] ? '✅' : '⬜'} ${plainStepLabel(step, progress[step], context.environment)}`);
@@ -298,6 +317,13 @@ export function renderSummary(report: StatusReport, progress: Progress, context:
   for (const item of report.missing.filter((entry) => entry.note === true)) {
     lines.push(item.plain?.text ?? item.text, '');
   }
+  lines.push(
+    '#### Want more?',
+    '- **See the vulnerabilities again:** `npx @patchstack/connect vulns`',
+    ...(options.widgetOnPage ? [] : ['- **Add the Patchstack widget to your app:** `npx @patchstack/connect widget`']),
+    '- **Go live on your host:** `npx @patchstack/connect go-live`',
+    '',
+  );
   lines.push(
     canProtect
       ? "Don't forget to republish or redeploy the app so the protection rules protect your live app."
