@@ -1,6 +1,15 @@
 import { describe, expect, it } from 'vitest';
 
-import { nextProgressStep, nextStepLines, nextStepTitle, renderProgress, stepLabel, type NextStepContext } from '../src/progress.js';
+import {
+  nextProgressStep,
+  nextStepLines,
+  nextStepTitle,
+  plainStepLabel,
+  renderChecklist,
+  renderProgress,
+  stepLabel,
+  type NextStepContext,
+} from '../src/progress.js';
 
 const context: NextStepContext = {
   installCommand: 'npm install --save @patchstack/connect',
@@ -89,5 +98,22 @@ describe('progress checklist', () => {
     expect(nextStepTitle('deployed', { ...context, environment: 'production' })).toBe(
       'open your live app so Patchstack can see it',
     );
+  });
+});
+
+describe('plain checklist labels', () => {
+  it('says what is true for a done step and what to do for the rest', () => {
+    expect(renderChecklist({ installed: true, connected: false, synced: true, deployed: false }, context, { useColor: false, plain: true })).toEqual([
+      ' ✔ Patchstack installed',
+      ' ✘ Connect your Patchstack account',
+      ' ✔ Packages checked on this computer',
+      ' ✘ Deploy to protect your live app',
+    ]);
+  });
+
+  it('names where the packages were checked', () => {
+    expect(plainStepLabel('synced', true, 'sandbox')).toBe('Packages checked in your preview');
+    expect(plainStepLabel('synced', true, 'production')).toBe('Packages checked in your live build');
+    expect(plainStepLabel('synced', false, 'production')).toBe('Check your packages');
   });
 });

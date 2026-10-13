@@ -10,6 +10,7 @@ import {
   ensureSourceWidget,
   ensureWidgetInHtml,
   findSourceShell,
+  removeSourceWidget,
 } from '../src/widget.js';
 
 const UUID_A = '550e8400-e29b-41d4-a716-446655440000';
@@ -235,5 +236,37 @@ describe('ensureSourceWidget on a JSX root', () => {
       shell: null,
       action: 'no-shell',
     });
+  });
+});
+
+describe('removeSourceWidget', () => {
+  let cwd: string;
+  beforeEach(() => {
+    cwd = mkdtempSync(path.join(tmpdir(), 'ps-widget-remove-'));
+  });
+  afterEach(() => {
+    rmSync(cwd, { recursive: true, force: true });
+  });
+
+  it('takes out the managed tag and leaves the page as it was before setup', () => {
+    writeFileSync(path.join(cwd, 'index.html'), SHELL);
+    ensureSourceWidget(cwd, UUID_A);
+
+    expect(removeSourceWidget(cwd)).toEqual({ shell: 'index.html', action: 'removed' });
+    expect(readFileSync(path.join(cwd, 'index.html'), 'utf8')).toBe(SHELL);
+  });
+
+  it('leaves a widget added by hand alone', () => {
+    const manual = SHELL.replace('</body>', `<script src="${WIDGET_SCRIPT_URL}" data-site-uuid="${UUID_B}"></script>\n  </body>`);
+    writeFileSync(path.join(cwd, 'index.html'), manual);
+
+    expect(removeSourceWidget(cwd)).toEqual({ shell: 'index.html', action: 'manual' });
+    expect(readFileSync(path.join(cwd, 'index.html'), 'utf8')).toBe(manual);
+  });
+
+  it('reports a page with no widget, and a project with no page', () => {
+    expect(removeSourceWidget(cwd)).toEqual({ shell: null, action: 'no-shell' });
+    writeFileSync(path.join(cwd, 'index.html'), SHELL);
+    expect(removeSourceWidget(cwd)).toEqual({ shell: 'index.html', action: 'absent' });
   });
 });

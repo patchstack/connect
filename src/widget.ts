@@ -142,3 +142,30 @@ export function ensureSourceWidget(
   }
   return { shell, action };
 }
+
+export type WidgetRemoveAction =
+  /** The managed tag was taken out. */
+  | 'removed'
+  /** A manual (non-managed) widget install exists — left untouched. */
+  | 'manual'
+  /** No widget tag in the shell. */
+  | 'absent'
+  | 'no-shell';
+
+/**
+ * Take the managed widget tag out of the project's root shell. Only the tag Connect wrote is removed; a
+ * widget somebody added by hand is theirs, and is reported rather than edited.
+ */
+export function removeSourceWidget(cwd: string, jsxShell: string | null = null): { shell: string | null; action: WidgetRemoveAction } {
+  const shell = findSourceShell(cwd) ?? jsxShell;
+  if (shell === null || !existsSync(path.join(cwd, shell))) return { shell: null, action: 'no-shell' };
+
+  const file = path.join(cwd, shell);
+  const before = readFileSync(file, 'utf8');
+  const line = new RegExp(`[ \\t]*${MANAGED_TAG_RE.source}[ \\t]*\\r?\\n?`, 'i');
+  if (line.test(before)) {
+    writeProjectFileSync(cwd, file, before.replace(line, ''), { encoding: 'utf8' });
+    return { shell, action: 'removed' };
+  }
+  return { shell, action: before.includes(WIDGET_NEEDLE) ? 'manual' : 'absent' };
+}

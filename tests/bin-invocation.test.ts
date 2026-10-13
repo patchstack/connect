@@ -330,15 +330,16 @@ describe.skipIf(!built)('the packaged bin, invoked as npm invokes it', () => {
       try {
         const stdout = await scan(dir, server.endpoint);
 
-        expect(stdout).toContain(' ✔ Install the Patchstack connector');
-        expect(stdout).toContain(' ✘ Connect project to Patchstack account');
-        expect(stdout).toContain(' ✔ Sync and monitor in local environment');
-        expect(stdout).toContain(' ✘ Deploy project to protect live app');
+        expect(stdout).toContain(' ✔ Patchstack installed');
+        expect(stdout).toContain(' ✘ Connect your Patchstack account');
+        expect(stdout).toContain(' ✔ Packages checked on this computer');
+        expect(stdout).toContain(' ✘ Deploy to protect your live app');
         expect(stdout.match(/Next: /g)).toHaveLength(1);
-        expect(stdout).toContain('Next: connect this project to your Patchstack account');
+        expect(stdout).toContain('Next: connect your Patchstack account');
         expect(stdout).toContain(`/monitor/claim?site=${SITE}`);
-        expect(stdout).toContain(' ✔ Added the Patchstack widget to index.html');
-        expect(stdout).toContain('anyone who opens your app can connect it to their own account');
+        // What a run did is printed only with --verbose; the file shows it happened.
+        expect(readFileSync(path.join(dir, 'index.html'), 'utf8')).toContain('patchstack-widget');
+        expect(stdout).not.toContain('Not connected to your Patchstack account');
         expect(stdout).not.toMatch(/report a vulnerability/i);
       } finally {
         await server.close();
@@ -352,9 +353,9 @@ describe.skipIf(!built)('the packaged bin, invoked as npm invokes it', () => {
       try {
         const stdout = await scan(dir, server.endpoint, { PATCHSTACK_ENVIRONMENT: 'production' });
 
-        expect(stdout).toContain(' ✔ Sync and monitor in production environment');
-        expect(stdout).toContain(' ✘ Deploy project to protect live app');
-        expect(stdout).toContain('Patchstack ticks this once it sees the live site.');
+        expect(stdout).toContain(' ✔ Packages checked in your live build');
+        expect(stdout).toContain(' ✘ Deploy to protect your live app');
+        expect(stdout).toContain('Ticks once Patchstack sees your live app.');
       } finally {
         await server.close();
         rmSync(dir, { recursive: true, force: true });
@@ -421,8 +422,8 @@ describe.skipIf(!built)('the packaged bin, invoked as npm invokes it', () => {
       try {
         const stdout = await scan(dir, server.endpoint, {}, ['--claim-token', 'tok-123']);
 
-        expect(stdout).toContain(' ✔ Connect project to Patchstack account');
-        expect(stdout).toContain('Next: deploy your project to protect the live app');
+        expect(stdout).toContain(' ✔ Connected to your Patchstack account');
+        expect(stdout).toContain('Next: deploy to protect your live app');
         expect(stdout).not.toContain('/monitor/claim?site=');
       } finally {
         await server.close();
@@ -451,7 +452,7 @@ describe.skipIf(!built)('the packaged bin, invoked as npm invokes it', () => {
       try {
         const first = await scan(dir, endpoint);
 
-        expect(first).toContain(' ✔ Connect project to Patchstack account');
+        expect(first).toContain(' ✔ Connected to your Patchstack account');
         expect(first).not.toContain('/monitor/claim?site=');
         expect(lookups).toEqual([`/monitor/claim/preview?site=${SITE}`]);
         const saved = JSON.parse(readFileSync(path.join(dir, '.patchstackrc.json'), 'utf8')) as Record<string, unknown>;
@@ -459,7 +460,7 @@ describe.skipIf(!built)('the packaged bin, invoked as npm invokes it', () => {
         expect(saved).not.toHaveProperty('claimUrl');
 
         const second = await scan(dir, endpoint);
-        expect(second).toContain(' ✔ Connect project to Patchstack account');
+        expect(second).toContain(' ✔ Connected to your Patchstack account');
         expect(lookups).toHaveLength(1);
       } finally {
         await new Promise<void>((resolve) => server.close(() => resolve()));
@@ -505,8 +506,8 @@ describe.skipIf(!built)('the packaged bin, invoked as npm invokes it', () => {
           expectPlain(fresh.slice(0, fresh.indexOf('———— Full reference guide')));
           expectPlain(await scan(dir, server.endpoint));
           const setup = await run(dir, server.endpoint, ['setup']);
-          expect(setup).toContain('Patchstack setup');
-          expect(setup).toContain('Done\n');
+          expect(setup).toContain('Patchstack checked');
+          expect(setup).not.toContain('Done\n');
           expect(setup).not.toContain('1/3');
           expectPlain(setup);
           const guide = await run(dir, server.endpoint, ['guide']);
@@ -516,6 +517,63 @@ describe.skipIf(!built)('the packaged bin, invoked as npm invokes it', () => {
           await server.close();
           rmSync(dir, { recursive: true, force: true });
         }
+      });
+
+      describe('the slim setup', () => {
+        const CONCISE = {};
+        const readConfig = (dir: string): Record<string, unknown> =>
+          JSON.parse(readFileSync(path.join(dir, '.patchstackrc.json'), 'utf8')) as Record<string, unknown>;
+
+        it('protects a new project first, offers the widget at the end, and stays free of technical words', async () => {
+          const server = await acceptingServer();
+          const dir = freshProject();
+          try {
+            const setup = await run(dir, server.endpoint, ['setup'], CONCISE);
+
+            expect(setup).toContain('Patchstack checked');
+            expect(setup).not.toContain('Done\n');
+            expect(setup).toContain(' ✔ Patchstack installed');
+            expect(setup).toContain(`/monitor/claim?site=${SITE}`);
+            expect(setup).toContain('npx @patchstack/connect widget');
+            expect(setup).not.toMatch(/attack-surface|rule lookup/i);
+            expectPlain(setup);
+            expect(readFileSync(path.join(dir, 'index.html'), 'utf8')).not.toContain('patchstack-widget');
+            expect(readConfig(dir).widget).toBe(false);
+          } finally {
+            await server.close();
+            rmSync(dir, { recursive: true, force: true });
+          }
+        });
+
+        it('adds the widget when setup is asked for it', async () => {
+          const server = await acceptingServer();
+          const dir = freshProject();
+          try {
+            const setup = await run(dir, server.endpoint, ['setup', '--widget'], CONCISE);
+
+            expect(readFileSync(path.join(dir, 'index.html'), 'utf8')).toContain('patchstack-widget');
+            expect(readConfig(dir).widget).toBe(true);
+            expect(setup).not.toContain('npx @patchstack/connect widget');
+          } finally {
+            await server.close();
+            rmSync(dir, { recursive: true, force: true });
+          }
+        });
+
+        it('leaves the widget on a project that already has a site', async () => {
+          const server = await acceptingServer();
+          const dir = freshProject();
+          try {
+            await scan(dir, server.endpoint);
+            await run(dir, server.endpoint, ['setup'], CONCISE);
+
+            expect(readFileSync(path.join(dir, 'index.html'), 'utf8')).toContain('patchstack-widget');
+            expect(readConfig(dir).widget).toBeUndefined();
+          } finally {
+            await server.close();
+            rmSync(dir, { recursive: true, force: true });
+          }
+        });
       });
 
       it('brings the detail back with --verbose', async () => {

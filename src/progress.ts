@@ -44,6 +44,59 @@ export function deployNote(context: NextStepContext): string | null {
 
 export interface RenderProgressOptions {
   useColor: boolean;
+  /** Says the next step in place of its usual title, for a report that has a better reason to give. */
+  nextTitle?: string;
+  /** Plain-word labels that say what is done and what to do, for the concise report. */
+  plain?: boolean;
+}
+
+/**
+ * The concise report's labels: a done step says what is true, a step not done says what to do. These
+ * differ from the dashboard's wording, so they are used only where that report is printed.
+ */
+export function plainStepLabel(step: ProgressStep, done: boolean, environment?: Environment | null): string {
+  switch (step) {
+    case 'installed':
+      return done ? 'Patchstack installed' : 'Install Patchstack';
+    case 'connected':
+      return done ? 'Connected to your Patchstack account' : 'Connect your Patchstack account';
+    case 'synced': {
+      if (!done) return 'Check your packages';
+      const where = environment === 'production' ? 'in your live build' : environment === 'sandbox' ? 'in your preview' : 'on this computer';
+      return `Packages checked ${where}`;
+    }
+    case 'deployed':
+      return done ? 'Live app protected' : 'Deploy to protect your live app';
+  }
+}
+
+/**
+ * The concise report's lines for a step: the same as `nextStepLines`, except that going live points at
+ * `go-live`, which gives the steps for this project's host instead of a general description of them.
+ */
+export function plainNextStepLines(step: ProgressStep, context: NextStepContext): string[] {
+  const goLive = 'Run: npx @patchstack/connect go-live';
+  if (step === 'deployed' && context.environment !== 'production') {
+    return [goLive, 'It shows how to add your key to your host and deploy.'];
+  }
+  if (step === 'connected' && context.siteUuid !== null && context.environment !== 'production') {
+    return [nextStepLines(step, context)[0]!, `Already connected? ${goLive}`];
+  }
+  return nextStepLines(step, context);
+}
+
+/** The concise report's next-step titles. */
+export function plainNextStepTitle(step: ProgressStep, context: NextStepContext): string {
+  switch (step) {
+    case 'installed':
+      return 'install Patchstack';
+    case 'connected':
+      return 'connect your Patchstack account';
+    case 'synced':
+      return 'check your packages';
+    case 'deployed':
+      return context.environment === 'production' ? 'open your live app once' : 'deploy to protect your live app';
+  }
 }
 
 const ANSI = {
@@ -117,26 +170,36 @@ export function renderProgress(
   context: NextStepContext,
   options: RenderProgressOptions,
 ): string[] {
+  return [...renderChecklist(progress, context, options), '', ...renderNextStep(progress, context, options)];
+}
+
+/** The four steps, ✔ or ✘ each. */
+export function renderChecklist(progress: Progress, context: NextStepContext, options: RenderProgressOptions): string[] {
   const paint = (code: string, text: string): string =>
     options.useColor ? `${code}${text}${ANSI.reset}` : text;
   const lines: string[] = [];
-
   for (const { step } of PROGRESS_STEPS) {
-    const label = stepLabel(step, context.environment);
+    const label = options.plain === true ? plainStepLabel(step, progress[step], context.environment) : stepLabel(step, context.environment);
     lines.push(progress[step] ? ` ${paint(ANSI.green, '✔')} ${label}` : ` ${paint(ANSI.yellow, '✘')} ${label}`);
-    const note = step === 'deployed' && !progress.deployed ? deployNote(context) : null;
+    const note =
+      step === 'deployed' && !progress.deployed
+        ? options.plain === true && context.environment === 'production'
+          ? 'Ticks once Patchstack sees your live app.'
+          : deployNote(context)
+        : null;
     if (note !== null) lines.push(`     ${paint(ANSI.dim, note)}`);
   }
-
-  const next = nextProgressStep(progress);
-  lines.push('');
-  if (next === null) {
-    lines.push(paint(ANSI.bold, 'All done.'));
-    return lines;
-  }
-  lines.push(`${paint(ANSI.cyan, '➜')} ${paint(ANSI.bold, `Next: ${nextStepTitle(next, context)}`)}`);
-  for (const line of nextStepLines(next, context)) {
-    lines.push(`  ${line}`);
-  }
   return lines;
+}
+
+/** The one next step: its title, then the command or link. */
+export function renderNextStep(progress: Progress, context: NextStepContext, options: RenderProgressOptions): string[] {
+  const paint = (code: string, text: string): string =>
+    options.useColor ? `${code}${text}${ANSI.reset}` : text;
+  const next = nextProgressStep(progress);
+  if (next === null) return [paint(ANSI.bold, 'All done.')];
+  return [
+    `${paint(ANSI.cyan, '➜')} ${paint(ANSI.bold, `Next: ${options.nextTitle ?? nextStepTitle(next, context)}`)}`,
+    ...nextStepLines(next, context).map((line) => `  ${line}`),
+  ];
 }

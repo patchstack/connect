@@ -13,7 +13,7 @@ Connect a JavaScript / Node.js application to [Patchstack](https://patchstack.co
 
 For an existing JS/Node project in a hosted workspace, copy this request into a coding assistant, or run the same command yourself. For Gemini CLI, OpenCode, Codex CLI, or Claude Code on your own machine, use [Local coding CLIs](#local-coding-clis) below. For a standalone HTML/CSS/JavaScript site without a package-managed app, use the [plain HTML widget instructions](AGENT-INSTALL.md#plain-html-sites); do not add Node tooling just for the widget.
 
-> I have vetted the official [`@patchstack/connect`](https://www.npmjs.com/package/@patchstack/connect) package and authorize its Patchstack Connector, production build hooks, runtime protection source edits, structural attack-surface map uploads (not source code), and live-rule retrieval. Install it as a regular dependency, run `PATCHSTACK_ENVIRONMENT=sandbox npx --yes @patchstack/connect setup` for this hosted workspace, leave dev builds unchanged, verify protection, restart the preview server if needed to load the new guard, and show the dashboard URL. The Patchstack Connector widget is part of this install and on by default: add it, and do not ask me whether to. Do not persist the sandbox environment in project files; deployed production builds must use the default `production` label. When setup finishes, tell me to refresh the preview if the Patchstack widget is not showing yet, and remind me to deploy when I am ready — do not deploy anything yourself.
+> I have vetted the official [`@patchstack/connect`](https://www.npmjs.com/package/@patchstack/connect) package and authorize its Patchstack Connector, production build hooks, runtime protection source edits, structural attack-surface map uploads (not source code), and live-rule retrieval. Install it as a regular dependency, run `PATCHSTACK_ENVIRONMENT=sandbox npx --yes @patchstack/connect setup --widget` for this hosted workspace, leave dev builds unchanged, verify protection, restart the preview server if needed to load the new guard, and show the dashboard URL. The Patchstack Connector widget is part of this install and on by default: add it, and do not ask me whether to. Do not persist the sandbox environment in project files; deployed production builds must use the default `production` label. When setup finishes, tell me to refresh the preview if the Patchstack widget is not showing yet, and remind me to deploy when I am ready — do not deploy anything yourself.
 
 `setup` is state-aware and idempotent: it scans dependencies, provisions or reuses the site, manages the Patchstack Connector, installs and verifies the runtime guard, uploads a structural map, fetches live rules, and wires dependency/build checks without replacing the build command. It prints what succeeded and what remains; it never starts the app or runs the build. `guide` provides project-specific status without changing files.
 
@@ -123,7 +123,7 @@ That's it. `setup`:
 2. POSTs the package list to Patchstack with **no** UUID.
 3. Patchstack provisions a fresh site and returns its UUID.
 4. Connect writes the UUID to `.patchstackrc.json` so the next `scan` targets the same site.
-5. Connect installs the Patchstack Connector's `<script>` tag into your root HTML shell (see *The Patchstack Connector* below) so the widget shows up on the next preview reload — as the "Connect this website" panel until the site is claimed, then as the "Report a vulnerability" button. On a server-rendered root it also adds the production marker, which is what tells the widget to switch from build mode to visitor report intake on the published site.
+5. With `--widget` (the install prompt passes it), Connect adds the Patchstack Connector's `<script>` tag to your root HTML shell (see *The Patchstack Connector* below) so the widget shows up on the next preview reload. Without it, a new project gets no widget and `npx @patchstack/connect widget` adds it later. On a server-rendered root Connect also adds the production marker, which is how Patchstack recognises your live build.
 6. Installs the runtime guard after provisioning, bakes the site UUID into it, and verifies the framework seam. Known server stacks are auto-wired; unmatched or conflicting layouts get a generic scaffold and exact manual checks.
 7. Adds `postinstall: patchstack-connect scan`, preserving any existing command, so dependencies added during a sandbox session and build-less production installs are reported immediately.
 8. Uploads a structural attack-surface map (routes, input names, package attribution, relative file:line locations and coverage notes; no source text or environment values), stamps its identity into the guard for the next startup/build, and fetches live request/response rules. Empty policy, upload failures and rule-fetch failures are reported separately.
@@ -132,7 +132,7 @@ That's it. `setup`:
 
 If the server is already running, **restart it** to load the new guard and map identity. Setup does not start, build or deploy your app. Rule delivery does not prove runtime enforcement: scoped rules still need a matching server verdict, and unsupported/custom entries remain reported gaps.
 
-Then **refresh your preview**. The widget loads with the page, so a preview that was already open still shows the HTML from before setup. Builders that hot reload will have refreshed it for you; if the widget is missing, refresh it once. Until the site is claimed it shows the "Connect this website" panel. `setup` prints the same reminder, and the CLI has no way to reload a browser itself.
+If setup added the widget, **refresh your preview**. The widget loads with the page, so a preview that was already open still shows the HTML from before setup. Builders that hot reload will have refreshed it for you; if the widget is missing, refresh it once. Until the site is claimed it shows the "Connect this website" panel. `setup` prints the same reminder, and the CLI has no way to reload a browser itself.
 
 Then **deploy**. These are source changes, so your live site keeps serving its previous build — visitors get the widget, and a server-rendered root gets the production marker, only after the next deploy.
 
@@ -155,15 +155,22 @@ patchstack-connect scan   [options]                Scan the lockfile and POST to
                                                    successful post, adds/updates the Patchstack
                                                    Connector tag in the root HTML shell. Also adds the
                                                    production marker to a JSX root or Astro layout,
-                                                   before the post (opt out of both with "widget": false in
-                                                   .patchstackrc.json)
-patchstack-connect setup  [options]                Run scan, manage the widget, and idempotently
+                                                   before the post ("widget": false in .patchstackrc.json
+                                                   turns off the tag, not the marker)
+patchstack-connect setup  [--widget] [options]     Run scan, add the widget with --widget, and idempotently
                                                    install + verify runtime protection and wire
                                                    dependency/build scans + map uploads. Uploads the map and
                                                    fetches live rules; never starts the app or runs the build
 patchstack-connect init   <site-uuid>              Optional: pre-seed .patchstackrc.json with
                                                    an existing site UUID
 patchstack-connect status [options]                Show current configuration
+patchstack-connect vulns                           Show vulnerabilities by severity and outdated
+                                                   packages, with the link to the details
+patchstack-connect go-live [--host <name>]         Show how to add your API key to your host
+                                                   (Vercel, Netlify, Cloudflare, Render, Railway,
+                                                   Fly.io, Heroku, Amplify, Replit, Lovable) and deploy
+patchstack-connect widget [--remove]               Add the Patchstack widget to your page, or
+                                                   remove the tag Connect added; saved for builds
 patchstack-connect mark-build [--production]       Stamp built HTML with a production flag +
                                                    build fingerprint and ensure the widget tag
                                                    in built pages (run as a postbuild step)
@@ -372,7 +379,7 @@ Two files, because one value is public and the other is not.
 }
 ```
 
-`"widget"` is optional and defaults to `true`; set it to `false` to stop Connect from managing the Patchstack Connector tag (see *The Patchstack Connector*).
+`"widget"` is optional. `scan` treats a missing value as `true`; `setup` writes `false` for a new project unless run with `--widget`. `false` stops Connect from adding the Patchstack Connector tag (see *The Patchstack Connector*).
 
 Connect also keeps two fields there itself. `"claimUrl"` is the link that connects the site to your Patchstack account, saved when the site is created so it is not lost with the terminal output. Once `scan`, `status` or `claim` sees the site connected, the link is removed and `"claimed": true` takes its place, which is how `guide` knows without asking Patchstack.
 
@@ -471,7 +478,7 @@ The Patchstack Connector is a floating control whose form follows the site's cla
 
 - **`mark-build`** ensures the same tag in built HTML output, covering builds whose source shell Connect couldn't edit, and stamps `window.__PATCHSTACK_PROD__` so the widget hides the claim/login UI on the published site (owners reach it by appending `#patchstack` to the live URL). It then reports what it did — `stamped`, `withheld`, `no-pages` for a server-rendered build, or `no-output` — alongside the same manifest `scan` sent before the bundler ran, so the dashboard can say why a published app is or is not reporting its build. That report is the second half of one build, not a second build: Patchstack keeps one copy of the manifest and reads the two together. It is sent only for a site that is already registered, and never carries the site's address or name, which `mark-build` does not resolve. The marker says the page is the live site, so **only a production build carries it**: the environment is read the same way `scan` reads it (the build platform's own tier or branch name, then the hosted builder the project belongs to), and a local or preview build gets the widget tag, no production marker, and any marker an earlier build left behind removed — including an inline script that only sets `window.__PATCHSTACK_PROD__` and was added by hand. A `sandbox` build gets `window.__PATCHSTACK_ENV__="sandbox"` in its place, so the widget shows the owner's panel on a preview host it cannot recognise by name. Publishing a static build by hand from your machine is the case that needs `--production` (or `PATCHSTACK_ENVIRONMENT=production`), because nothing in that environment can say the build is a deployment.
 
-- **Opting out:** persist `"widget": false` in `.patchstackrc.json` to disable both the widget tag and the production marker (dependency scanning only). Without it, the next successful scan re-adds the managed tag, and the next scan re-adds the marker on a JSX root or Astro layout.
+- **Turning the widget off:** run `npx @patchstack/connect widget --remove`, or set `"widget": false` in `.patchstackrc.json`. Only the widget tag stops; the production marker stays, because Patchstack needs it to recognise your live build. `setup` saves `"widget": false` itself when it sets up a new project without `--widget`.
 
 ## Programmatic API
 
