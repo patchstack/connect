@@ -568,8 +568,10 @@ export function guideMissing(state: GuideState, known: Partial<Progress> = {}): 
     missing.push({
       key: 'runtime-protection',
       plain: {
-        text: generic ? 'Add protection to your server' : 'Finish adding protection to your server',
-        hint: generic ? ['Run npx @patchstack/connect protect to see where to add it.'] : ['Run: npx @patchstack/connect protect'],
+        text: generic ? 'Blocking attacks needs a server' : 'Finish adding protection to your server',
+        hint: generic
+          ? ['If your app has one, run: npx @patchstack/connect protect. An app that runs only in the browser has nothing to add.']
+          : ['Run: npx @patchstack/connect protect'],
       },
       text: generic
         ? 'Runtime protection: not added to your server yet'

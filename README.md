@@ -110,14 +110,14 @@ you how to proceed. Any of these works:
 ## Quick start (zero configuration)
 
 ```bash
-npm install --save @patchstack/connect && npx @patchstack/connect setup
+npx @patchstack/connect setup
 ```
 
-> **Use your project's own package manager.** On Bun-managed projects (including many Lovable projects) install with `bun add @patchstack/connect` instead — running `npm install` there plants a `package-lock.json` that the platform's native dependency flow never updates again, leaving a stale lockfile next to the live one. Connect detects and works around that (see *Stale lockfiles* below), but not creating the fossil is better. Protection imports `@patchstack/connect/protect` at runtime, so deployments that prune dev dependencies need the package in `dependencies`.
+> **Your project's own package manager is used.** `setup` adds the package with it (`bun add` on a Bun-managed project, including many Lovable projects). If you install it yourself, do the same — running `npm install` there plants a `package-lock.json` that the platform's native dependency flow never updates again, leaving a stale lockfile next to the live one. Connect detects and works around that (see *Stale lockfiles* below), but not creating the fossil is better. Protection imports `@patchstack/connect/protect` at runtime, so deployments that prune dev dependencies need the package in `dependencies`.
 
 > **Hosted builders:** set `PATCHSTACK_ENVIRONMENT=sandbox` in the workspace process environment (or scope it to the setup command above), persist every file written by `setup`, and restart any already-running server so it loads the new middleware. Do not write `"environment": "sandbox"` to the committed `.patchstackrc.json`: the same project files reach production, where scans should inherit no override and default to `production`. TanStack Start + Supabase (the server shape emitted by Lovable) is auto-wired: browser Supabase traffic is tunneled through a same-origin guard, server-function arguments are inspected, and responses are screened. A client-only SPA has no server request path to protect; setup will leave a generic scaffold and `protect --check` will remain red until the host adds a server/edge seam. Native TanStack requests are screened by default; no additional route-WAF switch is needed. New Start apps without that Supabase layout use the documented server Fetch entry. Browser-direct services and separately deployed functions still require their own protection.
 
-That's it. `setup`:
+That's it. `setup` adds `@patchstack/connect` to the project when it is missing (and, in a folder of HTML pages with no `package.json`, first writes one with a build step), then:
 
 1. Reads your lockfile (see *Supported lockfiles*).
 2. POSTs the package list to Patchstack with **no** UUID.
@@ -342,6 +342,9 @@ group, and a verification that can leave a server running is worse than an unans
 No other command runs your application. `protect`, `protect --check`, `setup`, `guide`, `scan`,
 `status` and `mark-build` only read and write files, and — for `scan` and `mark-build` — report the
 dependency manifest they read, or only its checksum from a production build that has no API key.
+One exception to "only read and write files": when `@patchstack/connect` is not in the project yet,
+`setup` adds it with your package manager (`npm install --save`, `pnpm add`, `yarn add` or `bun add`),
+and like any install that runs the project's install scripts.
 
 ## Configuration
 
