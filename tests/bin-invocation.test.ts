@@ -544,6 +544,8 @@ describe.skipIf(!built)('the packaged bin, invoked as npm invokes it', () => {
             expect(setup).toContain(`/monitor/claim?site=${SITE}`);
             expect(setup).toContain('npx @patchstack/connect widget');
             expect(setup).not.toMatch(/attack-surface|rule lookup/i);
+            // Run outside a terminal, as an assistant runs it: the message to pass on comes last.
+            expect(setup).toContain('──── Summary ────\n### 🛡️ Patchstack is set up');
             expectPlain(setup);
             expect(readFileSync(path.join(dir, 'index.html'), 'utf8')).not.toContain('patchstack-widget');
             expect(readConfig(dir).widget).toBe(false);

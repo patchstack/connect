@@ -8,8 +8,10 @@ import {
   nextProgressStep,
   nextStepLines,
   nextStepTitle,
+  PROGRESS_STEPS,
   plainNextStepLines,
   plainNextStepTitle,
+  plainStepLabel,
   renderChecklist,
   renderProgress,
   type NextStepContext,
@@ -27,6 +29,8 @@ export interface MissingItem {
   detail?: string[];
   /** The same item in plain words, for the concise report. */
   plain?: { text: string; hint?: string[] };
+  /** Something to know rather than something to do: shown without a ✘ in the concise report. */
+  note?: boolean;
 }
 
 export interface StatusReport {
@@ -124,7 +128,7 @@ function renderConcise(
   const keys = new Set(report.missing.map((item) => item.key ?? item.text));
   const todo = report.missing.filter((item) => {
     const key = item.key ?? item.text;
-    if (COVERED_BY_CHECKLIST.has(key)) return false;
+    if (item.note === true || COVERED_BY_CHECKLIST.has(key)) return false;
     // Restarting loads protection that is in place; while it is not, the restart would load nothing.
     return !(key === 'runtime-restart' && keys.has('runtime-protection'));
   });
@@ -150,6 +154,12 @@ function renderConcise(
   }
   if (findings.length > 0 || (report.rules ?? 0) > 0) lines.push('');
 
+  for (const item of report.missing.filter((entry) => entry.note === true)) {
+    lines.push(`  ${paint(ANSI.dim, 'ℹ')} ${item.plain?.text ?? item.text}`);
+    for (const hint of item.plain?.hint ?? item.hint ?? []) lines.push(`    ${paint(ANSI.dim, hint)}`);
+    lines.push('');
+  }
+
   lines.push(...renderMenu(options.menu ?? [], { useColor: options.useColor }));
   if (lines[lines.length - 1] === '') lines.pop();
   return lines;
@@ -167,11 +177,14 @@ function nextStepBox(
     return renderBox([{ text: '✔ All done.', style: 'green' }], { useColor: options.useColor, columns: options.columns, accent: 'green' });
   }
   // With findings to show, connecting is how a person sees which packages they are, so the step says that.
+  // Without a server there is no protection to turn on, so the step does not promise one.
   const vulnerable = (report.findings?.vulnerable ?? 0) > 0;
   const title =
-    vulnerable && next === 'connected'
-      ? 'connect your Patchstack account to see the details and turn on protection'
-      : plainNextStepTitle(next, context);
+    next === 'connected' && !protectionPossible(report)
+      ? 'connect your Patchstack account to see the details'
+      : vulnerable && next === 'connected'
+        ? 'connect your Patchstack account to see the details and turn on protection'
+        : plainNextStepTitle(next, context);
   const [first, ...rest] = plainNextStepLines(next, context);
   const action = first?.startsWith('Open ') === true ? first.slice('Open '.length) : first;
   return [
@@ -207,4 +220,91 @@ export function renderHookSummary(report: StatusReport, progress: Progress, cont
     lines.push(`Patchstack next step: ${nextStepTitle(next, context)}.${first !== undefined ? ` ${first}` : ''}`);
   }
   return lines;
+}
+
+export interface SummaryOptions {
+  /** The widget tag is on the page, so the summary says where to see it. */
+  widgetOnPage: boolean;
+}
+
+/**
+ * The same report as a short Markdown message, ready to be passed on as it is: a headline with what was
+ * found, what to do now with the link written out in full, the four steps, and one closing reminder. It is
+ * built from this run's results only, so it never says more than the report above it.
+ */
+export function renderSummary(report: StatusReport, progress: Progress, context: NextStepContext, options: SummaryOptions): string[] {
+  const findings = report.findings ?? null;
+  const counted = findings !== null && findings.total > 0;
+  const checked = report.checked !== undefined ? `Checked ${report.checked} ${report.checked === 1 ? 'package' : 'packages'}` : null;
+  const canProtect = protectionPossible(report);
+
+  let headline: string;
+  if (counted && findings.vulnerable > 0) {
+    const vulnerabilities = findings.severity.high + findings.severity.medium + findings.severity.low + findings.severity.unknown;
+    const worst = (['high', 'medium', 'low'] as const).find((level) => findings.severity[level] > 0);
+    headline = `**${checked ?? 'Patchstack'}: ${vulnerabilities} ${vulnerabilities === 1 ? 'vulnerability' : 'vulnerabilities'} in ${findings.vulnerable} ${findings.vulnerable === 1 ? 'package' : 'packages'}${worst !== undefined ? ` (highest severity: ${worst})` : ''}.**`;
+  } else if (counted) {
+    headline = `**${checked ?? 'Patchstack'}: no known vulnerabilities.**`;
+  } else {
+    headline = checked !== null ? `**${checked}.** Patchstack is now watching them.` : '**Patchstack is now watching your app.**';
+  }
+  if (canProtect && (report.rules ?? 0) > 0) {
+    headline += ` ${report.rules} protection ${report.rules === 1 ? 'rule' : 'rules'} available.`;
+  }
+
+  const lines = ['### 🛡️ Patchstack is set up', '', headline, ''];
+
+  const todo: string[] = [];
+  const next = nextProgressStep(progress);
+  if (next !== null) {
+    const vulnerable = (findings?.vulnerable ?? 0) > 0;
+    const title =
+      next === 'connected' && !canProtect
+        ? 'Connect your Patchstack account** to see the details'
+        : next === 'connected'
+        ? vulnerable
+          ? 'Connect your Patchstack account** to see the details and turn on protection'
+          : 'Connect your Patchstack account** to turn on protection'
+        : `${capitalise(plainNextStepTitle(next, context))}**`;
+    const [first] = plainNextStepLines(next, context);
+    const action = first?.startsWith('Open ') === true ? first.slice('Open '.length) : first;
+    todo.push(`**${title}${action !== undefined ? `\n   ${action}` : ''}`);
+  }
+  for (const item of report.missing) {
+    const key = item.key ?? item.text;
+    if (item.note === true || COVERED_BY_CHECKLIST.has(key)) continue;
+    if (key === 'runtime-restart' && !canProtect) continue;
+    todo.push(item.plain?.text ?? item.text);
+  }
+  if (todo.length > 0) {
+    lines.push('#### 👉 What to do now', ...todo.slice(0, 3).flatMap((entry, index) => `${index + 1}. ${entry}`.split('\n')), '');
+  }
+
+  lines.push('#### Progress');
+  for (const { step } of PROGRESS_STEPS) {
+    lines.push(`${progress[step] ? '✅' : '⬜'} ${plainStepLabel(step, progress[step], context.environment)}`);
+  }
+  lines.push('');
+
+  if (options.widgetOnPage) {
+    lines.push('**Vulnerability overview:** a Patchstack widget now appears in the pre-production version of your app. Refresh the preview if it did not appear.', '');
+  }
+  for (const item of report.missing.filter((entry) => entry.note === true)) {
+    lines.push(item.plain?.text ?? item.text, '');
+  }
+  lines.push(
+    canProtect
+      ? "Don't forget to republish or redeploy the app so the protection rules protect your live app."
+      : "Don't forget to republish or redeploy the app when you're ready.",
+  );
+  return lines;
+}
+
+/** False when setup found no server, so there is no protection for the app to turn on. */
+function protectionPossible(report: StatusReport): boolean {
+  return !report.missing.some((item) => item.note === true && item.key === 'runtime-protection');
+}
+
+function capitalise(text: string): string {
+  return text.charAt(0).toUpperCase() + text.slice(1);
 }

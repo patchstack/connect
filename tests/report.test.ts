@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 
 import type { PackageSummary } from '../src/client.js';
-import { renderStatus, type StatusReport } from '../src/report.js';
+import { renderStatus, renderSummary, type StatusReport } from '../src/report.js';
 import type { NextStepContext, Progress } from '../src/progress.js';
 
 const context: NextStepContext = {
@@ -134,5 +134,67 @@ describe('renderStatus concise', () => {
       ' ✔ Added this project to Patchstack',
     ]);
     expect(lines.some((line) => line.includes('⚠'))).toBe(false);
+  });
+});
+
+const noServerItem = {
+  key: 'runtime-protection',
+  text: 'Runtime protection: no server file found',
+  note: true,
+  plain: {
+    text: 'Blocking attacks needs a server, and none was found, so Patchstack checks your packages only.',
+    hint: ['Has your app got a server? Run: npx @patchstack/connect protect'],
+  },
+};
+
+describe('an app with no server', () => {
+  it('shows the missing server as something to know, not a step left undone, and promises no protection', () => {
+    const lines = renderStatus('Patchstack setup', report({ missing: [noServerItem] }), notConnected, context, { useColor: false, concise: true });
+
+    expect(lines).not.toContain('To do');
+    expect(lines).toContain('  ℹ Blocking attacks needs a server, and none was found, so Patchstack checks your packages only.');
+    expect(lines.some((line) => line.includes('➜ Next: connect your Patchstack account to see the details '))).toBe(true);
+    expect(lines.some((line) => line.includes('turn on protection'))).toBe(false);
+  });
+});
+
+describe('renderSummary', () => {
+  it('writes the message to pass on: findings, what to do with the full link, progress, and the reminder', () => {
+    const lines = renderSummary(report({ rules: 12 }), notConnected, context, { widgetOnPage: true });
+
+    expect(lines).toEqual([
+      '### 🛡️ Patchstack is set up',
+      '',
+      '**Checked 89 packages: 5 vulnerabilities in 3 packages (highest severity: high).** 12 protection rules available.',
+      '',
+      '#### 👉 What to do now',
+      '1. **Connect your Patchstack account** to see the details and turn on protection',
+      `   ${context.claimUrl}`,
+      '2. Restart your app to turn protection on',
+      '',
+      '#### Progress',
+      '✅ Patchstack installed',
+      '⬜ Connect your Patchstack account',
+      '✅ Packages checked on this computer',
+      '⬜ Deploy to protect your live app',
+      '',
+      '**Vulnerability overview:** a Patchstack widget now appears in the pre-production version of your app. Refresh the preview if it did not appear.',
+      '',
+      "Don't forget to republish or redeploy the app so the protection rules protect your live app.",
+    ].join('\n').split('\n'));
+  });
+
+  it('makes no protection claims for an app with no server', () => {
+    const text = renderSummary(report({ rules: 12, missing: [noServerItem] }), notConnected, context, { widgetOnPage: false }).join('\n');
+
+    expect(text).not.toMatch(/protection rules|turn on protection|Restart your app/);
+    expect(text).toContain('Blocking attacks needs a server, and none was found');
+    expect(text).toContain("Don't forget to republish or redeploy the app when you're ready.");
+    expect(text).not.toContain('Vulnerability overview');
+  });
+
+  it('never states a count the run did not get', () => {
+    const lines = renderSummary(report({ findings: null }), notConnected, context, { widgetOnPage: false });
+    expect(lines[2]).toBe('**Checked 89 packages.** Patchstack is now watching them.');
   });
 });

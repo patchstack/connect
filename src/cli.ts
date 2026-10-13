@@ -79,7 +79,7 @@ import {
   resolveWidgetFileHint,
 } from './guide.js';
 import { type NextStepContext, type Progress } from './progress.js';
-import { emptyReport, renderHookSummary, renderStatus, type StatusReport } from './report.js';
+import { emptyReport, renderHookSummary, renderStatus, renderSummary, type StatusReport } from './report.js';
 import { login, readPendingLogin, redeemIfApproved, startLogin, waitForApproval } from './login.js';
 import {
   claim,
@@ -1314,8 +1314,11 @@ async function runGuide(args: ParsedArgs): Promise<number> {
   return 0;
 }
 
-/** What setup did about runtime protection, as Done or Missing lines. The working tree covers "not wired". */
-function reportProtection(protection: ReturnType<typeof setupProtection>, report: StatusReport): void {
+/**
+ * What setup did about runtime protection, as Done or Missing lines. The working tree covers "not wired".
+ * Returns true when no server was found, so the caller leaves out what only a server could use.
+ */
+function reportProtection(protection: ReturnType<typeof setupProtection>, report: StatusReport): boolean {
   for (const line of protection.log) detail(`patchstack protect: ${line}`);
 
   if (protection.install.status === 'not-applicable') {
@@ -1326,7 +1329,7 @@ function reportProtection(protection: ReturnType<typeof setupProtection>, report
         hint: [`You can delete: ${protection.install.leftovers.join(', ')}`],
       });
     }
-    return;
+    return false;
   }
   if (protection.verification.wired) {
     const changed = protection.install.status === 'wired' && protection.install.changed.length > 0;
@@ -1335,7 +1338,7 @@ function reportProtection(protection: ReturnType<typeof setupProtection>, report
         ? `Added runtime protection (${protection.verification.stack})`
         : `Runtime protection is already set up (${protection.verification.stack})`,
     );
-    return;
+    return false;
   }
   // The generic installer cannot see where requests enter, so it says why rather than which file to edit.
   if (protection.install.status === 'scaffolded' && protection.install.plan.includes('Could not locate a server entry')) {
@@ -1343,12 +1346,16 @@ function reportProtection(protection: ReturnType<typeof setupProtection>, report
       key: 'runtime-protection',
       text: 'Runtime protection: no server file found',
       hint: ['Add Patchstack where requests enter your app. Run npx @patchstack/connect protect for the steps.'],
+      // No server, so nothing to block requests in: a fact about the app, not a step left undone.
+      note: true,
       plain: {
-        text: 'Protection needs to know where your server starts',
-        hint: ['Run npx @patchstack/connect protect to see where to add it.'],
+        text: 'Blocking attacks needs a server, and none was found, so Patchstack checks your packages only.',
+        hint: ['Has your app got a server? Run: npx @patchstack/connect protect'],
       },
     });
+    return true;
   }
+  return false;
 }
 
 /** What setup did to package.json's scripts, as one Done line. */
@@ -1409,7 +1416,7 @@ async function runSetup(args: ParsedArgs): Promise<number> {
     return scanCode;
   }
 
-  reportProtection(setupProtection(process.cwd()), report);
+  const noServer = reportProtection(setupProtection(process.cwd()), report);
 
   const wired = wireBuildScripts(process.cwd(), before.packageManager);
   report.done.push(buildStepsLine(wired));
@@ -1424,17 +1431,18 @@ async function runSetup(args: ParsedArgs): Promise<number> {
   const uploaded = synced.map.upload;
   if (uploaded?.result === 'stored' || uploaded?.result === 'unchanged') {
     report.done.push(`Attack-surface map uploaded (revision ${uploaded.revision}; ${synced.map.endpoints ?? 0} detected entry points)`);
-    if (!synced.map.buildId) report.missing.push({ key: 'map-binding', text: 'Map is not linked to runtime protection', hint: ['Finish the reported protection integration, then rerun setup. Rules for specific inputs can only detect, not block, until linked.'], plain: { text: 'Some attacks are only reported, not blocked yet', hint: ['Finish adding protection, then run setup again.'] } });
+    if (!synced.map.buildId && !noServer) report.missing.push({ key: 'map-binding', text: 'Map is not linked to runtime protection', hint: ['Finish the reported protection integration, then rerun setup. Rules for specific inputs can only detect, not block, until linked.'], plain: { text: 'Some attacks are only reported, not blocked yet', hint: ['Finish adding protection, then run setup again.'] } });
   } else {
     report.missing.push({ key: 'map-upload', text: 'Attack-surface map was not uploaded', hint: [synced.map.error ?? uploaded?.message ?? 'Check connectivity and rerun setup.'], plain: { text: 'Could not send your app\'s layout to Patchstack', hint: ['Check your connection and run setup again.'] } });
   }
   if (synced.rules.ok) {
-    report.rules = synced.rules.count;
+    // Rules are enforced by protection in a server; an app without one has nothing to apply them.
+    if (!noServer) report.rules = synced.rules.count;
     report.done.push(`Live rule lookup succeeded (${synced.rules.count} delivered rules; ${synced.rules.count === 0 ? 'no rules currently assigned' : 'not proof of runtime enforcement'})`);
   } else {
     report.missing.push({ key: 'rules-pull', text: 'Live rule lookup is incomplete', hint: [synced.rules.error ?? 'Check authentication and rerun setup.'], plain: { text: 'Could not fetch protection rules', hint: ['Run setup again.'] } });
   }
-  report.missing.push({ key: 'runtime-restart', text: 'Load the new protection in your running app', hint: ['Restart the preview/server if it is already running. Deploy a new build to update the live app. Setup does not start or deploy it.'], plain: { text: 'Restart your app to turn protection on', hint: ['Your live app gets it on your next deploy.'] } });
+  if (!noServer) report.missing.push({ key: 'runtime-restart', text: 'Load the new protection in your running app', hint: ['Restart the preview/server if it is already running. Deploy a new build to update the live app. Setup does not start or deploy it.'], plain: { text: 'Restart your app to turn protection on', hint: ['Your live app gets it on your next deploy.'] } });
   const after = await collectGuideState(process.cwd());
   const missing = mergeMissing(report.missing, guideMissing(after, reported));
   const context = scanNextStepContext(config, after, after.siteUuid);
@@ -1448,6 +1456,15 @@ async function runSetup(args: ParsedArgs): Promise<number> {
     columns: terminalColumns(),
   })) {
     console.log(line);
+  }
+  // An assistant reads this output and writes the person one message; a ready-made summary is what it
+  // passes on. A terminal already shows the report above, and a build log is not read by a person.
+  if (!process.stdout.isTTY && !isInstallOrBuildHook() && !runningInCi()) {
+    console.log('');
+    console.log('──── Summary ────');
+    for (const line of renderSummary({ ...report, missing }, guideProgress(after, reported), context, { widgetOnPage: after.widgetInstalled })) {
+      console.log(line);
+    }
   }
   return 0;
 }
