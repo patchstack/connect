@@ -3,7 +3,7 @@ import { describe, expect, it } from 'vitest';
 import type { PackageSummary } from '../src/client.js';
 import { readFileSync } from 'node:fs';
 
-import { renderStatus, renderSummary, SUMMARY_HEADING, summaryReplies, type StatusReport } from '../src/report.js';
+import { renderStatus, renderSummary, SUMMARY_AGAIN, SUMMARY_HEADING, summaryReplies, type StatusReport } from '../src/report.js';
 import type { NextStepContext, Progress } from '../src/progress.js';
 
 const context: NextStepContext = {
@@ -198,6 +198,8 @@ describe('renderSummary', () => {
       '> 2️⃣ **Check that my account is connected**',
       '>',
       '> 3️⃣ **Help me put my app live**',
+      '',
+      '_Any time later, just ask: "Show my Patchstack summary"_',
     ].join('\n').split('\n'));
   });
 
@@ -248,6 +250,8 @@ describe('renderSummary', () => {
       '> 1️⃣ **Check that my account is connected**',
       '>',
       '> 2️⃣ **Help me put my app live**',
+      '',
+      '_Any time later, just ask: "Show my Patchstack summary"_',
     ]);
   });
 
@@ -267,6 +271,14 @@ describe('renderSummary', () => {
     for (const { reply, command } of offered) {
       expect(rows.some((row) => row.includes(`"${reply}"`) && row.includes(`\`${command}\``)), reply).toBe(true);
     }
+  });
+
+  it('ends by telling the person what to ask later, and AGENT-INSTALL.md maps it to summary', () => {
+    const lines = renderSummary(report(), notConnected, context, { widgetOnPage: true });
+    expect(lines[lines.length - 1]).toBe(`_Any time later, just ask: "${SUMMARY_AGAIN}"_`);
+    const doc = readFileSync(new URL('../AGENT-INSTALL.md', import.meta.url), 'utf8');
+    const table = doc.slice(doc.indexOf('### Commands for later'), doc.indexOf('Say only what the output says.'));
+    expect(table.split('\n').some((row) => row.includes(`"${SUMMARY_AGAIN}"`) && row.includes('`npx @patchstack/connect summary`'))).toBe(true);
   });
 
   it('lists what changed in the project, one line per file', () => {

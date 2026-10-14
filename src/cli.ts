@@ -116,6 +116,7 @@ function startScreen(color: boolean): string[] {
     command('widget', 'show Patchstack inside your app (optional)'),
     command('go-live', 'how to go live on your host'),
     command('status', 'the link to connect your account'),
+    command('summary', 'the setup summary again'),
     '',
     paint('dim', 'All commands: npx @patchstack/connect --help'),
   ];

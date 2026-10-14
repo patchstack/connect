@@ -361,10 +361,15 @@ export function renderSummary(report: StatusReport, progress: Progress, context:
       if (index > 0) lines.push('>');
       lines.push(`> ${KEYCAPS[index]} **${reply.reply}**`);
     });
+    lines.push('');
   }
-  if (lines[lines.length - 1] === '') lines.pop();
+  // In a later conversation the assistant has no memory of this one; the person needs the words to ask with.
+  lines.push(`_Any time later, just ask: "${SUMMARY_AGAIN}"_`);
   return lines;
 }
+
+/** What the person can ask, in a later conversation, to see this summary again. AGENT-INSTALL.md lists it. */
+export const SUMMARY_AGAIN = 'Show my Patchstack summary';
 
 const KEYCAPS = ['1️⃣', '2️⃣', '3️⃣', '4️⃣'] as const;
 

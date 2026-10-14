@@ -174,6 +174,8 @@ Don't forget to republish or redeploy the app so the protection rules protect yo
 > 2️⃣ **Check that my account is connected**
 >
 > 3️⃣ **Help me put my app live**
+
+_Any time later, just ask: "Show my Patchstack summary"_
 ```
 
 The parts always come in that order. Fill each from the output, and leave out a part the output gives you nothing for:
@@ -185,7 +187,7 @@ The parts always come in that order. Fill each from the output, and leave out a 
 5. **What changed in your project.** One line per file setup changed, from the `Done` lines: `package.json`, the page the widget went into, `.patchstackrc.json`, `.patchstackrc.local.json` (never commit it), `.gitignore`.
 6. **Notes.** The widget line when setup added the widget; any line the output marks `ℹ`.
 7. **Going live.** One line, only when the app has a server for protection to load in. Do not deploy anything yourself.
-8. **What next.** The numbered menu from the table below: "Show me the vulnerabilities" unless nothing was found, "Check that my account is connected" until it is, "Add the Patchstack widget to my app" when the widget is not on the page, and "Help me put my app live" until the app is live.
+8. **What next.** The numbered menu from the table below: "Show me the vulnerabilities" unless nothing was found, "Check that my account is connected" until it is, "Add the Patchstack widget to my app" when the widget is not on the page, and "Help me put my app live" until the app is live. Then the closing line telling the person they can ask "Show my Patchstack summary" any time later.
 
 ### Commands for later
 
@@ -199,7 +201,7 @@ When the person asks for any of these after setup, run the command and pass on w
 | "Remove the widget" | `npx @patchstack/connect widget --remove` | Takes out the tag Connect added; a hand-added tag is left alone |
 | "Help me put my app live" / "How do I go live?" / "set up my host" | `npx @patchstack/connect go-live` | Three steps for the project's host: add the key, commit, deploy |
 | "What is left to do?" | `npx @patchstack/connect guide` | The four steps and the next one |
-| "Show me the summary again" | `npx @patchstack/connect summary` | The summary the last setup wrote, from `.patchstack/summary.md`. Sends nothing; writes nothing |
+| "Show my Patchstack summary" / "Show me the summary again" | `npx @patchstack/connect summary` | The summary the last setup wrote, from `.patchstack/summary.md`. Sends nothing; writes nothing |
 | "Check my packages again" | `npx @patchstack/connect scan` | A fresh check of the project's packages |
 
 Say only what the output says. Do not explain why setup could not finish a part, and do not add steps the output did not print. Never ask the person to copy their API key into a builder's settings or secrets: in an app that runs in the browser, a key saved there can end up in the published page. Never offer to wire protection in by hand when the output says no server was found. `go-live` prints the steps for the person's host when they are ready.
