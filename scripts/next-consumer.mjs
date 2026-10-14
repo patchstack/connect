@@ -4,7 +4,7 @@ import assert from 'node:assert/strict';
 import { spawn, spawnSync } from 'node:child_process';
 import { once } from 'node:events';
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
-import { createHash } from 'node:crypto';
+import { createHash, createHmac, randomBytes } from 'node:crypto';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -24,6 +24,8 @@ assert.ok(bundler === 'webpack' || (major === '16' && bundler === 'turbopack'), 
 const scratch = mkdtempSync(path.join(tmpdir(), 'ps-next-consumer-'));
 const app = path.join(scratch, 'app');
 const env = Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith('PATCHSTACK_')));
+const activationSecret = 'synthetic-fixture-activation-1234';
+const fixtureBuildId = 'a'.repeat(64);
 Object.assign(env, { NEXT_TELEMETRY_DISABLED: '1', NODE_ENV: 'production' });
 const read = file => readFileSync(path.join(app, file), 'utf8');
 const put = (file, source) => {
@@ -94,7 +96,7 @@ export function middleware(request: NextRequest) {
 }
 export const config = { matcher: ['/members/:path*', '/tenant', '/api/cookies'] };
 `;
-const rules = { firewall: [
+const rules = { _patchstack:{build_id:fixtureBuildId}, firewall: [
   { id: 'synthetic-request', rule_v2: [{ parameter: 'raw', match: { type: 'contains', value: 'synthetic-deny' } }] },
   { id: 'synthetic-response', phase: 'response', action: 'redact', rule_v2: [{ parameter: 'response.body', match: { type: 'regex', value: '/synthetic-private-value/' } }] },
 ], whitelists: [], whitelist_keys: {} };
@@ -143,6 +145,18 @@ async function probes(base, protectedApp) {
   const options = await request('/api/contact', { method: 'OPTIONS' });
   assert.equal(options.status, 204);
   assert.match(options.headers.get('allow'), /POST/);
+  if (protectedApp) {
+    const challenge = `${Date.now()}.${randomBytes(24).toString('hex')}`;
+    const signature = createHmac('sha256',activationSecret).update(`patchstack-activation-request-v1\nOPTIONS\n/api/contact\n${challenge}`).digest('hex');
+    const activation = await request('/api/contact',{method:'OPTIONS',headers:{'x-patchstack-activation':`${challenge}.${signature}`}});
+    assert.equal(activation.status,200);
+    const body = await activation.text();
+    assert.equal(activation.headers.get('x-patchstack-activation'),createHmac('sha256',activationSecret).update(`patchstack-activation-response-v1\n${body}`).digest('hex'));
+    assert.equal(JSON.parse(body).buildId,fixtureBuildId);
+    assert.equal(JSON.parse(body).challenge,challenge);
+    const invalid = await request('/api/contact',{method:'OPTIONS',headers:{'x-patchstack-activation':`${challenge}.${'0'.repeat(64)}`}});
+    assert.equal(invalid.status,204,'invalid activation keeps normal OPTIONS routing');
+  }
   assert.equal((await request('/api/error')).status, 500);
   const deny = await request('/api/contact', { method: 'POST', headers: { 'content-type': 'application/json' }, body: '{"message":"synthetic-deny"}' });
   assert.equal(deny.status, protectedApp ? 403 : 201);
@@ -197,6 +211,9 @@ try {
   build();
   await serve(base => probes(base, false));
   run(process.execPath, [...cli, 'protect']);
+  // No site identity is configured in this fixture, so its rules stay bundled. Disable all telemetry;
+  // the synthetic key exercises only the local activation challenge, never an account or API.
+  Object.assign(env,{PATCHSTACK_API_KEY:activationSecret,PATCHSTACK_TELEMETRY:'off'});
   put('src/patchstack.rules.json', JSON.stringify(rules));
   const composed = read('src/middleware.ts');
   const contact = read('src/app/api/contact/route.ts');

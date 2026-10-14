@@ -165,6 +165,14 @@ function candidates(): Map<string, Set<string>> {
 describe('shipped docs disclose every endpoint the package calls', () => {
   const agentInstall = readFileSync(join(root, 'AGENT-INSTALL.md'), 'utf8');
 
+  it('discloses explicit activation URLs and request-triggered runtime refresh', () => {
+    expect(agentInstall).toContain('--runtime-url');
+    expect(agentInstall).toContain('x-patchstack-activation');
+    expect(agentInstall).toContain('no API key or bearer token sent');
+    expect(agentInstall).toContain('requestRefreshMs: 0');
+    expect(agentInstall).toContain('no source analysis or manifest report runs inside a request');
+  });
+
   it('classifies every path-shaped candidate, at every call site it appears in', () => {
     // Per OCCURRENCE, not per path. A classification earned in one file says nothing about the same
     // string appearing in another, and treating it as though it did is how a real endpoint would inherit
