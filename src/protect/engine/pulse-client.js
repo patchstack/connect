@@ -123,6 +123,7 @@ export class PulseRuleClient {
           notModified: true,
           etag: response.headers?.get?.('etag') ?? this.#etag,
           build: buildVerdictOf(response.headers),
+          mapRules: mapRulesStateOf(response.headers),
         };
         this.#cache = result;
         this.#etag = result.etag;
@@ -149,6 +150,7 @@ export class PulseRuleClient {
         // Carried through so the caller can decide what a build-scoped rule may do. Response metadata,
         // rather than bundle content, because it varies with the build asking and is also present on 304.
         build: buildVerdictOf(response.headers),
+        mapRules: mapRulesStateOf(response.headers),
       };
       this.#cache = result;
       this.#etag = result.etag;
@@ -202,6 +204,12 @@ export function buildVerdictOf(headers) {
   const matched = get(BUILD_IDENTITY_HEADER);
 
   return { verdict, matchedBuildId: typeof matched === 'string' ? matched : null };
+}
+
+/** Readiness is distinct from map acceptance, and is refreshed even on an unchanged bundle. */
+export function mapRulesStateOf(headers) {
+  const value = headers?.get?.('X-Patchstack-Map-Rules');
+  return value === 'ready' || value === 'pending' ? value : 'unknown';
 }
 
 /** @param {unknown} data @returns {{ enforcement?: 'block'|'dry-run' }} */
