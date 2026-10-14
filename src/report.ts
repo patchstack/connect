@@ -44,6 +44,13 @@ export interface StatusReport {
   findings?: PackageSummary | null;
   /** Protection rules Patchstack has ready for this app, when the run looked them up. */
   rules?: number;
+  /** Files this run changed in the project, and what it put in each, for the person to know. */
+  changed?: Array<{ file: string; what: string }>;
+}
+
+/** Note a file this run changed. */
+export function recordChange(report: StatusReport, file: string, what: string): void {
+  (report.changed ??= []).push({ file, what });
 }
 
 export function emptyReport(): StatusReport {
@@ -333,6 +340,20 @@ export function renderSummary(report: StatusReport, progress: Progress, context:
   }
   lines.push('');
 
+  // The person is owed an account of what changed in their project. Written here, so an assistant has no
+  // reason to write its own next to the summary.
+  const changed = new Map<string, string[]>();
+  for (const { file, what } of report.changed ?? []) {
+    const items = changed.get(file) ?? [];
+    if (!items.includes(what)) items.push(what);
+    changed.set(file, items);
+  }
+  if (changed.size > 0) {
+    lines.push('#### What changed in your project');
+    for (const [file, items] of changed) lines.push(`- \`${file}\`: ${items.join('; ')}`);
+    lines.push('');
+  }
+
   if (options.widgetOnPage) {
     const where = options.widgetFile != null ? ` (in \`${options.widgetFile}\`)` : '';
     lines.push(`The Patchstack widget now shows in your app preview${where}. Refresh the preview if you don't see it.`, '');
@@ -350,10 +371,15 @@ export function renderSummary(report: StatusReport, progress: Progress, context:
       if (index > 0) lines.push('>');
       lines.push(`> ${KEYCAPS[index]} **${reply.reply}**`);
     });
+    lines.push('');
   }
-  if (lines[lines.length - 1] === '') lines.pop();
+  // In a later conversation the assistant has no memory of this one; the person needs the words to ask with.
+  lines.push(`_Any time later, just ask: "${SUMMARY_AGAIN}"_`);
   return lines;
 }
+
+/** What the person can ask, in a later conversation, to see this summary again. AGENT-INSTALL.md lists it. */
+export const SUMMARY_AGAIN = 'Show my Patchstack summary';
 
 const KEYCAPS = ['1️⃣', '2️⃣', '3️⃣', '4️⃣'] as const;
 

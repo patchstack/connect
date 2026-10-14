@@ -65,12 +65,21 @@ export function installArgs(pm: PackageManager, spec: string): string[] {
 
 /**
  * Add `@patchstack/connect` to the project with its own package manager, at the version that is running,
- * so the project gets the code the person just approved. Output goes straight to the terminal. Like any
- * install, the package manager runs the project's own install scripts.
+ * so the project gets the code the person just approved. Like any install, the package manager runs the
+ * project's own install scripts. In a terminal its output goes straight there. Read by an assistant, the
+ * output is held back and its last lines are shown only if the install fails: a long install log can push
+ * setup's own summary out of what the assistant gets to read.
  */
-export function installSelf(cwd: string, pm: PackageManager, version: string): { ok: boolean; command: string } {
+export function installSelf(cwd: string, pm: PackageManager, version: string, options: { quiet?: boolean } = {}): { ok: boolean; command: string } {
   const spec = /^\d+\.\d+\.\d+/.test(version) ? `@patchstack/connect@${version}` : '@patchstack/connect';
   const args = installArgs(pm, spec);
-  const result = spawnSync(pm, args, { cwd, stdio: 'inherit', shell: process.platform === 'win32' });
+  const quiet = options.quiet === true;
+  const result = spawnSync(pm, args, { cwd, stdio: quiet ? 'pipe' : 'inherit', encoding: 'utf8', maxBuffer: 64 * 1024 * 1024, shell: process.platform === 'win32' });
+  if (quiet && result.status !== 0) {
+    const output = `${result.stdout ?? ''}${result.stderr ?? ''}`.trimEnd().split('\n');
+    for (const line of output.slice(-INSTALL_FAILURE_LINES)) console.error(line);
+  }
   return { ok: result.status === 0, command: [pm, ...args].join(' ') };
 }
+
+const INSTALL_FAILURE_LINES = 20;

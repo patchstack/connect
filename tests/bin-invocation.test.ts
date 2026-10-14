@@ -580,7 +580,9 @@ describe.skipIf(!built)('the packaged bin, invoked as npm invokes it', () => {
       ];
 
       function expectPlain(output: string): void {
-        for (const word of BANNED) expect(output, String(word)).not.toMatch(word);
+        // File names and commands in backticks are named as they are; the words around them must be plain.
+        const prose = output.replace(/`[^`\n]*`/g, '');
+        for (const word of BANNED) expect(prose, String(word)).not.toMatch(word);
       }
 
       it('keeps scan, setup and guide free of technical words', async () => {
@@ -628,6 +630,27 @@ describe.skipIf(!built)('the packaged bin, invoked as npm invokes it', () => {
             expectPlain(setup);
             expect(readFileSync(path.join(dir, 'index.html'), 'utf8')).not.toContain('patchstack-widget');
             expect(readConfig(dir).widget).toBe(false);
+          } finally {
+            await server.close();
+            rmSync(dir, { recursive: true, force: true });
+          }
+        });
+
+        it('keeps the summary, lists what changed in it, and prints it again with summary', async () => {
+          const server = await acceptingServer();
+          const dir = freshProject();
+          try {
+            const setup = await run(dir, server.endpoint, ['setup', '--widget'], CONCISE);
+            const summary = setup.slice(setup.indexOf('──── Summary ────'));
+
+            expect(summary).toContain('#### What changed in your project');
+            expect(summary).toContain('- `index.html`: the Patchstack widget, just before </body>');
+            expect(summary).toContain('- `.patchstackrc.json`: your site\'s ID and connect link. Safe to commit');
+            // A project with no server still gets the protection files; they are listed, not left for the person to find.
+            expect(summary).toContain('- `patchstack/rules.json`: Patchstack protection files, not used until your app has a server');
+            expect(readFileSync(path.join(dir, '.patchstack', 'summary.md'), 'utf8')).toBe(`${summary.slice(summary.indexOf('\n') + 1).trimEnd()}\n`);
+            const again = await run(dir, server.endpoint, ['summary'], CONCISE);
+            expect(again.trimEnd()).toBe(setup.slice(setup.indexOf('Setup is finished.')).trimEnd());
           } finally {
             await server.close();
             rmSync(dir, { recursive: true, force: true });
