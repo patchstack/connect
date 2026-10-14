@@ -121,6 +121,7 @@ function renderConcise(
   options: RenderStatusOptions,
   paint: (code: string, text: string) => string,
 ): string[] {
+  context = { ...context, noServer: !protectionPossible(report) };
   const heading = report.checked !== undefined ? `Patchstack checked ${report.checked} ${report.checked === 1 ? 'package' : 'packages'}` : title;
   const lines: string[] = [paint(ANSI.bold, heading), ''];
 
@@ -231,18 +232,22 @@ export const SUMMARY_INTRO = 'Setup is finished. The summary below is written fo
 export interface SummaryOptions {
   /** The widget tag is on the page, so the summary says where to see it. */
   widgetOnPage: boolean;
+  /** The file the widget tag is in, relative to the project, when it was found. */
+  widgetFile?: string | null;
 }
 
 /**
  * The same report as a short Markdown message, ready to be passed on as it is: a headline with what was
- * found, what to do now with the link written out in full, the four steps, and one closing reminder. It is
- * built from this run's results only, so it never says more than the report above it.
+ * found, what to do now with the link written out in full and the commands for later, the four steps, and
+ * one closing reminder. It is built from this run's results only, so it never says more than the report
+ * above it, and a part with nothing new to say is left out.
  */
 export function renderSummary(report: StatusReport, progress: Progress, context: NextStepContext, options: SummaryOptions): string[] {
   const findings = report.findings ?? null;
   const counted = findings !== null && findings.total > 0;
   const checked = report.checked !== undefined ? `Checked ${report.checked} ${report.checked === 1 ? 'package' : 'packages'}` : null;
   const canProtect = protectionPossible(report);
+  context = { ...context, noServer: !canProtect };
 
   let headline: string;
   if (counted && findings.vulnerable > 0) {
@@ -282,17 +287,25 @@ export function renderSummary(report: StatusReport, progress: Progress, context:
     if (key === 'runtime-restart' && !canProtect) continue;
     todo.push(item.plain?.text ?? item.text);
   }
-  // The commands sit in the steps themselves, the part of the message every assistant keeps, so the
-  // person always learns what they can run next.
+  // The commands stay inside this section, the part of the message every assistant keeps, so the person
+  // always learns what they can run next. They come after the steps, so the one thing to do now leads.
+  const outdated = findings?.outdated ?? 0;
   const commands = [
-    '**See the vulnerabilities:** `npx @patchstack/connect vulns`',
+    ...(counted && findings.vulnerable === 0 && outdated === 0 ? [] : ['**See the vulnerabilities:** `npx @patchstack/connect vulns`']),
     ...(options.widgetOnPage ? [] : ['**Add the Patchstack widget (optional):** `npx @patchstack/connect widget`']),
-    '**Go live on your host:** `npx @patchstack/connect go-live`',
+    // When going live is the step itself, the step already points at go-live.
+    ...(next === 'deployed' ? [] : [`**${canProtect ? 'Go live on your host' : 'Publish your app'}:** \`npx @patchstack/connect go-live\``]),
   ];
-  const steps = [...todo.slice(0, 3), ...commands];
-  lines.push('#### 👉 What to do now', ...steps.flatMap((entry, index) => `${index + 1}. ${entry}`.split('\n')), '');
+  const steps = todo.slice(0, 3);
+  if (steps.length > 0 || commands.length > 0) lines.push('#### 👉 What to do now');
+  // A single step needs no number; its link goes in a paragraph of its own so it renders on its own line.
+  if (steps.length === 1) lines.push(...steps[0]!.split('\n').flatMap((line, index) => (index === 0 ? [line] : ['', line.trimStart()])));
+  else lines.push(...steps.flatMap((entry, index) => `${index + 1}. ${entry}`.split('\n')));
+  if (steps.length > 0) lines.push('');
+  if (commands.length > 0) lines.push('Later, when you need them:', ...commands.map((command) => `- ${command}`), '');
 
-  if (counted) {
+  // With nothing found, the headline already says it all.
+  if (counted && (findings.vulnerable > 0 || outdated > 0 || (canProtect && (report.rules ?? 0) > 0))) {
     const severity = (
       [
         ['🔴 High', findings.severity.high],
@@ -305,7 +318,7 @@ export function renderSummary(report: StatusReport, progress: Progress, context:
       .map(([label, count]) => `${label} **${count}**`);
     const parts = [
       ...(severity.length > 0 ? severity : ['No known vulnerabilities']),
-      ...(findings.outdated > 0 ? [`${findings.outdated} ${findings.outdated === 1 ? 'package' : 'packages'} outdated`] : []),
+      ...(outdated > 0 ? [`${outdated} ${outdated === 1 ? 'package' : 'packages'} outdated`] : []),
       ...(canProtect && (report.rules ?? 0) > 0 ? [`${report.rules} protection ${report.rules === 1 ? 'rule' : 'rules'} available`] : []),
     ];
     lines.push('#### What Patchstack found', parts.join(' · '), '');
@@ -313,21 +326,20 @@ export function renderSummary(report: StatusReport, progress: Progress, context:
 
   lines.push('#### Progress');
   for (const { step } of PROGRESS_STEPS) {
-    lines.push(`${progress[step] ? '✅' : '⬜'} ${plainStepLabel(step, progress[step], context.environment)}`);
+    lines.push(`${progress[step] ? '✅' : '⬜'} ${plainStepLabel(step, progress[step], context.environment, !canProtect)}`);
   }
   lines.push('');
 
   if (options.widgetOnPage) {
-    lines.push('**Vulnerability overview:** a Patchstack widget now appears in the pre-production version of your app. Refresh the preview if it did not appear.', '');
+    const where = options.widgetFile != null ? ` (in \`${options.widgetFile}\`)` : '';
+    lines.push(`The Patchstack widget now shows in your app preview${where}. Refresh the preview if you don't see it.`, '');
   }
   for (const item of report.missing.filter((entry) => entry.note === true)) {
     lines.push(item.plain?.text ?? item.text, '');
   }
-  lines.push(
-    canProtect
-      ? "Don't forget to republish or redeploy the app so the protection rules protect your live app."
-      : "Don't forget to republish or redeploy the app when you're ready.",
-  );
+  // Without a server, publishing is already the go-live command above, so there is nothing to remind.
+  if (canProtect) lines.push("Don't forget to republish or redeploy the app so the protection rules protect your live app.");
+  if (lines[lines.length - 1] === '') lines.pop();
   return lines;
 }
 

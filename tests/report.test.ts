@@ -144,7 +144,7 @@ const noServerItem = {
   text: 'Runtime protection: no server file found',
   note: true,
   plain: {
-    text: 'Blocking attacks needs a server, and none was found, so Patchstack checks your packages only.',
+    text: 'No server was found in this project, so Patchstack checks its packages. Blocking attacks needs a server.',
     hint: ['Has your app got a server? Run: npx @patchstack/connect protect'],
   },
 };
@@ -154,9 +154,11 @@ describe('an app with no server', () => {
     const lines = renderStatus('Patchstack setup', report({ missing: [noServerItem] }), notConnected, context, { useColor: false, concise: true });
 
     expect(lines).not.toContain('To do');
-    expect(lines).toContain('  ℹ Blocking attacks needs a server, and none was found, so Patchstack checks your packages only.');
+    expect(lines).toContain('  ℹ No server was found in this project, so Patchstack checks its packages. Blocking attacks needs a server.');
     expect(lines.some((line) => line.includes('➜ Next: connect your Patchstack account to see the details '))).toBe(true);
     expect(lines.some((line) => line.includes('turn on protection'))).toBe(false);
+    expect(lines).toContain(' ✘ Publish your app');
+    expect(lines).not.toContain(' ✘ Deploy to protect your live app');
   });
 });
 
@@ -173,8 +175,10 @@ describe('renderSummary', () => {
       '1. **Connect your Patchstack account** to see the details and turn on protection',
       `   ${context.claimUrl}`,
       '2. Restart your app to turn protection on',
-      '3. **See the vulnerabilities:** `npx @patchstack/connect vulns`',
-      '4. **Go live on your host:** `npx @patchstack/connect go-live`',
+      '',
+      'Later, when you need them:',
+      '- **See the vulnerabilities:** `npx @patchstack/connect vulns`',
+      '- **Go live on your host:** `npx @patchstack/connect go-live`',
       '',
       '#### What Patchstack found',
       '🔴 High **1** · 🟠 Medium **3** · 🔵 Low **1** · 12 packages outdated · 12 protection rules available',
@@ -185,7 +189,7 @@ describe('renderSummary', () => {
       '✅ Packages checked on this computer',
       '⬜ Deploy to protect your live app',
       '',
-      '**Vulnerability overview:** a Patchstack widget now appears in the pre-production version of your app. Refresh the preview if it did not appear.',
+      'The Patchstack widget now shows in your app preview. Refresh the preview if you don\'t see it.',
       '',
       "Don't forget to republish or redeploy the app so the protection rules protect your live app.",
     ].join('\n').split('\n'));
@@ -195,10 +199,51 @@ describe('renderSummary', () => {
     const text = renderSummary(report({ rules: 12, missing: [noServerItem] }), notConnected, context, { widgetOnPage: false }).join('\n');
 
     expect(text).not.toMatch(/protection rules|turn on protection|Restart your app/);
-    expect(text).toContain('Blocking attacks needs a server, and none was found');
-    expect(text).toContain("Don't forget to republish or redeploy the app when you're ready.");
-    expect(text).not.toContain('Vulnerability overview');
-    expect(text).toContain('**Add the Patchstack widget (optional):** `npx @patchstack/connect widget`');
+    expect(text).toContain('No server was found in this project');
+    expect(text).toContain('⬜ Publish your app');
+    expect(text).not.toContain('Deploy to protect');
+    expect(text).not.toContain("Don't forget to republish");
+    expect(text).not.toContain('widget now shows');
+    expect(text).toContain('- **Add the Patchstack widget (optional):** `npx @patchstack/connect widget`');
+    expect(text).toContain('- **Publish your app:** `npx @patchstack/connect go-live`');
+  });
+
+  it('gives a browser-only app with nothing found one thing to do, and does not repeat the all-clear', () => {
+    const clean = summary({ vulnerable: 0, outdated: 0, total: 2, severity: { high: 0, medium: 0, low: 0, unknown: 0 } });
+    const lines = renderSummary(report({ checked: 2, findings: clean, missing: [noServerItem] }), notConnected, context, {
+      widgetOnPage: true,
+      widgetFile: 'index.html',
+    });
+
+    expect(lines).toEqual([
+      '### 🛡️ Patchstack is set up',
+      '',
+      '**Checked 2 packages: no known vulnerabilities.**',
+      '',
+      '#### 👉 What to do now',
+      '**Connect your Patchstack account** to see the details',
+      '',
+      context.claimUrl,
+      '',
+      'Later, when you need them:',
+      '- **Publish your app:** `npx @patchstack/connect go-live`',
+      '',
+      '#### Progress',
+      '✅ Patchstack installed',
+      '⬜ Connect your Patchstack account',
+      '✅ Packages checked on this computer',
+      '⬜ Publish your app',
+      '',
+      'The Patchstack widget now shows in your app preview (in `index.html`). Refresh the preview if you don\'t see it.',
+      '',
+      'No server was found in this project, so Patchstack checks its packages. Blocking attacks needs a server.',
+    ]);
+  });
+
+  it('does not offer go-live twice when going live is the next step', () => {
+    const connected: Progress = { installed: true, connected: true, synced: true, deployed: false };
+    const text = renderSummary(report(), connected, context, { widgetOnPage: true }).join('\n');
+    expect(text.match(/connect go-live/g)).toHaveLength(1);
   });
 
   it('lists every command it offers in AGENT-INSTALL.md, so an assistant knows what each one does', () => {

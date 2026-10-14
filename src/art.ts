@@ -13,6 +13,9 @@ const ANSI = {
   blue: '\u001B[34m',
   cyan: '\u001B[36m',
   green: '\u001B[32m',
+  // The two greens of the Patchstack mark, as the nearest 256-colour codes so every terminal shows them.
+  brandDark: '\u001B[38;5;106m',
+  brandLight: '\u001B[38;5;148m',
 };
 
 export type Paint = (code: keyof typeof ANSI, text: string) => string;
@@ -105,4 +108,20 @@ export function renderMenu(items: Array<{ command: string; does: string }>, opti
   return items.map((item, index) =>
     `${index === 0 ? paint('bold', 'More') : '    '}  ${paint('cyan', item.command.padEnd(width))}  ${paint('dim', item.does)}`,
   );
+}
+
+/**
+ * The banner `setup` opens with in a person's terminal: the Patchstack mark drawn in half blocks, then the
+ * name. Never printed into a pipe, a build log or CI, where an assistant or a log reader would only pay for
+ * it in lines.
+ */
+export function renderLogo(options: { useColor: boolean }): string[] {
+  const paint = painter(options.useColor);
+  const dark = (text: string): string => paint('brandDark', text);
+  const light = (text: string): string => paint('brandLight', text);
+  return [
+    ` ${dark('████')}${light('████')}  ${paint('bold', 'patchstack')}`,
+    ` ${light('▄▄')}${dark('▄▄')}${light('▀▀▀▀')}  ${paint('dim', "Checking your app's packages for known vulnerabilities")}`,
+    '',
+  ];
 }

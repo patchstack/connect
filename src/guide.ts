@@ -54,6 +54,8 @@ export interface GuideState {
   prebuildWired: boolean;
   postbuildWired: boolean;
   widgetInstalled: boolean;
+  /** The file the widget is in, relative to the project, when it was found. */
+  widgetFile: string | null;
   /** False when the widget is present but its site UUID isn't this project's. */
   widgetTokenMatches: boolean | null;
   /** True when .patchstackrc.json opts out of widget management ("widget": false). */
@@ -220,6 +222,8 @@ export interface WidgetScanResult {
    * mismatch is worth surfacing rather than passing the check.
    */
   uuidMatches: boolean | null;
+  /** The file the widget was found in, relative to the search root; one carrying the UUID when there is one. */
+  file: string | null;
 }
 
 /**
@@ -230,6 +234,7 @@ export function findWidgetMarker(cwd: string, siteUuid?: string | null): WidgetS
   let budget = WIDGET_SCAN_MAX_FILES;
   let sawWidget = false;
   let sawTokenMatch = false;
+  let file: string | null = null;
 
   // Stop early only once the answer can't improve: with no UUID to match, the
   // first hit settles it; with a UUID, keep looking until a matching file shows.
@@ -270,8 +275,10 @@ export function findWidgetMarker(cwd: string, siteUuid?: string | null): WidgetS
           continue;
         }
         sawWidget = true;
+        file ??= path.relative(cwd, full);
         if (siteUuid != null && content.includes(siteUuid)) {
           sawTokenMatch = true;
+          file = path.relative(cwd, full);
         }
       } catch {
         // unreadable file — skip
@@ -283,6 +290,7 @@ export function findWidgetMarker(cwd: string, siteUuid?: string | null): WidgetS
   return {
     found: sawWidget,
     uuidMatches: sawWidget && siteUuid != null ? sawTokenMatch : null,
+    file,
   };
 }
 
@@ -414,6 +422,7 @@ export async function collectGuideState(cwd: string): Promise<GuideState> {
       (packageManager === 'npm' && (pkg?.scripts?.postbuild ?? '').includes('patchstack-connect mark-build')) ||
       (pkg?.scripts?.build ?? '').includes('patchstack-connect mark-build'),
     widgetInstalled: widget.found,
+    widgetFile: widget.file,
     widgetTokenMatches: widget.uuidMatches,
     widgetOptOut,
     framework: stack.framework,
