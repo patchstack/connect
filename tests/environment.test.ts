@@ -27,6 +27,15 @@ describe('inferEnvironment', () => {
     expect(inferEnvironment({ RAILWAY_ENVIRONMENT_NAME: 'production' }).environment).toBe('production');
   });
 
+  it('counts `netlify deploy --prod` from a laptop as production, and a local `netlify build` as local', () => {
+    // The Netlify CLI runs the build with NETLIFY_LOCAL=true, a real deploy ID when deploying, and "0" when not.
+    const cli = { NETLIFY_LOCAL: 'true', CONTEXT: 'production', DEPLOY_ID: '6a0000000000000000000001' };
+    expect(inferEnvironment(cli)).toMatchObject({ environment: 'production', source: 'platform' });
+    expect(inferEnvironment({ ...cli, CONTEXT: 'deploy-preview' }).environment).toBe('sandbox');
+    expect(inferEnvironment({ ...cli, DEPLOY_ID: '0' }).environment).toBe('local');
+    expect(inferEnvironment({ NETLIFY_LOCAL: 'true', CONTEXT: 'production' }).environment).toBe('local');
+  });
+
   it('reports a preview the platform names as such as sandbox, never production', () => {
     expect(inferEnvironment({ VERCEL: '1', VERCEL_ENV: 'preview' })).toEqual({
       environment: 'sandbox',

@@ -221,13 +221,14 @@ Leave out the commands you ran, settings, and anything that worked as expected; 
 Only when the person asks you to publish the site. Start with `npx @patchstack/connect go-live`: it prints the steps for the host this project uses. The rest of this section covers what it does not. Two things decide whether Patchstack recognises the deploy: the build has to run, and it has to know it is the production build.
 
 - **Deploy through the build, and publish only its output.** Never pass `--no-build`, and never upload the project folder itself: it holds `node_modules` and `.patchstackrc.local.json`, which contains the site's API key. Publish `dist/` for a plain HTML site, or whatever the framework builds.
-- **A deploy that builds on this machine** (`netlify deploy --prod --build`, a static folder uploaded by hand) has nothing that says "production" to Patchstack. Prefix that command, and only the production one, with `PATCHSTACK_ENVIRONMENT=production`:
+- **`netlify deploy --prod` from this machine** is recognised as production by itself: the Netlify CLI tells the build it is deploying to production. The key is in `.patchstackrc.local.json` on this machine, so nothing else is needed.
+- **Any other deploy that builds on this machine** (a static folder built here and uploaded by hand) has nothing that says "production" to Patchstack. Prefix the build, and only the production one, with `PATCHSTACK_ENVIRONMENT=production`:
 
   ```
-  PATCHSTACK_ENVIRONMENT=production npx netlify deploy --prod --build
+  PATCHSTACK_ENVIRONMENT=production npm run build
   ```
 
-  The key is in `.patchstackrc.local.json` on this machine, so nothing else is needed. A preview deploy runs without the prefix.
+  A preview deploy runs without the prefix.
 - **A deploy that builds on the host** (`vercel --prod`, or any git-connected Netlify or Vercel site) labels production by itself, but the host never receives `.patchstackrc.local.json`. Before the first production deploy, put the key in the host's production settings, read straight from the file so it is never printed:
 
   ```

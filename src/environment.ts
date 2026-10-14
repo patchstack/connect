@@ -108,6 +108,15 @@ const DISCRIMINATORS: readonly Discriminator[] = [
       if (env.NETLIFY_DEV === 'true') {
         return { environment: 'local', evidence: 'NETLIFY_DEV=true (the local development server)' };
       }
+      // `netlify deploy` from a laptop runs the build with NETLIFY_LOCAL=true instead of NETLIFY=true. It is
+      // a deploy only with a real deploy ID: a plain local `netlify build` also says CONTEXT=production, with
+      // the deploy ID "0".
+      if (env.NETLIFY_LOCAL === 'true' && env.NETLIFY !== 'true') {
+        if (!set(env.DEPLOY_ID) || env.DEPLOY_ID === '0' || !set(env.CONTEXT)) return null;
+        return env.CONTEXT === 'production'
+          ? { environment: 'production', evidence: 'netlify deploy --prod (NETLIFY_LOCAL=true, CONTEXT=production, DEPLOY_ID set)' }
+          : { environment: 'sandbox', evidence: `netlify deploy (NETLIFY_LOCAL=true, CONTEXT=${env.CONTEXT})` };
+      }
       if (env.NETLIFY !== 'true') return null;
       if (!set(env.CONTEXT)) {
         return { environment: 'local', evidence: 'NETLIFY=true without CONTEXT; set PATCHSTACK_ENVIRONMENT' };

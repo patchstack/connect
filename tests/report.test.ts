@@ -322,6 +322,16 @@ describe('renderSummary', () => {
     expect(renderSummary(report(), notConnected, context, { widgetOnPage: true }).join('\n')).not.toContain('What changed');
   });
 
+  it('keeps the command that goes with a step, so the person is told how to fix it', () => {
+    const devOnly = {
+      key: 'dev-only-install',
+      text: 'Patchstack is installed as a development tool only',
+      plain: { text: 'Patchstack is installed for development only, so your live app cannot use it', hint: ['Run: npm install --save-prod @patchstack/connect'] },
+    };
+    const text = renderSummary(report({ missing: [devOnly] }), notConnected, context, { widgetOnPage: true }).join('\n');
+    expect(text).toContain('2. Patchstack is installed for development only, so your live app cannot use it\n   `npm install --save-prod @patchstack/connect`');
+  });
+
   it('never states a count the run did not get', () => {
     const lines = renderSummary(report({ findings: null }), notConnected, context, { widgetOnPage: false });
     expect(lines[2]).toBe('**Checked 89 packages.** Patchstack is now watching them.');
