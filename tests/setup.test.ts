@@ -167,6 +167,19 @@ describe('wireBuildScripts', () => {
     expect(wireBuildScripts(cwd,'npm').changed).toBe(false);
   });
 
+  it.each(['npm', 'yarn', 'pnpm', 'bun'] as const)('maps after inline code generation with %s', manager => {
+    writePackage({scripts:{build:'node generate.js && vite build && node finish.js'}});
+    wireBuildScripts(cwd, manager);
+    expect(readPackage().scripts.build).toContain('node generate.js && patchstack-connect map --upload && vite build && node finish.js');
+    expect(wireBuildScripts(cwd, manager).changed).toBe(false);
+  });
+
+  it.each(['next', 'nuxt', 'astro'])('places the map before the %s compiler, not before its generator', framework => {
+    writePackage({scripts:{build:`node generate.js && ${framework} build`}});
+    wireBuildScripts(cwd, 'pnpm');
+    expect(readPackage().scripts.build).toBe(`patchstack-connect scan && node generate.js && patchstack-connect map --upload && ${framework} build && patchstack-connect mark-build`);
+  });
+
   it('puts a Bun map before bundling even when a user already maps after it', () => {
     writePackage({scripts:{build:'vite build && patchstack-connect map --upload'}});
     wireBuildScripts(cwd,'bun');

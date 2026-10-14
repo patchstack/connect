@@ -16,6 +16,25 @@ interface PackageJson {
   [key: string]: unknown;
 }
 
+/** Explicit opt-in: wrap a recognizable single dev command, not an arbitrary shell program. */
+export function wireDevelopmentScript(cwd: string): { wired: boolean; changed: boolean } {
+  const target = path.join(cwd, 'package.json');
+  const raw = readFileSync(target, 'utf8');
+  const pkg = JSON.parse(raw) as PackageJson;
+  const dev = pkg.scripts?.dev;
+  if (typeof dev !== 'string') return { wired: false, changed: false };
+  if (dev.startsWith('patchstack-connect dev -- ')) return { wired: true, changed: false };
+  // Windows package-manager shims need a shell. Preserve them rather than changing quoting or
+  // enabling shell execution; a caller may pass an explicit Node entry to the wrapper instead.
+  if (process.platform === 'win32' && !dev.startsWith('node ')) return { wired: false, changed: false };
+  if (!/^(?:vite(?:\s|$)|next\s+dev(?:\s|$)|nuxt\s+dev(?:\s|$)|astro\s+dev(?:\s|$)|tsx\s+watch(?:\s|$)|node\s+--watch(?:\s|$)|nodemon(?:\s|$))/.test(dev)
+    || /[^a-zA-Z0-9_./:= @,+\-]/.test(dev) || dev.includes('\n')) return { wired: false, changed: false };
+  pkg.scripts!.dev = `patchstack-connect dev -- ${dev}`;
+  const indent = raw.match(/^[\t ]+(?=")/m)?.[0] ?? '  ';
+  writeProjectFileSync(cwd, target, `${JSON.stringify(pkg, null, indent)}${raw.endsWith('\n') ? '\n' : ''}`, { encoding: 'utf8' });
+  return { wired: true, changed: true };
+}
+
 export interface WireBuildScriptsResult {
   changed: boolean;
   strategy: 'build-chain' | 'lifecycle-hooks' | 'postinstall-only';
@@ -109,6 +128,16 @@ function finishWithMap(existing: string): string {
   return `${existing} && ${MAP_COMMAND}`;
 }
 
+/** A literal bundler step can be preceded by code generation inside the build script itself. */
+function mapBeforeBundler(source: string): string | null {
+  const parts = splitAndChain(source);
+  const builders = parts.flatMap((part, index) => /^(?:next|vite|astro|nuxt)\s+build(?:\s|$)/.test(part.trim()) ? [index] : []);
+  if (builders.length !== 1) return null;
+  const index = builders[0]!;
+  if (parts[index - 1]?.trim() !== MAP_COMMAND) parts.splice(index, 0, MAP_COMMAND);
+  return parts.join(' && ');
+}
+
 /**
  * Wire a scan after dependency installs and around the project's build without
  * invoking a shell. Only npm is assumed to run pre/post build hooks. Other managers
@@ -137,7 +166,10 @@ export function wireBuildScripts(
     scripts.postinstall = postinstall;
   } else if (packageManager !== 'npm') {
     let nextBuild = prependHook(build, SCAN_COMMAND);
-    if (!/^\s*patchstack-connect scan\s*&&\s*patchstack-connect map --upload(?:\s*(?:&&|;)|\s*$)/.test(nextBuild)) {
+    const ordered = mapBeforeBundler(nextBuild);
+    if (ordered !== null) {
+      nextBuild = ordered;
+    } else if (!/^\s*patchstack-connect scan\s*&&\s*patchstack-connect map --upload(?:\s*(?:&&|;)|\s*$)/.test(nextBuild)) {
       nextBuild = nextBuild.replace(SCAN_COMMAND, `${SCAN_COMMAND} && ${MAP_COMMAND}`);
     }
     if (!nextBuild.includes(MARK_BUILD_COMMAND)) {
@@ -157,10 +189,15 @@ export function wireBuildScripts(
     // that command may create and upload the new map which the bundled guard should retain.
     const prebuild = finishWithMap(prependHook(scripts.prebuild, SCAN_COMMAND));
     const postbuild = appendHook(scripts.postbuild, MARK_BUILD_COMMAND);
+    // npm's prebuild runs before an inline code generator. Re-map immediately before the known
+    // bundler as well; the scan prefix makes this explicit build chain a binding lifecycle.
+    const nextBuild = splitAndChain(build).length > 1
+      ? mapBeforeBundler(prependHook(build, SCAN_COMMAND)) ?? build : build;
     if (
       prebuild === scripts.prebuild &&
       postbuild === scripts.postbuild &&
       postinstall === scripts.postinstall
+      && nextBuild === build
     ) {
       return {
         changed: false,
@@ -169,6 +206,7 @@ export function wireBuildScripts(
       };
     }
     scripts.postinstall = postinstall;
+    scripts.build = nextBuild;
     scripts.prebuild = prebuild;
     scripts.postbuild = postbuild;
   }

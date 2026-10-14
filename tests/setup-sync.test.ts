@@ -53,6 +53,20 @@ function cache() { return JSON.parse(readFileSync(join(cwd,'.patchstack/patchsta
 function uploaded() { return JSON.parse(String(calls.find(c => c.url.includes('/input-map/'))!.init.body)); }
 
 describe('one-command setup synchronization', () => {
+  it('does not upload or bind an analysis superseded by another source edit', async () => {
+    const result = await syncSetupProtection(cwd, config, {mapOptions:{isCurrent:()=>false}});
+    expect(result.map.error).toContain('Source changed');
+    expect(calls.filter(c => c.url.includes('/input-map/'))).toHaveLength(0);
+  });
+
+  it('skips repeated map uploads for an already acknowledged policy identity but still pulls rules', async () => {
+    const first = await syncSetupProtection(cwd, config);
+    calls = [];
+    const result = await syncSetupProtection(cwd, config, {mapOptions:{previousBuildId:first.map.buildId!}});
+    expect(result.map.unchangedLocal).toBe(true);
+    expect(calls.filter(c => c.url.includes('/input-map/'))).toHaveLength(0);
+    expect(calls.filter(c => c.url.includes('/rules/'))).toHaveLength(1);
+  });
   it('distinguishes pending, ready-empty, and an older service without readiness', async () => {
     delivered = bundle();
     readiness = 'pending';
