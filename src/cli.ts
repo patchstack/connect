@@ -69,6 +69,7 @@ import {
 import {
   collectGuideState,
   detectPackageManager,
+  DEV_ONLY_INSTALL,
   guideMissing,
   guideNextStepContext,
   notConnectedItem,
@@ -1544,7 +1545,8 @@ async function runSetup(args: ParsedArgs): Promise<number> {
     report.missing.push({ key: 'runtime-activation', text: 'Runtime protection has not been checked in the running app', hint: ['Your app may reload these changes automatically. Check it: npx @patchstack/connect protect --check --runtime-url <URL>. Restart/rebuild/deploy only if the new protection has not loaded. Setup does not start or deploy it.'], plain: { text: 'Check protection in your running app with npx @patchstack/connect protect --check --runtime-url <URL>', hint: ['Your app may reload these changes automatically. Restart or rebuild only if the check says they have not loaded.'] } });
   }
   const after = await collectGuideState(process.cwd());
-  const missing = mergeMissing(report.missing, guideMissing(after, reported));
+  // The generic installer can count a project as one protection applies to while finding no server in it.
+  const missing = mergeMissing(report.missing, guideMissing(after, reported)).filter((item) => !(noServer && item.key === DEV_ONLY_INSTALL));
   const ignoredNow = [...readIgnoreLines(cwd)].filter((line) => !ignoredBefore.has(line));
   if (ignoredNow.length > 0) recordChange(report, '.gitignore', `now ignores ${ignoredNow.join(', ')}`);
   const context = scanNextStepContext(config, after, after.siteUuid);

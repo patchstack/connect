@@ -298,7 +298,9 @@ export function renderSummary(report: StatusReport, progress: Progress, context:
     const key = item.key ?? item.text;
     if (item.note === true || COVERED_BY_CHECKLIST.has(key)) continue;
     if (key === 'runtime-restart' && !canProtect) continue;
-    todo.push(item.plain?.text ?? item.text);
+    // A step that is a command keeps it: without it the person is told what is wrong and not how to fix it.
+    const run = (item.plain?.hint ?? item.hint ?? []).find((line) => line.startsWith('Run: '));
+    todo.push(`${item.plain?.text ?? item.text}${run !== undefined ? `\n   \`${run.slice('Run: '.length)}\`` : ''}`);
   }
   const outdated = findings?.outdated ?? 0;
   const steps = todo;

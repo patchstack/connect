@@ -190,6 +190,15 @@ export function installCommand(pm: PackageManager): string {
   return INSTALL_COMMANDS[pm];
 }
 
+/**
+ * The command that moves Patchstack from devDependencies to dependencies. A plain add leaves an existing
+ * dev dependency where it is under npm, so npm needs --save-prod; the others are removed and added again,
+ * which moves it whatever their version does with an add.
+ */
+export function moveToDependenciesCommand(pm: PackageManager): string {
+  return pm === 'npm' ? 'npm install --save-prod @patchstack/connect' : `${pm} remove @patchstack/connect && ${INSTALL_COMMANDS[pm]}`;
+}
+
 function readPackageJson(cwd: string): PackageJson | null {
   try {
     return JSON.parse(readFileSync(path.join(cwd, 'package.json'), 'utf8')) as PackageJson;
@@ -542,14 +551,21 @@ function buildScriptLines(state: GuideState): string[] {
  * `connected` is whether the caller heard from Patchstack that the project has an owner. Without that
  * answer, the note in `.patchstackrc.json` decides.
  */
+/** Key of the missing item for an install that only the development tools can use. */
+export const DEV_ONLY_INSTALL = 'dev-only-install';
+
 export function guideMissing(state: GuideState, known: Partial<Progress> = {}): MissingItem[] {
   const missing: MissingItem[] = [];
 
-  if (state.installed?.section === 'devDependencies') {
+  // Only protection runs inside the live app. Without a server to protect, the build-time checks work from
+  // devDependencies, so there is nothing to move.
+  if (state.installed?.section === 'devDependencies' && state.protectionApplicable) {
+    const move = moveToDependenciesCommand(state.packageManager);
     missing.push({
+      key: DEV_ONLY_INSTALL,
       text: 'Patchstack is installed as a development tool only, so your live app cannot load it',
-      hint: [`Run: ${installCommand(state.packageManager)}`],
-      plain: { text: 'Patchstack is installed for development only, so your live app cannot use it', hint: [`Run: ${installCommand(state.packageManager)}`] },
+      hint: [`Run: ${move}`],
+      plain: { text: 'Patchstack is installed for development only, so your live app cannot use it', hint: [`Run: ${move}`] },
     });
   }
   if (state.siteUuid === null) return missing;

@@ -128,7 +128,7 @@ const GUIDES: Record<Exclude<Host, 'lovable'>, HostGuide> = {
   },
   netlify: {
     addKey: { command: `npx netlify env:set PATCHSTACK_API_KEY ${KEY_FROM_FILE} --context production --secret` },
-    deploy: 'Push to your production branch',
+    deploy: 'Push to your production branch, or run: npx netlify deploy --prod',
   },
   'cloudflare-pages': {
     addKey: { command: `${KEY_PIPE} npx wrangler pages secret put PATCHSTACK_API_KEY` },

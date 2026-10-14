@@ -8,8 +8,11 @@ import {
   collectGuideState,
   countRemainingSteps,
   detectPackageManager,
+  DEV_ONLY_INSTALL,
   findWidgetMarker,
+  guideMissing,
   installCommand,
+  moveToDependenciesCommand,
   needsSourceProductionMarker,
   renderGuideChecklist,
   widgetTagInPlace,
@@ -323,7 +326,17 @@ describe('guide', () => {
       expect(state.installed?.section).toBe('devDependencies');
       expect(output).toContain('✔ Patchstack installed');
       expect(output).toContain('Patchstack is installed for development only, so your live app cannot use it');
-      expect(output).toContain(`Run: ${installCommand('npm')}`);
+      expect(output).toContain('Run: npm install --save-prod @patchstack/connect');
+    });
+
+    it('moves a dev-only install with a command that really moves it, and leaves it alone without a server', async () => {
+      // A plain `npm install --save` keeps an existing dev dependency where it is.
+      expect(moveToDependenciesCommand('npm')).toBe('npm install --save-prod @patchstack/connect');
+      expect(moveToDependenciesCommand('pnpm')).toBe('pnpm remove @patchstack/connect && pnpm add @patchstack/connect');
+      writeJson('package.json', { name: 'static-app', devDependencies: { '@patchstack/connect': '^0.5.0' } });
+      const state = await collectGuideState(cwd);
+      expect(guideMissing({ ...state, protectionApplicable: false }).some((item) => item.key === DEV_ONLY_INSTALL)).toBe(false);
+      expect(guideMissing({ ...state, protectionApplicable: true }).some((item) => item.key === DEV_ONLY_INSTALL)).toBe(true);
     });
 
     it('counts a chained build script as wired (the bun pattern)', async () => {
