@@ -48,7 +48,7 @@ import {
   persistWidgetChoice,
   hasWidgetChoice,
 } from './config.js';
-import { painter, renderBox, renderFindings } from './art.js';
+import { painter, renderBox, renderFindings, renderLogo } from './art.js';
 import { detectHost, HOST_NAMES, parseHost, renderGoLive } from './go-live.js';
 import { createSiteProject, installSelf, isPlainHtmlSite } from './bootstrap.js';
 import {
@@ -1365,7 +1365,7 @@ function reportProtection(protection: ReturnType<typeof setupProtection>, report
       // No server, so nothing to block requests in: a fact about the app, not a step left undone.
       note: true,
       plain: {
-        text: 'Blocking attacks needs a server, and none was found, so Patchstack checks your packages only.',
+        text: 'No server was found in this project, so Patchstack checks its packages. Blocking attacks needs a server.',
         hint: ['Has your app got a server? Run: npx @patchstack/connect protect'],
       },
     });
@@ -1388,6 +1388,10 @@ async function runSetup(args: ParsedArgs): Promise<number> {
   if (args.flags.get('dry-run') === true) {
     console.error('Setup cannot run as a preview. To see what would be sent, run: npx @patchstack/connect scan --dry-run');
     return 1;
+  }
+
+  if (process.stdout.isTTY === true && !isInstallOrBuildHook() && !runningInCi()) {
+    for (const line of renderLogo({ useColor: useColor() })) console.log(line);
   }
 
   const cwd = process.cwd();
@@ -1479,7 +1483,7 @@ async function runSetup(args: ParsedArgs): Promise<number> {
     console.log('');
     console.log(SUMMARY_INTRO);
     console.log(SUMMARY_HEADING);
-    for (const line of renderSummary({ ...report, missing }, guideProgress(after, reported), context, { widgetOnPage: after.widgetInstalled })) {
+    for (const line of renderSummary({ ...report, missing }, guideProgress(after, reported), context, { widgetOnPage: after.widgetInstalled, widgetFile: after.widgetFile })) {
       console.log(line);
     }
   }

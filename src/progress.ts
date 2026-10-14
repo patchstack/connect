@@ -22,6 +22,8 @@ export interface NextStepContext {
   /** Where a scan from here reports from. Names the sync step and decides what the deploy step says. */
   environment?: Environment | null;
   environmentSource?: EnvironmentSource | null;
+  /** No server was found, so deploying publishes the app but has no protection to turn on. */
+  noServer?: boolean;
 }
 
 /** The sync step names the environment the scan came from, as the dashboard does. */
@@ -54,7 +56,7 @@ export interface RenderProgressOptions {
  * The concise report's labels: a done step says what is true, a step not done says what to do. These
  * differ from the dashboard's wording, so they are used only where that report is printed.
  */
-export function plainStepLabel(step: ProgressStep, done: boolean, environment?: Environment | null): string {
+export function plainStepLabel(step: ProgressStep, done: boolean, environment?: Environment | null, noServer = false): string {
   switch (step) {
     case 'installed':
       return done ? 'Patchstack installed' : 'Install Patchstack';
@@ -66,6 +68,7 @@ export function plainStepLabel(step: ProgressStep, done: boolean, environment?: 
       return `Packages checked ${where}`;
     }
     case 'deployed':
+      if (noServer) return done ? 'Live app seen by Patchstack' : 'Publish your app';
       return done ? 'Live app protected' : 'Deploy to protect your live app';
   }
 }
@@ -95,7 +98,8 @@ export function plainNextStepTitle(step: ProgressStep, context: NextStepContext)
     case 'synced':
       return 'check your packages';
     case 'deployed':
-      return context.environment === 'production' ? 'open your live app once' : 'deploy to protect your live app';
+      if (context.environment === 'production') return 'open your live app once';
+      return context.noServer === true ? 'publish your app' : 'deploy to protect your live app';
   }
 }
 
@@ -179,7 +183,7 @@ export function renderChecklist(progress: Progress, context: NextStepContext, op
     options.useColor ? `${code}${text}${ANSI.reset}` : text;
   const lines: string[] = [];
   for (const { step } of PROGRESS_STEPS) {
-    const label = options.plain === true ? plainStepLabel(step, progress[step], context.environment) : stepLabel(step, context.environment);
+    const label = options.plain === true ? plainStepLabel(step, progress[step], context.environment, context.noServer) : stepLabel(step, context.environment);
     lines.push(progress[step] ? ` ${paint(ANSI.green, '✔')} ${label}` : ` ${paint(ANSI.yellow, '✘')} ${label}`);
     const note =
       step === 'deployed' && !progress.deployed

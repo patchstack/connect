@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import { renderBox, renderFindings, renderMenu } from '../src/art.js';
+import { renderBox, renderFindings, renderMenu, renderLogo } from '../src/art.js';
 import type { PackageSummary } from '../src/client.js';
 
 const summary = (overrides: Partial<PackageSummary> = {}): PackageSummary => ({
@@ -88,5 +88,14 @@ describe('renderMenu', () => {
 
   it('prints nothing for no items', () => {
     expect(renderMenu([], { useColor: false })).toEqual([]);
+  });
+});
+
+describe('renderLogo', () => {
+  it('draws the shield and name, with no escape codes when colour is off', () => {
+    const lines = renderLogo({ useColor: false });
+    expect(lines.join('\n')).toContain('patchstack');
+    expect(lines.join('\n')).not.toContain('\u001B[');
+    expect(lines.length).toBeLessThanOrEqual(4);
   });
 });

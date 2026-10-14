@@ -202,7 +202,7 @@ describe('guide', () => {
       );
       mkdirSync(path.join(cwd, '.cache'));
       writeFileSync(path.join(cwd, '.cache', 'page.html'), 'patchstack-widget.js');
-      expect(findWidgetMarker(cwd)).toEqual({ found: false, uuidMatches: null });
+      expect(findWidgetMarker(cwd)).toEqual({ found: false, uuidMatches: null, file: null });
     });
 
     it('finds the marker in nested source files', () => {
@@ -211,7 +211,7 @@ describe('guide', () => {
         path.join(cwd, 'src', 'routes', '__root.tsx'),
         'const s = "https://cdn.patchstack.com/patchstack-widget.js";',
       );
-      expect(findWidgetMarker(cwd)).toEqual({ found: true, uuidMatches: null });
+      expect(findWidgetMarker(cwd)).toEqual({ found: true, uuidMatches: null, file: path.join('src', 'routes', '__root.tsx') });
     });
 
     it('checks the userToken against the site UUID when one is known', () => {
@@ -219,10 +219,11 @@ describe('guide', () => {
         path.join(cwd, 'index.html'),
         `patchstack-widget.js userToken: '${VALID_UUID}'`,
       );
-      expect(findWidgetMarker(cwd, VALID_UUID)).toEqual({ found: true, uuidMatches: true });
+      expect(findWidgetMarker(cwd, VALID_UUID)).toEqual({ found: true, uuidMatches: true, file: 'index.html' });
       expect(findWidgetMarker(cwd, '11111111-1111-1111-1111-111111111111')).toEqual({
         found: true,
         uuidMatches: false,
+        file: 'index.html',
       });
     });
   });
