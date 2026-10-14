@@ -503,7 +503,9 @@ describe.skipIf(!built)('the packaged bin, invoked as npm invokes it', () => {
       ];
 
       function expectPlain(output: string): void {
-        for (const word of BANNED) expect(output, String(word)).not.toMatch(word);
+        // File names and commands in backticks are named as they are; the words around them must be plain.
+        const prose = output.replace(/`[^`\n]*`/g, '');
+        for (const word of BANNED) expect(prose, String(word)).not.toMatch(word);
       }
 
       it('keeps scan, setup and guide free of technical words', async () => {
