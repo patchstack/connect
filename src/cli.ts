@@ -4,7 +4,7 @@ import type { BuildMarker, Config, Environment } from './types.js';
 import type { GuideState } from './guide.js';
 import type { PackageSummary } from './client.js';
 import { createRequire } from 'node:module';
-import { writeProjectFileSync } from './safe-file.js';
+import { ensureProjectDirectorySync, writeProjectFileSync } from './safe-file.js';
 
 import { scanLockfile } from './parsers/index.js';
 import { buildWirePayload, type WirePayload } from './normalize.js';
@@ -78,7 +78,7 @@ import {
   resolveWidgetFileHint,
 } from './guide.js';
 import { type NextStepContext, type Progress } from './progress.js';
-import { emptyReport, renderHookSummary, renderStatus, renderSummary, SUMMARY_HEADING, SUMMARY_INTRO, type StatusReport } from './report.js';
+import { emptyReport, recordChange, renderHookSummary, renderStatus, renderSummary, SUMMARY_HEADING, SUMMARY_INTRO, type StatusReport } from './report.js';
 import { login, readPendingLogin, redeemIfApproved, startLogin, waitForApproval } from './login.js';
 import {
   claim,
@@ -156,6 +156,9 @@ Usage:
   patchstack-connect status [options]                Show current configuration and whether the
                                                      site still exists on Patchstack (active /
                                                      removed)
+  patchstack-connect summary                         Print the summary the last setup wrote, from
+                                                     .patchstack/summary.md. Sends nothing; writes
+                                                     nothing
   patchstack-connect vulns                           Show what Patchstack found in this project's
                                                      packages: vulnerabilities by severity and
                                                      outdated packages, with the link to the
@@ -862,6 +865,7 @@ async function runScan(
     const claimUrl = config.endpointTrusted !== false ? buildClaimUrl(config.endpoint, response.uuid) : null;
     const target = await persistSiteUuid(process.cwd(), response.uuid, claimUrl);
     report.done.push('Added this project to Patchstack');
+    recordChange(report, path.relative(process.cwd(), target) || target, "your site's ID and connect link. Safe to commit");
     say(`Created site ${response.uuid}. Saved it${claimUrl !== null ? ' and the link to connect it' : ''} to ${target}.`);
   }
   if (typeof response.api_key === 'string' && response.api_key.length > 0) {
@@ -874,6 +878,7 @@ async function runScan(
     // covers it: an assurance that turns out to be false is the reason somebody stops checking.
     if (saved.ignored) {
       report.done.push(`Saved the project's API key in ${SECRET_CONFIG_FILENAME}. Never commit this file`);
+      recordChange(report, SECRET_CONFIG_FILENAME, 'your API key. Never commit or upload it; git ignores it');
       say(`Saved API key to ${saved.path} (git-ignored).`);
     } else {
       report.missing.push({
@@ -1053,9 +1058,11 @@ function reportSourceWidget(siteUuid: string, framework: string | null, report: 
     switch (result.action) {
       case 'added':
         report.done.push(`Added the Patchstack widget to ${result.shell}`);
+        if (result.shell !== null) recordChange(report, result.shell, 'the Patchstack widget, just before </body>');
         break;
       case 'updated':
         report.done.push(`Updated the Patchstack widget in ${result.shell}`);
+        if (result.shell !== null) recordChange(report, result.shell, 'the Patchstack widget, updated to this site');
         break;
       case 'unchanged':
         report.done.push(`The Patchstack widget is already in ${result.shell}`);
@@ -1111,6 +1118,7 @@ function reportSourceMarker(framework: string | null, checksum: string | null, r
     switch (result.action) {
       case 'added':
         report.done.push(`Set up ${shell} to tell Patchstack when it runs as your live app`);
+        recordChange(report, shell, 'a line that tells Patchstack when it runs as your live app');
         detail(`Production marker: added to ${shell} (only set when ${productionGate(framework)}).`);
         break;
       case 'manual':
@@ -1349,6 +1357,9 @@ function reportProtection(protection: ReturnType<typeof setupProtection>, report
   }
   if (protection.verification.wired) {
     const changed = protection.install.status === 'wired' && protection.install.changed.length > 0;
+    if (protection.install.status === 'wired') {
+      for (const file of protection.install.changed) recordChange(report, file, 'Patchstack protection');
+    }
     report.done.push(
       changed
         ? `Added runtime protection (${protection.verification.stack})`
@@ -1375,6 +1386,20 @@ function reportProtection(protection: ReturnType<typeof setupProtection>, report
 }
 
 /** What setup did to package.json's scripts, as one Done line. */
+/** The entries in the project's .gitignore; none when there is no such file. */
+function readIgnoreLines(cwd: string): Set<string> {
+  try {
+    return new Set(
+      readFileSync(path.join(cwd, '.gitignore'), 'utf8')
+        .split('\n')
+        .map((line) => line.trim())
+        .filter((line) => line !== '' && !line.startsWith('#')),
+    );
+  } catch {
+    return new Set();
+  }
+}
+
 function buildStepsLine(wired: ReturnType<typeof wireBuildScripts>): string {
   if (wired.strategy === 'postinstall-only') {
     return wired.changed
@@ -1397,7 +1422,9 @@ async function runSetup(args: ParsedArgs): Promise<number> {
   const cwd = process.cwd();
   // One command does it all: a plain HTML folder gets the small Node project Connect needs, and a project
   // without Connect gets it installed, so the person approves setup once instead of a chain of commands.
-  if (isPlainHtmlSite(cwd)) {
+  const ignoredBefore = readIgnoreLines(cwd);
+  const createdProject = isPlainHtmlSite(cwd);
+  if (createdProject) {
     createSiteProject(cwd);
     console.log('Added package.json with a build step that copies your site into dist/. Your pages stay where they are.');
   }
@@ -1406,9 +1433,10 @@ async function runSetup(args: ParsedArgs): Promise<number> {
     console.error('No package.json or HTML page here. Run setup from your project folder.');
     return 1;
   }
-  if (before.installed === null) {
+  const addedSelf = before.installed === null;
+  if (addedSelf) {
     console.log('Adding Patchstack to this project…');
-    const installed = installSelf(cwd, before.packageManager, packageVersion());
+    const installed = installSelf(cwd, before.packageManager, packageVersion(), { quiet: process.stdout.isTTY !== true });
     before = await collectGuideState(cwd);
     if (!installed.ok || before.installed === null) {
       console.error(`Could not add Patchstack to this project. Run this, then run setup again:\n  ${installCommand(before.packageManager)}`);
@@ -1425,6 +1453,8 @@ async function runSetup(args: ParsedArgs): Promise<number> {
   }
 
   const report = emptyReport();
+  if (createdProject) recordChange(report, 'package.json', 'created, with a build step that copies your site into dist/');
+  if (addedSelf) recordChange(report, 'package.json', 'added @patchstack/connect');
   let reported: Partial<Progress> = {};
   const scanCode = await runScan(args, {
     report,
@@ -1440,6 +1470,9 @@ async function runSetup(args: ParsedArgs): Promise<number> {
 
   const wired = wireBuildScripts(process.cwd(), before.packageManager);
   report.done.push(buildStepsLine(wired));
+  if (wired.changed) {
+    recordChange(report, 'package.json', wired.strategy === 'postinstall-only' ? 'a package check after each install' : 'Patchstack steps in the install and build scripts');
+  }
   detail(`Build hooks: ${wired.detail}`);
 
   const config = await resolveCliConfig(args);
@@ -1465,6 +1498,8 @@ async function runSetup(args: ParsedArgs): Promise<number> {
   if (!noServer) report.missing.push({ key: 'runtime-restart', text: 'Load the new protection in your running app', hint: ['Restart the preview/server if it is already running. Deploy a new build to update the live app. Setup does not start or deploy it.'], plain: { text: 'Restart your app to turn protection on', hint: ['Your live app gets it on your next deploy.'] } });
   const after = await collectGuideState(process.cwd());
   const missing = mergeMissing(report.missing, guideMissing(after, reported));
+  const ignoredNow = [...readIgnoreLines(cwd)].filter((line) => !ignoredBefore.has(line));
+  if (ignoredNow.length > 0) recordChange(report, '.gitignore', `now ignores ${ignoredNow.join(', ')}`);
   const context = scanNextStepContext(config, after, after.siteUuid);
 
   if (verbose) console.log('');
@@ -1479,14 +1514,40 @@ async function runSetup(args: ParsedArgs): Promise<number> {
   }
   // An assistant reads this output and writes the person one message; a ready-made summary is what it
   // passes on. A terminal already shows the report above, and a build log is not read by a person.
-  if (!process.stdout.isTTY && !isInstallOrBuildHook() && !runningInCi()) {
-    console.log('');
-    console.log(SUMMARY_INTRO);
-    console.log(SUMMARY_HEADING);
-    for (const line of renderSummary({ ...report, missing }, guideProgress(after, reported), context, { widgetOnPage: after.widgetInstalled, widgetFile: after.widgetFile })) {
-      console.log(line);
+  if (!isInstallOrBuildHook() && !runningInCi()) {
+    const summary = renderSummary({ ...report, missing }, guideProgress(after, reported), context, { widgetOnPage: after.widgetInstalled, widgetFile: after.widgetFile });
+    // Kept, so `summary` can print it again: long setup output can be cut short before it reaches an assistant.
+    try {
+      ensureProjectDirectorySync(cwd, path.join(cwd, path.dirname(SUMMARY_FILE)));
+      writeProjectFileSync(cwd, path.join(cwd, SUMMARY_FILE), `${summary.join('\n')}\n`, { encoding: 'utf8' });
+    } catch {
+      // The summary is printed below either way; only `summary` loses its copy.
+    }
+    if (!process.stdout.isTTY) {
+      console.log('');
+      console.log(SUMMARY_INTRO);
+      console.log(SUMMARY_HEADING);
+      for (const line of summary) console.log(line);
     }
   }
+  return 0;
+}
+
+/** Where setup keeps the summary it wrote, for `summary` to print again. */
+const SUMMARY_FILE = path.join('.patchstack', 'summary.md');
+
+/** The summary the last setup wrote, with the same lines before it, so an assistant passes it on as it is. */
+function runSummary(): number {
+  let summary: string;
+  try {
+    summary = readFileSync(path.join(process.cwd(), SUMMARY_FILE), 'utf8').trimEnd();
+  } catch {
+    console.error('No summary yet. Run: npx @patchstack/connect setup');
+    return 1;
+  }
+  console.log(SUMMARY_INTRO);
+  console.log(SUMMARY_HEADING);
+  console.log(summary);
   return 0;
 }
 
@@ -2003,6 +2064,8 @@ async function main(): Promise<number> {
       return runScan(args);
     case 'vulns':
       return runVulns(args);
+    case 'summary':
+      return runSummary();
     case 'go-live':
       return runGoLive(args);
     case 'widget':

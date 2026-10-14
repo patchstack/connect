@@ -42,6 +42,13 @@ export interface StatusReport {
   findings?: PackageSummary | null;
   /** Protection rules Patchstack has ready for this app, when the run looked them up. */
   rules?: number;
+  /** Files this run changed in the project, and what it put in each, for the person to know. */
+  changed?: Array<{ file: string; what: string }>;
+}
+
+/** Note a file this run changed. */
+export function recordChange(report: StatusReport, file: string, what: string): void {
+  (report.changed ??= []).push({ file, what });
 }
 
 export function emptyReport(): StatusReport {
@@ -322,6 +329,20 @@ export function renderSummary(report: StatusReport, progress: Progress, context:
     lines.push(`${progress[step] ? '✅' : '⬜'} ${plainStepLabel(step, progress[step], context.environment, !canProtect)}`);
   }
   lines.push('');
+
+  // The person is owed an account of what changed in their project. Written here, so an assistant has no
+  // reason to write its own next to the summary.
+  const changed = new Map<string, string[]>();
+  for (const { file, what } of report.changed ?? []) {
+    const items = changed.get(file) ?? [];
+    if (!items.includes(what)) items.push(what);
+    changed.set(file, items);
+  }
+  if (changed.size > 0) {
+    lines.push('#### What changed in your project');
+    for (const [file, items] of changed) lines.push(`- \`${file}\`: ${items.join('; ')}`);
+    lines.push('');
+  }
 
   if (options.widgetOnPage) {
     const where = options.widgetFile != null ? ` (in \`${options.widgetFile}\`)` : '';

@@ -269,6 +269,23 @@ describe('renderSummary', () => {
     }
   });
 
+  it('lists what changed in the project, one line per file', () => {
+    const changed = [
+      { file: 'package.json', what: 'added @patchstack/connect' },
+      { file: 'index.html', what: 'the Patchstack widget, just before </body>' },
+      { file: 'package.json', what: 'Patchstack steps in the install and build scripts' },
+    ];
+    const text = renderSummary(report({ changed }), notConnected, context, { widgetOnPage: true }).join('\n');
+    expect(text).toContain(
+      [
+        '#### What changed in your project',
+        '- `package.json`: added @patchstack/connect; Patchstack steps in the install and build scripts',
+        '- `index.html`: the Patchstack widget, just before </body>',
+      ].join('\n'),
+    );
+    expect(renderSummary(report(), notConnected, context, { widgetOnPage: true }).join('\n')).not.toContain('What changed');
+  });
+
   it('never states a count the run did not get', () => {
     const lines = renderSummary(report({ findings: null }), notConnected, context, { widgetOnPage: false });
     expect(lines[2]).toBe('**Checked 89 packages.** Patchstack is now watching them.');
