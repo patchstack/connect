@@ -227,7 +227,7 @@ export function renderHookSummary(report: StatusReport, progress: Progress, cont
 export const SUMMARY_HEADING = '──── Summary ────';
 
 /** The line printed just before the summary, saying what it is for. */
-export const SUMMARY_INTRO = 'Setup is finished. The summary below is written for the person: show it as your final message, exactly as written, with every section.';
+export const SUMMARY_INTRO = 'Setup is finished. The summary below is written for the person: show it as your final message, exactly as written, with every section, ending with the numbered menu.';
 
 export interface SummaryOptions {
   /** The widget tag is on the page, so the summary says where to see it. */
@@ -238,8 +238,8 @@ export interface SummaryOptions {
 
 /**
  * The same report as a short Markdown message, ready to be passed on as it is: a headline with what was
- * found, what to do now with the link written out in full and the commands for later, the four steps, and
- * one closing reminder. It is built from this run's results only, so it never says more than the report
+ * found, what to do now with the link written out in full, the four steps, one closing reminder, and a
+ * numbered menu of what the person can ask for next. It is built from this run's results only, so it never says more than the report
  * above it, and a part with nothing new to say is left out.
  */
 export function renderSummary(report: StatusReport, progress: Progress, context: NextStepContext, options: SummaryOptions): string[] {
@@ -287,22 +287,15 @@ export function renderSummary(report: StatusReport, progress: Progress, context:
     if (key === 'runtime-restart' && !canProtect) continue;
     todo.push(item.plain?.text ?? item.text);
   }
-  // The commands stay inside this section, the part of the message every assistant keeps, so the person
-  // always learns what they can run next. They come after the steps, so the one thing to do now leads.
   const outdated = findings?.outdated ?? 0;
-  const commands = [
-    ...(counted && findings.vulnerable === 0 && outdated === 0 ? [] : ['**See the vulnerabilities:** `npx @patchstack/connect vulns`']),
-    ...(options.widgetOnPage ? [] : ['**Add the Patchstack widget (optional):** `npx @patchstack/connect widget`']),
-    // When going live is the step itself, the step already points at go-live.
-    ...(next === 'deployed' ? [] : [`**${canProtect ? 'Go live on your host' : 'Publish your app'}:** \`npx @patchstack/connect go-live\``]),
-  ];
   const steps = todo.slice(0, 3);
-  if (steps.length > 0 || commands.length > 0) lines.push('#### 👉 What to do now');
-  // A single step needs no number; its link goes in a paragraph of its own so it renders on its own line.
-  if (steps.length === 1) lines.push(...steps[0]!.split('\n').flatMap((line, index) => (index === 0 ? [line] : ['', line.trimStart()])));
-  else lines.push(...steps.flatMap((entry, index) => `${index + 1}. ${entry}`.split('\n')));
-  if (steps.length > 0) lines.push('');
-  if (commands.length > 0) lines.push('Later, when you need them:', ...commands.map((command) => `- ${command}`), '');
+  if (steps.length > 0) {
+    lines.push('#### 👉 What to do now');
+    // A single step needs no number; its link goes in a paragraph of its own so it renders on its own line.
+    if (steps.length === 1) lines.push(...steps[0]!.split('\n').flatMap((line, index) => (index === 0 ? [line] : ['', line.trimStart()])));
+    else lines.push(...steps.flatMap((entry, index) => `${index + 1}. ${entry}`.split('\n')));
+    lines.push('');
+  }
 
   // With nothing found, the headline already says it all.
   if (counted && (findings.vulnerable > 0 || outdated > 0 || (canProtect && (report.rules ?? 0) > 0))) {
@@ -337,10 +330,47 @@ export function renderSummary(report: StatusReport, progress: Progress, context:
   for (const item of report.missing.filter((entry) => entry.note === true)) {
     lines.push(item.plain?.text ?? item.text, '');
   }
-  // Without a server, publishing is already the go-live command above, so there is nothing to remind.
-  if (canProtect) lines.push("Don't forget to republish or redeploy the app so the protection rules protect your live app.");
+  // Without a server, publishing is already an option in the menu below, so there is nothing to remind.
+  if (canProtect) lines.push("Don't forget to republish or redeploy the app so the protection rules protect your live app.", '');
+
+  const replies = summaryReplies(report, progress, options);
+  if (replies.length > 0) {
+    lines.push('---', '', '### 💬 What next? Reply with a number', '');
+    replies.forEach((reply, index) => {
+      if (index > 0) lines.push('>');
+      lines.push(`> ${KEYCAPS[index]} **${reply.reply}**`);
+    });
+  }
   if (lines[lines.length - 1] === '') lines.pop();
   return lines;
+}
+
+const KEYCAPS = ['1️⃣', '2️⃣', '3️⃣', '4️⃣'] as const;
+
+/** One thing the person can ask for after setup, and the command the assistant runs for it. */
+export interface SummaryReply {
+  reply: string;
+  command: string;
+}
+
+/**
+ * The menu the summary ends on: things the person can ask for by replying with a number, each answered by
+ * a command AGENT-INSTALL.md lists. Only choices that apply to this run are offered.
+ */
+export function summaryReplies(report: StatusReport, progress: Progress, options: SummaryOptions): SummaryReply[] {
+  const findings = report.findings ?? null;
+  const nothingFound = findings !== null && findings.total > 0 && findings.vulnerable === 0 && findings.outdated === 0;
+  const replies: SummaryReply[] = [];
+  if (!nothingFound) {
+    replies.push({
+      reply: (findings?.vulnerable ?? 1) > 0 ? 'Show me the vulnerabilities' : 'Show me what Patchstack found',
+      command: 'npx @patchstack/connect vulns',
+    });
+  }
+  if (!progress.connected) replies.push({ reply: 'Check that my account is connected', command: 'npx @patchstack/connect status' });
+  if (!options.widgetOnPage) replies.push({ reply: 'Add the Patchstack widget to my app', command: 'npx @patchstack/connect widget' });
+  if (!progress.deployed) replies.push({ reply: 'Help me put my app live', command: 'npx @patchstack/connect go-live' });
+  return replies.slice(0, KEYCAPS.length);
 }
 
 /** False when setup found no server, so there is no protection for the app to turn on. */

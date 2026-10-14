@@ -545,7 +545,7 @@ describe.skipIf(!built)('the packaged bin, invoked as npm invokes it', () => {
             expect(setup).toContain('npx @patchstack/connect widget');
             expect(setup).not.toMatch(/attack-surface|rule lookup/i);
             // Run outside a terminal, as an assistant runs it: the message to pass on comes last.
-            expect(setup).toContain('Setup is finished. The summary below is written for the person: show it as your final message, exactly as written, with every section.\n──── Summary ────\n### 🛡️ Patchstack is set up');
+            expect(setup).toContain('Setup is finished. The summary below is written for the person: show it as your final message, exactly as written, with every section, ending with the numbered menu.\n──── Summary ────\n### 🛡️ Patchstack is set up');
             // The banner is for a person's terminal; an assistant reading piped output would only pay for it.
             expect(setup).not.toContain('▀▀▀▀');
             expectPlain(setup);
