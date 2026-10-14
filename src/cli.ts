@@ -1356,11 +1356,14 @@ function reportProtection(protection: ReturnType<typeof setupProtection>, report
     }
     return false;
   }
+  const scaffoldedWithoutServer =
+    protection.install.status === 'scaffolded' && protection.install.plan.includes('Could not locate a server entry');
+  if (protection.install.status === 'wired' || protection.install.status === 'scaffolded') {
+    const what = scaffoldedWithoutServer ? 'Patchstack protection files, not used until your app has a server' : 'Patchstack protection';
+    for (const file of protection.install.changed) recordChange(report, file, what);
+  }
   if (protection.verification.wired) {
     const changed = protection.install.status === 'wired' && protection.install.changed.length > 0;
-    if (protection.install.status === 'wired') {
-      for (const file of protection.install.changed) recordChange(report, file, 'Patchstack protection');
-    }
     report.done.push(
       changed
         ? `Added runtime protection (${protection.verification.stack})`
@@ -1369,7 +1372,7 @@ function reportProtection(protection: ReturnType<typeof setupProtection>, report
     return false;
   }
   // The generic installer cannot see where requests enter, so it says why rather than which file to edit.
-  if (protection.install.status === 'scaffolded' && protection.install.plan.includes('Could not locate a server entry')) {
+  if (scaffoldedWithoutServer) {
     report.missing.push({
       key: 'runtime-protection',
       text: 'Runtime protection: no server file found',
@@ -1386,7 +1389,6 @@ function reportProtection(protection: ReturnType<typeof setupProtection>, report
   return false;
 }
 
-/** What setup did to package.json's scripts, as one Done line. */
 /** The entries in the project's .gitignore; none when there is no such file. */
 function readIgnoreLines(cwd: string): Set<string> {
   try {
@@ -1401,6 +1403,7 @@ function readIgnoreLines(cwd: string): Set<string> {
   }
 }
 
+/** What setup did to package.json's scripts, as one Done line. */
 function buildStepsLine(wired: ReturnType<typeof wireBuildScripts>): string {
   if (wired.strategy === 'postinstall-only') {
     return wired.changed

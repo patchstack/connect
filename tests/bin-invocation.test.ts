@@ -567,6 +567,8 @@ describe.skipIf(!built)('the packaged bin, invoked as npm invokes it', () => {
             expect(summary).toContain('#### What changed in your project');
             expect(summary).toContain('- `index.html`: the Patchstack widget, just before </body>');
             expect(summary).toContain('- `.patchstackrc.json`: your site\'s ID and connect link. Safe to commit');
+            // A project with no server still gets the protection files; they are listed, not left for the person to find.
+            expect(summary).toContain('- `patchstack/rules.json`: Patchstack protection files, not used until your app has a server');
             expect(readFileSync(path.join(dir, '.patchstack', 'summary.md'), 'utf8')).toBe(`${summary.slice(summary.indexOf('\n') + 1).trimEnd()}\n`);
             const again = await run(dir, server.endpoint, ['summary'], CONCISE);
             expect(again.trimEnd()).toBe(setup.slice(setup.indexOf('Setup is finished.')).trimEnd());
