@@ -673,21 +673,25 @@ describe('buildManifestBody', () => {
 
   it('is the whole body, so --dry-run and the post cannot describe different requests', () => {
     expect(
-      buildManifestBody({ ...base, siteUrl: 'https://shop.example.com', siteName: 'Shop' }, payload),
+      buildManifestBody({ ...base, siteUrl: 'https://shop.example.com', siteName: 'Shop' }, payload, {
+        npm_lifecycle_event: 'postinstall',
+      }),
     ).toEqual({
       ecosystem: 'npm',
       packages: [{ name: 'lodash', version: '4.17.21' }],
       environment: 'production',
       url: 'https://shop.example.com',
       name: 'Shop',
+      trigger: 'install',
     });
   });
 
   it('leaves out what is not known rather than sending an empty value', () => {
-    expect(buildManifestBody({ ...base, siteUrl: null, siteName: '' }, payload)).toEqual({
+    expect(buildManifestBody({ ...base, siteUrl: null, siteName: '' }, payload, {})).toEqual({
       ecosystem: 'npm',
       packages: [{ name: 'lodash', version: '4.17.21' }],
       environment: 'production',
+      trigger: 'other',
     });
   });
 });

@@ -1,0 +1,23 @@
+import type { EnvLike } from './stack.js';
+
+/**
+ * What prompted a manifest report, as the package manager names it.
+ *
+ * `install` and `build` come from `npm_lifecycle_event`, which npm, pnpm, Yarn and `bun run` set to the
+ * running script's name. Anything else — a direct invocation, a `dev` script, a lifecycle name not listed
+ * here — is `other`. Bun does not set the variable for install-time scripts, so a `postinstall` under
+ * `bun install` reports `other`. The variable is inherited by child processes, so a command run from inside
+ * a build's process tree reports `build`.
+ */
+export type ReportTrigger = 'install' | 'build' | 'other';
+
+const INSTALL_EVENTS: ReadonlySet<string> = new Set(['preinstall', 'install', 'postinstall', 'prepare']);
+const BUILD_EVENTS: ReadonlySet<string> = new Set(['prebuild', 'build', 'postbuild']);
+
+export function reportTrigger(env: EnvLike = process.env): ReportTrigger {
+  const event = env.npm_lifecycle_event;
+  if (event === undefined) return 'other';
+  if (INSTALL_EVENTS.has(event)) return 'install';
+  if (BUILD_EVENTS.has(event)) return 'build';
+  return 'other';
+}

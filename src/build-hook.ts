@@ -1,21 +1,8 @@
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { SECRET_CONFIG_FILENAME } from './config.js';
+import { reportTrigger } from './report-context.js';
 import type { Config, PatchstackError } from './types.js';
-
-/**
- * Lifecycle names under which `scan` is a hook on somebody else's install or build: the `postinstall`,
- * `prebuild` and Bun `build` chain that `setup` wires, and the neighbours a project wires by hand.
- */
-const INSTALL_AND_BUILD_EVENTS: ReadonlySet<string> = new Set([
-  'preinstall',
-  'install',
-  'postinstall',
-  'prepare',
-  'prebuild',
-  'build',
-  'postbuild',
-]);
 
 /**
  * Whether this process is a lifecycle hook on an install or build.
@@ -30,9 +17,9 @@ const INSTALL_AND_BUILD_EVENTS: ReadonlySet<string> = new Set([
  * tree counts as a hook too — the error is still printed, so what that costs is an exit code, not silence.
  */
 export function isInstallOrBuildHook(env: NodeJS.ProcessEnv = process.env): boolean {
-  const event = env.npm_lifecycle_event;
-
-  return typeof event === 'string' && INSTALL_AND_BUILD_EVENTS.has(event);
+  // The `postinstall`, `prebuild` and Bun `build` chain that `setup` wires, and the neighbours a
+  // project wires by hand.
+  return reportTrigger(env) !== 'other';
 }
 
 /**

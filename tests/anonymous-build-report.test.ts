@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
+  buildReportBody,
   buildReportUrl,
   postBuildReport,
   postManifestWithEnvironmentFallback,
@@ -99,7 +100,7 @@ describe("postManifestWithEnvironmentFallback without a key", () => {
     expect(
       (init.headers as Record<string, string>).Authorization,
     ).toBeUndefined();
-    expect(JSON.parse(init.body as string)).toEqual({
+    expect(JSON.parse(init.body as string)).toMatchObject({
       checksum: computeManifestChecksum(packages),
       environment: "production",
       marker: "no-pages",
@@ -195,5 +196,20 @@ describe("postManifestWithEnvironmentFallback without a key", () => {
     const urls = fetchMock.mock.calls.map((call) => call[0] as string);
     expect(urls.some((u) => u.includes("/monitor/pulse/build/"))).toBe(false);
     expect(urls.some((u) => u.includes("/monitor/pulse/manifest/"))).toBe(true);
+  });
+});
+
+describe("buildReportBody", () => {
+  it("carries the trigger a manifest carries", () => {
+    expect(
+      buildReportBody("abc", "stamped", {
+        npm_lifecycle_event: "build",
+      }),
+    ).toEqual({
+      checksum: "abc",
+      environment: "production",
+      marker: "stamped",
+      trigger: "build",
+    });
   });
 });

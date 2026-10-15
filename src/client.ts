@@ -8,6 +8,7 @@ import {
 } from './types.js';
 import type { WirePayload } from './normalize.js';
 import { detectHostingPlatform } from './hosting.js';
+import { reportTrigger } from './report-context.js';
 import { computeManifestChecksum } from './checksum.js';
 import { pulseFetch } from './pulse-token.js';
 import { canonicalBuildId } from './build-id.js';
@@ -477,6 +478,9 @@ export function buildManifestBody(
       ? { name: config.siteName }
       : {}),
     ...(hosting !== null && hosting.platform !== null ? { hosting } : {}),
+    // Whether an install or a build prompted this report, so the server can attribute a change in
+    // the package list to the step that made it. Servers that predate the field ignore it.
+    trigger: reportTrigger(env),
   };
 }
 
@@ -630,6 +634,20 @@ export function buildReportUrl(manifestEndpoint: string, siteUuid: string): stri
   return url.toString();
 }
 
+/** The keyless build report's body: the checksum, plus the same trigger a manifest carries. */
+export function buildReportBody(
+  checksum: string,
+  marker: BuildMarker | null,
+  env: EnvLike = process.env,
+): Record<string, unknown> {
+  return {
+    checksum,
+    environment: 'production',
+    ...(marker !== null ? { marker } : {}),
+    trigger: reportTrigger(env),
+  };
+}
+
 /**
  * Tell Patchstack a production build ran, naming it by checksum. Sent without a credential.
  *
@@ -656,7 +674,7 @@ export async function postBuildReport(
         Accept: 'application/json',
         'User-Agent': '@patchstack/connect',
       },
-      body: JSON.stringify({ checksum, environment: 'production', ...(marker !== null ? { marker } : {}) }),
+      body: JSON.stringify(buildReportBody(checksum, marker)),
       signal: AbortSignal.timeout(config.timeoutMs),
     });
   } catch (cause) {
