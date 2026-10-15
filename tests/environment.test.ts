@@ -325,11 +325,22 @@ describe('inferEnvironment with a hosted builder', () => {
     // Lovable sets no variable we can read, and its edit preview is a dev server that never runs a
     // build — so the build hook firing IS the deploy. Without this a Lovable app's live site reports as
     // a working tree and the published page loses its marker.
-    expect(inferEnvironment({ HOME: '/home/user' }, 'lovable')).toEqual({
+    expect(inferEnvironment({ HOME: '/home/user', npm_lifecycle_event: 'build' }, 'lovable')).toEqual({
       environment: 'production',
       evidence: ['lovable: a build in a lovable project is its publish step'],
       source: 'builder',
     });
+    expect(inferEnvironment({ npm_lifecycle_event: 'postbuild' }, 'lovable').environment).toBe('production');
+  });
+
+  it('reads anything but a build in a builder project as its workspace', () => {
+    for (const env of [{}, { npm_lifecycle_event: 'postinstall' }, { npm_lifecycle_event: 'dev' }]) {
+      expect(inferEnvironment(env, 'lovable')).toEqual({
+        environment: 'sandbox',
+        evidence: ['lovable: not a build, so the lovable workspace rather than its publish step'],
+        source: 'builder',
+      });
+    }
   });
 
   it('still lets the hosting platform decide, so an exported project is graded by where it deploys', () => {
@@ -354,7 +365,7 @@ describe('inferEnvironment with a hosted builder', () => {
   it('reads a Replit workspace as sandbox even in a Replit project, and an export built elsewhere as its publish step', () => {
     expect(inferEnvironment({ REPL_ID: 'abc' }, 'replit').environment).toBe('sandbox');
     expect(inferEnvironment({ REPL_ID: 'abc', REPLIT_DEPLOYMENT: '1' }, 'replit').environment).toBe('production');
-    expect(inferEnvironment({ HOME: '/home/user' }, 'replit').environment).toBe('production');
+    expect(inferEnvironment({ HOME: '/home/user', npm_lifecycle_event: 'build' }, 'replit').environment).toBe('production');
   });
 
   it('is unchanged for a project no builder made', () => {
