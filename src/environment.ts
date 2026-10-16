@@ -1,6 +1,7 @@
 import { readFileSync } from 'node:fs';
 import path from 'node:path';
 
+import { reportTrigger } from './report-context.js';
 import type { EnvLike } from './stack.js';
 import type { Environment, EnvironmentSource } from './types.js';
 
@@ -301,6 +302,7 @@ export interface InferredEnvironment {
  * @param builder A hosted builder this project belongs to, from {@link detectHostedBuilder}. Consulted
  *                only after every platform discriminator has declined, so a builder-made project
  *                deployed through Netlify, Vercel or Cloudflare is still decided by that platform.
+ *                A builder project is `production` only while a build lifecycle script is running.
  */
 export function inferEnvironment(
   env: EnvLike = process.env,
@@ -317,12 +319,20 @@ export function inferEnvironment(
     }
   }
 
+  // Only a build is the publish step. An install, a direct run or a dev script in the same project is
+  // the builder's workspace, which is never the live site.
   if (builder !== null) {
-    return {
-      environment: 'production',
-      evidence: [`${builder}: a build in a ${builder} project is its publish step`],
-      source: 'builder',
-    };
+    return reportTrigger(env) === 'build'
+      ? {
+          environment: 'production',
+          evidence: [`${builder}: a build in a ${builder} project is its publish step`],
+          source: 'builder',
+        }
+      : {
+          environment: 'sandbox',
+          evidence: [`${builder}: not a build, so the ${builder} workspace rather than its publish step`],
+          source: 'builder',
+        };
   }
 
   return { environment: 'local', evidence: [], source: null };
