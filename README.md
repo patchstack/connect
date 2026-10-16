@@ -533,11 +533,14 @@ resulting bundle. Update the rules service before distributing rules that requir
     { "name": "lodash", "version": "4.17.21" }
   ],
   "url": "https://your-app.example.com",
-  "name": "ToDo Application"
+  "name": "ToDo Application",
+  "trigger": "install"
 }
 ```
 
 That's the entire payload: the package names and versions from your lockfile, plus what your project says about the site itself — its public address and its name. No source code, no file paths, no secrets.
+
+`trigger` says what ran the report — `install` or `build` when it runs as one of those lifecycle scripts (read from `npm_lifecycle_event`), `other` otherwise — so Patchstack can tell which step changed the package list.
 
 The address is included so the site in your dashboard shows where it lives instead of a placeholder, and so Patchstack can check the published page still carries what was scanned. It is taken from `url` in `.patchstackrc.json` (or `PATCHSTACK_SITE_URL`) if you set one; otherwise from the one variable a host publishes to name its own production URL — `VERCEL_PROJECT_PRODUCTION_URL` on a Vercel production deployment, Netlify's `URL` in the production context, `RENDER_EXTERNAL_URL`, `RAILWAY_PUBLIC_DOMAIN` in a production environment. No other environment variable's value is read, and `url` is left out entirely when none of those says anything — a build on your own machine sends no address. An address that is not how the public reaches a website is refused: any IP address, any single-label host such as `localhost`, and the reserved suffixes (`.local`, `.internal`, `.test`, `.invalid`). If you set `url` yourself and it fails those checks, `scan` stops and says so rather than sending a different address.
 
