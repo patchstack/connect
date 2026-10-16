@@ -128,7 +128,7 @@ const WIDGET_FILE_CANDIDATES: Record<string, string[]> = {
 const GENERIC_WIDGET_FILES = ['index.html', 'public/index.html'];
 
 /** Directories never worth searching for the widget snippet. */
-const SKIPPED_DIRS = new Set([
+export const SKIPPED_DIRS: ReadonlySet<string> = new Set([
   'node_modules',
   '.git',
   'dist',
