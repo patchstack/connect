@@ -96,7 +96,7 @@ import {
 } from './claim.js';
 import { runProtect, runVerify } from './protect/install/index.js';
 import { formatRuntimeCheck, runRuntimeCheck, runtimeExitCode } from './protect/install/runtime/check.js';
-import { runMap, runMapDetailed } from './map-command.js';
+import { runMap } from './map-command.js';
 import { getStringFlag } from './flags.js';
 import { isCanonicalUuid } from './endpoint-policy.js';
 import { setupProtection, wireBuildScripts, wireDevelopmentScript } from './setup.js';
@@ -958,7 +958,7 @@ async function runScan(
 
   // Setup uploads its own map; this is the workspace's routine scan, which holds the key.
   if (options.report === undefined && (response.stored || response.reason === 'duplicate')) {
-    await declareWorkspaceMap(config);
+    await syncWorkspace(config);
   }
 
   if (options.report === undefined) {
@@ -1606,19 +1606,21 @@ async function runSetup(args: ParsedArgs): Promise<number> {
 }
 
 /**
- * In a hosted builder's workspace, send the map under its identity after a successful package report.
+ * In a hosted builder's workspace, after a successful package report: upload the map and put the site's
+ * current rules into the guard's rules file.
  *
- * The builder's publish has no key, so it cannot upload the map it is built from; it only writes the
- * map's identity into its guard. The workspace holds the key and scans the same source, so sending the
- * map from here means Patchstack already knows the identity the published guard presents. Nothing is
- * written to the project. A build's own pre-bundle `map --upload` covers builds that have the key.
+ * The builder's publish has no key, so it can neither upload the map it is built from nor fetch rules. The
+ * workspace holds the key and scans the same source, so it does both here, the way setup does, and the next
+ * publish ships the rules and presents a map identity Patchstack already holds. A build that has the key
+ * does its own pre-bundle `map --upload`.
  */
-async function declareWorkspaceMap(config: Config): Promise<void> {
+async function syncWorkspace(config: Config): Promise<void> {
   if (isPreBundleBuildHook() || !hasSiteCredential(config) || detectHostedBuilder(process.cwd()) === null) return;
   try {
-    await runMapDetailed(new Map<string, string | true>([['dir', process.cwd()], ['upload', true]]), { config, declare: true, log: detail });
+    const synced = await syncSetupProtection(process.cwd(), config, { waitMs: 0 });
+    for (const line of synced.notices) detail(line);
   } catch {
-    // The package report already succeeded; the map is sent again on the next scan.
+    // The package report already succeeded; the next scan tries again.
   }
 }
 
