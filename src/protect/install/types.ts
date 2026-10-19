@@ -38,6 +38,11 @@ export interface VerifyCheck {
    * people to ignore the output. So it is neither, it is stated, and it does not decide `wired`.
    */
   unverifiable?: boolean;
+  /**
+   * Extra coverage beyond the guard itself. Shown either way, with its fix when missing, and it does not
+   * decide `wired`: the guard screens requests without it.
+   */
+  optional?: boolean;
 }
 
 export interface VerifyResult {

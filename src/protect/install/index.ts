@@ -55,14 +55,21 @@ export function runProtect(cwd: string, opts: WireOptions = {}): ProtectResult {
       };
     }
 
-    adapter = ADAPTERS.find((a) => a.detect(cwd));
-    if (adapter) {
-      const result = adapter.wire(cwd, opts);
-      const verification = adapter.verify(cwd);
-      if (result.ok && verification.wired) return { status: 'wired', adapter: adapter.name, changed: result.changed };
-      const plan = verification.checks.filter(check => !check.ok).map(check => check.hint ?? check.label).join('\n');
-      return { status: 'scaffolded', adapter: adapter.name, changed: result.changed, plan };
+    // Every adapter that recognises the app, most specific first. One that cannot wire this app and
+    // changed nothing makes way for the next: a TanStack Start app whose Supabase layout is not the one
+    // the specific adapter is written for is still a TanStack Start app with a server entry.
+    const matching = ADAPTERS.filter((a) => a.detect(cwd));
+    let first: { name: string; changed: string[]; plan: string } | null = null;
+    for (const candidate of matching) {
+      adapter = candidate;
+      const result = candidate.wire(cwd, opts);
+      const verification = candidate.verify(cwd);
+      if (result.ok && verification.wired) return { status: 'wired', adapter: candidate.name, changed: result.changed };
+      const plan = verification.checks.filter(check => !check.ok && !check.optional).map(check => check.hint ?? check.label).join('\n');
+      first ??= { name: candidate.name, changed: result.changed, plan };
+      if (result.changed.length > 0) break;
     }
+    if (first) return { status: 'scaffolded', adapter: first.name, changed: first.changed, plan: first.plan };
   } catch (err) {
     // A wire/detect failure (read-only FS, EACCES, a bad source file) must not crash the CLI —
     // fall through to the generic scaffold + plan so the user still gets something actionable.
@@ -146,7 +153,9 @@ export function runVerify(cwd: string): VerifyReport {
       };
     }
 
-    const adapter = ADAPTERS.find((a) => a.detect(cwd));
+    // The adapter that wired this app, when one did; otherwise the most specific one that recognises it.
+    const matching = ADAPTERS.filter((a) => a.detect(cwd));
+    const adapter = matching.find((a) => a.verify(cwd).wired) ?? matching[0];
     if (adapter) {
       const result = adapter.verify(cwd);
       return {

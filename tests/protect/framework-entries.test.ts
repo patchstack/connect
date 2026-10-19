@@ -202,3 +202,49 @@ describe('version-aware Next proxy',()=>{
     expect(result.indexOf('if (psBlocked) return psBlocked')).toBeLessThan(result.indexOf('new RegExp(pattern)'));
   });
 });
+
+describe('TanStack Start + Supabase when the Supabase client is not the layout the tunnel is written for', () => {
+  // A generated client that builds the Supabase client directly, with no fetch wrapper to tunnel through.
+  const GENERATED_CLIENT = "import { createClient } from '@supabase/supabase-js';\n" +
+    "const SUPABASE_URL = 'https://example.supabase.co';\nconst SUPABASE_PUBLISHABLE_KEY = 'public-anon-key';\n" +
+    'export const supabase = createClient(SUPABASE_URL, SUPABASE_PUBLISHABLE_KEY, { auth: { persistSession: true } });\n';
+  const START = 'import { createStart, createMiddleware } from "@tanstack/react-start";\n' +
+    'export const startInstance = createStart(() => ({ functionMiddleware: [], requestMiddleware: [] }));\n';
+
+  function lovableApp(start: string) {
+    const cwd = tanstack();
+    put(cwd, 'src/start.ts', start);
+    put(cwd, 'src/integrations/supabase/client.ts', GENERATED_CLIENT);
+    return cwd;
+  }
+
+  it('still wires the guard into requests and server functions, and leaves the client untouched', () => {
+    const cwd = lovableApp(START);
+
+    const result = runProtect(cwd);
+    const report = runVerify(cwd);
+
+    expect(result.status).toBe('wired');
+    expect(read(cwd, 'src/start.ts')).toContain('requestMiddleware: [patchstackGuard');
+    expect(read(cwd, 'src/start.ts')).toContain('functionMiddleware: [patchstackFunctionGuard');
+    expect(read(cwd, 'src/integrations/supabase/client.ts')).toBe(GENERATED_CLIENT);
+    expect(existsSync(join(cwd, 'src/integrations/patchstack/rules.json'))).toBe(true);
+    expect(report.wired).toBe(true);
+    expect(report.checks.find((c) => c.label.startsWith('Supabase browser traffic'))).toMatchObject({ ok: false, optional: true });
+  });
+
+  it('falls back to the server entry when src/start.ts is not a layout it can patch either', () => {
+    const start = 'import { createStart } from "@tanstack/react-start";\nconst options = () => ({});\nexport const startInstance = createStart(options);\n';
+    const cwd = lovableApp(start);
+    put(cwd, 'vite.config.ts', 'import { defineConfig } from "@lovable.dev/vite-tanstack-config";\nexport default defineConfig();\n');
+
+    const result = runProtect(cwd);
+
+    expect(result).toMatchObject({ status: 'wired', adapter: 'tanstack-start' });
+    expect(read(cwd, 'src/server.ts')).toContain('protectFetch(handler.fetch.bind(handler))');
+    expect(read(cwd, 'src/start.ts')).toBe(start);
+    expect(read(cwd, 'src/integrations/supabase/client.ts')).toBe(GENERATED_CLIENT);
+    expect(existsSync(join(cwd, 'src/integrations/patchstack/guard.ts'))).toBe(false);
+    expect(runVerify(cwd)).toMatchObject({ wired: true, stack: 'TanStack Start' });
+  });
+});
