@@ -266,11 +266,17 @@ function wire(cwd: string, opts: WireOptions): WireResult {
   const startPath = join(cwd, 'src/start.ts');
   const oldClient = read(clientPath);
   const oldStart = read(startPath);
-  const client = ts && patchClient(ts, oldClient);
   const start = ts && patchStart(ts, oldStart);
-  if (!ts || !client || !start || !parsedSource(ts, 'client.ts', client)) {
+  if (!ts || !start) {
     log('TanStack wiring needs manual integration: client and server left untouched; no browser traffic was redirected.');
     return { ok: false, changed: [] };
+  }
+  // The request and server-function guard does not depend on the Supabase client. A client whose layout
+  // is not the one this tunnel is written for is left as it is, and only its browser traffic goes unscreened.
+  const patched = patchClient(ts, oldClient);
+  const client = patched !== null && parsedSource(ts, 'client.ts', patched) ? patched : oldClient;
+  if (client === oldClient && !oldClient.includes('x-ps-target')) {
+    log('Supabase client layout not recognised: browser traffic to Supabase is not tunnelled through the guard. Requests and server functions are screened.');
   }
   const changed = scaffold(cwd, opts);
   if (!matchesGuardTemplate(cwd, GUARD_FILE, 'guard.ts')) {
@@ -313,11 +319,11 @@ function verify(cwd: string): VerifyResult {
   const checks = [
     { label: 'guard.ts scaffolded', ok: guard.length > 0, hint: 'run `patchstack-connect protect`' },
     { label: 'guard helper implementation verified', ok: matchesGuardTemplate(cwd, GUARD_FILE, 'guard.ts'), hint: 'preserved custom helpers require manual review before redirecting browser traffic' },
-    { label: 'Supabase client tunnels through the guard', ok: !!ts && client.includes('x-ps-target') && patchClient(ts, client) === client, hint: 'run `patchstack-connect protect` to re-patch src/integrations/supabase/client.ts' },
+    { label: 'Supabase browser traffic tunnels through the guard', optional: true, ok: !!ts && client.includes('x-ps-target') && patchClient(ts, client) === client, hint: 'requests and server functions are screened without it; run `patchstack-connect protect` to re-patch src/integrations/supabase/client.ts, or screen Supabase on its own side' },
     { label: 'request middleware defined + registered', ok: start.includes('const patchstackGuard =') && start.includes('requestMiddleware: [patchstackGuard'), hint: 'run `patchstack-connect protect` to re-patch src/start.ts' },
     { label: 'server-function middleware defined + registered', ok: start.includes('const patchstackFunctionGuard =') && start.includes('functionMiddleware: [patchstackFunctionGuard'), hint: 'run `patchstack-connect protect` to re-patch src/start.ts' },
   ];
-  return { wired: checks.every((c) => c.ok), checks };
+  return { wired: checks.every((c) => c.ok || c.optional), checks };
 }
 
 export const tanstackSupabaseAdapter: Adapter = {

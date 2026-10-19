@@ -192,15 +192,17 @@ function verify(cwd: string): VerifyResult {
   const inventory = routes(cwd);
   const missing = inventory.files.filter(file => !(ts && shared
     && nextSourceWired(ts, file, read(join(cwd, file)), importFrom(file, mw.guard), true)));
+  // The middleware screens every request; route files add response filtering on top. A route file this
+  // could not compose is a gap in that extra coverage, reported, and not a reason to call the app unguarded.
   return {
-    wired: present && rulesPresent && missing.length === 0 && !inventory.incomplete,
+    wired: present && rulesPresent,
     checks: [
       { label: 'Next middleware request guard has a catch-all matcher', ok: present,
         hint: `run \`patchstack-connect protect\`; review any unsupported middleware shape in ${mw.relFile}` },
       { label: 'fallback rules co-located with the guard', ok: rulesPresent, hint: 'run `patchstack-connect protect`' },
       { label: `App Router request/response wiring: ${inventory.files.length - missing.length}/${inventory.files.length} route files`,
-        ok: missing.length === 0 && !inventory.incomplete,
-        hint: `run protect again after adding routes; manually integrate unsupported handlers: ${missing.join(', ') || 'inventory incomplete'}` },
+        ok: missing.length === 0 && !inventory.incomplete, optional: true,
+        hint: `requests are screened by the middleware without it; run protect again after adding routes; manually integrate unsupported handlers: ${missing.join(', ') || 'inventory incomplete'}` },
       { label: 'rendered pages, Server Actions and Pages API response filtering are not verified', ok: true, unverifiable: true,
         hint: 'middleware cannot screen the downstream response; use a supported server boundary or add response filtering to those handlers' },
       { label: 'live rule delivery and enforcement are not established by source inspection', ok: true, unverifiable: true,

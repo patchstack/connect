@@ -1190,7 +1190,7 @@ async function runProtectCommand(args: ParsedArgs): Promise<number> {
       // Three states, not two. A check this machine cannot answer is marked `?` and always prints its
       // note: shown as a tick it would claim something nobody established, and as a cross it would fail a
       // correctly configured deployment.
-      const mark = c.unverifiable ? '?' : c.ok ? '✓' : '✗';
+      const mark = c.unverifiable ? '?' : c.ok ? '✓' : c.optional ? '!' : '✗';
       const note = c.unverifiable || !c.ok ? c.hint : undefined;
       console.log(`  ${mark} ${c.label}${note ? ` — ${note}` : ''}`);
     };
@@ -1403,6 +1403,17 @@ function reportProtection(protection: ReturnType<typeof setupProtection>, report
         ? `Added runtime protection (${protection.verification.stack})`
         : `Runtime protection is already set up (${protection.verification.stack})`,
     );
+    // Coverage the guard works without (a Supabase browser tunnel, Next.js route-level response filtering),
+    // said as a fact about the app rather than a step left undone.
+    for (const check of protection.verification.checks.filter((c) => c.optional && !c.ok)) {
+      report.missing.push({
+        key: `optional-${check.label}`,
+        text: `Not covered: ${check.label}`,
+        hint: check.hint ? [check.hint] : [],
+        note: true,
+        plain: { text: `Requests to your app are protected. Not covered yet: ${check.label}.`, hint: [] },
+      });
+    }
     return false;
   }
   // The generic installer cannot see where requests enter, so it says why rather than which file to edit.

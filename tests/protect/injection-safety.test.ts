@@ -171,10 +171,14 @@ describe('TanStack paired edits', () => {
     expect(runVerify(cwd).wired).toBe(false);
   });
 
-  it('does not change the server when the client is unsupported', () => {
-    const cwd = tanstack(start, 'export const client = createClient(url, key);');
-    expect(runProtect(cwd).status).toBe('scaffolded');
-    expect(read(cwd, 'src/start.ts')).toBe(start);
+  it('guards the server and leaves an unsupported client untouched', () => {
+    // Only the client half is paired with the server: redirecting browser traffic needs the server's
+    // tunnel endpoint. The server guard needs nothing from the client, so it is wired on its own.
+    const unsupported = 'export const client = createClient(url, key);';
+    const cwd = tanstack(start, unsupported);
+    expect(runProtect(cwd).status).toBe('wired');
+    expect(read(cwd, 'src/start.ts')).toContain('requestMiddleware: [patchstackGuard');
+    expect(read(cwd, clientFile)).toBe(unsupported);
   });
 
   it('preserves Request bodies, headers, overrides and cancellation when tunneling', async () => {

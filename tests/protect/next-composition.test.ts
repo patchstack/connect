@@ -47,6 +47,15 @@ export async function screenPatchstackResponse(response, request, protection) {
 }
 `;
 
+
+/** A route file left for manual integration: the middleware still guards every request, and the gap in
+ *  route-level response filtering is reported as optional coverage rather than as an unguarded app. */
+function expectRouteGap(dir: string): void {
+  const report = runVerify(dir);
+  expect(report.wired).toBe(true);
+  expect(report.checks.find((c) => c.label.startsWith('App Router request/response wiring'))).toMatchObject({ ok: false, optional: true });
+}
+
 describe('Next middleware composition', () => {
   const source = `
 export function middleware(request: Request, event: { waitUntil: (p: Promise<unknown>) => void }) {
@@ -238,7 +247,7 @@ export async function GET() { return new Response('private-value'); }
     runProtect(dir);
     expect(read(dir, 'src/app/api/message/route.ts')).toBe(generated);
     put(dir, 'src/app/api/other/route.ts', 'export const POST = handler;');
-    expect(runVerify(dir).wired).toBe(false);
+    expectRouteGap(dir);
     runProtect(dir);
     expect(read(dir, 'src/app/api/other/route.ts')).toBe('export const POST = handler;');
     expect(nextSourceWired(ts, 'route.ts', generated.replace('if (psBlocked) return psBlocked;', ''), '../../../patchstack.next', true)).toBe(false);
@@ -250,7 +259,7 @@ export async function GET() { return new Response('private-value'); }
     const dir = fixture();
     put(dir, 'app/api/view/route.tsx', `export async function GET() { return new Response('example'); }`);
     runProtect(dir);
-    expect(runVerify(dir).wired).toBe(false);
+    expectRouteGap(dir);
     expect(runVerify(dir).checks.find(c => c.label.startsWith('App Router'))?.hint).toContain('app/api/view/route.tsx');
   });
 
@@ -293,7 +302,7 @@ export async function POST(request: Request) {
     put(dir, 'app/api/contact/route.ts', source);
     runProtect(dir);
     expect(read(dir, 'app/api/contact/route.ts')).toBe(source);
-    expect(runVerify(dir).wired).toBe(false);
+    expectRouteGap(dir);
     expect(runVerify(dir).checks.find(c => c.label.startsWith('App Router'))?.hint).toContain('app/api/contact/route.ts');
   });
 
@@ -305,7 +314,7 @@ export async function POST(request: Request) {
     put(dir, 'app/api/contact/route.ts', edited);
     runProtect(dir);
     expect(read(dir, 'app/api/contact/route.ts')).toBe(edited);
-    expect(runVerify(dir).wired).toBe(false);
+    expectRouteGap(dir);
   });
 });
 
