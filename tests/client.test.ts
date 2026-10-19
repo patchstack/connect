@@ -12,6 +12,7 @@ import {
   postPackageRemoved,
   buildManifestBody,
   connectHeaders,
+  postRunNotice,
   setRunCommand,
 } from '../src/client.js';
 import { PatchstackError } from '../src/types.js';
@@ -738,5 +739,37 @@ describe('connectHeaders', () => {
 
   it('leaves the command out when none is running', () => {
     expect(connectHeaders({})).toEqual({ 'User-Agent': '@patchstack/connect', 'X-Patchstack-Trigger': 'other' });
+  });
+});
+
+describe('postRunNotice', () => {
+  afterEach(() => {
+    setRunCommand(null);
+    vi.unstubAllGlobals();
+  });
+
+  it('names the command, the key state and the exit code to the run route, and nothing about the project', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(new Response(null, { status: 204 }));
+    vi.stubGlobal('fetch', fetchMock);
+    setRunCommand('summary');
+
+    await postRunNotice(
+      { siteUuid: '550e8400-e29b-41d4-a716-446655440000', pulseAuth: null, endpoint: 'https://example.com/monitor/pulse/manifest', timeoutMs: 30_000 } as never,
+      1,
+    );
+
+    const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+    expect(url).toBe('https://example.com/monitor/pulse/run/550e8400-e29b-41d4-a716-446655440000');
+    expect(JSON.parse(init.body as string)).toEqual({ exit_code: 1 });
+    expect(init.headers).toMatchObject({ 'X-Patchstack-Command': 'summary', 'X-Patchstack-Key': 'none' });
+  });
+
+  it('sends nothing without a site, and never throws', async () => {
+    const fetchMock = vi.fn().mockRejectedValue(new Error('offline'));
+    vi.stubGlobal('fetch', fetchMock);
+
+    await expect(postRunNotice({ siteUuid: null, endpoint: 'https://example.com/monitor/pulse/manifest', timeoutMs: 1 } as never, 0)).resolves.toBeUndefined();
+    expect(fetchMock).not.toHaveBeenCalled();
+    await expect(postRunNotice({ siteUuid: 'uuid', endpoint: 'https://example.com/monitor/pulse/manifest', timeoutMs: 1 } as never, 0)).resolves.toBeUndefined();
   });
 });

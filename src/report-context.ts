@@ -40,3 +40,14 @@ export function connectHeaders(env: EnvLike = process.env): Record<string, strin
     'X-Patchstack-Trigger': reportTrigger(env),
   };
 }
+
+let runLogged = false;
+
+/** Note that this run reached a request the site's activity log records, so it needs no run notice. */
+export function markRunLogged(): void {
+  runLogged = true;
+}
+
+export function runWasLogged(): boolean {
+  return runLogged;
+}

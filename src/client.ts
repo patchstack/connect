@@ -8,7 +8,7 @@ import {
 } from './types.js';
 import type { WirePayload } from './normalize.js';
 import { detectHostingPlatform } from './hosting.js';
-import { connectHeaders, reportTrigger } from './report-context.js';
+import { connectHeaders, markRunLogged, reportTrigger } from './report-context.js';
 export { connectHeaders, setRunCommand } from './report-context.js';
 import { computeManifestChecksum } from './checksum.js';
 import { pulseFetch } from './pulse-token.js';
@@ -234,6 +234,7 @@ export async function postInputMap(
       body: JSON.stringify(canonical === null ? map : { ...map, build_id: canonical }),
       signal: AbortSignal.timeout(config.timeoutMs),
     });
+    markRunLogged();
     if (response.status === 404) {
       return { result: 'failed', message: 'Site not found — the configured site UUID is unknown to Patchstack.' };
     }
@@ -419,6 +420,8 @@ export async function fetchClaimPreview(config: Config): Promise<ClaimPreview> {
       },
       signal: AbortSignal.timeout(config.timeoutMs),
     });
+    // The activity log records this check only for a run without the key that is not a build.
+    if (!hasSiteCredential(config) && reportTrigger() !== 'build') markRunLogged();
     if (!response.ok) return unknown;
     const body = (await readBoundedJson(response)) as { state?: unknown; package_summary?: unknown } | null;
     if (body?.state === 'claimable') return { state: 'unclaimed', summary: readPackageSummary(body.package_summary) };
@@ -632,6 +635,44 @@ export function reportsBuildWithoutCredential(config: Config): boolean {
   return !hasSiteCredential(config) && config.environment === 'production' && config.siteUuid !== null && config.siteUuid !== '';
 }
 
+/**
+ * Tell Patchstack a command ran, for a run that sent nothing else its activity log records — `summary`,
+ * `vulns`, `guide`, or any command in a copy without the key. Sent without a credential: it names the
+ * command, what started it, whether the key is present and the exit code, and nothing about the project.
+ * Never throws and never delays a command for long: it is a notice, not a report.
+ */
+export async function postRunNotice(config: Config, exitCode: number): Promise<void> {
+  if (config.siteUuid === null || config.siteUuid === '') return;
+  try {
+    const url = buildRunNoticeUrl(config.endpoint, config.siteUuid);
+    assertConnectableEndpoint(config, url);
+    await fetch(url, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Accept: 'application/json',
+        ...connectHeaders(),
+        'X-Patchstack-Key': hasSiteCredential(config) ? 'present' : 'none',
+      },
+      body: JSON.stringify({ exit_code: exitCode }),
+      signal: AbortSignal.timeout(Math.min(config.timeoutMs, 5_000)),
+    });
+  } catch {
+    // A notice that cannot be delivered changes nothing about the command it describes.
+  }
+}
+
+/** The run-notice URL beside a manifest endpoint override. */
+export function buildRunNoticeUrl(manifestEndpoint: string, siteUuid: string): string {
+  const url = new URL(manifestEndpoint);
+  const path = url.pathname.replace(/\/$/, '');
+  const id = encodeURIComponent(siteUuid);
+  url.pathname = path.endsWith('/manifest') ? `${path.slice(0, -'/manifest'.length)}/run/${id}` : `/monitor/pulse/run/${id}`;
+  url.search = '';
+  url.hash = '';
+  return url.toString();
+}
+
 /** The build-report URL beside a manifest endpoint override. */
 export function buildReportUrl(manifestEndpoint: string, siteUuid: string): string {
   const url = new URL(manifestEndpoint);
@@ -689,6 +730,7 @@ export async function postBuildReport(
       body: JSON.stringify(buildReportBody(checksum, marker)),
       signal: AbortSignal.timeout(config.timeoutMs),
     });
+    markRunLogged();
   } catch (cause) {
     throw new PatchstackError(
       isTimeoutError(cause)
@@ -765,6 +807,7 @@ export async function postManifest(
       body: JSON.stringify(buildManifestBody(config, payload, process.env, marker)),
       signal: AbortSignal.timeout(timeoutMs),
     });
+    markRunLogged();
   } catch (cause) {
     if (isTimeoutError(cause)) {
       throw new PatchstackError(

@@ -24,7 +24,9 @@ import {
   postPackageRemoved,
   setRunCommand,
   hasSiteCredential,
+  postRunNotice,
 } from './client.js';
+import { runWasLogged } from './report-context.js';
 import { detectHostedBuilder } from './environment.js';
 import {
   assertDemoDependency,
@@ -2160,6 +2162,36 @@ async function main(): Promise<number> {
   }
 
   setRunCommand(args.command);
+  if (!KNOWN_COMMANDS.has(args.command)) return runCommand(args);
+  let code = 1;
+  try {
+    code = await runCommand(args);
+    return code;
+  } finally {
+    await noticeUnloggedRun(args, code);
+  }
+}
+
+/** Commands `runCommand` dispatches; anything else is an unknown command and sends no notice. */
+const KNOWN_COMMANDS = new Set([
+  'init', 'scan', 'vulns', 'summary', 'go-live', 'widget', 'status', 'uninstall', 'mark-build', 'protect',
+  'demo', 'demo-guide', 'guide', 'setup', 'map', 'claim', 'login',
+]);
+
+/**
+ * A run that sent nothing the site's activity log records still tells Patchstack it ran, by the site's
+ * UUID alone, so a command an assistant was asked to run can be seen to have run — or not.
+ */
+async function noticeUnloggedRun(args: ParsedArgs, code: number): Promise<void> {
+  if (runWasLogged()) return;
+  try {
+    await postRunNotice(await resolveCliConfig(args), code);
+  } catch {
+    // No readable configuration means no site to tell.
+  }
+}
+
+async function runCommand(args: ParsedArgs): Promise<number> {
   switch (args.command) {
     case 'init':
       return runInit(args);
