@@ -112,6 +112,34 @@ describe('native TanStack server boundary',()=>{
     expect(runVerify(cwd).wired).toBe(true);
   });
 
+  it.each([
+    'defineConfig()',
+    'defineConfig({})',
+    'defineConfig({tanstackStart:{}, vite:{build:{sourcemap:true}}})',
+  ])('accepts a config wrapper that adds tanstackStart() with its defaults: %s', call => {
+    const cwd = tanstack();
+    put(cwd, 'vite.config.ts', `import {defineConfig} from '@lovable.dev/vite-tanstack-config';\nexport default ${call};`);
+    expect(runProtect(cwd).status).toBe('wired');
+    expect(read(cwd, 'src/server.ts')).toContain('protectFetch(handler.fetch.bind(handler))');
+    expect(runVerify(cwd).wired).toBe(true);
+  });
+
+  it.each([
+    'defineConfig({tanstackStart:{srcDirectory:"web"}})',
+    'defineConfig({tanstackStart:{server:{entry:"custom"}}})',
+    'defineConfig({tanstackStart:options})',
+    'defineConfig({...options})',
+    'defineConfig(options)',
+    'defineConfig({plugins:[tanstackStart()]})',
+  ])('does not assume default entries from a config wrapper that may move them: %s', call => {
+    const cwd = tanstack();
+    const start = call.includes('tanstackStart(') ? "import {tanstackStart} from '@tanstack/react-start/plugin/vite';\n" : '';
+    put(cwd, 'vite.config.ts', "import {defineConfig} from '@lovable.dev/vite-tanstack-config';\n" + start +
+      `import options from './start-options';\nexport default ${call};`);
+    expect(runProtect(cwd).status).toBe('scaffolded');
+    expect(existsSync(join(cwd, 'src/server.ts'))).toBe(false);
+  });
+
   it.each(['vite.config.cjs','vite.config.cts','app.config.ts','rsbuild.config.ts'])('preserves unsupported configuration in %s', file => {
     const cwd = tanstack();
     put(cwd, file, 'module.exports = require("./options");');

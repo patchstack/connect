@@ -15,6 +15,8 @@ const DEFAULT = `import handler, { createServerEntry } from '@tanstack/react-sta
 export default createServerEntry({ fetch: handler.fetch.bind(handler) });
 `;
 const EXTENSIONS = ['ts', 'js', 'mts', 'mjs', 'tsx', 'jsx', 'cts', 'cjs'];
+/** A Vite config wrapper that adds tanstackStart() itself, passing its `tanstackStart` option through. */
+const START_CONFIG_WRAPPER = '@lovable.dev/vite-tanstack-config';
 
 /** Prove the default entry from literal configuration without executing application code. */
 function defaultEntryConfig(ts: Compiler, file: string, source: string): boolean {
@@ -25,6 +27,7 @@ function defaultEntryConfig(ts: Compiler, file: string, source: string): boolean
     .flatMap(n => n.importClause?.namedBindings && ts.isNamedImports(n.importClause.namedBindings)
       ? n.importClause.namedBindings.elements.filter(e => !e.isTypeOnly && (e.propertyName ?? e.name).text === name).map(e => e.name.text) : []);
   const defineConfig = binding('vite', 'defineConfig');
+  const wrapper = binding(START_CONFIG_WRAPPER, 'defineConfig');
   const start = binding('@tanstack/react-start/plugin/vite', 'tanstackStart');
   const unwrap = (expression: import('typescript').Expression): import('typescript').Expression => {
     while (ts.isParenthesizedExpression(expression) || ts.isAsExpression(expression) || ts.isSatisfiesExpression(expression)) expression = expression.expression;
@@ -33,8 +36,14 @@ function defaultEntryConfig(ts: Compiler, file: string, source: string): boolean
   const exports = tree.statements.filter(ts.isExportAssignment);
   if (exports.length !== 1 || exports[0]!.isExportEquals) return false;
   let config = unwrap(exports[0]!.expression);
+  let wrapped = false;
   if (ts.isCallExpression(config)) {
-    if (!ts.isIdentifier(config.expression) || !defineConfig.includes(config.expression.text) || config.arguments.length !== 1) return false;
+    if (!ts.isIdentifier(config.expression)) return false;
+    wrapped = wrapper.includes(config.expression.text);
+    // The wrapper's own tanstackStart() keeps the default entry; importing another one would compete with it.
+    if (wrapped && start.length > 0) return false;
+    if (wrapped && config.arguments.length === 0) return true;
+    if (!(wrapped || defineConfig.includes(config.expression.text)) || config.arguments.length !== 1) return false;
     config = unwrap(config.arguments[0]!);
   }
   if (!ts.isObjectLiteralExpression(config)) return false;
@@ -54,6 +63,10 @@ function defaultEntryConfig(ts: Compiler, file: string, source: string): boolean
   };
   visit(config);
   if (unsafe) return false;
+  if (wrapped) {
+    const options = config.properties.find(p => ts.isPropertyAssignment(p) && (ts.isIdentifier(p.name) || ts.isStringLiteral(p.name)) && p.name.text === 'tanstackStart');
+    return !options || (ts.isPropertyAssignment(options) && ts.isObjectLiteralExpression(unwrap(options.initializer)));
+  }
   const plugins = config.properties.find(p => ts.isPropertyAssignment(p) && (ts.isIdentifier(p.name) || ts.isStringLiteral(p.name)) && p.name.text === 'plugins');
   if (!plugins || !ts.isPropertyAssignment(plugins) || !ts.isArrayLiteralExpression(plugins.initializer)) return false;
   const calls = plugins.initializer.elements.map(unwrap).filter(n => ts.isCallExpression(n) && ts.isIdentifier(n.expression) && start.includes(n.expression.text));
