@@ -448,6 +448,32 @@ describe.skipIf(!built)('the packaged bin, invoked as npm invokes it', () => {
       }
     });
 
+    it('tells Patchstack a command ran when it sent nothing else, once, by the site UUID', async () => {
+      const requests: Array<{ line: string; command: string | undefined; key: string | undefined; body: string }> = [];
+      const server = createServer((req, res) => {
+        let body = '';
+        req.on('data', (chunk) => { body += chunk.toString(); });
+        req.on('end', () => {
+          requests.push({ line: `${req.method} ${req.url}`, command: req.headers['x-patchstack-command'] as string | undefined, key: req.headers['x-patchstack-key'] as string | undefined, body });
+          res.writeHead(204);
+          res.end();
+        });
+      });
+      await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+      const endpoint = `http://127.0.0.1:${(server.address() as AddressInfo).port}/monitor/pulse/manifest`;
+      const dir = freshProject();
+      writeFileSync(path.join(dir, '.patchstackrc.json'), JSON.stringify({ siteUuid: SITE }));
+      try {
+        await expect(run(dir, endpoint, ['summary'])).rejects.toThrow();
+        expect(requests).toEqual([
+          { line: `POST /monitor/pulse/run/${SITE}`, command: 'summary', key: 'none', body: JSON.stringify({ exit_code: 1 }) },
+        ]);
+      } finally {
+        await new Promise<void>((resolve) => server.close(() => resolve()));
+        rmSync(dir, { recursive: true, force: true });
+      }
+    });
+
     it('sends nothing from a hosted builder copy without the key, and lets its install go on', async () => {
       const requests: string[] = [];
       const server = createServer((req, res) => {
@@ -466,7 +492,9 @@ describe.skipIf(!built)('the packaged bin, invoked as npm invokes it', () => {
       try {
         await expect(scan(builder, endpoint)).resolves.toBeDefined();
         await expect(scan(plain, endpoint)).rejects.toThrow();
-        expect(requests.filter((r) => r.startsWith('POST'))).toEqual([]);
+        // Only each run's notice that it ran: nothing a key would have been needed for.
+        expect(requests.filter((r) => r.startsWith('POST') && !r.includes('/monitor/pulse/run/'))).toEqual([]);
+        expect(requests.filter((r) => r.includes('/monitor/pulse/run/'))).toHaveLength(2);
       } finally {
         await new Promise<void>((resolve) => server.close(() => resolve()));
         rmSync(builder, { recursive: true, force: true });

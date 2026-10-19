@@ -45,6 +45,7 @@ const DISCLOSED_AS: Record<string, { doc: RegExp; files?: string[] }> = {
   'monitor/pulse/package-removed': { doc: /package-removed|package removal/i },
   'monitor/pulse/token': { doc: /short-lived token|pulse\/token/i },
   'monitor/pulse/build': { doc: /monitor\/pulse\/build/i, files: ['src/client.ts'] },
+  'monitor/pulse/run': { doc: /monitor\/pulse\/run/i, files: ['src/client.ts'] },
   'monitor/widget/settings': { doc: /monitor\/widget\/settings/i },
   'monitor/claim': { doc: /claim/i },
   'monitor/claim/preview': { doc: /monitor\/claim\/preview/i },
@@ -70,6 +71,7 @@ const DISCLOSED_AS: Record<string, { doc: RegExp; files?: string[] }> = {
   },
   token: { doc: /short-lived token|pulse\/token/i, files: ['src/pulse-token.ts'] },
   build: { doc: /monitor\/pulse\/build/i, files: ['src/client.ts'] },
+  run: { doc: /monitor\/pulse\/run/i, files: ['src/client.ts'] },
 };
 
 /**
