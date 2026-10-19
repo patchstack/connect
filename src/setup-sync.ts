@@ -6,6 +6,8 @@ import { runMapDetailed, type MapResult, type MapOptions } from './map-command.j
 import { resolveRules } from './protect/rules/source.js';
 import { makeStore } from './protect/rules/store.js';
 import type { Config } from './types.js';
+import { writeBundledRules, type BundledRulesResult } from './bundled-rules.js';
+import { detectHostedBuilder } from './environment.js';
 
 export interface SetupSyncResult {
   map: MapResult;
@@ -16,6 +18,8 @@ export interface SetupSyncResult {
     mapRules: 'ready' | 'pending' | 'unknown';
     error?: string;
   };
+  /** Whether the site's rules were written into the guard's rules file (hosted-builder workspaces only). */
+  bundled?: BundledRulesResult;
   notices: string[];
   warnings: string[];
 }
@@ -76,8 +80,16 @@ export async function syncSetupProtection(cwd: string, config: Config, { waitMs 
         pulseAuth: config.pulseAuth, timeoutMs: Math.min(config.timeoutMs, remaining),
       });
     }
+    // A hosted builder publishes without the key, so its live app cannot fetch rules. The workspace can:
+    // it puts them into the guard's rules file, which the next publish ships.
+    let bundled: BundledRulesResult | undefined;
+    if (bundle.source.ok && detectHostedBuilder(cwd) !== null) {
+      const cached = await store.read();
+      bundled = cached?.bundle ? writeBundledRules(cwd, cached.bundle) : 'skipped';
+      if (bundled === 'written') notices.push("Wrote this site's current rules into the guard's rules file, for the next publish.");
+    }
     return {
-      map, notices, warnings,
+      map, notices, warnings, bundled,
       rules: { ok: bundle.source.ok, origin: bundle.source.origin, count: bundle.firewall.length,
         mapRules: bundle.synchronization?.mapRules ?? 'unknown',
         ...(bundle.source.ok ? {} : { error: bundle.source.reason ?? 'Live rules could not be fetched.' }) },

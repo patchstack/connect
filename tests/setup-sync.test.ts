@@ -53,6 +53,23 @@ function cache() { return JSON.parse(readFileSync(join(cwd,'.patchstack/patchsta
 function uploaded() { return JSON.parse(String(calls.find(c => c.url.includes('/input-map/'))!.init.body)); }
 
 describe('one-command setup synchronization', () => {
+  it("puts the site's rules into the guard's rules file in a hosted builder's workspace, and only there", async () => {
+    const rulesFile = () => { const found = findRulesFile(cwd); if (found.kind !== 'one') throw new Error('no rules file'); return found.path; };
+    const ids = () => JSON.parse(readFileSync(rulesFile(), 'utf8')).firewall.map((r: { id: string }) => r.id);
+
+    const plain = await syncSetupProtection(cwd, config);
+    expect(plain.bundled).toBeUndefined();
+    expect(ids()).not.toContain('synthetic-request');
+
+    const pkg = JSON.parse(readFileSync(join(cwd, 'package.json'), 'utf8'));
+    writeFileSync(join(cwd, 'package.json'), JSON.stringify({ ...pkg, devDependencies: { 'lovable-tagger': '^1.1.7' } }));
+
+    const builder = await syncSetupProtection(cwd, config);
+    expect(builder.bundled).toBe('written');
+    expect(ids()).toContain('synthetic-request');
+    expect((await syncSetupProtection(cwd, config)).bundled).toBe('unchanged');
+  });
+
   it('does not upload or bind an analysis superseded by another source edit', async () => {
     const result = await syncSetupProtection(cwd, config, {mapOptions:{isCurrent:()=>false}});
     expect(result.map.error).toContain('Source changed');
