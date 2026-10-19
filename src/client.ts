@@ -413,6 +413,9 @@ export async function fetchClaimPreview(config: Config): Promise<ClaimPreview> {
         Accept: 'application/json',
         'Cache-Control': 'no-cache',
         ...connectHeaders(),
+        // Whether this run holds the site's key, never the key itself. A run without one sends nothing
+        // else, so this check is the only request its activity log can show.
+        'X-Patchstack-Key': hasSiteCredential(config) ? 'present' : 'none',
       },
       signal: AbortSignal.timeout(config.timeoutMs),
     });
