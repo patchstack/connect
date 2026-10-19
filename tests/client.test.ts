@@ -11,6 +11,8 @@ import {
   postManifest,
   postPackageRemoved,
   buildManifestBody,
+  connectHeaders,
+  setRunCommand,
 } from '../src/client.js';
 import { PatchstackError } from '../src/types.js';
 
@@ -109,7 +111,7 @@ describe('buildSettingsUrl', () => {
 
 describe('fetchSiteStatus', () => {
   const config = {
-    siteUuid: 'uuid',
+    siteUuid: 'uuid', pulseAuth: 'synthetic-key',
     endpoint: 'https://example.com/monitor/pulse/manifest',
     timeoutMs: 30_000,
     widget: true,
@@ -174,7 +176,7 @@ describe('fetchSiteStatus', () => {
 
 describe('fetchClaimState', () => {
   const config = {
-    siteUuid: 'uuid',
+    siteUuid: 'uuid', pulseAuth: 'synthetic-key',
     endpoint: 'https://example.com/monitor/pulse/manifest',
     timeoutMs: 30_000,
     widget: true,
@@ -281,7 +283,7 @@ describe('buildPackageRemovedUrl', () => {
 
 describe('postPackageRemoved', () => {
   const config = {
-    siteUuid: 'uuid',
+    siteUuid: 'uuid', pulseAuth: 'synthetic-key',
     endpoint: 'https://example.com/monitor/pulse/manifest',
     timeoutMs: 30_000,
     widget: true,
@@ -375,7 +377,7 @@ describe('postManifest', () => {
     vi.stubGlobal('fetch', fetchMock);
 
     const result = await postManifest(
-      { siteUuid: 'uuid', endpoint: 'https://example.com', timeoutMs: 30_000, widget: true, environment: 'production' },
+      { siteUuid: 'uuid', pulseAuth: 'synthetic-key', endpoint: 'https://example.com', timeoutMs: 30_000, widget: true, environment: 'production' },
       { ecosystem: 'npm', packages: [{ name: 'lodash', version: '4.17.21' }] },
     );
     expect(result.stored).toBe(true);
@@ -389,7 +391,7 @@ describe('postManifest', () => {
     await expect(
       postManifest(
         {
-          siteUuid: 'uuid',
+          siteUuid: 'uuid', pulseAuth: 'synthetic-key',
           endpoint: 'https://example.com',
           endpointTrusted: false,
           timeoutMs: 30_000,
@@ -431,7 +433,7 @@ describe('postManifest', () => {
     await expect(
       postManifest(
         {
-          siteUuid: 'uuid',
+          siteUuid: 'uuid', pulseAuth: 'synthetic-key',
           endpoint: 'https://example.com',
           timeoutMs: 30_000,
           widget: true,
@@ -449,7 +451,7 @@ describe('postManifest', () => {
     vi.stubGlobal('fetch', fetchMock);
 
     await postManifest(
-      { siteUuid: 'uuid', endpoint: 'https://example.com', timeoutMs: 30_000, widget: true, environment: 'sandbox' },
+      { siteUuid: 'uuid', pulseAuth: 'synthetic-key', endpoint: 'https://example.com', timeoutMs: 30_000, widget: true, environment: 'sandbox' },
       { ecosystem: 'npm', packages: [{ name: 'lodash', version: '4.17.21' }] },
     );
 
@@ -467,7 +469,7 @@ describe('postManifest', () => {
 
     await postManifest(
       {
-        siteUuid: 'uuid',
+        siteUuid: 'uuid', pulseAuth: 'synthetic-key',
         siteUrl: 'https://shop.example.com',
         endpoint: 'https://example.com',
         timeoutMs: 30_000,
@@ -492,7 +494,7 @@ describe('postManifest', () => {
 
     await postManifest(
       {
-        siteUuid: 'uuid',
+        siteUuid: 'uuid', pulseAuth: 'synthetic-key',
         siteUrl: null,
         endpoint: 'https://example.com',
         timeoutMs: 30_000,
@@ -516,7 +518,7 @@ describe('postManifest', () => {
 
     await expect(
       postManifest(
-        { siteUuid: 'uuid', endpoint: 'https://example.com', timeoutMs: 30_000, widget: true, environment: 'production' },
+        { siteUuid: 'uuid', pulseAuth: 'synthetic-key', endpoint: 'https://example.com', timeoutMs: 30_000, widget: true, environment: 'production' },
         { ecosystem: 'npm', packages: [] },
       ),
     ).rejects.toMatchObject({ code: 'SITE_NOT_FOUND' });
@@ -534,7 +536,7 @@ describe('postManifest', () => {
 
     await expect(
       postManifest(
-        { siteUuid: 'uuid', endpoint: 'https://example.com', timeoutMs: 30_000, widget: true, environment: 'production' },
+        { siteUuid: 'uuid', pulseAuth: 'synthetic-key', endpoint: 'https://example.com', timeoutMs: 30_000, widget: true, environment: 'production' },
         { ecosystem: 'npm', packages: [] },
       ),
     ).rejects.toMatchObject({ code: 'VALIDATION_ERROR' });
@@ -545,7 +547,7 @@ describe('postManifest', () => {
 
     await expect(
       postManifest(
-        { siteUuid: 'uuid', endpoint: 'https://example.com', timeoutMs: 30_000, widget: true, environment: 'production' },
+        { siteUuid: 'uuid', pulseAuth: 'synthetic-key', endpoint: 'https://example.com', timeoutMs: 30_000, widget: true, environment: 'production' },
         { ecosystem: 'npm', packages: [] },
       ),
     ).rejects.toBeInstanceOf(PatchstackError);
@@ -558,7 +560,7 @@ describe('postManifest', () => {
     vi.stubGlobal('fetch', fetchMock);
 
     await postManifest(
-      { siteUuid: 'uuid', endpoint: 'https://example.com', timeoutMs: 12345, widget: true, environment: 'production' },
+      { siteUuid: 'uuid', pulseAuth: 'synthetic-key', endpoint: 'https://example.com', timeoutMs: 12345, widget: true, environment: 'production' },
       { ecosystem: 'npm', packages: [] },
     );
 
@@ -593,7 +595,7 @@ describe('postManifest', () => {
 
     await expect(
       postManifest(
-        { siteUuid: 'uuid', endpoint: 'https://example.com', timeoutMs: 1, widget: true, environment: 'production' },
+        { siteUuid: 'uuid', pulseAuth: 'synthetic-key', endpoint: 'https://example.com', timeoutMs: 1, widget: true, environment: 'production' },
         { ecosystem: 'npm', packages: [] },
       ),
     ).rejects.toMatchObject({ code: 'NETWORK_TIMEOUT' });
@@ -615,7 +617,7 @@ describe('postManifest site name', () => {
     const base = {
       siteUuid: 'uuid',
       apiKey: null,
-      pulseAuth: null,
+      pulseAuth: 'synthetic-key',
       siteUrl: null,
       endpoint: 'https://example.com',
       timeoutMs: 30_000,
@@ -643,7 +645,7 @@ describe('postManifest site name', () => {
       {
         siteUuid: 'uuid',
         apiKey: null,
-        pulseAuth: null,
+        pulseAuth: 'synthetic-key',
         endpoint: 'https://example.com',
         timeoutMs: 30_000,
         widget: true,
@@ -663,7 +665,7 @@ describe('buildManifestBody', () => {
   const base = {
     siteUuid: 'uuid',
     apiKey: null,
-    pulseAuth: null,
+    pulseAuth: 'synthetic-key',
     endpoint: 'https://example.com',
     timeoutMs: 30_000,
     widget: true,
@@ -693,5 +695,36 @@ describe('buildManifestBody', () => {
       environment: 'production',
       trigger: 'other',
     });
+  });
+});
+
+describe('connectHeaders', () => {
+  afterEach(() => {
+    setRunCommand(null);
+    vi.unstubAllGlobals();
+    vi.unstubAllEnvs();
+  });
+
+  it('names the command and what started it on every request, and nothing else', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(
+      new Response(JSON.stringify({ stored: true, manifest_id: 1, checksum: 'abc123abc123' }), { status: 200 }),
+    );
+    vi.stubGlobal('fetch', fetchMock);
+    vi.stubEnv('npm_lifecycle_event', 'prebuild');
+    setRunCommand('scan');
+
+    await postManifest(
+      { siteUuid: 'uuid', pulseAuth: 'synthetic-key', endpoint: 'https://example.com', timeoutMs: 30_000, widget: true, environment: 'production' },
+      { ecosystem: 'npm', packages: [] },
+    );
+
+    const headers = fetchMock.mock.calls[0][1].headers as Record<string, string>;
+    expect(headers['X-Patchstack-Command']).toBe('scan');
+    expect(headers['X-Patchstack-Trigger']).toBe('build');
+    expect(headers['User-Agent']).toBe('@patchstack/connect');
+  });
+
+  it('leaves the command out when none is running', () => {
+    expect(connectHeaders({})).toEqual({ 'User-Agent': '@patchstack/connect', 'X-Patchstack-Trigger': 'other' });
   });
 });

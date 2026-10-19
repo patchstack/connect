@@ -22,7 +22,10 @@ import {
   postManifestWithEnvironmentFallback,
   canRetryManifestPost,
   postPackageRemoved,
+  setRunCommand,
+  hasSiteCredential,
 } from './client.js';
+import { detectHostedBuilder } from './environment.js';
 import {
   assertDemoDependency,
   assertPersistedSiteUuid,
@@ -843,11 +846,15 @@ async function runScan(
 
   // Hooked into an install or build, the report is this command's concern and the build is not: the
   // failure is said in full on stderr and the build goes on. A direct `scan` still exits non-zero for it.
+  // So does a hosted builder's copy without the key — its publish, or a clone — whose `bun install` hook
+  // Bun does not name: that copy is expected to hold no key, and nothing was sent.
   let response: StoreManifestResponse;
   try {
     response = await postManifestWithPatience(config, payload);
   } catch (err) {
-    if (!(err instanceof PatchstackError) || !isInstallOrBuildHook()) throw err;
+    const keylessBuilderCopy = err instanceof PatchstackError && err.code === 'UNAUTHORIZED'
+      && !hasSiteCredential(config) && detectHostedBuilder(process.cwd()) !== null;
+    if (!(err instanceof PatchstackError) || !(isInstallOrBuildHook() || keylessBuilderCopy)) throw err;
     for (const line of undeliveredReportLines(err, config, process.cwd())) console.error(line);
     return 0;
   }
@@ -1499,10 +1506,19 @@ async function runSetup(args: ParsedArgs): Promise<number> {
   }
   detail(`Build hooks: ${wired.detail}`);
 
-  if (args.flags.get('dev-sync') === true) {
+  // A hosted builder publishes without the key, so its publish cannot upload the map. The workspace has
+  // the key: syncing there uploads each map the publish will carry, under the same identity.
+  const builder = detectHostedBuilder(process.cwd());
+  if (args.flags.get('dev-sync') === true || builder !== null) {
     const development = wireDevelopmentScript(process.cwd());
-    if (development.wired) report.done.push('Development map synchronization wired (starts with your dev command)');
-    else report.missing.push({ key: 'development-sync', text: 'Development command needs manual sync integration', hint: ['The existing dev script was preserved. Run: patchstack-connect dev -- <server-command> [arguments]'] });
+    if (development.wired) {
+      report.done.push('Development map synchronization wired (starts with your dev command)');
+      if (development.changed) recordChange(report, 'package.json', 'the dev script also keeps Patchstack\'s map of the app up to date');
+    } else if (builder === null) {
+      report.missing.push({ key: 'development-sync', text: 'Development command needs manual sync integration', hint: ['The existing dev script was preserved. Run: patchstack-connect dev -- <server-command> [arguments]'] });
+    } else {
+      detail(`Development map synchronization not wired: the ${builder} dev script was not one setup recognises, so it was left unchanged.`);
+    }
   }
 
   const config = await resolveCliConfig(args);
@@ -2088,6 +2104,7 @@ function plainErrorMessage(err: PatchstackError): string | null {
 
 async function main(): Promise<number> {
   if (process.argv[2] === 'dev') {
+    setRunCommand('dev');
     return runDevelopment(process.argv[3] === '--' ? process.argv.slice(4) : []);
   }
   const args = parseArgs(process.argv);
@@ -2120,6 +2137,7 @@ async function main(): Promise<number> {
     return 0;
   }
 
+  setRunCommand(args.command);
   switch (args.command) {
     case 'init':
       return runInit(args);

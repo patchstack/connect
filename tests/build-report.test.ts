@@ -5,6 +5,7 @@ import type { Config } from '../src/types.js';
 
 const config = {
   siteUuid: '550e8400-e29b-41d4-a716-446655440000',
+  pulseAuth: 'synthetic-key',
   endpoint: 'https://example.com/monitor/pulse/manifest',
   timeoutMs: 30_000,
   widget: true,

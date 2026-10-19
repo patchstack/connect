@@ -30,6 +30,9 @@ function project(files: Record<string, string>): string {
 
 function captureUploads() {
   const sent: Array<{ url: string; body: any }> = [];
+  // An upload is sent only with the site's credential; this one is not in the token format, so no
+  // token exchange runs.
+  vi.stubEnv('PATCHSTACK_PULSE_AUTH', 'synthetic-key');
   vi.stubGlobal('fetch', async (url: any, init: any) => {
     sent.push({ url: String(url), body: JSON.parse(String(init?.body ?? '{}')) });
     return new Response(JSON.stringify({ result: 'stored', revision: 1 }), {
