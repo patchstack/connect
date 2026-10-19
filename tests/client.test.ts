@@ -260,6 +260,18 @@ describe('fetchClaimState', () => {
     expect(init.method).toBe('GET');
     expect(JSON.stringify(init.headers)).not.toContain('secret-key');
   });
+
+  it('says whether this run holds a key, and never sends the key', async () => {
+    const fetchMock = answering({ state: 'claimable' });
+    vi.stubGlobal('fetch', fetchMock);
+
+    await fetchClaimState({ ...config, pulseAuth: null } as typeof config);
+    await fetchClaimState({ ...config, pulseAuth: 'secret-credential-1' } as typeof config);
+
+    const headers = fetchMock.mock.calls.map((call) => (call[1] as RequestInit).headers as Record<string, string>);
+    expect(headers.map((h) => h['X-Patchstack-Key'])).toEqual(['none', 'present']);
+    expect(JSON.stringify(headers)).not.toContain('secret-credential-1');
+  });
 });
 
 describe('buildPackageRemovedUrl', () => {
