@@ -167,7 +167,7 @@ When setup is finished, the person reads one short message, not a transcript of 
 - `.patchstackrc.json`: your site's ID and connect link. Safe to commit
 - `.patchstackrc.local.json`: your API key. Never commit or upload it; git ignores it
 
-The Patchstack widget now shows in your app preview (in `index.html`). Refresh the preview if you don't see it.
+**Vulnerability overview:** a Patchstack widget now appears in the pre-production version of your app (in `index.html`). Refresh the preview if it did not appear.
 
 Don't forget to republish or redeploy the app so the protection rules protect your live app.
 

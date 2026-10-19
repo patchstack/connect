@@ -192,7 +192,7 @@ describe('renderSummary', () => {
       '✅ Packages checked on this computer',
       '⬜ Deploy to protect your live app',
       '',
-      'The Patchstack widget now shows in your app preview. Refresh the preview if you don\'t see it.',
+      '**Vulnerability overview:** a Patchstack widget now appears in the pre-production version of your app. Refresh the preview if it did not appear.',
       '',
       "Don't forget to republish or redeploy the app so the protection rules protect your live app.",
       '',
@@ -219,7 +219,7 @@ describe('renderSummary', () => {
     expect(text).toContain('⬜ Publish your app');
     expect(text).not.toContain('Deploy to protect');
     expect(text).not.toContain("Don't forget to republish");
-    expect(text).not.toContain('widget now shows');
+    expect(text).not.toContain('Vulnerability overview');
     expect(text).not.toContain('Rules for this app are ready');
     expect(renderStatus('Patchstack setup', input, notConnected, context, { useColor: false, concise: true }).join('\n')).not.toContain('Rules for this app are ready');
     expect(text).toContain('**Add the Patchstack widget to my app**');
@@ -249,7 +249,7 @@ describe('renderSummary', () => {
       '✅ Packages checked on this computer',
       '⬜ Publish your app',
       '',
-      'The Patchstack widget now shows in your app preview (in `index.html`). Refresh the preview if you don\'t see it.',
+      '**Vulnerability overview:** a Patchstack widget now appears in the pre-production version of your app (in `index.html`). Refresh the preview if it did not appear.',
       '',
       'No server was found in this project, so Patchstack checks its packages. Blocking attacks needs a server.',
       '',

@@ -358,7 +358,7 @@ export function renderSummary(report: StatusReport, progress: Progress, context:
 
   if (options.widgetOnPage) {
     const where = options.widgetFile != null ? ` (in \`${options.widgetFile}\`)` : '';
-    lines.push(`The Patchstack widget now shows in your app preview${where}. Refresh the preview if you don't see it.`, '');
+    lines.push(`**Vulnerability overview:** a Patchstack widget now appears in the pre-production version of your app${where}. Refresh the preview if it did not appear.`, '');
   }
   for (const item of report.missing.filter((entry) => entry.note === true)) {
     lines.push(item.plain?.text ?? item.text, '');
