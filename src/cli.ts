@@ -1403,14 +1403,15 @@ function reportProtection(protection: ReturnType<typeof setupProtection>, report
         ? `Added runtime protection (${protection.verification.stack})`
         : `Runtime protection is already set up (${protection.verification.stack})`,
     );
-    // Coverage the guard works without, said as a fact about the app rather than a step left undone.
+    // Coverage the guard works without (a Supabase browser tunnel, Next.js route-level response filtering),
+    // said as a fact about the app rather than a step left undone.
     for (const check of protection.verification.checks.filter((c) => c.optional && !c.ok)) {
       report.missing.push({
         key: `optional-${check.label}`,
         text: `Not covered: ${check.label}`,
         hint: check.hint ? [check.hint] : [],
         note: true,
-        plain: { text: 'Requests to your app are protected. Traffic from the browser straight to your database is not screened.', hint: [] },
+        plain: { text: `Requests to your app are protected. Not covered yet: ${check.label}.`, hint: [] },
       });
     }
     return false;

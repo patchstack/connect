@@ -277,7 +277,9 @@ returned response. The shared server-only `patchstack.next` helper initializes o
 instance, retries a failed initialization, and imports the same fallback rules file as middleware.
 Supported handlers are directly exported async functions or block-bodied async arrows without an
 explicit return type. Re-run `protect` after adding routes. Unsupported handlers remain unchanged;
-`protect --check` lists the gaps instead of reporting complete route coverage.
+`protect --check` lists the gaps (marked `!`) instead of reporting complete route coverage. They do not
+fail the check: the middleware screens every request, and route-level response filtering is the extra
+coverage they miss.
 
 Middleware cannot inspect the body that a downstream page returns. This setup does **not** establish
 response filtering for rendered pages, Server Actions or Pages Router API handlers. Those need their
