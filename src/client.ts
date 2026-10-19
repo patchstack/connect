@@ -8,7 +8,8 @@ import {
 } from './types.js';
 import type { WirePayload } from './normalize.js';
 import { detectHostingPlatform } from './hosting.js';
-import { reportTrigger } from './report-context.js';
+import { connectHeaders, reportTrigger } from './report-context.js';
+export { connectHeaders, setRunCommand } from './report-context.js';
 import { computeManifestChecksum } from './checksum.js';
 import { pulseFetch } from './pulse-token.js';
 import { canonicalBuildId } from './build-id.js';
@@ -34,6 +35,11 @@ export function claimTokenHeader(config: Config): Record<string, string> {
   return config.endpointTrusted !== false && isHeaderValue(config.claimToken)
     ? { [CLAIM_TOKEN_HEADER]: config.claimToken }
     : {};
+}
+
+/** Whether this run holds the site's credential. An existing site refuses every write without it. */
+export function hasSiteCredential(config: Config): boolean {
+  return typeof config.pulseAuth === 'string' && config.pulseAuth.length > 0;
 }
 
 export interface ClaimOutcome {
@@ -204,6 +210,11 @@ export async function postInputMap(
   if (config.siteUuid === null) {
     return { result: 'skipped', message: 'No site UUID configured — run `patchstack-connect scan` first.' };
   }
+  // The route refuses a map without the site's credential, so none is sent. A project copy that holds
+  // the key (setup, or the development sync) uploads the same map under the same identity.
+  if (!hasSiteCredential(config)) {
+    return { result: 'skipped', message: 'no API key here, so this build did not send it. The copy of the project that has the key sends it, or set PATCHSTACK_API_KEY here.' };
+  }
 
   const url = buildInputMapUrl(config.endpoint, config.siteUuid);
   try {
@@ -213,7 +224,7 @@ export async function postInputMap(
       headers: {
         Accept: 'application/json',
         'Content-Type': 'application/json',
-        'User-Agent': '@patchstack/connect',
+        ...connectHeaders(),
       },
       // `build_id` is additive to the v3 document: a reader that ignores it behaves exactly as before.
       // It is the digest of the policy map carrying these coordinates, so the server can serve a rule pinned
@@ -281,7 +292,7 @@ export async function postPackageRemoved(config: Config): Promise<PackageRemoved
       method: 'POST',
       headers: {
         Accept: 'application/json',
-        'User-Agent': '@patchstack/connect',
+        ...connectHeaders(),
       },
       signal: AbortSignal.timeout(config.timeoutMs),
     });
@@ -341,7 +352,7 @@ export async function fetchSiteStatus(config: Config): Promise<SiteStatus> {
       headers: {
         Accept: 'application/json',
         'Cache-Control': 'no-cache',
-        'User-Agent': '@patchstack/connect',
+        ...connectHeaders(),
       },
       signal: AbortSignal.timeout(config.timeoutMs),
     });
@@ -401,7 +412,7 @@ export async function fetchClaimPreview(config: Config): Promise<ClaimPreview> {
       headers: {
         Accept: 'application/json',
         'Cache-Control': 'no-cache',
-        'User-Agent': '@patchstack/connect',
+        ...connectHeaders(),
       },
       signal: AbortSignal.timeout(config.timeoutMs),
     });
@@ -594,8 +605,7 @@ export async function postManifestWithEnvironmentFallback(
       environmentUsed: config.environment,
     };
   } catch (err) {
-    // Asked only once the manifest was refused: a host's build authenticates with a HostToken and
-    // carries no key of its own, and its manifest must still go through.
+    // A run with no key is refused before anything is sent; a production build then names itself instead.
     if (err instanceof PatchstackError && err.code === 'UNAUTHORIZED' && reportsBuildWithoutCredential(config)) {
       return {
         response: await postBuildReport(config, computeManifestChecksum(payload.packages), marker),
@@ -613,12 +623,10 @@ export async function postManifestWithEnvironmentFallback(
  *
  * That is a hosted builder's publish. It builds from the committed project, and the API key lives in a
  * git-ignored file, so the manifest post would be refused. The build report needs no credential
- * because it cannot say what the app is built from — only that the build Patchstack last scanned was
- * built for production.
+ * because it cannot say what the app is built from — only that this build was built for production.
  */
 export function reportsBuildWithoutCredential(config: Config): boolean {
-  const hasCredential = typeof config.pulseAuth === 'string' && config.pulseAuth.length > 0;
-  return !hasCredential && config.environment === 'production' && config.siteUuid !== null && config.siteUuid !== '';
+  return !hasSiteCredential(config) && config.environment === 'production' && config.siteUuid !== null && config.siteUuid !== '';
 }
 
 /** The build-report URL beside a manifest endpoint override. */
@@ -651,8 +659,9 @@ export function buildReportBody(
 /**
  * Tell Patchstack a production build ran, naming it by checksum. Sent without a credential.
  *
- * Accepted only when the checksum is the site's newest scanned build, so a publish that changed the
- * packages is refused, and the refusal says the key is what that build needs.
+ * Patchstack records it against the site's newest scanned package list, whatever the checksum: the
+ * build machine installs its own tree, so its checksum need not match the workspace's. A site that was
+ * never scanned has no list to record it against, and is refused.
  */
 export async function postBuildReport(
   config: Config,
@@ -672,7 +681,7 @@ export async function postBuildReport(
       headers: {
         'Content-Type': 'application/json',
         Accept: 'application/json',
-        'User-Agent': '@patchstack/connect',
+        ...connectHeaders(),
       },
       body: JSON.stringify(buildReportBody(checksum, marker)),
       signal: AbortSignal.timeout(config.timeoutMs),
@@ -698,7 +707,7 @@ export async function postBuildReport(
   if (response.status === 422) {
     throw new PatchstackError(
       safeDisplayString((parsed as { error?: unknown } | null)?.error) ??
-        `This build is not the one Patchstack last scanned. ${needsKey}`,
+        `Patchstack has no package list for this site yet. ${needsKey}`,
       'UNAUTHORIZED',
     );
   }
@@ -732,6 +741,12 @@ export async function postManifest(
 
   assertConnectableEndpoint(config, url);
 
+  // An existing site accepts a report only with its credential. Without one the answer is already
+  // known, so nothing is sent and the caller gets the same refusal.
+  if (config.siteUuid !== null && !hasSiteCredential(config)) {
+    throw new PatchstackError(authFailureMessage(401, config) ?? 'Patchstack needs this project\'s API key.', 'UNAUTHORIZED');
+  }
+
   let response: Response;
   try {
     // Unauthenticated on the bootstrap POST: there is no credential until this
@@ -741,7 +756,7 @@ export async function postManifest(
       headers: {
         'Content-Type': 'application/json',
         Accept: 'application/json',
-        'User-Agent': '@patchstack/connect',
+        ...connectHeaders(),
         ...claimTokenHeader(config),
       },
       body: JSON.stringify(buildManifestBody(config, payload, process.env, marker)),

@@ -73,12 +73,9 @@ describe("buildReportUrl", () => {
 });
 
 describe("postManifestWithEnvironmentFallback without a key", () => {
-  it("names the build by checksum once the manifest is refused", async () => {
+  it("names the build by checksum without sending a manifest it has no key for", async () => {
     const fetchMock = vi
       .fn()
-      .mockResolvedValueOnce(
-        jsonResponse(401, { error: "A bearer token is required." }),
-      )
       .mockResolvedValueOnce(jsonResponse(200, { result: "recorded" }));
     vi.stubGlobal("fetch", fetchMock);
 
@@ -89,11 +86,8 @@ describe("postManifestWithEnvironmentFallback without a key", () => {
         "no-pages",
       );
 
-    expect(fetchMock).toHaveBeenCalledTimes(2);
-    expect(fetchMock.mock.calls[0][0]).toBe(
-      "https://api.example.com/monitor/pulse/manifest/55b1e661-469d-4d67-b592-f90378c3ef81",
-    );
-    const [url, init] = fetchMock.mock.calls[1] as [string, RequestInit];
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit];
     expect(url).toBe(
       "https://api.example.com/monitor/pulse/build/55b1e661-469d-4d67-b592-f90378c3ef81",
     );
@@ -109,39 +103,28 @@ describe("postManifestWithEnvironmentFallback without a key", () => {
     expect(environmentUsed).toBe("production");
   });
 
-  it("leaves a manifest the server accepted without a key alone, as a host token push is", async () => {
-    const fetchMock = vi
-      .fn()
-      .mockResolvedValue(
-        jsonResponse(200, {
-          uuid: "x",
-          stored: true,
-          manifest_id: 1,
-          checksum: "c",
-        }),
-      );
+  it("sends nothing for a build that is not production and has no key", async () => {
+    const fetchMock = vi.fn();
     vi.stubGlobal("fetch", fetchMock);
 
-    await postManifestWithEnvironmentFallback(config(), {
-      packages,
-    } as never).catch(() => null);
-
-    expect(
-      fetchMock.mock.calls
-        .map((call) => call[0] as string)
-        .some((u) => u.includes("/build/")),
-    ).toBe(false);
+    await expect(
+      postManifestWithEnvironmentFallback(
+        { ...config(), environment: "sandbox" } as Config,
+        { packages } as never,
+      ),
+    ).rejects.toMatchObject({ code: "UNAUTHORIZED" });
+    expect(fetchMock).not.toHaveBeenCalled();
   });
 
-  it("says the key is needed when the build is not the one last scanned", async () => {
+  it("passes on what the server says when it has no package list for the site", async () => {
     vi.stubGlobal(
       "fetch",
       vi
         .fn()
         .mockResolvedValue(
           jsonResponse(422, {
-            result: "unknown-build",
-            error: "Not the build last scanned. Set PATCHSTACK_API_KEY.",
+            result: "not-scanned",
+            error: "Patchstack has no package list for this site yet.",
           }),
         ),
     );
@@ -150,7 +133,7 @@ describe("postManifestWithEnvironmentFallback without a key", () => {
       postBuildReport(config(), "abcdefabcdef"),
     ).rejects.toMatchObject({
       code: "UNAUTHORIZED",
-      message: "Not the build last scanned. Set PATCHSTACK_API_KEY.",
+      message: "Patchstack has no package list for this site yet.",
     });
   });
 

@@ -312,7 +312,8 @@ describe.skipIf(!built)('the packaged bin, invoked as npm invokes it', () => {
         req.resume();
         req.on('end', () => {
           res.writeHead(200, { 'Content-Type': 'application/json' });
-          res.end(JSON.stringify({ uuid: SITE, stored: true, manifest_id: 7, checksum: 'abc', ...(claim ? { claim } : {}) }));
+          // Provisioning issues the site's key, as the API does: without it, later reports are not sent.
+          res.end(JSON.stringify({ uuid: SITE, stored: true, manifest_id: 7, checksum: 'abc', api_key: 'a-secret-40-chars-long-enough-for-this-1', ...(claim ? { claim } : {}) }));
         });
       });
       await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
@@ -376,7 +377,7 @@ describe.skipIf(!built)('the packaged bin, invoked as npm invokes it', () => {
                 res.setHeader('X-Patchstack-Map-Rules', 'ready');
               }
               res.end(JSON.stringify({ firewall: [], whitelists: [], whitelist_keys: {} }));
-            } else res.end(JSON.stringify({ uuid: SITE, stored: true, manifest_id: 7, checksum: 'abc' }));
+            } else res.end(JSON.stringify({ uuid: SITE, api_key: 'a-secret-40-chars-long-enough-for-this-1', stored: true, manifest_id: 7, checksum: 'abc' }));
           })().catch(() => { res.statusCode = 500; res.end(); });
         });
       });
@@ -447,6 +448,32 @@ describe.skipIf(!built)('the packaged bin, invoked as npm invokes it', () => {
       }
     });
 
+    it('sends nothing from a hosted builder copy without the key, and lets its install go on', async () => {
+      const requests: string[] = [];
+      const server = createServer((req, res) => {
+        requests.push(`${req.method} ${req.url}`);
+        req.resume();
+        req.on('end', () => { res.writeHead(500); res.end(); });
+      });
+      await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+      const endpoint = `http://127.0.0.1:${(server.address() as AddressInfo).port}/monitor/pulse/manifest`;
+      const builder = freshProject();
+      const pkg = JSON.parse(readFileSync(path.join(builder, 'package.json'), 'utf8'));
+      writeFileSync(path.join(builder, 'package.json'), JSON.stringify({ ...pkg, devDependencies: { 'lovable-tagger': '^1.1.7' } }));
+      writeFileSync(path.join(builder, '.patchstackrc.json'), JSON.stringify({ siteUuid: SITE }));
+      const plain = freshProject();
+      writeFileSync(path.join(plain, '.patchstackrc.json'), JSON.stringify({ siteUuid: SITE }));
+      try {
+        await expect(scan(builder, endpoint)).resolves.toBeDefined();
+        await expect(scan(plain, endpoint)).rejects.toThrow();
+        expect(requests.filter((r) => r.startsWith('POST'))).toEqual([]);
+      } finally {
+        await new Promise<void>((resolve) => server.close(() => resolve()));
+        rmSync(builder, { recursive: true, force: true });
+        rmSync(plain, { recursive: true, force: true });
+      }
+    });
+
     it('keeps scan reports and built HTML consistent as a project moves between deployment tiers', async () => {
       const bodies: Record<string, unknown>[] = [];
       const server = createServer((req, res) => {
@@ -459,9 +486,15 @@ describe.skipIf(!built)('the packaged bin, invoked as npm invokes it', () => {
             res.end(JSON.stringify({ state: 'claimable' }));
             return;
           }
+          // The key's token exchange, which carries no report.
+          if (req.url?.endsWith('/token')) {
+            res.writeHead(200, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({ access_token: 'synthetic-token', expires_in: 3600 }));
+            return;
+          }
           bodies.push(JSON.parse(raw) as Record<string, unknown>);
           res.writeHead(200, { 'Content-Type': 'application/json' });
-          res.end(JSON.stringify({ uuid: SITE, stored: true, checksum: 'abc' }));
+          res.end(JSON.stringify({ uuid: SITE, api_key: 'a-secret-40-chars-long-enough-for-this-1', stored: true, checksum: 'abc' }));
         });
       });
       await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
@@ -527,7 +560,7 @@ describe.skipIf(!built)('the packaged bin, invoked as npm invokes it', () => {
             res.end(JSON.stringify({ state: 'owned-by-other' }));
             return;
           }
-          res.end(JSON.stringify({ uuid: SITE, stored: true, manifest_id: 7, checksum: 'abc' }));
+          res.end(JSON.stringify({ uuid: SITE, api_key: 'a-secret-40-chars-long-enough-for-this-1', stored: true, manifest_id: 7, checksum: 'abc' }));
         });
       });
       await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));

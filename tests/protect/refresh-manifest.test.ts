@@ -15,6 +15,7 @@ async function makeProject(withSite = true): Promise<string> {
   await copyFile(path.join(fixtures, 'package-lock-v3.json'), path.join(dir, 'package-lock.json'));
   if (withSite) {
     await writeFile(path.join(dir, '.patchstackrc.json'), JSON.stringify({ siteUuid: UUID }));
+    await writeFile(path.join(dir, '.patchstackrc.local.json'), JSON.stringify({ pulseAuth: 'synthetic-key' }));
   }
   return dir;
 }

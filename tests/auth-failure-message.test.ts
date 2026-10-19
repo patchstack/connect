@@ -64,16 +64,24 @@ describe('authFailureMessage', () => {
 });
 
 describe('the write paths report a refusal in those terms', () => {
-  it('map upload fails with the remedy, not the number', async () => {
-    vi.stubGlobal('fetch', respond(401));
+  it('map upload without a key is not sent, and says how to send it', async () => {
+    const fetchMock = vi.fn();
+    vi.stubGlobal('fetch', fetchMock);
 
     const outcome = await postInputMap(config(), { version: 3, endpoints: [] });
 
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(outcome.result).toBe('skipped');
+    expect((outcome as { message: string }).message).toContain('PATCHSTACK_API_KEY');
+  });
+
+  it('map upload with a refused key fails with the remedy, not the number', async () => {
+    vi.stubGlobal('fetch', respond(403));
+
+    const outcome = await postInputMap(WITH_CREDENTIAL, { version: 3, endpoints: [] });
+
     expect(outcome.result).toBe('failed');
-    expect(outcome).toHaveProperty('message');
-    const message = (outcome as { message: string }).message;
-    expect(message).not.toMatch(/^Patchstack returned/);
-    expect(message).toContain('login');
+    expect((outcome as { message: string }).message).not.toMatch(/^Patchstack returned/);
   });
 
   it('manifest push throws UNAUTHORIZED rather than SERVER_ERROR', async () => {

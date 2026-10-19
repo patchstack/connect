@@ -2,6 +2,7 @@ import type { Config } from './types.js';
 import { isSafeOrigin } from './protect/safe-origin.js';
 import { assertConnectableEndpoint, isHeaderValue } from './endpoint-policy.js';
 import { readBoundedJson } from './bounded-response.js';
+import { connectHeaders } from './report-context.js';
 
 /**
  * Bearer tokens for the authenticated Pulse endpoints (ADR-0018).
@@ -106,7 +107,7 @@ export async function getPulseToken(
         headers: {
           'Content-Type': 'application/json',
           Accept: 'application/json',
-          'User-Agent': '@patchstack/connect',
+          ...connectHeaders(),
         },
         body: JSON.stringify({
           grant_type: 'client_credentials',

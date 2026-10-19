@@ -21,3 +21,22 @@ export function reportTrigger(env: EnvLike = process.env): ReportTrigger {
   if (BUILD_EVENTS.has(event)) return 'build';
   return 'other';
 }
+
+let runCommand: string | null = null;
+
+/** The CLI command this process runs, named on each request so the site's activity log can show it. */
+export function setRunCommand(command: string | null): void {
+  runCommand = command;
+}
+
+/**
+ * Headers every request from the CLI carries: the client, the command that sent it and what started
+ * that command (an install, a build, or something else). Names only — never arguments or values.
+ */
+export function connectHeaders(env: EnvLike = process.env): Record<string, string> {
+  return {
+    'User-Agent': '@patchstack/connect',
+    ...(runCommand !== null ? { 'X-Patchstack-Command': runCommand } : {}),
+    'X-Patchstack-Trigger': reportTrigger(env),
+  };
+}

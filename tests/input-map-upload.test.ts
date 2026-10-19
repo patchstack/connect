@@ -9,6 +9,7 @@ const config = (overrides: Partial<Config> = {}): Config =>
   ({
     endpoint: 'https://api.patchstack.com/monitor/pulse/manifest',
     siteUuid: 'aaaa-bbbb',
+    pulseAuth: 'synthetic-key',
     timeoutMs: 5_000,
     ...overrides,
   }) as Config;
