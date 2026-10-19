@@ -27,6 +27,12 @@ export interface MapOptions {
   log?: (line: string) => void;
   /** A lifecycle coordinator must discard analysis superseded by source changes. */
   isCurrent?: () => boolean;
+  /**
+   * Send the map under its own identity without writing that identity anywhere. A build of the same
+   * source derives the same identity and writes it into its guard itself, so a build that cannot upload
+   * — a hosted builder's keyless publish — presents an identity Patchstack already holds.
+   */
+  declare?: boolean;
   previousBuildId?: string;
 }
 
@@ -169,6 +175,13 @@ export async function runMapDetailed(flags: Flags, options: MapOptions = {}): Pr
           `patchstack: could not bind this map to the runtime guard — ${reason}. ` +
             'Rules generated from these coordinates will detect only, not block.',
         );
+      }
+    } else if (options.declare) {
+      try {
+        buildId = inputMapBuildId(map);
+        detail(`patchstack: sent this map as ${buildId.slice(0, 12)}, for a build of the same source to present.`);
+      } catch (err) {
+        if (!(err instanceof NonCanonicalInputMap)) throw err;
       }
     } else {
       log(

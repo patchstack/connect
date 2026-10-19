@@ -2,7 +2,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { mkdtempSync, mkdirSync, readFileSync, writeFileSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
-import { runMap } from '../../src/map-command.js';
+import { runMap, runMapDetailed } from '../../src/map-command.js';
 import { readBuildStamp } from '../../src/build-id.js';
 import { inputMapBuildId } from '../../src/input-map-id.js';
 
@@ -140,6 +140,37 @@ describe('a map with entry points', () => {
     await upload(dir);
 
     expect(sent[0].body).not.toHaveProperty('build_id');
+  });
+
+  it('declares the identity a build of the same source writes, without writing it anywhere', async () => {
+    const files = {
+      'package.json': JSON.stringify({ name: 'x', dependencies: { express: '4.18.0' } }),
+      'src/server.ts':
+        "import express from 'express';\nconst app = express();\napp.post('/report', (req, res) => res.end(String(req.body.sql)));\n",
+      'src/patchstack/guard.ts': "import rules from './rules.json';\nimport { createProtection } from '@patchstack/connect/protect';\nexport default createProtection({ rules });\n",
+      'src/patchstack/rules.json': JSON.stringify({ firewall: [], whitelists: [], whitelist_keys: {} }),
+    };
+    const workspace = project(files);
+    const sent = captureUploads();
+
+    await runMapDetailed(
+      new Map<string, string | true>([
+        ['dir', workspace],
+        ['upload', true],
+        ['site-uuid', '47acf878-4892-4756-94d3-d7bc5ae4e46d'],
+        ['endpoint', 'https://api.test/monitor/pulse/manifest'],
+      ]),
+      { declare: true },
+    );
+
+    expect(readFileSync(join(workspace, 'src/patchstack/rules.json'), 'utf8')).toBe(files['src/patchstack/rules.json']);
+
+    const build = project(files);
+    vi.stubEnv('npm_lifecycle_event', 'prebuild');
+    await upload(build);
+
+    expect(sent[0].body.build_id).toMatch(/^[0-9a-f]{64}$/);
+    expect(sent[0].body.build_id).toBe(readBuildStamp(JSON.parse(readFileSync(join(build, 'src/patchstack/rules.json'), 'utf8'))));
   });
 
   it('does not send an identity when no guard bundle retained it', async () => {

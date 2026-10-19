@@ -94,7 +94,7 @@ import {
 } from './claim.js';
 import { runProtect, runVerify } from './protect/install/index.js';
 import { formatRuntimeCheck, runRuntimeCheck, runtimeExitCode } from './protect/install/runtime/check.js';
-import { runMap } from './map-command.js';
+import { runMap, runMapDetailed } from './map-command.js';
 import { getStringFlag } from './flags.js';
 import { isCanonicalUuid } from './endpoint-policy.js';
 import { setupProtection, wireBuildScripts, wireDevelopmentScript } from './setup.js';
@@ -954,6 +954,11 @@ async function runScan(
   };
   options.onReported?.(outcome);
 
+  // Setup uploads its own map; this is the workspace's routine scan, which holds the key.
+  if (options.report === undefined && (response.stored || response.reason === 'duplicate')) {
+    await declareWorkspaceMap(config);
+  }
+
   if (options.report === undefined) {
     try {
       await printScanReport(config, effectiveUuid, outcome, report, options.showRemainingSetup !== false);
@@ -1596,6 +1601,23 @@ async function runSetup(args: ParsedArgs): Promise<number> {
     }
   }
   return 0;
+}
+
+/**
+ * In a hosted builder's workspace, send the map under its identity after a successful package report.
+ *
+ * The builder's publish has no key, so it cannot upload the map it is built from; it only writes the
+ * map's identity into its guard. The workspace holds the key and scans the same source, so sending the
+ * map from here means Patchstack already knows the identity the published guard presents. Nothing is
+ * written to the project. A build's own pre-bundle `map --upload` covers builds that have the key.
+ */
+async function declareWorkspaceMap(config: Config): Promise<void> {
+  if (isPreBundleBuildHook() || !hasSiteCredential(config) || detectHostedBuilder(process.cwd()) === null) return;
+  try {
+    await runMapDetailed(new Map<string, string | true>([['dir', process.cwd()], ['upload', true]]), { config, declare: true, log: detail });
+  } catch {
+    // The package report already succeeded; the map is sent again on the next scan.
+  }
 }
 
 /** Where setup keeps the summary it wrote, for `summary` to print again. */
