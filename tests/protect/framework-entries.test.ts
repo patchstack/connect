@@ -248,3 +248,75 @@ describe('TanStack Start + Supabase when the Supabase client is not the layout t
     expect(runVerify(cwd)).toMatchObject({ wired: true, stack: 'TanStack Start' });
   });
 });
+
+describe('TanStack Start deployed as a Cloudflare Worker', () => {
+  const cloudflareConfig = `import { defineConfig } from "vite";
+import { cloudflare } from "@cloudflare/vite-plugin";
+import { tanstackStart } from "@tanstack/react-start/plugin/vite";
+export default defineConfig(({ command }) => ({
+  server: { host: "::", port: 8080 },
+  plugins: [...(command === "build" ? [cloudflare({ viteEnvironment: { name: "ssr" } })] : []), tanstackStart({ server: { entry: './server.ts' } })],
+}));`;
+  const wrangler = (main: string) => `/** Worker settings. */
+{
+\t"name": "app",
+\t// the Worker's entry module
+\t"main": "${main}",
+\t"compatibility_flags": ["nodejs_compat"]
+}`;
+  function worker(main = '@tanstack/react-start/server-entry') {
+    const cwd = tanstack();
+    put(cwd, 'vite.config.ts', cloudflareConfig);
+    put(cwd, 'wrangler.jsonc', wrangler(main));
+    return cwd;
+  }
+
+  it('points the Worker at the guarded entry, keeping the rest of its config, and then reports it wired', () => {
+    const cwd = worker();
+    expect(runProtect(cwd).status).toBe('wired');
+    expect(read(cwd, 'src/server.ts')).toContain('protectFetch(handler.fetch.bind(handler))');
+    expect(read(cwd, 'wrangler.jsonc')).toBe(wrangler('./src/server.ts'));
+    expect(runVerify(cwd).wired).toBe(true);
+
+    const files = [read(cwd, 'src/server.ts'), read(cwd, 'wrangler.jsonc')];
+    runProtect(cwd);
+    expect([read(cwd, 'src/server.ts'), read(cwd, 'wrangler.jsonc')]).toEqual(files);
+  });
+
+  it('accepts a hand-wired entry in another quote style, and names the Worker entry as what is missing', () => {
+    const cwd = worker();
+    expect(runProtect(cwd).status).toBe('wired');
+    put(cwd, 'src/server.ts', `import handler, { createServerEntry } from '@tanstack/react-start/server-entry';
+import { protectFetch } from './patchstack/guard';
+
+export default createServerEntry({ fetch: protectFetch(handler.fetch.bind(handler)) });
+`);
+    put(cwd, 'wrangler.jsonc', wrangler('@tanstack/react-start/server-entry'));
+
+    const before = runVerify(cwd);
+    expect(before.wired).toBe(false);
+    expect(before.checks[0]!.hint).toContain('`main` in wrangler.jsonc');
+
+    expect(runProtect(cwd).status).toBe('wired');
+    expect(read(cwd, 'wrangler.jsonc')).toBe(wrangler('./src/server.ts'));
+    expect(runVerify(cwd).wired).toBe(true);
+  });
+
+  it('leaves a Worker with its own entry module alone', () => {
+    const cwd = worker('./worker/index.ts');
+    expect(runProtect(cwd).status).not.toBe('wired');
+    expect(read(cwd, 'wrangler.jsonc')).toBe(wrangler('./worker/index.ts'));
+    expect(existsSync(join(cwd, 'src/server.ts'))).toBe(false);
+  });
+
+  it('says live rules come from the bundled read-only credential when the rules file carries one', () => {
+    const cwd = worker();
+    runProtect(cwd);
+    const rules = JSON.parse(read(cwd, 'src/patchstack/rules.json'));
+    put(cwd, 'src/patchstack/rules.json', JSON.stringify({ ...rules, _patchstack: { ...rules._patchstack, rules_reader: `rr_${'a'.repeat(48)}-7` } }));
+
+    const labels = runVerify(cwd).checks.map(check => check.label);
+    expect(labels).toContain('live rule updates use the read-only rules credential in the guard rules file');
+    expect(labels).not.toContain('live rule updates need PATCHSTACK_API_KEY in the deployment environment');
+  });
+});

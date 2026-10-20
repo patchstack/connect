@@ -19,7 +19,8 @@ import { fastifyAdapter } from './adapters/fastify.js';
 import { expressAdapter } from './adapters/express.js';
 import { scaffoldGeneric, wiringPlan, genericVerify, genericScaffoldFiles } from './generic.js';
 import { reportingChecks } from './reporting.js';
-import { hasResolvableCredential } from './util.js';
+import { hasResolvableCredential, read } from './util.js';
+import { findRulesFile } from '../../build-stamp.js';
 import type { Adapter, VerifyCheck, WireOptions, ProtectResult, VerifyReport } from './types.js';
 
 // Registry — order = match priority (most specific first): framework meta-frameworks before the
@@ -99,6 +100,19 @@ export function runProtect(cwd: string, opts: WireOptions = {}): ProtectResult {
  */
 const RUNTIMES_WITHOUT_CONFIG_FILE = new Set(['tanstack-start', 'nextjs', 'sveltekit', 'astro', 'nuxt', 'generic']);
 
+/** Whether the guard's rules file carries the site's read-only rules credential. */
+function bundledRulesReader(cwd: string): boolean {
+  try {
+    const found = findRulesFile(cwd);
+    if (found.kind !== 'one') return false;
+    const reader = (JSON.parse(read(found.path)) as { _patchstack?: { rules_reader?: unknown } })._patchstack?.rules_reader;
+
+    return typeof reader === 'string' && /^rr_[0-9a-f]{48}-\d+$/.test(reader);
+  } catch {
+    return false;
+  }
+}
+
 /**
  * A note about the deployment credential, when the stack needs one and this machine cannot confirm it.
  *
@@ -108,6 +122,17 @@ const RUNTIMES_WITHOUT_CONFIG_FILE = new Set(['tanstack-start', 'nextjs', 'svelt
  */
 function credentialNote(cwd: string, adapterName: string): VerifyCheck[] {
   if (!RUNTIMES_WITHOUT_CONFIG_FILE.has(adapterName)) return [];
+
+  if (bundledRulesReader(cwd)) {
+    return [
+      {
+        label: 'live rule updates use the read-only rules credential in the guard rules file',
+        ok: true,
+        unverifiable: true,
+        hint: 'a deployment without PATCHSTACK_API_KEY still fetches live rules with it; set the key there too for detections to be reported',
+      },
+    ];
+  }
 
   // A credential in the local environment says the developer has one; it says nothing about production,
   // which is where it matters. Either way the answer is the same note.

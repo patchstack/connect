@@ -15,6 +15,30 @@ const DEFAULT = `import handler, { createServerEntry } from '@tanstack/react-sta
 export default createServerEntry({ fetch: handler.fetch.bind(handler) });
 `;
 const EXTENSIONS = ['ts', 'js', 'mts', 'mjs', 'tsx', 'jsx', 'cts', 'cjs'];
+/** TanStack Start's own server entry, which a Cloudflare Worker runs when wrangler's `main` names it. */
+const PACKAGE_ENTRY = '@tanstack/react-start/server-entry';
+const WRANGLER_CONFIGS = ['wrangler.jsonc', 'wrangler.json', 'wrangler.toml'];
+const MAIN = /^(\s*"main"\s*:\s*|main\s*=\s*)"([^"]*)"/m;
+
+/**
+ * The Cloudflare Worker this app deploys as, when it builds with `@cloudflare/vite-plugin`: its wrangler
+ * config and the module that config names as `main`. That module is what the Worker runs, so the vite
+ * config's own entry setting does not decide it. Null when the app is not a Cloudflare Worker build, or
+ * its Worker entry cannot be read.
+ */
+function workerEntry(cwd: string, configs: string[]): { file: string; main: string } | null {
+  if (!configs.some(file => read(join(cwd, file)).includes('@cloudflare/vite-plugin'))) return null;
+  const file = WRANGLER_CONFIGS.find(name => existsSync(join(cwd, name)));
+  const main = file ? MAIN.exec(read(join(cwd, file)))?.[2] : undefined;
+
+  return file && main !== undefined ? { file, main } : null;
+}
+
+/** Whether a wrangler `main` names the managed server entry. */
+function runsManagedEntry(main: string): boolean {
+  return main.replace(/^\.\//, '') === ENTRY;
+}
+
 /** A Vite config wrapper that adds tanstackStart() itself, passing its `tanstackStart` option through. */
 const START_CONFIG_WRAPPER = '@lovable.dev/vite-tanstack-config';
 
@@ -76,6 +100,11 @@ function defaultEntryConfig(ts: Compiler, file: string, source: string): boolean
     || (call.arguments.length === 1 && ts.isObjectLiteralExpression(unwrap(call.arguments[0]!))));
 }
 
+function viteConfigs(cwd: string): string[] {
+  return ['vite', 'app', 'rsbuild'].flatMap(name => EXTENSIONS.map(ext => `${name}.config.${ext}`))
+    .filter(file => existsSync(join(cwd, file)));
+}
+
 function entryProblem(cwd: string): string | null {
   try {
     const file = createRequire(join(cwd, 'package.json')).resolve('@tanstack/react-start/package.json');
@@ -86,8 +115,15 @@ function entryProblem(cwd: string): string | null {
   if (entries.some(file => file !== ENTRY && existsSync(join(cwd, file)))) {
     return 'non-default or competing server entries require manual integration';
   }
-  const configs = ['vite', 'app', 'rsbuild'].flatMap(name => EXTENSIONS.map(ext => `${name}.config.${ext}`))
-    .filter(file => existsSync(join(cwd, file)));
+  const configs = viteConfigs(cwd);
+  // A Cloudflare Worker runs the module its wrangler config names. TanStack's own entry can be pointed at
+  // the managed one (`protect` does that); anything else is the app's own and is left to it.
+  const worker = workerEntry(cwd, configs);
+  if (worker) {
+    return runsManagedEntry(worker.main) || worker.main === PACKAGE_ENTRY
+      ? null
+      : `the Cloudflare Worker entry (\`main\` in ${worker.file}) is a custom module; wrap its Fetch handler manually`;
+  }
   if (configs.length) {
     const ts = sourceCompiler(cwd);
     if (configs.length !== 1 || !configs[0]!.startsWith('vite.') || !ts
@@ -132,7 +168,12 @@ export function composeTanstackEntry(ts: Compiler, source: string): string | nul
 function wiredEntry(ts: Compiler, source: string): boolean {
   const tree = parsedSource(ts, ENTRY, source);
   if (!tree) return false;
-  const imported = tree.statements.filter(ts.isImportDeclaration).filter(n => n.getText(tree) === IMPORT);
+  // The managed import by meaning, not spelling: quotes and spacing are the formatter's.
+  const imported = tree.statements.filter(ts.isImportDeclaration).filter(n => ts.isStringLiteral(n.moduleSpecifier)
+    && n.moduleSpecifier.text === './patchstack/guard' && !n.importClause?.isTypeOnly && !n.importClause?.name
+    && !!n.importClause?.namedBindings && ts.isNamedImports(n.importClause.namedBindings)
+    && n.importClause.namedBindings.elements.length === 1
+    && !n.importClause.namedBindings.elements[0]!.propertyName && n.importClause.namedBindings.elements[0]!.name.text === 'protectFetch');
   if (imported.length !== 1) return false;
   // Removing just the managed wrapper must recover a supported entry that composes identically.
   const wrappers: import('typescript').CallExpression[] = [];
@@ -144,7 +185,8 @@ function wiredEntry(ts: Compiler, source: string): boolean {
   if (wrappers.length !== 1 || wrappers[0]!.arguments.length !== 1) return false;
   const wrapper = wrappers[0]!;
   const plain = source.slice(0, wrapper.getStart(tree)) + wrapper.arguments[0]!.getText(tree) + source.slice(wrapper.end);
-  const composed = composeTanstackEntry(ts, plain.replace(IMPORT, ''));
+  const importText = imported[0]!.getText(tree);
+  const composed = composeTanstackEntry(ts, plain.replace(importText, ''))?.replace(IMPORT, importText);
   const reparsed = composed && parsedSource(ts, ENTRY, composed);
   const printer = ts.createPrinter({removeComments:true});
   return !!reparsed && printer.printFile(reparsed) === printer.printFile(tree);
@@ -176,15 +218,26 @@ export const tanstackAdapter: Adapter = {
       writeProjectFileSync(cwd,join(cwd,ENTRY),next);
       changed.push(ENTRY);
     }
+    const worker = workerEntry(cwd, viteConfigs(cwd));
+    if (worker && worker.main === PACKAGE_ENTRY) {
+      const config = read(join(cwd, worker.file));
+      writeProjectFileSync(cwd, join(cwd, worker.file), config.replace(MAIN, (_, key: string) => `${key}"./${ENTRY}"`));
+      changed.push(worker.file);
+      log(`Cloudflare Worker entry (\`main\` in ${worker.file}) now runs ${ENTRY}.`);
+    }
     log('TanStack server entry screens requests and final Responses; browser-direct backend traffic and separately deployed functions need their own protection.');
     return {ok:true,changed};
   },
   verify(cwd) {
     const ts = sourceCompiler(cwd);
     const problem = entryProblem(cwd);
-    const wired = !problem && !!ts && existsSync(join(cwd,ENTRY)) && wiredEntry(ts,read(join(cwd,ENTRY)))
+    const worker = workerEntry(cwd, viteConfigs(cwd));
+    const workerProblem = worker && !runsManagedEntry(worker.main)
+      ? `the Cloudflare Worker runs \`${worker.main}\` (\`main\` in ${worker.file}), not ${ENTRY}; run protect`
+      : null;
+    const wired = !problem && !workerProblem && !!ts && existsSync(join(cwd,ENTRY)) && wiredEntry(ts,read(join(cwd,ENTRY)))
       && matchesGuardTemplate(cwd,GUARD,'fetch-guard.ts') && existsSync(join(cwd,'src/patchstack/rules.json'));
-    return {wired,checks:[{label:'TanStack server Fetch boundary wired',ok:wired,hint:problem ?? 'run protect; manually review unsupported custom server entries'},
+    return {wired,checks:[{label:'TanStack server Fetch boundary wired',ok:wired,hint:problem ?? workerProblem ?? 'run protect; manually review unsupported custom server entries'},
       {label:'browser-direct services and separately deployed functions are not covered by this entry',ok:true,unverifiable:true,hint:'install protection at each independently exposed backend; retain backend authorization and RLS'}]};
   },
 };
