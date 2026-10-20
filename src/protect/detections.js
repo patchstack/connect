@@ -105,6 +105,13 @@ const ATTEMPT_TIMEOUT_MS = 10_000;
 const STOP_BUDGET_MS = 5_000;
 
 /**
+ * How long `settle()` keeps an edge host's runtime alive waiting for a report to land before resolving
+ * anyway. Shorter than `stop()`'s: this runs per request under `ctx.waitUntil`, whose own ceiling is the
+ * real bound, and a report that has not left within one attempt's timeout will travel on the next request.
+ */
+const SETTLE_BUDGET_MS = 10_000;
+
+/**
  * The shape a category has to have to mean anything to the platform receiving it.
  *
  * No length bound here: the bound is applied separately, so a category that is a real slug and merely
@@ -531,7 +538,7 @@ export function createDetectionReporter(opts) {
     // Nothing to report against. A no-op rather than a throw: reporting is never worth failing a boot.
     // It answers the whole interface, so a caller never has to know which kind it holds.
     return {
-      record() {}, flush() {}, stop: () => Promise.resolve(), setRulesEtag() {}, announce() {}, dropped: () => 0,
+      record() {}, flush() {}, settle: () => Promise.resolve(), stop: () => Promise.resolve(), setRulesEtag() {}, announce() {}, dropped: () => 0,
       health: () => ({
         sent: 0, delivered: 0, failed: 0, dropped: 0, retried: 0, reauthorized: 0, lastDeliveredAt: null,
         capability: { announced: 0, acknowledged: 0, failed: 0, retried: 0, lastAcknowledgedAt: null },
@@ -599,6 +606,25 @@ export function createDetectionReporter(opts) {
 
   // One send at a time, and one batch's worth of state while it runs.
   let sending = false;
+
+  /**
+   * Callers awaiting a quiet reporter — `settle()`, which an edge host uses to keep its runtime alive
+   * until a report lands (see `ctx.waitUntil`). Resolved together the moment nothing is in flight, queued
+   * or scheduled, and cleared; a per-call timeout also resolves its own, so a host's wait is always
+   * bounded whatever the network does.
+   *
+   * @type {Array<() => void>}
+   */
+  let settleWaiters = [];
+  /** Nothing to send and nothing on the way: the batch a `settle()` was waiting for has been dealt with. */
+  const reporterIdle = () =>
+    !sending && inFlight === null && retryTimer === null && queue.length === 0 && pendingState === null;
+  const notifyIdle = () => {
+    if (settleWaiters.length === 0 || !reporterIdle()) return;
+    const waiters = settleWaiters;
+    settleWaiters = [];
+    for (const resolve of waiters) resolve();
+  };
   /**
    * @type {{
    *   key: string, events: Array<Record<string, unknown>>, dropped: number,
@@ -801,6 +827,7 @@ export function createDetectionReporter(opts) {
   const finish = () => {
     sending = false;
     kick();
+    notifyIdle();
   };
 
   const arm = () => {
@@ -831,6 +858,7 @@ export function createDetectionReporter(opts) {
     if (typeof fetchImpl !== 'function') {
       // Nothing can be sent, so a drain makes no progress and the queue is accounted for here.
       if (draining) drained();
+      notifyIdle();
 
       return;
     }
@@ -841,6 +869,7 @@ export function createDetectionReporter(opts) {
     if (queue.length === 0 && pendingState === null) {
       flushRequested = false;
       if (draining) drained();
+      notifyIdle();
 
       return;
     }
@@ -1075,6 +1104,38 @@ export function createDetectionReporter(opts) {
       kick();
     },
     flush,
+    /**
+     * Resolve once everything recorded so far has been delivered (or given up on), WITHOUT stopping the
+     * reporter — the primitive an edge host hands to `ctx.waitUntil` so a serverless runtime stays alive
+     * until the report lands instead of being frozen the moment it answers the visitor. On a long-lived
+     * runtime nothing calls this; the flush interval delivers on its own.
+     *
+     * Bounded: a `budgetMs` timeout resolves the wait regardless, so a slow or dead network cannot hold
+     * the host's runtime open past what it allows. Anything still queued when the budget elapses is left
+     * for the next request's flush — this declines to wait longer, it does not drop. Unlike `stop()` it
+     * leaves the reporter running and keeps the queue.
+     *
+     * @param {number} [budgetMs]
+     * @returns {Promise<void>}
+     */
+    settle(budgetMs = SETTLE_BUDGET_MS) {
+      if (stopped) return drainPromise ?? Promise.resolve();
+      if (reporterIdle()) return Promise.resolve();
+
+      return new Promise((resolve) => {
+        let done = false;
+        const finishWait = () => {
+          if (done) return;
+          done = true;
+          resolve();
+        };
+        settleWaiters.push(finishWait);
+        unattended(setTimeout(finishWait, budgetMs));
+        // Send what is queued now rather than at the interval, so the wait is for delivery, not for the
+        // timer the flush interval exists to impose on a busy app.
+        flush();
+      });
+    },
     /**
      * Tell the platform which reporting state this guard settled on.
      *

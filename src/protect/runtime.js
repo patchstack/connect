@@ -1741,15 +1741,37 @@ export async function createProtection(options = {}) {
     // Wrap a fetch handler: screens the request, then the response (redact/block).
     fetch(handler) {
       return async function (request, ...rest) {
+        // A serverless/edge host (Cloudflare Workers, and the hosted builders that deploy onto it) freezes
+        // the runtime the moment it answers the visitor — cancelling the detection report in flight, which
+        // arrives at the platform as a client-closed request and stores nothing. The host passes an
+        // execution context with `waitUntil` for exactly this: work that must outlive the response. Found
+        // by shape, not position, because the argument order differs by host; absent (a long-lived Node
+        // server), the flush interval delivers on its own and nothing here changes.
+        const ctx = rest.find((arg) => arg && typeof arg === 'object' && typeof arg.waitUntil === 'function');
+        const keepReportAlive = () => {
+          if (!ctx || !detections) return;
+          try {
+            ctx.waitUntil(detections.settle());
+          } catch {
+            /* a host that rejects waitUntil here still delivers on the next request's flush */
+          }
+        };
+
         // The request phase's own resolution is carried into the response phase rather than the response
         // screening making a second one. Two resolutions for one request can disagree, and a response
         // detection naming a different address than the request detection describes two clients that do
         // not exist.
         const { blocked, client } = await screenFetchRequest(request, rest);
-        if (blocked) return blocked;
-        const response = await handler.call(this, request, ...rest);
+        if (blocked) {
+          keepReportAlive();
 
-        return screenResp(response, reqContextFromFetch(request, client));
+          return blocked;
+        }
+        const response = await handler.call(this, request, ...rest);
+        const screened = await screenResp(response, reqContextFromFetch(request, client));
+        keepReportAlive();
+
+        return screened;
       };
     },
 
