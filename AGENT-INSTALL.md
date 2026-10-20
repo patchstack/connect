@@ -473,6 +473,12 @@ It is server-only. Never put it in the widget tag, client bundles, or public env
    or `src/start.ts`. Supported literal `createServerEntry({ fetch: ... })` configurations are wrapped
    without changing host arguments or application error handling. The installed framework must expose
    `server-entry`; custom entry paths, spreads, getters and competing files need manual integration.
+   An app that deploys as a Cloudflare Worker (`@cloudflare/vite-plugin` with a `wrangler.jsonc`,
+   `wrangler.json` or `wrangler.toml`) runs the module its wrangler `main` names, so the Vite config's
+   entry setting does not decide it. When `main` is TanStack's own `@tanstack/react-start/server-entry`,
+   `protect` changes that one value to `./src/server.ts` and leaves the rest of the file as it is; a
+   custom `main` is left alone and reported for manual integration. `protect --check` reports the
+   Worker entry when it does not run `src/server.ts`.
    The existing TanStack/Supabase adapter screens native requests by default and filters the response
    inside TanStack's middleware result. No `PATCHSTACK_ROUTE_WAF` switch is needed. Browser-direct
    services and separately deployed functions are not protected by guarding the frontend server;
