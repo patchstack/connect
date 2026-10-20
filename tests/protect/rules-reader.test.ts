@@ -61,6 +61,34 @@ describe('a guard without the site credential, shipped with a rules reader', () 
     expect((report?.init.headers as Record<string, string>).Authorization).toBe('Bearer reader-token');
   });
 
+  it('on an edge host, delivers the block report via ctx.waitUntil before the runtime is frozen', async () => {
+    const { protection, calls } = await guard({ rules_reader: READER });
+    expect(protection.detectionReporting).toBe('on-unverified');
+
+    // A Cloudflare-style execution context: the host runs the fetch handler as fetch(request, env, ctx)
+    // and freezes the isolate once the response resolves, so background work must go through waitUntil.
+    const pending: Promise<unknown>[] = [];
+    const ctx = { waitUntil: (p: Promise<unknown>) => { pending.push(p); } };
+    const env = {};
+
+    const response = await protection.fetch(() => new Response('ok'))(
+      new Request('https://app.test/search?q=live-attack'),
+      env,
+      ctx,
+    );
+    expect(response.status).toBe(403);
+
+    // The report rides the context: the host is handed a promise to await before it freezes the isolate,
+    // which is what keeps the in-flight POST from being cancelled (the 499 this fixes).
+    expect(pending).toHaveLength(1);
+    await Promise.all(pending);
+
+    const report = calls.find((c) => c.url.includes('/detections/'));
+    expect(report).toBeDefined();
+    expect((report?.init.headers as Record<string, string>).Authorization).toBe('Bearer reader-token');
+    await protection.stop();
+  });
+
   it('ignores a reader that is not in the issued form', async () => {
     const { protection, calls } = await guard({ rules_reader: 'not-a-reader-1' });
 
