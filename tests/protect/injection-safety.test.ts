@@ -110,7 +110,7 @@ app.post('/submit', handler);
       .replace('__PATCHSTACK_SITE_UUID__','00000000-0000-4000-8000-000000000001');
     const cwd = project({}, {'helper.ts':previous});
     expect(installTemplate(cwd,'helper.ts','next-guard.ts')).toBe(true);
-    expect(read(cwd,'helper.ts')).toContain('300000');
+    expect(read(cwd,'helper.ts')).toContain('2700000');
     expect(read(cwd,'helper.ts')).toContain('00000000-0000-4000-8000-000000000001');
     expect(installTemplate(cwd,'helper.ts','next-guard.ts')).toBe(false);
     writeFileSync(join(cwd,'helper.ts'),previous+'\n// Custom application policy.\n');

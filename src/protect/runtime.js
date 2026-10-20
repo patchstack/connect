@@ -207,6 +207,11 @@ export async function createProtection(options = {}) {
   // Resolved once and threaded through ctx: reading it is a filesystem hit on
   // runtimes that have one, and refreshes should not repeat it.
   const pulseAuth = await resolvePulseAuth(options);
+  // Rules are fetched with the site credential when there is one, and otherwise with the read-only
+  // rules-reader shipped in the guard's own rules file — the case of a published app built without the
+  // site credential. The reader is used for nothing else: reporting and the activation responder need
+  // the site credential, and without it they stay off.
+  const rulesAuth = pulseAuth ?? bundledRulesReader(options.rules);
   // A site UUID with no credential behind it, said out loud ONCE at boot.
   //
   // Resolution reads the config files, so it needs a filesystem and a working directory. The
@@ -222,7 +227,7 @@ export async function createProtection(options = {}) {
   //
   // A warning, not a throw. Booting is protection; refusing to boot over a missing credential would
   // trade a stale rule set for no rule set at all.
-  if (options.siteUuid && !pulseAuth) {
+  if (options.siteUuid && !rulesAuth) {
     const message =
       'Patchstack: no API credential resolved for site ' +
       options.siteUuid +
@@ -254,7 +259,7 @@ export async function createProtection(options = {}) {
   const preFetchState = stateFor(await cachedOrigin()).state;
   const bundle = await resolveRules(options, store, {
     timeoutMs: bootTimeoutMs,
-    pulseAuth,
+    pulseAuth: rulesAuth,
     detectionState: preFetchState,
   });
   let synchronization = bundle.synchronization ?? null;
@@ -1872,8 +1877,9 @@ export async function createProtection(options = {}) {
   // manual `protection.refresh()`, or an authenticated push (`protection.refreshHandler()`).
   const cwd = workingDirectory(options);
   const live = Boolean(options.siteUuid || options.token);
+  const refreshMs = rulesRefreshMs(options.refreshMs);
   const refreshSecret = options.refreshSecret ?? (typeof process !== 'undefined' ? process.env.PATCHSTACK_REFRESH_SECRET : undefined);
-  const refreshable = live && (options.refreshMs > 0 || Boolean(refreshSecret));
+  const refreshable = live && (refreshMs > 0 || Boolean(refreshSecret));
 
   // On the Pulse (siteUuid) path, re-post the dependency manifest before re-fetching. A targeted
   // `npm install <pkg>` fires no npm lifecycle hook, so nothing else re-scans; reporting here lets
@@ -1890,7 +1896,7 @@ export async function createProtection(options = {}) {
   }
 
   let recovery = null;
-  const requestInterval = options.requestRefreshMs ?? options.refreshMs ?? 0;
+  const requestInterval = options.requestRefreshMs ?? refreshMs ?? 0;
   const requestBudget = Number.isFinite(options.requestRefreshTimeoutMs) ? Math.max(50, Math.min(options.requestRefreshTimeoutMs, 2000)) : 250;
   let activeRefresh = null;
   const performRefresh = async (fromRequest = false) => {
@@ -1908,7 +1914,7 @@ export async function createProtection(options = {}) {
     const declaredState = stateFor(currentOrigin).state;
     const next = await resolveRules(options, store, {
       timeoutMs: fromRequest ? requestBudget : options.refreshTimeoutMs,
-      pulseAuth,
+      pulseAuth: rulesAuth,
       detectionState: declaredState,
     });
     if (refreshStopped) return {ok:false};
@@ -1943,7 +1949,7 @@ export async function createProtection(options = {}) {
   };
 
   requestRefresher = requestRefresh(() => runRefreshTick(true), {
-    intervalMs: live && (options.token || pulseAuth) && Number.isFinite(requestInterval) && requestInterval > 0 ? Math.max(1000, requestInterval) : 0,
+    intervalMs: live && (options.token || rulesAuth) && Number.isFinite(requestInterval) && requestInterval > 0 ? Math.max(1000, requestInterval) : 0,
     timeoutMs: requestBudget,
   });
 
@@ -1959,15 +1965,15 @@ export async function createProtection(options = {}) {
     protection.refreshHandler = () => makeRefreshHandler(refreshTick, refreshSecret);
   }
 
-  const loop = options.refreshMs > 0 && live
-    ? startRefresh(refreshTick, { refreshMs: options.refreshMs, onError })
+  const loop = refreshMs > 0 && live
+    ? startRefresh(refreshTick, { refreshMs, onError })
     : null;
   // No loop to try again later, and the first resolution was not clean: retry until it is, rather than
   // serving stale or fallback rules for the life of the process. Only with a credential to ask with: the
   // site-addressed rules endpoint refuses a request without one, the credential is resolved once at
   // boot, and asking again every ten minutes forever would change nothing. The boot warning above
   // already says what is missing.
-  const canAsk = Boolean(options.token || pulseAuth);
+  const canAsk = Boolean(options.token || rulesAuth);
   recovery = live && canAsk && !loop && ruleSource.ok === false ? startRecovery(refreshTick, { onError }) : null;
 
   // One method, always present, that reaches everything holding a timer, a buffer or a process-wide
@@ -2132,6 +2138,26 @@ async function resolveApiKey(options) {
  * but the fetch then goes out unauthenticated and the platform refuses it, so the guard stops receiving
  * rules. That is why the caller warns about it at boot rather than treating it as a normal state.
  */
+/**
+ * The read-only rules credential a hosted builder's workspace ships in the guard's rules file
+ * (`_patchstack.rules_reader`), or undefined. Accepted only in the exact form Patchstack issues it.
+ */
+/**
+ * The rules refresh interval: `PATCHSTACK_RULES_REFRESH_SECONDS`, when set to a positive number, overrides
+ * the one the guard was written with, so a deployment can change it without editing the guard.
+ */
+function rulesRefreshMs(configured) {
+  const raw = typeof process !== 'undefined' ? process.env?.PATCHSTACK_RULES_REFRESH_SECONDS : undefined;
+  const seconds = Number(raw);
+  if (raw === undefined || raw === '' || !Number.isFinite(seconds) || seconds <= 0) return configured;
+  return Math.max(5, seconds) * 1000;
+}
+
+function bundledRulesReader(rules) {
+  const reader = rules?._patchstack?.rules_reader;
+  return typeof reader === 'string' && /^rr_[0-9a-f]{48}-\d+$/.test(reader) ? reader : undefined;
+}
+
 async function resolvePulseAuth(options) {
   if (typeof options?.pulseAuth === 'string' && options.pulseAuth.length > 0) return options.pulseAuth;
   if (typeof process !== 'undefined') {

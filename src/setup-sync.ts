@@ -1,13 +1,12 @@
 import { join } from 'node:path';
-import { buildRulesUrl, DEFAULT_ENDPOINT } from './client.js';
+import { buildRulesUrl, DEFAULT_ENDPOINT, fetchRulesReader } from './client.js';
 import { ensureIgnored } from './config.js';
 import { assertConnectableEndpoint, isCanonicalUuid } from './endpoint-policy.js';
 import { runMapDetailed, type MapResult, type MapOptions } from './map-command.js';
 import { resolveRules } from './protect/rules/source.js';
 import { makeStore } from './protect/rules/store.js';
 import type { Config } from './types.js';
-import { writeBundledRules, type BundledRulesResult } from './bundled-rules.js';
-import { detectHostedBuilder } from './environment.js';
+import { bundleRulesAllowed, writeBundledRules, type BundledRulesResult } from './bundled-rules.js';
 
 export interface SetupSyncResult {
   map: MapResult;
@@ -18,7 +17,7 @@ export interface SetupSyncResult {
     mapRules: 'ready' | 'pending' | 'unknown';
     error?: string;
   };
-  /** Whether the site's rules were written into the guard's rules file (hosted-builder workspaces only). */
+  /** Whether the site's rules were written into the guard's rules file (see bundleRulesAllowed). */
   bundled?: BundledRulesResult;
   notices: string[];
   warnings: string[];
@@ -80,12 +79,13 @@ export async function syncSetupProtection(cwd: string, config: Config, { waitMs 
         pulseAuth: config.pulseAuth, timeoutMs: Math.min(config.timeoutMs, remaining),
       });
     }
-    // A hosted builder publishes without the key, so its live app cannot fetch rules. The workspace can:
-    // it puts them into the guard's rules file, which the next publish ships.
+    // A copy of the project built without the key cannot fetch rules. This copy can: it puts them, and the
+    // read-only rules credential, into the guard's rules file, which every build of the project ships.
     let bundled: BundledRulesResult | undefined;
-    if (bundle.source.ok && detectHostedBuilder(cwd) !== null) {
+    if (bundle.source.ok && bundleRulesAllowed(cwd)) {
       const cached = await store.read();
-      bundled = cached?.bundle ? writeBundledRules(cwd, cached.bundle) : 'skipped';
+      const reader = await fetchRulesReader(config);
+      bundled = cached?.bundle ? writeBundledRules(cwd, cached.bundle, reader) : 'skipped';
       if (bundled === 'written') notices.push("Wrote this site's current rules into the guard's rules file, for the next publish.");
     }
     return {

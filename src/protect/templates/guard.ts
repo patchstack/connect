@@ -60,7 +60,7 @@ async function buildProtection() {
   } catch {
     /* ignore a malformed SUPABASE_URL — just don't add an allow entry */
   }
-  const refreshMs = (typeof process === "undefined" ? undefined : process.env.PATCHSTACK_ENVIRONMENT) === "sandbox" ? 15000 : 300000;
+  const refreshMs = (typeof process === "undefined" ? undefined : process.env.PATCHSTACK_ENVIRONMENT) === "sandbox" ? 15000 : 2700000;
   const common = { mode, egress: true, allowHosts, refreshMs };
   return createProtection(
     siteUuid

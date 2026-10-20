@@ -4,10 +4,23 @@ import type tsType from 'typescript';
 
 export type Compiler = typeof tsType;
 
-/** Resolve a parser without evaluating application source or configuration. */
+/** Whether a loaded `typescript` module exposes the JavaScript compiler API (TypeScript 7 does not). */
+export function hasCompilerApi(ts: unknown): ts is Compiler {
+  const api = ts as Partial<Compiler> | null;
+  return typeof api?.createSourceFile === 'function' && api.ScriptTarget !== undefined;
+}
+
+/**
+ * Resolve a parser without evaluating application source or configuration: the project's TypeScript,
+ * else Connect's own. A project TypeScript without the JavaScript compiler API (TypeScript 7 and later)
+ * is passed over.
+ */
 export function sourceCompiler(cwd: string): Compiler | null {
   for (const base of [join(cwd, 'package.json'), import.meta.url]) {
-    try { return createRequire(base)('typescript') as Compiler; } catch { /* optional compiler */ }
+    try {
+      const ts = createRequire(base)('typescript') as Partial<Compiler>;
+      if (hasCompilerApi(ts)) return ts;
+    } catch { /* optional compiler */ }
   }
   return null;
 }

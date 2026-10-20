@@ -26,7 +26,7 @@ describe('generated Fetch guard',()=>{
       const responses=await Promise.all([server.fetch(request(),env,execution),server.fetch(request(),env,execution)]);
       expect(factoryOptions).toHaveLength(1);
       expect(factoryOptions[0].pulseAuth).toBe('synthetic-credential');
-      expect(factoryOptions[0].refreshMs).toBe(300000);
+      expect(factoryOptions[0].refreshMs).toBe(2700000);
       for(const response of responses) { expect(response.status).toBe(201);expect(await response.text()).not.toContain('synthetic-secret');expect(response.headers.get('x-app')).toBe('unchanged'); }
     } finally { active.stop(); }
   });

@@ -97,6 +97,7 @@ import {
 import { runProtect, runVerify } from './protect/install/index.js';
 import { formatRuntimeCheck, runRuntimeCheck, runtimeExitCode } from './protect/install/runtime/check.js';
 import { runMap } from './map-command.js';
+import { bundleRulesAllowed } from './bundled-rules.js';
 import { getStringFlag } from './flags.js';
 import { isCanonicalUuid } from './endpoint-policy.js';
 import { setupProtection, wireBuildScripts, wireDevelopmentScript } from './setup.js';
@@ -1617,8 +1618,8 @@ async function runSetup(args: ParsedArgs): Promise<number> {
 }
 
 /**
- * In a hosted builder's workspace, after a successful package report: upload the map and put the site's
- * current rules into the guard's rules file.
+ * After a successful package report in a copy of the project that holds the key and keeps its guard's
+ * rules file current: upload the map and put the site's current rules into that file.
  *
  * The builder's publish has no key, so it can neither upload the map it is built from nor fetch rules. The
  * workspace holds the key and scans the same source, so it does both here, the way setup does, and the next
@@ -1626,7 +1627,7 @@ async function runSetup(args: ParsedArgs): Promise<number> {
  * does its own pre-bundle `map --upload`.
  */
 async function syncWorkspace(config: Config): Promise<void> {
-  if (isPreBundleBuildHook() || !hasSiteCredential(config) || detectHostedBuilder(process.cwd()) === null) return;
+  if (isPreBundleBuildHook() || !hasSiteCredential(config) || !bundleRulesAllowed(process.cwd())) return;
   try {
     const synced = await syncSetupProtection(process.cwd(), config, { waitMs: 0 });
     for (const line of synced.notices) detail(line);

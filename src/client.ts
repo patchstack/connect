@@ -185,6 +185,44 @@ export function buildInputMapUrl(manifestEndpoint: string, siteUuid: string): st
   return url.toString();
 }
 
+/** The rules-reader URL beside a manifest endpoint override. */
+export function buildRulesReaderUrl(manifestEndpoint: string, siteUuid: string): string {
+  const url = new URL(manifestEndpoint);
+  const path = url.pathname.replace(/\/$/, '');
+  url.pathname = path.endsWith('/manifest')
+    ? `${path.slice(0, -'/manifest'.length)}/rules-reader/${encodeURIComponent(siteUuid)}`
+    : `/monitor/pulse/rules-reader/${encodeURIComponent(siteUuid)}`;
+  url.search = '';
+  url.hash = '';
+  return url.toString();
+}
+
+/** A rules-reader credential exactly as Patchstack issues it: `rr_` and 48 hex digits, a dash, the client id. */
+export const RULES_READER = /^rr_[0-9a-f]{48}-\d+$/;
+
+/**
+ * The site's read-only rules credential, asked for with the site's own credential.
+ *
+ * It can fetch this site's rules and nothing else, and it is the same on every call. A hosted builder's
+ * workspace ships it with the app, so a published app without the site credential can still fetch its
+ * rules. Null when there is no credential to ask with, or Patchstack did not issue one.
+ */
+export async function fetchRulesReader(config: Config): Promise<string | null> {
+  if (config.siteUuid === null || !hasSiteCredential(config)) return null;
+  try {
+    const response = await pulseFetch(config, buildRulesReaderUrl(config.endpoint, config.siteUuid), {
+      method: 'POST',
+      headers: { Accept: 'application/json', ...connectHeaders() },
+      signal: AbortSignal.timeout(Math.min(config.timeoutMs, 10_000)),
+    });
+    if (!response.ok) return null;
+    const credential = ((await readBoundedJson(response)) as { credential?: unknown } | null)?.credential;
+    return typeof credential === 'string' && RULES_READER.test(credential) ? credential : null;
+  } catch {
+    return null;
+  }
+}
+
 /**
  * Outcome of uploading an attack-surface map. `unchanged` is a first-class result, not a failure: most
  * builds do not change the surface, and the server keeps one revision per distinct surface rather than

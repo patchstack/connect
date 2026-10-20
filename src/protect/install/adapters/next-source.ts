@@ -1,6 +1,5 @@
-import { createRequire } from 'node:module';
-import { join } from 'node:path';
 import type tsType from 'typescript';
+import { sourceCompiler } from '../syntax.js';
 
 type Compiler = typeof tsType;
 type Edit = { start: number; end: number; text: string };
@@ -10,10 +9,7 @@ const METHODS = new Set(['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'HEAD', 'OPTIO
 
 /** Use the application's parser without executing its source or configuration. */
 export function nextCompiler(cwd: string): Compiler | null {
-  for (const base of [join(cwd, 'package.json'), import.meta.url]) {
-    try { return createRequire(base)('typescript') as Compiler; } catch { /* optional app dependency */ }
-  }
-  return null;
+  return sourceCompiler(cwd);
 }
 
 function parse(ts: Compiler, file: string, source: string) {
