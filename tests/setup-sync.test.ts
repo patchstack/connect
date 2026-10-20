@@ -37,6 +37,7 @@ beforeEach(() => {
     calls.push({url: String(url), init});
     if (String(url).endsWith('/token')) return Response.json({access_token:'synthetic-token', expires_in:3600});
     if (String(url).includes('/input-map/')) return Response.json({result:'stored', revision:1}, {status:mapStatus});
+    if (String(url).includes('/rules-reader/')) return Response.json({credential:`rr_${'c'.repeat(48)}-9`});
     if (String(url).includes('/rules/')) {
       const id = new Headers(init.headers).get('X-Patchstack-Build');
       return Response.json(delivered, {status:ruleStatus, headers: {
@@ -53,20 +54,19 @@ function cache() { return JSON.parse(readFileSync(join(cwd,'.patchstack/patchsta
 function uploaded() { return JSON.parse(String(calls.find(c => c.url.includes('/input-map/'))!.init.body)); }
 
 describe('one-command setup synchronization', () => {
-  it("puts the site's rules into the guard's rules file in a hosted builder's workspace, and only there", async () => {
+  it("puts the site's rules into the guard's rules file in any project with a guard, unless turned off", async () => {
     const rulesFile = () => { const found = findRulesFile(cwd); if (found.kind !== 'one') throw new Error('no rules file'); return found.path; };
     const ids = () => JSON.parse(readFileSync(rulesFile(), 'utf8')).firewall.map((r: { id: string }) => r.id);
 
-    const plain = await syncSetupProtection(cwd, config);
-    expect(plain.bundled).toBeUndefined();
+    writeFileSync(join(cwd, '.patchstackrc.json'), JSON.stringify({ bundleRules: false }));
+    expect((await syncSetupProtection(cwd, config)).bundled).toBeUndefined();
     expect(ids()).not.toContain('synthetic-request');
+    expect(JSON.parse(readFileSync(rulesFile(), 'utf8'))._patchstack.rules_reader).toBeUndefined();
 
-    const pkg = JSON.parse(readFileSync(join(cwd, 'package.json'), 'utf8'));
-    writeFileSync(join(cwd, 'package.json'), JSON.stringify({ ...pkg, devDependencies: { 'lovable-tagger': '^1.1.7' } }));
-
-    const builder = await syncSetupProtection(cwd, config);
-    expect(builder.bundled).toBe('written');
+    writeFileSync(join(cwd, '.patchstackrc.json'), JSON.stringify({}));
+    expect((await syncSetupProtection(cwd, config)).bundled).toBe('written');
     expect(ids()).toContain('synthetic-request');
+    expect(JSON.parse(readFileSync(rulesFile(), 'utf8'))._patchstack.rules_reader).toBe(`rr_${'c'.repeat(48)}-9`);
     expect((await syncSetupProtection(cwd, config)).bundled).toBe('unchanged');
   });
 

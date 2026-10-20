@@ -50,6 +50,17 @@ describe('writeBundledRules', () => {
     expect(read(dir).firewall).toEqual([{ id: 'ps-fallback-proto-pollution', title: 'delivered' }]);
   });
 
+  it('stores the rules reader beside the map identity, and keeps it when a later run has none', () => {
+    const dir = project({ _patchstack: stamp, firewall: [starter], whitelists: [], whitelist_keys: {} });
+    const reader = `rr_${'b'.repeat(48)}-7`;
+
+    writeBundledRules(dir, { firewall: [{ id: 'site-1' }] }, reader);
+    expect(read(dir)._patchstack).toEqual({ ...stamp, rules_reader: reader });
+
+    writeBundledRules(dir, { firewall: [{ id: 'site-2' }] });
+    expect(read(dir)._patchstack.rules_reader).toBe(reader);
+  });
+
   it('touches nothing in a project with no guard rules file', () => {
     const dir = mkdtempSync(join(tmpdir(), 'ps-bundled-none-'));
     dirs.push(dir);
