@@ -1877,8 +1877,9 @@ export async function createProtection(options = {}) {
   // manual `protection.refresh()`, or an authenticated push (`protection.refreshHandler()`).
   const cwd = workingDirectory(options);
   const live = Boolean(options.siteUuid || options.token);
+  const refreshMs = rulesRefreshMs(options.refreshMs);
   const refreshSecret = options.refreshSecret ?? (typeof process !== 'undefined' ? process.env.PATCHSTACK_REFRESH_SECRET : undefined);
-  const refreshable = live && (options.refreshMs > 0 || Boolean(refreshSecret));
+  const refreshable = live && (refreshMs > 0 || Boolean(refreshSecret));
 
   // On the Pulse (siteUuid) path, re-post the dependency manifest before re-fetching. A targeted
   // `npm install <pkg>` fires no npm lifecycle hook, so nothing else re-scans; reporting here lets
@@ -1895,7 +1896,7 @@ export async function createProtection(options = {}) {
   }
 
   let recovery = null;
-  const requestInterval = options.requestRefreshMs ?? options.refreshMs ?? 0;
+  const requestInterval = options.requestRefreshMs ?? refreshMs ?? 0;
   const requestBudget = Number.isFinite(options.requestRefreshTimeoutMs) ? Math.max(50, Math.min(options.requestRefreshTimeoutMs, 2000)) : 250;
   let activeRefresh = null;
   const performRefresh = async (fromRequest = false) => {
@@ -1964,8 +1965,8 @@ export async function createProtection(options = {}) {
     protection.refreshHandler = () => makeRefreshHandler(refreshTick, refreshSecret);
   }
 
-  const loop = options.refreshMs > 0 && live
-    ? startRefresh(refreshTick, { refreshMs: options.refreshMs, onError })
+  const loop = refreshMs > 0 && live
+    ? startRefresh(refreshTick, { refreshMs, onError })
     : null;
   // No loop to try again later, and the first resolution was not clean: retry until it is, rather than
   // serving stale or fallback rules for the life of the process. Only with a credential to ask with: the
@@ -2141,6 +2142,17 @@ async function resolveApiKey(options) {
  * The read-only rules credential a hosted builder's workspace ships in the guard's rules file
  * (`_patchstack.rules_reader`), or undefined. Accepted only in the exact form Patchstack issues it.
  */
+/**
+ * The rules refresh interval: `PATCHSTACK_RULES_REFRESH_SECONDS`, when set to a positive number, overrides
+ * the one the guard was written with, so a deployment can change it without editing the guard.
+ */
+function rulesRefreshMs(configured) {
+  const raw = typeof process !== 'undefined' ? process.env?.PATCHSTACK_RULES_REFRESH_SECONDS : undefined;
+  const seconds = Number(raw);
+  if (raw === undefined || raw === '' || !Number.isFinite(seconds) || seconds <= 0) return configured;
+  return Math.max(5, seconds) * 1000;
+}
+
 function bundledRulesReader(rules) {
   const reader = rules?._patchstack?.rules_reader;
   return typeof reader === 'string' && /^rr_[0-9a-f]{48}-\d+$/.test(reader) ? reader : undefined;
