@@ -57,6 +57,23 @@ describe('reporting state', () => {
     });
   });
 
+  it('reports on the read-only reader credential, marked unverified', () => {
+    // An app deployed without the site key reports on the bundled read-only credential; the platform
+    // stores those events unverified, so the guard is not silent.
+    expect(reportingState({ ...base, hasCredential: false, readerCredential: true, ruleOrigin: 'api' })).toEqual({
+      state: 'on-unverified',
+      reports: true,
+    });
+    expect(reportingState({ ...base, hasCredential: false, readerCredential: true, ruleOrigin: 'cache' }).state).toBe('on-unverified');
+  });
+
+  it('still needs managed rules, and a config opt-out still wins, on the reader credential', () => {
+    // A reader shipped with the caller's own bundle has no managed rule to attribute a hit to.
+    expect(reportingState({ ...base, hasCredential: false, readerCredential: true, ruleOrigin: 'bundled' }).state).toBe('no-managed-rules');
+    // An explicit opt-out outranks reader reporting as it outranks everything else.
+    expect(reportingState({ ...base, hasCredential: false, readerCredential: true, ruleOrigin: 'api', configOptOut: true }).state).toBe('disabled-by-config');
+  });
+
   it.each(['0', 'false', 'off', 'no', 'FALSE', 'Off'])(
     'honours PATCHSTACK_REPORT_DETECTIONS=%s',
     (value) => {

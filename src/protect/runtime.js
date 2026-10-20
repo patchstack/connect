@@ -251,6 +251,9 @@ export async function createProtection(options = {}) {
       siteUuid: options.siteUuid,
       ruleOrigin: origin,
       hasCredential: Boolean(pulseAuth),
+      // An app deployed without the key reports on the bundled read-only credential; its events are
+      // stored unverified. `rulesAuth` is that credential when no key resolved.
+      readerCredential: Boolean(rulesAuth) && !pulseAuth,
       configOptOut: options.reportDetections === false,
     });
 
@@ -343,7 +346,9 @@ export async function createProtection(options = {}) {
       detections = createDetectionReporter({
         siteUuid: options.siteUuid,
         baseUrl: options.pulseRulesUrl,
-        pulseAuth,
+        // The site key when present; otherwise the bundled read-only credential, which the detections
+        // endpoint now accepts and the platform records as unverified.
+        pulseAuth: pulseAuth ?? rulesAuth,
         // The bundle the guard is actually running, so a hit can be attributed to the rules that
         // produced it rather than to whatever is current when the report is read.
         rulesEtag: (await store.read())?.etag ?? null,

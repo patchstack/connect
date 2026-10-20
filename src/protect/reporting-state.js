@@ -46,6 +46,12 @@ export const REPORTING_STATES = Object.freeze([
   'no-managed-rules',
   /** Enrolled with managed rules, but no credential resolved, so a report would be refused. */
   'unavailable-no-credential',
+  /**
+   * Enrolled with managed rules, reporting on the bundled read-only rules credential rather than the
+   * site's own key — an app deployed without the key. Events ARE sent, but the platform stores them
+   * unverified (the credential ships in the app, so a report is forgeable by anyone who can read it).
+   */
+  'on-unverified',
 ]);
 
 /**
@@ -72,6 +78,7 @@ function optedOut(value) {
  *   siteUuid?: unknown,
  *   ruleOrigin?: 'api'|'cache'|'bundled'|'empty',
  *   hasCredential?: boolean,
+ *   readerCredential?: boolean,
  *   configOptOut?: boolean,
  *   env?: Record<string, string | undefined>,
  * }} input
@@ -99,13 +106,20 @@ export function reportingState(input) {
   // caller's bundle or to nothing, and the origin is then `bundled` or `empty`. Asking about the origin
   // first would report `no-managed-rules` for a site whose real and fixable problem is the credential,
   // sending an operator to look for an enrolment that already exists.
-  if (input.hasCredential !== true) return { state: 'unavailable-no-credential', reports: false };
+  // The site's own key, or — for an app deployed without it — the bundled read-only rules credential.
+  // Both can reach the detections endpoint; only the key's reports are stored verified.
+  if (input.hasCredential !== true && input.readerCredential !== true) {
+    return { state: 'unavailable-no-credential', reports: false };
+  }
 
   // `cache` counts as managed: the rules came from the platform, just not on this call. Excluding it
   // would silence reporting for exactly the sites whose delivery is degraded — the ones whose evidence
   // is most worth having.
   const managed = input.ruleOrigin === 'api' || input.ruleOrigin === 'cache';
   if (!managed) return { state: 'no-managed-rules', reports: false };
+
+  // Reporting on the read-only credential: events are sent, and the platform marks them unverified.
+  if (input.hasCredential !== true) return { state: 'on-unverified', reports: true };
 
   return { state: 'on', reports: true };
 }
@@ -130,6 +144,8 @@ export function explainReportingState(state) {
       return 'Reporting is off because the rules in force did not come from Patchstack, so a detection could not be attributed to a managed rule.';
     case 'unavailable-no-credential':
       return 'Reporting is unavailable because no API credential resolved, so a report would be refused.';
+    case 'on-unverified':
+      return 'Security events are reported to Patchstack on the read-only rules credential; the platform stores them unverified (set PATCHSTACK_API_KEY to report as verified).';
     default:
       return `Unrecognised reporting state: ${String(state)}.`;
   }
