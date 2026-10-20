@@ -40,7 +40,7 @@ async function guard(patchstack: Record<string, unknown>) {
 }
 
 describe('a guard without the site credential, shipped with a rules reader', () => {
-  it('fetches live rules with the reader, says it cannot report, and reports nothing', async () => {
+  it('fetches live rules with the reader and reports detections on it, as unverified', async () => {
     const { protection, calls } = await guard({ rules_reader: READER });
 
     const exchange = calls.find((c) => c.url.endsWith('/token'));
@@ -49,13 +49,16 @@ describe('a guard without the site credential, shipped with a rules reader', () 
     const rules = calls.find((c) => c.url.includes('/rules/'));
     const headers = rules?.init.headers as Record<string, string>;
     expect(headers.Authorization).toBe('Bearer reader-token');
-    expect(headers['X-Patchstack-Detections']).toBe('unavailable-no-credential');
 
-    expect(protection.detectionReporting).toBe('unavailable-no-credential');
-    expect(protection.detectionHealth).toBeUndefined();
+    // Once live rules have resolved, the guard reports on the reader; the platform stores those unverified.
+    expect(protection.detectionReporting).toBe('on-unverified');
     expect(await protection.fetchGuard()(new Request('https://app.test/search?q=live-attack'))).toMatchObject({ status: 403 });
-    expect(calls.some((c) => c.url.includes('/detections/'))).toBe(false);
-    protection.stop();
+
+    // stop() drains the reporter: the block is posted to the detections endpoint on the reader token.
+    await protection.stop();
+    const report = calls.find((c) => c.url.includes('/detections/'));
+    expect(report).toBeDefined();
+    expect((report?.init.headers as Record<string, string>).Authorization).toBe('Bearer reader-token');
   });
 
   it('ignores a reader that is not in the issued form', async () => {
