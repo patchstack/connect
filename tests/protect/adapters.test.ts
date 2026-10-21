@@ -328,6 +328,8 @@ describe('React Router adapter', () => {
       devDependencies: { '@react-router/dev': '^7.3.0' },
     }));
     writeFileSync(path.join(dir, '.patchstackrc.json'), JSON.stringify({ siteUuid: '550e8400-e29b-41d4-a716-446655440000' }));
+    writeFileSync(path.join(dir, 'react-router.config.ts'),
+      'import type { Config } from "@react-router/dev/config";\nexport default { ssr: true } satisfies Config;\n');
     mkdirSync(path.join(dir, path.dirname(root)), { recursive: true });
     writeFileSync(path.join(dir, root), rootSource ?? [
       "import { Outlet } from 'react-router';",
@@ -348,6 +350,8 @@ describe('React Router adapter', () => {
       const root = read(dir, 'app/root.tsx');
       expect(root).toContain('import { patchstackRootMiddleware } from "./patchstack/guard.server"');
       expect(root).toContain('export const middleware = [patchstackRootMiddleware]');
+      // React Router 7.3 gates middleware on the future flag; the adapter turns it on or the guard is inert.
+      expect(read(dir, 'react-router.config.ts')).toContain('unstable_middleware: true');
       expect(runVerify(dir).wired).toBe(true);
       // the UUID is baked into the server guard, not left as the placeholder
       expect(read(dir, 'app/patchstack/guard.server.ts')).toContain('550e8400-e29b-41d4-a716-446655440000');
