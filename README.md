@@ -65,17 +65,20 @@ you how to proceed. Any of these works:
   to retry the command with a manual approval — or press `Shift+Tab` to switch to Manual mode and approve
   the prompt when the assistant tries again.
 
-- **Allow it, then ask again.** Claude Code resolves explicit allow rules before its classifier. These two
-  rules cover every `npx @patchstack/connect …` command (`setup`, `guide`, `status`, `claim`) and nothing
-  else. Put them in `.claude/settings.json` to share them with the repository, in
-  `.claude/settings.local.json` to keep them to yourself, or add them through `/permissions`:
+- **Allow it, then ask again.** Claude Code resolves explicit allow rules before its classifier. These
+  rules cover every `npx @patchstack/connect …` command (`setup`, `guide`, `status`, `claim`), with or
+  without a pinned version such as `npx @patchstack/connect@0.5.61 setup`, and nothing else. Put them in
+  `.claude/settings.json` to share them with the repository, in `.claude/settings.local.json` to keep them
+  to yourself, or add them through `/permissions`:
 
   ```json
   {
     "permissions": {
       "allow": [
         "Bash(npx @patchstack/connect *)",
-        "Bash(npx --yes @patchstack/connect *)"
+        "Bash(npx --yes @patchstack/connect *)",
+        "Bash(npx @patchstack/connect@* *)",
+        "Bash(npx --yes @patchstack/connect@* *)"
       ]
     }
   }
@@ -101,7 +104,7 @@ you how to proceed. Any of these works:
   OpenCode takes the pattern in `opencode.json` (project root, or `~/.config/opencode/opencode.json`):
 
   ```json
-  { "permission": { "bash": { "npx @patchstack/connect *": "allow" } } }
+  { "permission": { "bash": { "npx @patchstack/connect *": "allow", "npx @patchstack/connect@* *": "allow" } } }
   ```
 
   Codex CLI asks according to `approval_policy` in `~/.codex/config.toml`: approve the command when it
