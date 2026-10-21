@@ -903,6 +903,16 @@ export async function createProtection(options = {}) {
       () => requestMeta(shaped, request),
     );
 
+    // A block has just recorded a detection. Send it now, on the request that produced it and while the
+    // process is awake, instead of waiting for the background flush interval — some hosts (a builder's
+    // per-request or frozen-between-requests runtime) never run that timer, so a lone blocked attack would
+    // otherwise sit unsent and never reach the firewall log. Non-blocking and best-effort: the edge path
+    // additionally rides `ctx.waitUntil(settle())` (see `fetch()`), and nothing here is awaited or allowed
+    // to affect screening.
+    if (blocked && detections) {
+      try { detections.flush(); } catch { /* never let reporting affect screening */ }
+    }
+
     return { blocked, client: shaped?._clientIp };
   };
 

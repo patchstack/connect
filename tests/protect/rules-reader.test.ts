@@ -61,6 +61,24 @@ describe('a guard without the site credential, shipped with a rules reader', () 
     expect((report?.init.headers as Record<string, string>).Authorization).toBe('Bearer reader-token');
   });
 
+  it('sends a blocked attack to the detections endpoint on the request itself, not on the flush interval', async () => {
+    const { protection, calls } = await guard({ rules_reader: READER });
+    expect(protection.detectionReporting).toBe('on-unverified');
+
+    const before = calls.length;
+    expect(await protection.fetchGuard()(new Request('https://app.test/search?q=live-attack'))).toMatchObject({ status: 403 });
+    // A tick for the fire-and-forget send to reach fetch — far short of the multi-second flush interval,
+    // and with NO stop() to drain it. On a host that never runs the background timer this is the only
+    // delivery a lone blocked attack gets.
+    await new Promise((resolve) => setTimeout(resolve, 50));
+
+    const report = calls.slice(before).find((c) => c.url.includes('/detections/'));
+    expect(report).toBeDefined();
+    expect((report?.init.headers as Record<string, string>).Authorization).toBe('Bearer reader-token');
+    expect(JSON.parse(String(report?.init.body)).detections?.length).toBeGreaterThan(0);
+    await protection.stop();
+  });
+
   it('on an edge host, delivers the block report via ctx.waitUntil before the runtime is frozen', async () => {
     const { protection, calls } = await guard({ rules_reader: READER });
     expect(protection.detectionReporting).toBe('on-unverified');
