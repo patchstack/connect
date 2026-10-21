@@ -887,7 +887,7 @@ async function runScan(
     const claimUrl = config.endpointTrusted !== false ? buildClaimUrl(config.endpoint, response.uuid) : null;
     const target = await persistSiteUuid(process.cwd(), response.uuid, claimUrl);
     report.done.push('Added this project to Patchstack');
-    recordChange(report, path.relative(process.cwd(), target) || target, "your site's ID and connect link. Safe to commit");
+    recordChange(report, path.relative(process.cwd(), target) || target, 'site ID and connect link, safe to commit');
     say(`Created site ${response.uuid}. Saved it${claimUrl !== null ? ' and the link to connect it' : ''} to ${target}.`);
   }
   if (typeof response.api_key === 'string' && response.api_key.length > 0) {
@@ -900,7 +900,7 @@ async function runScan(
     // covers it: an assurance that turns out to be false is the reason somebody stops checking.
     if (saved.ignored) {
       report.done.push(`Saved the project's API key in ${SECRET_CONFIG_FILENAME}. Never commit this file`);
-      recordChange(report, SECRET_CONFIG_FILENAME, 'your API key. Never commit or upload it; git ignores it');
+      recordChange(report, SECRET_CONFIG_FILENAME, 'API key, ignored by git. Never commit it');
       say(`Saved API key to ${saved.path} (git-ignored).`);
     } else {
       report.missing.push({
@@ -1093,7 +1093,7 @@ function reportSourceWidget(siteUuid: string, framework: string | null, report: 
     switch (result.action) {
       case 'added':
         report.done.push(`Added the Patchstack widget to ${shellPath}`);
-        if (shellPath !== null) recordChange(report, shellPath, 'the Patchstack widget, just before </body>');
+        if (shellPath !== null) recordChange(report, shellPath, 'the Patchstack widget');
         break;
       case 'updated':
         report.done.push(`Updated the Patchstack widget in ${shellPath}`);
@@ -1407,7 +1407,7 @@ function reportProtection(protection: ReturnType<typeof setupProtection>, report
   const scaffoldedWithoutServer =
     protection.install.status === 'scaffolded' && protection.install.plan.includes('Could not locate a server entry');
   if (protection.install.status === 'wired' || protection.install.status === 'scaffolded') {
-    const what = scaffoldedWithoutServer ? 'Patchstack protection files, not used until your app has a server' : 'Patchstack protection';
+    const what = scaffoldedWithoutServer ? 'protection files, for when your app has a server' : 'Patchstack protection';
     for (const file of protection.install.changed) recordChange(report, file, what);
   }
   if (protection.verification.wired) {
@@ -1534,7 +1534,7 @@ async function runSetup(args: ParsedArgs): Promise<number> {
   const wired = wireBuildScripts(process.cwd(), before.packageManager);
   report.done.push(buildStepsLine(wired));
   if (wired.changed) {
-    recordChange(report, 'package.json', wired.strategy === 'postinstall-only' ? 'a package check after each install' : 'Patchstack steps in the install and build scripts');
+    recordChange(report, 'package.json', wired.strategy === 'postinstall-only' ? 'a package check after each install' : 'Patchstack in the install and build scripts');
   }
   detail(`Build hooks: ${wired.detail}`);
 

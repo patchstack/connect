@@ -170,29 +170,27 @@ describe('an app with no server', () => {
 });
 
 describe('renderSummary', () => {
-  it('writes the message to pass on: findings, what to do with the full link, progress, and the reminder', () => {
+  it('writes the message to pass on: findings as the heading, what to do with the full link, and the reminder', () => {
     const lines = renderSummary(report({ rules: 12 }), notConnected, context, { widgetOnPage: true });
 
     expect(lines).toEqual([
-      '### 🛡️ Patchstack is set up',
+      '```',
+      '████████  P A T C H S T A C K',
+      '▄▄▄▄▀▀▀▀',
+      '```',
       '',
-      '**Checked 89 packages: 5 vulnerabilities in 3 packages (highest severity: high).** 12 protection rules available.',
+      '### 🛡️ Checked 89 packages: 5 vulnerabilities in 3 packages (highest severity: high)',
       '',
       '#### 👉 What to do now',
       '1. **Connect your Patchstack account** to see the details and turn on protection',
       `   ${context.claimUrl}`,
+      '   Once connected, reply **2** from the menu below to check it.',
       '2. Restart your app to turn protection on',
       '',
       '#### What Patchstack found',
       '🔴 High **1** · 🟠 Medium **3** · 🔵 Low **1** · 12 packages outdated · 12 protection rules available',
       '',
-      '#### Progress',
-      '✅ Patchstack installed',
-      '⬜ Connect your Patchstack account',
-      '✅ Packages checked on this computer',
-      '⬜ Deploy to protect your live app',
-      '',
-      '**Vulnerability overview:** a Patchstack widget now appears in the pre-production version of your app. Refresh the preview if it did not appear.',
+      'The Patchstack widget now shows in the pre-production version of your app. Refresh the preview if it did not appear.',
       '',
       "Don't forget to republish or redeploy the app so the protection rules protect your live app.",
       '',
@@ -216,10 +214,9 @@ describe('renderSummary', () => {
 
     expect(text).not.toMatch(/protection rules|turn on protection|Restart your app/);
     expect(text).toContain('No server was found in this project');
-    expect(text).toContain('⬜ Publish your app');
     expect(text).not.toContain('Deploy to protect');
     expect(text).not.toContain("Don't forget to republish");
-    expect(text).not.toContain('Vulnerability overview');
+    expect(text).not.toContain('widget now shows');
     expect(text).not.toContain('Rules for this app are ready');
     expect(renderStatus('Patchstack setup', input, notConnected, context, { useColor: false, concise: true }).join('\n')).not.toContain('Rules for this app are ready');
     expect(text).toContain('**Add the Patchstack widget to my app**');
@@ -234,22 +231,21 @@ describe('renderSummary', () => {
     });
 
     expect(lines).toEqual([
-      '### 🛡️ Patchstack is set up',
+      '```',
+      '████████  P A T C H S T A C K',
+      '▄▄▄▄▀▀▀▀',
+      '```',
       '',
-      '**Checked 2 packages: no known vulnerabilities.**',
+      '### 🛡️ Checked 2 packages: no known vulnerabilities',
       '',
       '#### 👉 What to do now',
       '**Connect your Patchstack account** to see the details',
       '',
       context.claimUrl,
       '',
-      '#### Progress',
-      '✅ Patchstack installed',
-      '⬜ Connect your Patchstack account',
-      '✅ Packages checked on this computer',
-      '⬜ Publish your app',
+      'Once connected, reply **1** from the menu below to check it.',
       '',
-      '**Vulnerability overview:** a Patchstack widget now appears in the pre-production version of your app (in `index.html`). Refresh the preview if it did not appear.',
+      'The Patchstack widget now shows in the pre-production version of your app (in `index.html`). Refresh the preview if it did not appear.',
       '',
       'No server was found in this project, so Patchstack checks its packages. Blocking attacks needs a server.',
       '',
@@ -305,20 +301,25 @@ describe('renderSummary', () => {
     expect(table.split('\n').some((row) => row.includes(`"${SUMMARY_AGAIN}"`) && row.includes('`npx @patchstack/connect summary`'))).toBe(true);
   });
 
-  it('lists what changed in the project, one line per file', () => {
+  it('lists what changed in the project, one line per file, with files that got the same thing together', () => {
     const changed = [
       { file: 'package.json', what: 'added @patchstack/connect' },
-      { file: 'index.html', what: 'the Patchstack widget, just before </body>' },
-      { file: 'package.json', what: 'Patchstack steps in the install and build scripts' },
+      { file: 'index.html', what: 'the Patchstack widget' },
+      { file: 'package.json', what: 'Patchstack in the install and build scripts' },
+      { file: 'src/patchstack/guard.js', what: 'protection files, for when your app has a server' },
+      { file: 'src/patchstack/rules.json', what: 'protection files, for when your app has a server' },
     ];
-    const text = renderSummary(report({ changed }), notConnected, context, { widgetOnPage: true }).join('\n');
+    const text = renderSummary(report({ changed }), notConnected, context, { widgetOnPage: true, widgetFile: 'index.html' }).join('\n');
     expect(text).toContain(
       [
-        '#### What changed in your project',
-        '- `package.json`: added @patchstack/connect; Patchstack steps in the install and build scripts',
-        '- `index.html`: the Patchstack widget, just before </body>',
+        '**What changed**',
+        '- `package.json`: added @patchstack/connect; Patchstack in the install and build scripts',
+        '- `index.html`: the Patchstack widget',
+        '- `src/patchstack/guard.js`, `src/patchstack/rules.json`: protection files, for when your app has a server',
       ].join('\n'),
     );
+    // The widget's file is already in the list, so the widget line does not name it again.
+    expect(text).toContain('The Patchstack widget now shows in the pre-production version of your app. Refresh');
     expect(renderSummary(report(), notConnected, context, { widgetOnPage: true }).join('\n')).not.toContain('What changed');
   });
 
@@ -333,8 +334,9 @@ describe('renderSummary', () => {
   });
 
   it('never states a count the run did not get', () => {
-    const lines = renderSummary(report({ findings: null }), notConnected, context, { widgetOnPage: false });
-    expect(lines[2]).toBe('**Checked 89 packages.** Patchstack is now watching them.');
+    const lines = renderSummary(report({ findings: null, rules: 12 }), notConnected, context, { widgetOnPage: false });
+    expect(lines[5]).toBe('### 🛡️ Checked 89 packages, now watching them');
+    expect(lines[7]).toBe('12 protection rules available.');
   });
 });
 
