@@ -42,6 +42,7 @@ const DISCLOSED_AS: Record<string, { doc: RegExp; files?: string[] }> = {
   // Built from the resolved Pulse base rather than a literal path, which is why the second extraction
   // pattern exists — and why the first version of this file could not see it.
   detections: { doc: /monitor\/pulse\/detections/i, files: ['src/protect/detections.js'] },
+  'monitor/pulse/live': { doc: /monitor\/pulse\/live/i, files: ['src/protect/live-report.js'] },
   'monitor/pulse/package-removed': { doc: /package-removed|package removal/i },
   'monitor/pulse/token': { doc: /short-lived token|pulse\/token/i },
   'monitor/pulse/build': { doc: /monitor\/pulse\/build/i, files: ['src/client.ts'] },
@@ -74,6 +75,7 @@ const DISCLOSED_AS: Record<string, { doc: RegExp; files?: string[] }> = {
   build: { doc: /monitor\/pulse\/build/i, files: ['src/client.ts'] },
   run: { doc: /monitor\/pulse\/run/i, files: ['src/client.ts'] },
   'rules-reader': { doc: /monitor\/pulse\/rules-reader/i, files: ['src/client.ts'] },
+  live: { doc: /monitor\/pulse\/live/i, files: ['src/protect/live-report.js'] },
 };
 
 /**
@@ -94,7 +96,7 @@ const DISCLOSED_AS: Record<string, { doc: RegExp; files?: string[] }> = {
 const NOT_AN_ENDPOINT: Record<string, { why: string; files: string[] }> = {
   'monitor/pulse': {
     why: 'the base path the per-site endpoints are built on, not an endpoint itself',
-    files: ['src/device-flow.ts', 'src/protect/detections.js', 'src/protect/engine/pulse-client.js'],
+    files: ['src/device-flow.ts', 'src/protect/detections.js', 'src/protect/engine/pulse-client.js', 'src/protect/live-report.js'],
   },
   'api/tasks': {
     why: "a route in the demo's own throwaway app on localhost, used as the default exploit target",

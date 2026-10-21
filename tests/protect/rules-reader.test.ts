@@ -89,6 +89,19 @@ describe('a guard without the site credential, shipped with a rules reader', () 
     await protection.stop();
   });
 
+  it('reports the live deployment to /live on the first request it serves', async () => {
+    const { protection, calls } = await guard({ rules_reader: READER });
+    expect(protection.detectionReporting).toBe('on-unverified');
+
+    await protection.fetchGuard()(new Request('https://my-live-app.example.com/'));
+
+    const live = calls.find((c) => c.url.includes('/live/'));
+    expect(live).toBeDefined();
+    expect(JSON.parse(String(live?.init.body))).toMatchObject({ origin: 'https://my-live-app.example.com' });
+    expect((live?.init.headers as Record<string, string>).Authorization).toBe('Bearer reader-token');
+    await protection.stop();
+  });
+
   it('ignores a reader that is not in the issued form', async () => {
     const { protection, calls } = await guard({ rules_reader: 'not-a-reader-1' });
 

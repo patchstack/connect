@@ -36,6 +36,7 @@ import { makeStore } from './rules/store.js';
 import { resolveRules } from './rules/source.js';
 import { startRefresh, startRecovery, makeRefreshHandler, serialise } from './rules/refresh.js';
 import { createDetectionReporter } from './detections.js';
+import { createLiveReporter } from './live-report.js';
 import { reportingState } from './reporting-state.js';
 import { hardensWithoutBody, readsOnlyResponseHeaders } from './response-hardening.js';
 import { notify } from './notify.js';
@@ -212,6 +213,15 @@ export async function createProtection(options = {}) {
   // site credential. The reader is used for nothing else: reporting and the activation responder need
   // the site credential, and without it they stay off.
   const rulesAuth = pulseAuth ?? bundledRulesReader(options.rules);
+  // Reports the live deployment from the running server (host, and build when the guard carries one), so a
+  // server-rendered app registers as deployed without waiting for a browser to load the widget. Uses the
+  // same credential the rules fetch does; a no-op without one, or without a site.
+  const liveReporter = createLiveReporter({
+    siteUuid: options.siteUuid,
+    pulseAuth: rulesAuth,
+    baseUrl: options.pulseRulesUrl,
+    fetchImpl: options.fetchImpl,
+  });
   // A site UUID with no credential behind it, said out loud ONCE at boot.
   //
   // Resolution reads the config files, so it needs a filesystem and a working directory. The
@@ -847,6 +857,15 @@ export async function createProtection(options = {}) {
       if (activated) return {blocked:activated, client:undefined};
       const pending = requestRefresher?.check();
       if (pending) await pending;
+      // First real request on a new origin: tell Patchstack the deployment is live. Gated on reporting
+      // being on — the same enrolment that turns on detection reporting — so a local or unenrolled guard
+      // stays silent on the request path. Inline and best-effort (see live-report.js): a no-op after the
+      // first success and between failed attempts.
+      if (detections) {
+        try {
+          await liveReporter.note(new URL(request.url).origin, options.rules?._patchstack?.manifest_checksum);
+        } catch { /* never let the live report affect screening */ }
+      }
       shaped = await fromFetchRequest(request, {
         peer: peerOf(request, hostArgs),
         trustedProxy: options.trustedProxy,
