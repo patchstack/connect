@@ -36,7 +36,7 @@ import { makeStore } from './rules/store.js';
 import { resolveRules } from './rules/source.js';
 import { startRefresh, startRecovery, makeRefreshHandler, serialise } from './rules/refresh.js';
 import { createDetectionReporter } from './detections.js';
-import { createLiveReporter } from './live-report.js';
+import { createLiveReporter, publicOriginOf } from './live-report.js';
 import { reportingState } from './reporting-state.js';
 import { hardensWithoutBody, readsOnlyResponseHeaders } from './response-hardening.js';
 import { notify } from './notify.js';
@@ -863,7 +863,10 @@ export async function createProtection(options = {}) {
       // first success and between failed attempts.
       if (detections) {
         try {
-          await liveReporter.note(new URL(request.url).origin, options.rules?._patchstack?.manifest_checksum);
+          // The public address a visitor used, not `request.url` — behind a reverse proxy (every hosted
+          // builder's deploy) that URL often carries the internal host the app binds to, so the forwarded
+          // headers the proxy sets are what name the live site.
+          await liveReporter.note(publicOriginOf(request), options.rules?._patchstack?.manifest_checksum);
         } catch { /* never let the live report affect screening */ }
       }
       shaped = await fromFetchRequest(request, {
