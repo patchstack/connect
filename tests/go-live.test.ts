@@ -3,7 +3,7 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
-import { detectHost, parseHost, renderGoLive, type Host } from '../src/go-live.js';
+import { detectHost, HOST_NAMES, parseHost, renderGoLive, type Host } from '../src/go-live.js';
 
 describe('detectHost', () => {
   let cwd: string;
@@ -65,6 +65,10 @@ describe('parseHost', () => {
     expect(parseHost('fly.io')).toBe('fly');
     expect(parseHost('aws')).toBe('amplify');
     expect(parseHost('nowhere')).toBeNull();
+  });
+
+  it('accepts every host by the name it is shown with', () => {
+    for (const [host, name] of Object.entries(HOST_NAMES)) expect(parseHost(name), name).toBe(host);
   });
 });
 

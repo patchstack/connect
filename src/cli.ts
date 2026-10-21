@@ -85,7 +85,20 @@ import {
   resolveWidgetShellDir,
 } from './guide.js';
 import { type NextStepContext, type Progress } from './progress.js';
-import { emptyReport, recordChange, renderHookSummary, renderStatus, renderSummary, SUMMARY_HEADING, SUMMARY_INTRO, type StatusReport } from './report.js';
+import {
+  BUILD_SCRIPTS_CHANGE,
+  emptyReport,
+  INSTALL_SCRIPT_CHANGE,
+  NEXT_INTRO,
+  recordChange,
+  renderHookSummary,
+  renderNext,
+  renderStatus,
+  renderSummary,
+  SUMMARY_HEADING,
+  SUMMARY_INTRO,
+  type StatusReport,
+} from './report.js';
 import { login, readPendingLogin, redeemIfApproved, startLogin, waitForApproval } from './login.js';
 import {
   claim,
@@ -122,6 +135,7 @@ function startScreen(color: boolean): string[] {
     `  ${paint('cyan', 'npx @patchstack/connect setup')}`,
     '',
     'Then:',
+    command('next', 'what to do next'),
     command('vulns', 'see what was found'),
     command('widget', 'show Patchstack inside your app (optional)'),
     command('go-live', 'how to go live on your host'),
@@ -170,6 +184,10 @@ Usage:
   patchstack-connect status [options]                Show current configuration and whether the
                                                      site still exists on Patchstack (active /
                                                      removed)
+  patchstack-connect next                            Say where this project stands and the one thing
+                                                     to do now: connect the account, or go live.
+                                                     Sends the site UUID to the public claim page;
+                                                     updates the connected note in .patchstackrc.json
   patchstack-connect summary                         Print the summary the last setup wrote, from
                                                      .patchstack/summary.md. Sends nothing; writes
                                                      nothing
@@ -1534,7 +1552,7 @@ async function runSetup(args: ParsedArgs): Promise<number> {
   const wired = wireBuildScripts(process.cwd(), before.packageManager);
   report.done.push(buildStepsLine(wired));
   if (wired.changed) {
-    recordChange(report, 'package.json', wired.strategy === 'postinstall-only' ? 'a package check after each install' : 'Patchstack in the install and build scripts');
+    recordChange(report, 'package.json', wired.strategy === 'postinstall-only' ? INSTALL_SCRIPT_CHANGE : BUILD_SCRIPTS_CHANGE);
   }
   detail(`Build hooks: ${wired.detail}`);
 
@@ -1612,7 +1630,7 @@ async function runSetup(args: ParsedArgs): Promise<number> {
   // An assistant reads this output and writes the person one message; a ready-made summary is what it
   // passes on. A terminal already shows the report above, and a build log is not read by a person.
   if (!isInstallOrBuildHook() && !runningInCi()) {
-    const summary = renderSummary({ ...report, missing }, guideProgress(after, reported), context, { widgetOnPage: after.widgetInstalled, widgetFile: after.widgetFile });
+    const summary = renderSummary({ ...report, missing }, guideProgress(after, reported), context, { widgetOnPage: after.widgetInstalled });
     // Kept, so `summary` can print it again: long setup output can be cut short before it reaches an assistant.
     try {
       ensureProjectDirectorySync(cwd, path.join(cwd, path.dirname(SUMMARY_FILE)));
@@ -1664,6 +1682,41 @@ function runSummary(): number {
   console.log(SUMMARY_INTRO);
   console.log(SUMMARY_HEADING);
   console.log(summary);
+  return 0;
+}
+
+/**
+ * The one thing to do now, for the word the summary ends on. Connection lives on the server, so it is
+ * looked up unless `.patchstackrc.json` already records it; everything else is read from the project.
+ */
+async function runNext(args: ParsedArgs): Promise<number> {
+  const config = await resolveCliConfig(args);
+  if (config.siteUuid === null) {
+    console.error('This project is not on Patchstack yet. Run: npx @patchstack/connect setup');
+    return 1;
+  }
+  const cwd = process.cwd();
+  const state = await collectGuideState(cwd);
+  let connected = config.claimed === true;
+  if (!connected) {
+    const preview = await fetchClaimPreview(config);
+    if (preview.state === 'unknown') {
+      console.error('Could not reach Patchstack. Check your connection and try again.');
+      return 1;
+    }
+    connected = preview.state === 'claimed';
+    await recordClaimState(config, config.siteUuid, connected);
+  }
+  const link = config.endpointTrusted !== false ? buildClaimUrl(config.endpoint, config.siteUuid) : null;
+  const context = { ...guideNextStepContext(state), noServer: !state.protectionApplicable };
+  const host = detectHost(cwd);
+  const lines = renderNext(guideProgress(state, { connected }), context, {
+    link,
+    goLive: host !== null ? renderGoLive(host, { useColor: false }) : null,
+    hosts: Object.values(HOST_NAMES).filter((name) => name !== HOST_NAMES['cloudflare-workers']),
+  });
+  if (!process.stdout.isTTY) console.log(NEXT_INTRO);
+  for (const line of lines) console.log(line);
   return 0;
 }
 
@@ -2201,7 +2254,7 @@ async function main(): Promise<number> {
 
 /** Commands `runCommand` dispatches; anything else is an unknown command and sends no notice. */
 const KNOWN_COMMANDS = new Set([
-  'init', 'scan', 'vulns', 'summary', 'go-live', 'widget', 'status', 'uninstall', 'mark-build', 'protect',
+  'init', 'scan', 'vulns', 'next', 'summary', 'go-live', 'widget', 'status', 'uninstall', 'mark-build', 'protect',
   'demo', 'demo-guide', 'guide', 'setup', 'map', 'claim', 'login',
 ]);
 
@@ -2228,6 +2281,8 @@ async function runCommand(args: ParsedArgs): Promise<number> {
       return runVulns(args);
     case 'summary':
       return runSummary();
+    case 'next':
+      return runNext(args);
     case 'go-live':
       return runGoLive(args);
     case 'widget':

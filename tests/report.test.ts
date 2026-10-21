@@ -3,7 +3,19 @@ import { describe, expect, it } from 'vitest';
 import type { PackageSummary } from '../src/client.js';
 import { readFileSync } from 'node:fs';
 
-import { renderStatus, renderSummary, SUMMARY_AGAIN, SUMMARY_HEADING, summaryReplies, type StatusReport } from '../src/report.js';
+import { SECRET_CONFIG_FILENAME } from '../src/config.js';
+import {
+  BUILD_SCRIPTS_CHANGE,
+  INSTALL_SCRIPT_CHANGE,
+  NEXT_REPLY,
+  renderNext,
+  renderStatus,
+  renderSummary,
+  SUMMARY_AGAIN,
+  SUMMARY_HEADING,
+  SUMMARY_INTRO,
+  type StatusReport,
+} from '../src/report.js';
 import type { NextStepContext, Progress } from '../src/progress.js';
 
 const context: NextStepContext = {
@@ -169,101 +181,75 @@ describe('an app with no server', () => {
   });
 });
 
+const LOGO = ['```', '████████  P A T C H S T A C K', '▄▄▄▄▀▀▀▀', '```', ''];
+
 describe('renderSummary', () => {
-  it('writes the message to pass on: findings as the heading, what to do with the full link, and the reminder', () => {
+  it('writes the message to pass on: findings as the heading, what to do with the full link, and the word to say next', () => {
     const lines = renderSummary(report({ rules: 12 }), notConnected, context, { widgetOnPage: true });
 
     expect(lines).toEqual([
-      '```',
-      '████████  P A T C H S T A C K',
-      '▄▄▄▄▀▀▀▀',
-      '```',
-      '',
+      ...LOGO,
       '### 🛡️ Checked 89 packages: 5 vulnerabilities in 3 packages (highest severity: high)',
       '',
       '#### 👉 What to do now',
       '1. **Connect your Patchstack account** to see the details and turn on protection',
       `   ${context.claimUrl}`,
-      '   Once connected, reply **2** from the menu below to check it.',
       '2. Restart your app to turn protection on',
+      '',
+      `When you've connected, say **done**.`,
       '',
       '#### What Patchstack found',
       '🔴 High **1** · 🟠 Medium **3** · 🔵 Low **1** · 12 packages outdated · 12 protection rules available',
       '',
-      'The Patchstack widget now shows in the pre-production version of your app. Refresh the preview if it did not appear.',
+      "**Refresh your app's preview** to see the Patchstack widget.",
       '',
       "Don't forget to republish or redeploy the app so the protection rules protect your live app.",
-      '',
-      '---',
-      '',
-      '### 💬 What next? Reply with a number',
-      '',
-      '> 1️⃣ **Show me the vulnerabilities**',
-      '>',
-      '> 2️⃣ **Check that my account is connected**',
-      '>',
-      '> 3️⃣ **Help me put my app live**',
-      '',
-      '_Any time later, just ask: "Show my Patchstack summary"_',
-    ].join('\n').split('\n'));
+    ]);
   });
 
-  it('makes no protection claims for an app with no server', () => {
+  it('gives a browser-only app with nothing found one path: the link, then the word to say', () => {
+    const clean = summary({ vulnerable: 0, outdated: 0, total: 42, severity: { high: 0, medium: 0, low: 0, unknown: 0 } });
+    const changed = [
+      { file: 'package.json', what: 'added @patchstack/connect' },
+      { file: 'package.json', what: BUILD_SCRIPTS_CHANGE },
+      { file: SECRET_CONFIG_FILENAME, what: 'API key, ignored by git. Never commit it' },
+      { file: 'index.html', what: 'the Patchstack widget' },
+    ];
+    const lines = renderSummary(report({ checked: 42, findings: clean, missing: [noServerItem], changed }), notConnected, context, { widgetOnPage: true });
+
+    expect(lines).toEqual([
+      ...LOGO,
+      '### 🛡️ Checked 42 packages: no known vulnerabilities',
+      '',
+      '#### 👉 Connect your Patchstack account to see the details',
+      '',
+      context.claimUrl,
+      '',
+      `When you've connected, say **done**.`,
+      '',
+      "**Refresh your app's preview** to see the Patchstack widget.",
+      '',
+      `_Patchstack is now part of your install and build. Your API key is in \`${SECRET_CONFIG_FILENAME}\`: git ignores it, so never share it._`,
+    ]);
+  });
+
+  it('makes no protection claims for an app with no server, and leaves the missing server to the dashboard', () => {
     const input = report({ rules: 12, confirmed: ['Rules for this app are ready.'], missing: [noServerItem] });
     const text = renderSummary(input, notConnected, context, { widgetOnPage: false }).join('\n');
 
     expect(text).not.toMatch(/protection rules|turn on protection|Restart your app/);
-    expect(text).toContain('No server was found in this project');
-    expect(text).not.toContain('Deploy to protect');
+    expect(text).not.toContain('No server was found');
     expect(text).not.toContain("Don't forget to republish");
-    expect(text).not.toContain('widget now shows');
+    expect(text).not.toContain('widget');
     expect(text).not.toContain('Rules for this app are ready');
     expect(renderStatus('Patchstack setup', input, notConnected, context, { useColor: false, concise: true }).join('\n')).not.toContain('Rules for this app are ready');
-    expect(text).toContain('**Add the Patchstack widget to my app**');
-    expect(text).toContain('**Help me put my app live**');
   });
 
-  it('gives a browser-only app with nothing found one thing to do, and does not repeat the all-clear', () => {
-    const clean = summary({ vulnerable: 0, outdated: 0, total: 2, severity: { high: 0, medium: 0, low: 0, unknown: 0 } });
-    const lines = renderSummary(report({ checked: 2, findings: clean, missing: [noServerItem] }), notConnected, context, {
-      widgetOnPage: true,
-      widgetFile: 'index.html',
-    });
-
-    expect(lines).toEqual([
-      '```',
-      '████████  P A T C H S T A C K',
-      '▄▄▄▄▀▀▀▀',
-      '```',
-      '',
-      '### 🛡️ Checked 2 packages: no known vulnerabilities',
-      '',
-      '#### 👉 What to do now',
-      '**Connect your Patchstack account** to see the details',
-      '',
-      context.claimUrl,
-      '',
-      'Once connected, reply **1** from the menu below to check it.',
-      '',
-      'The Patchstack widget now shows in the pre-production version of your app (in `index.html`). Refresh the preview if it did not appear.',
-      '',
-      'No server was found in this project, so Patchstack checks its packages. Blocking attacks needs a server.',
-      '',
-      '---',
-      '',
-      '### 💬 What next? Reply with a number',
-      '',
-      '> 1️⃣ **Check that my account is connected**',
-      '>',
-      '> 2️⃣ **Help me put my app live**',
-      '',
-      '_Any time later, just ask: "Show my Patchstack summary"_',
-    ]);
-  });
-
-  it('offers only what is still left: no connection check once connected, no go-live once live', () => {
-    const done: Progress = { installed: true, connected: true, synced: true, deployed: true };
-    expect(summaryReplies(report(), done, { widgetOnPage: true }).map((reply) => reply.reply)).toEqual(['Show me the vulnerabilities']);
+  it('says only the parts of the project it changed', () => {
+    const installOnly = [{ file: 'package.json', what: INSTALL_SCRIPT_CHANGE }];
+    expect(renderSummary(report({ changed: installOnly }), notConnected, context, { widgetOnPage: false }).join('\n')).toContain('_Patchstack is now part of your install._');
+    expect(renderSummary(report(), notConnected, context, { widgetOnPage: false }).join('\n')).not.toContain('part of your');
+    expect(renderSummary(report(), notConnected, context, { widgetOnPage: false }).join('\n')).not.toContain('API key');
   });
 
   it('includes verified readiness and every outstanding action', () => {
@@ -280,49 +266,6 @@ describe('renderSummary', () => {
     for (const item of missing) expect(text).toContain(item.text);
   });
 
-  it('lists every reply it offers in AGENT-INSTALL.md with its command, so an assistant knows what to run', () => {
-    const doc = readFileSync(new URL('../AGENT-INSTALL.md', import.meta.url), 'utf8');
-    const table = doc.slice(doc.indexOf('### Commands for later'), doc.indexOf('Say only what the output says.'));
-    const rows = table.split('\n');
-    const offered = [
-      ...summaryReplies(report(), notConnected, { widgetOnPage: false }),
-      ...summaryReplies(report({ findings: summary({ vulnerable: 0, severity: { high: 0, medium: 0, low: 0, unknown: 0 } }) }), notConnected, { widgetOnPage: false }),
-    ];
-    for (const { reply, command } of offered) {
-      expect(rows.some((row) => row.includes(`"${reply}"`) && row.includes(`\`${command}\``)), reply).toBe(true);
-    }
-  });
-
-  it('ends by telling the person what to ask later, and AGENT-INSTALL.md maps it to summary', () => {
-    const lines = renderSummary(report(), notConnected, context, { widgetOnPage: true });
-    expect(lines[lines.length - 1]).toBe(`_Any time later, just ask: "${SUMMARY_AGAIN}"_`);
-    const doc = readFileSync(new URL('../AGENT-INSTALL.md', import.meta.url), 'utf8');
-    const table = doc.slice(doc.indexOf('### Commands for later'), doc.indexOf('Say only what the output says.'));
-    expect(table.split('\n').some((row) => row.includes(`"${SUMMARY_AGAIN}"`) && row.includes('`npx @patchstack/connect summary`'))).toBe(true);
-  });
-
-  it('lists what changed in the project, one line per file, with files that got the same thing together', () => {
-    const changed = [
-      { file: 'package.json', what: 'added @patchstack/connect' },
-      { file: 'index.html', what: 'the Patchstack widget' },
-      { file: 'package.json', what: 'Patchstack in the install and build scripts' },
-      { file: 'src/patchstack/guard.js', what: 'protection files, for when your app has a server' },
-      { file: 'src/patchstack/rules.json', what: 'protection files, for when your app has a server' },
-    ];
-    const text = renderSummary(report({ changed }), notConnected, context, { widgetOnPage: true, widgetFile: 'index.html' }).join('\n');
-    expect(text).toContain(
-      [
-        '**What changed**',
-        '- `package.json`: added @patchstack/connect; Patchstack in the install and build scripts',
-        '- `index.html`: the Patchstack widget',
-        '- `src/patchstack/guard.js`, `src/patchstack/rules.json`: protection files, for when your app has a server',
-      ].join('\n'),
-    );
-    // The widget's file is already in the list, so the widget line does not name it again.
-    expect(text).toContain('The Patchstack widget now shows in the pre-production version of your app. Refresh');
-    expect(renderSummary(report(), notConnected, context, { widgetOnPage: true }).join('\n')).not.toContain('What changed');
-  });
-
   it('keeps the command that goes with a step, so the person is told how to fix it', () => {
     const devOnly = {
       key: 'dev-only-install',
@@ -337,6 +280,56 @@ describe('renderSummary', () => {
     const lines = renderSummary(report({ findings: null, rules: 12 }), notConnected, context, { widgetOnPage: false });
     expect(lines[5]).toBe('### 🛡️ Checked 89 packages, now watching them');
     expect(lines[7]).toBe('12 protection rules available.');
+  });
+
+  it('ends on the word AGENT-INSTALL.md maps to next, and the doc still maps the summary for later', () => {
+    const doc = readFileSync(new URL('../AGENT-INSTALL.md', import.meta.url), 'utf8');
+    const table = doc.slice(doc.indexOf('### Commands for later'), doc.indexOf('Say only what the output says.')).split('\n');
+    expect(table.some((row) => row.includes(`"${NEXT_REPLY}"`) && row.includes('`npx @patchstack/connect next`'))).toBe(true);
+    expect(table.some((row) => row.includes(`"${SUMMARY_AGAIN}"`) && row.includes('`npx @patchstack/connect summary`'))).toBe(true);
+    expect(SUMMARY_INTRO).toContain(`"${NEXT_REPLY}"`);
+    expect(SUMMARY_INTRO).toContain('npx @patchstack/connect next');
+  });
+});
+
+describe('renderNext', () => {
+  const options = { link: context.claimUrl, goLive: ['Go live on Vercel', '', ' 1. Add your Patchstack key to Vercel'], hosts: ['Vercel', 'Netlify', 'Lovable'] };
+
+  it('repeats the link until the account is connected', () => {
+    expect(renderNext(notConnected, context, options)).toEqual([
+      "### ⏳ Your Patchstack account isn't connected yet",
+      '',
+      context.claimUrl,
+      '',
+      `When you've connected, say **done**.`,
+    ]);
+  });
+
+  it('moves on to going live once connected, with the steps for the host', () => {
+    const lines = renderNext({ ...notConnected, connected: true }, context, options);
+    expect(lines).toEqual([
+      '### ✅ Your Patchstack account is connected',
+      '',
+      `See what Patchstack found in your dashboard: ${context.claimUrl}`,
+      '',
+      '#### 👉 Deploy to protect your live app',
+      '',
+      '```',
+      ...options.goLive,
+      '```',
+      '',
+      '_Your Patchstack dashboard shows your live app once it reports in._',
+    ]);
+  });
+
+  it('asks where the app is hosted when the project does not say', () => {
+    const lines = renderNext({ ...notConnected, connected: true }, context, { ...options, goLive: null });
+    expect(lines[lines.length - 1]).toBe('Where is your app hosted? Say its name: Vercel, Netlify or Lovable.');
+  });
+
+  it('says publish, not protect, for an app with no server', () => {
+    const lines = renderNext({ ...notConnected, connected: true }, { ...context, noServer: true }, options);
+    expect(lines).toContain('#### 👉 Publish your app');
   });
 });
 
