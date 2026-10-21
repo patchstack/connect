@@ -82,6 +82,7 @@ import {
   installCommand,
   renderGuideChecklist,
   resolveWidgetFileHint,
+  resolveWidgetShellDir,
 } from './guide.js';
 import { type NextStepContext, type Progress } from './progress.js';
 import { emptyReport, recordChange, renderHookSummary, renderStatus, renderSummary, SUMMARY_HEADING, SUMMARY_INTRO, type StatusReport } from './report.js';
@@ -1075,29 +1076,37 @@ function reportSourceWidget(siteUuid: string, framework: string | null, report: 
     });
   };
   try {
+    // In a monorepo the shell is in the workspace app (apps/web), not the root `scan` runs in. Resolve the
+    // app directory so the widget lands where the page is actually rendered, and report its files by the
+    // path the user sees from the root.
+    const appDir = resolveWidgetShellDir(process.cwd(), framework);
+    const atRepo = (shell: string | null): string | null =>
+      shell === null ? null : path.join(path.relative(process.cwd(), appDir), shell).replace(/\\/g, '/');
+
     // A server-rendered project has no HTML shell to edit, so the framework's JSX root or Astro layout
     // stands in for one. Only where a literal tag is known to belong — the same set the marker will write into.
-    const hint = hasEditableShell(framework) ? resolveWidgetFileHint(process.cwd(), framework) : null;
+    const hint = hasEditableShell(framework) ? resolveWidgetFileHint(appDir, framework) : null;
     const jsxShell = hint !== null && !hint.toLowerCase().endsWith('.html') ? hint : null;
 
-    const result = ensureSourceWidget(process.cwd(), siteUuid, jsxShell);
+    const result = ensureSourceWidget(appDir, siteUuid, jsxShell);
+    const shellPath = atRepo(result.shell);
     switch (result.action) {
       case 'added':
-        report.done.push(`Added the Patchstack widget to ${result.shell}`);
-        if (result.shell !== null) recordChange(report, result.shell, 'the Patchstack widget, just before </body>');
+        report.done.push(`Added the Patchstack widget to ${shellPath}`);
+        if (shellPath !== null) recordChange(report, shellPath, 'the Patchstack widget, just before </body>');
         break;
       case 'updated':
-        report.done.push(`Updated the Patchstack widget in ${result.shell}`);
-        if (result.shell !== null) recordChange(report, result.shell, 'the Patchstack widget, updated to this site');
+        report.done.push(`Updated the Patchstack widget in ${shellPath}`);
+        if (shellPath !== null) recordChange(report, shellPath, 'the Patchstack widget, updated to this site');
         break;
       case 'unchanged':
-        report.done.push(`The Patchstack widget is already in ${result.shell}`);
+        report.done.push(`The Patchstack widget is already in ${shellPath}`);
         break;
       case 'manual':
-        report.done.push(`Left your own Patchstack widget in ${result.shell} as it is`);
+        report.done.push(`Left your own Patchstack widget in ${shellPath} as it is`);
         break;
       case 'no-body':
-        handAdd(`${result.shell} has no </body>. Add this to your main page layout, just before </body>:`);
+        handAdd(`${shellPath} has no </body>. Add this to your main page layout, just before </body>:`);
         break;
       case 'no-shell':
         handAdd('Add this to your main page layout, just before </body>:');
@@ -1134,21 +1143,25 @@ function ignoredFileEnvironmentWarning(config: Config): string | null {
  */
 function reportSourceMarker(framework: string | null, checksum: string | null, report: StatusReport): void {
   try {
-    const shell = resolveWidgetFileHint(process.cwd(), framework);
+    // The marker goes in the same shell as the widget — in a monorepo that is the workspace app, not the
+    // root `scan` runs in. Resolve the app directory, then report its files by the path from the root.
+    const appDir = resolveWidgetShellDir(process.cwd(), framework);
+    const shell = resolveWidgetFileHint(appDir, framework);
     if (shell === null || shell.toLowerCase().endsWith('.html')) {
       // An HTML shell needs nothing here: mark-build stamps the built copy.
       return;
     }
+    const shellPath = path.join(path.relative(process.cwd(), appDir), shell).replace(/\\/g, '/');
 
-    const result = ensureSourceMarker(process.cwd(), shell, framework, checksum);
+    const result = ensureSourceMarker(appDir, shell, framework, checksum);
     switch (result.action) {
       case 'added':
-        report.done.push(`Set up ${shell} to tell Patchstack when it runs as your live app`);
-        recordChange(report, shell, 'a line that tells Patchstack when it runs as your live app');
-        detail(`Production marker: added to ${shell} (only set when ${productionGate(framework)}).`);
+        report.done.push(`Set up ${shellPath} to tell Patchstack when it runs as your live app`);
+        recordChange(report, shellPath, 'a line that tells Patchstack when it runs as your live app');
+        detail(`Production marker: added to ${shellPath} (only set when ${productionGate(framework)}).`);
         break;
       case 'manual':
-        detail(`Production marker: already in ${shell}.`);
+        detail(`Production marker: already in ${shellPath}.`);
         break;
       case 'no-anchor':
       case 'unsupported':
@@ -1156,9 +1169,9 @@ function reportSourceMarker(framework: string | null, checksum: string | null, r
         report.missing.push({
           text: 'Your live app does not tell Patchstack it is live yet',
           hint: hasEditableShell(framework)
-            ? [`Add this inside <head> in ${shell}:`, ...buildSourceMarkerSnippet(framework).split('\n').map((line) => `  ${line}`)]
+            ? [`Add this inside <head> in ${shellPath}:`, ...buildSourceMarkerSnippet(framework).split('\n').map((line) => `  ${line}`)]
             : [
-                `Add this inside <head> in ${shell}, only when ${productionGate(framework)}:`,
+                `Add this inside <head> in ${shellPath}, only when ${productionGate(framework)}:`,
                 '  <script>window.__PATCHSTACK_PROD__=true;</script>',
               ],
         });
