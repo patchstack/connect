@@ -102,6 +102,21 @@ describe('a guard without the site credential, shipped with a rules reader', () 
     await protection.stop();
   });
 
+  it('reports the forwarded public host, not the internal one, behind a reverse proxy', async () => {
+    const { protection, calls } = await guard({ rules_reader: READER });
+
+    // A reverse-proxied SSR deploy: the server bound a loopback port, and the public address rides the
+    // forwarded headers. The live report must name the public host, or the platform never sees the deploy.
+    await protection.fetchGuard()(new Request('http://127.0.0.1:8080/', {
+      headers: { 'x-forwarded-host': 'lifestyle-886500.hostingersite.com', 'x-forwarded-proto': 'https' },
+    }));
+
+    const live = calls.find((c) => c.url.includes('/live/'));
+    expect(live).toBeDefined();
+    expect(JSON.parse(String(live?.init.body))).toMatchObject({ origin: 'https://lifestyle-886500.hostingersite.com' });
+    await protection.stop();
+  });
+
   it('ignores a reader that is not in the issued form', async () => {
     const { protection, calls } = await guard({ rules_reader: 'not-a-reader-1' });
 
