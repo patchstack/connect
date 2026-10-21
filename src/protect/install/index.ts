@@ -13,6 +13,7 @@ import { tanstackAdapter } from './adapters/tanstack.js';
 import { nextAdapter } from './adapters/next.js';
 import { sveltekitAdapter } from './adapters/sveltekit.js';
 import { astroAdapter } from './adapters/astro.js';
+import { reactRouterAdapter } from './adapters/react-router.js';
 import { nuxtAdapter } from './adapters/nuxt.js';
 import { nestjsAdapter } from './adapters/nestjs.js';
 import { fastifyAdapter } from './adapters/fastify.js';
@@ -31,6 +32,7 @@ const ADAPTERS: Adapter[] = [
   nextAdapter,
   sveltekitAdapter,
   astroAdapter,
+  reactRouterAdapter,
   nuxtAdapter,
   nestjsAdapter,
   fastifyAdapter,
@@ -98,7 +100,7 @@ export function runProtect(cwd: string, opts: WireOptions = {}): ProtectResult {
  * an environment variable in the deployment. Without it the guard runs on the rules it shipped with: it
  * screens every request, reports healthy, and never receives another rule.
  */
-const RUNTIMES_WITHOUT_CONFIG_FILE = new Set(['tanstack-start', 'nextjs', 'sveltekit', 'astro', 'nuxt', 'generic']);
+const RUNTIMES_WITHOUT_CONFIG_FILE = new Set(['tanstack-start', 'nextjs', 'sveltekit', 'astro', 'nuxt', 'react-router', 'generic']);
 
 /** Whether the guard's rules file carries the site's read-only rules credential. */
 function bundledRulesReader(cwd: string): boolean {
