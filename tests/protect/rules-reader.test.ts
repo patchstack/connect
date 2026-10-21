@@ -117,6 +117,43 @@ describe('a guard without the site credential, shipped with a rules reader', () 
     await protection.stop();
   });
 
+  it('reports /live on the reader even when managed rules have not resolved (screening on the bundle)', async () => {
+    const cwd = mkdtempSync(join(tmpdir(), 'ps-reader-'));
+    dirs.push(cwd);
+    vi.stubEnv('PATCHSTACK_API_KEY', '');
+    vi.stubEnv('PATCHSTACK_PULSE_AUTH', '');
+    const calls: Array<{ url: string; init: RequestInit }> = [];
+    vi.stubGlobal('fetch', vi.fn(async (url: string, init: RequestInit = {}) => {
+      calls.push({ url: String(url), init });
+      if (String(url).endsWith('/token')) {
+        return new Response(JSON.stringify({ access_token: 'reader-token', expires_in: 3600 }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+      }
+      // The managed-rules fetch fails, so the guard keeps screening on the bundle it shipped with — exactly
+      // what a keyless app whose rules have not landed looks like: protected, but not on managed rules.
+      if (String(url).includes('/rules/')) return new Response('upstream error', { status: 503 });
+      return new Response('{}', { status: 202, headers: { 'Content-Type': 'application/json' } });
+    }));
+    const protection: any = await createProtection({
+      siteUuid: '550e8400-e29b-41d4-a716-446655440000',
+      pulseRulesUrl: 'https://x.test/monitor/pulse',
+      cwd, cacheDir: join(cwd, '.patchstack'),
+      rules: { firewall: [], whitelists: [], whitelist_keys: {}, _patchstack: { rules_reader: READER } } as never,
+      reportDetections: true,
+    });
+
+    // Detection reporting is off (no managed rules to attribute an event to) ...
+    expect(protection.detectionReporting).not.toBe('on-unverified');
+    await protection.fetchGuard()(new Request('https://live.example.com/'));
+
+    // ... but the deployment still reports it is live, authenticated on the reader credential — a running
+    // guard IS deployed whether or not its managed rules have resolved.
+    const live = calls.find((c) => c.url.includes('/live/'));
+    expect(live).toBeDefined();
+    expect(JSON.parse(String(live?.init.body))).toMatchObject({ origin: 'https://live.example.com' });
+    expect((live?.init.headers as Record<string, string>).Authorization).toBe('Bearer reader-token');
+    await protection.stop();
+  });
+
   it('ignores a reader that is not in the issued form', async () => {
     const { protection, calls } = await guard({ rules_reader: 'not-a-reader-1' });
 
