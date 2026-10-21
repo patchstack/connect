@@ -325,15 +325,18 @@ Handle it in this order:
      with a manual approval; or `Shift+Tab` switches to Manual mode, and the tool prompts them when you
      try again.
    - **Allow it for good, then ask you to run it again.** For Claude Code these rules pre-approve every
-     `npx @patchstack/connect …` command and nothing else. They go in `.claude/settings.json` (shared with
-     the repository), `.claude/settings.local.json` (this person only), or through `/permissions`:
+     `npx @patchstack/connect …` command, with or without a pinned version, and nothing else. They go in
+     `.claude/settings.json` (shared with the repository), `.claude/settings.local.json` (this person
+     only), or through `/permissions`:
 
      ```json
      {
        "permissions": {
          "allow": [
            "Bash(npx @patchstack/connect *)",
-           "Bash(npx --yes @patchstack/connect *)"
+           "Bash(npx --yes @patchstack/connect *)",
+           "Bash(npx @patchstack/connect@* *)",
+           "Bash(npx --yes @patchstack/connect@* *)"
          ]
        }
      }

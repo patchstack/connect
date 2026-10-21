@@ -15,7 +15,12 @@ const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const read = (relative: string): string => readFileSync(path.join(root, relative), 'utf8');
 
 /** The allow rules the docs hand to a Claude Code user, verbatim. */
-const RULES = ['Bash(npx @patchstack/connect *)', 'Bash(npx --yes @patchstack/connect *)'];
+const RULES = [
+  'Bash(npx @patchstack/connect *)',
+  'Bash(npx --yes @patchstack/connect *)',
+  'Bash(npx @patchstack/connect@* *)',
+  'Bash(npx --yes @patchstack/connect@* *)',
+];
 
 const HANDOFF_HEADING = '## When your tool will not run this CLI';
 const README_HEADING = '### If your coding tool blocks the command';
@@ -83,11 +88,11 @@ describe('the permission handoff', () => {
 
   it('recommends no other Bash rule shape anywhere', () => {
     // A broader rule such as Bash(npx *) approves every npx command; a narrower or differently spelled one
-    // does not match what the docs tell the agent to run. Either drift is a rule that is not one of the two.
+    // does not match what the docs tell the agent to run. Either drift is a rule outside RULES.
     for (const [name, text] of Object.entries(docs)) {
       const found = [...text.matchAll(/Bash\([^)]*\)/g)].map((m) => m[0]);
       expect(found.length, `${name} should carry the rules at all`).toBeGreaterThan(0);
-      expect(new Set(found), `${name} recommends a rule that is not one of the two`).toEqual(new Set(RULES));
+      expect(new Set(found), `${name} recommends a rule that is not one of these`).toEqual(new Set(RULES));
     }
   });
 
@@ -104,5 +109,6 @@ describe('the permission handoff', () => {
     expect(readmeSection).toContain('~/.gemini/policies/');
     expect(readmeSection).toContain('commandPrefix = "npx @patchstack/connect"');
     expect(readmeSection).toContain('"npx @patchstack/connect *": "allow"');
+    expect(readmeSection).toContain('"npx @patchstack/connect@* *": "allow"');
   });
 });
