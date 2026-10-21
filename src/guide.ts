@@ -14,6 +14,7 @@ import { DEFAULT_ENDPOINT, buildClaimUrl } from './client.js';
 import { resolveConfig } from './config.js';
 import { runVerify } from './protect/install/index.js';
 import type { VerifyCheck } from './protect/install/types.js';
+import { workspacePackageDirs } from './protect/install/workspaces.js';
 import {
   buildSourceMarkerSnippet,
   hasEditableShell,
@@ -330,6 +331,23 @@ export function resolveWidgetFileHint(cwd: string, framework: string | null): st
     }
   }
   return framework === 'astro' ? findAstroDocumentLayout(cwd) : null;
+}
+
+/**
+ * The directory whose page shell the widget (and the production marker) belong in.
+ *
+ * The project root when the shell is there, and otherwise the workspace package that has one — a monorepo
+ * whose framework app lives in `apps/web` while `scan` runs at the root. Falls back to the root so the
+ * caller still has a directory to report against when no shell exists anywhere. Mirrors how the guard is
+ * wired into the workspace app, so the widget lands in the same place.
+ */
+export function resolveWidgetShellDir(cwd: string, framework: string | null): string {
+  if (resolveWidgetFileHint(cwd, framework) !== null) return cwd;
+  for (const dir of workspacePackageDirs(cwd)) {
+    if (resolveWidgetFileHint(dir, framework) !== null) return dir;
+  }
+
+  return cwd;
 }
 
 /**

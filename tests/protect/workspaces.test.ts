@@ -4,6 +4,8 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { runProtect, runVerify } from '../../src/protect/install/index.js';
 import { workspacePackageDirs } from '../../src/protect/install/workspaces.js';
+import { resolveWidgetShellDir } from '../../src/guide.js';
+import { ensureSourceWidget, WIDGET_MARKER_ATTR } from '../../src/widget.js';
 
 // `protect` run at a monorepo root must wire the guard into the workspace package that holds the app — the
 // shape Hostinger Horizons generates (an `apps/web` React Router app under a bare workspace root). The
@@ -77,6 +79,54 @@ describe('protect in a workspace monorepo', () => {
     // Still wired — protection does not depend on the credential — but the UUID falls back to the env var.
     expect(read(root, 'apps/web/app/root.tsx')).toContain('patchstackRootMiddleware');
     expect(read(root, 'apps/web/app/patchstack/guard.server.ts')).toContain('__PATCHSTACK_SITE_UUID__');
+  });
+});
+
+describe('widget injection in a workspace monorepo', () => {
+  // A React Router root with a document shell (a <body> to inject before), as a real app has.
+  const SHELL = `import { Outlet, Scripts } from "react-router";
+export function Layout({ children }: { children: React.ReactNode }) {
+  return (<html><head></head><body>{children}<Scripts /></body></html>);
+}
+export default function Root() { return <Outlet />; }
+`;
+
+  function makeMonorepoWithShell(): string {
+    const root = mkdtempSync(path.join(tmpdir(), 'ps-mono-w-'));
+    dirs.push(root);
+    writeFileSync(path.join(root, 'package.json'), JSON.stringify({ name: 'mono', private: true, workspaces: ['apps/*'] }));
+    mkdirSync(path.join(root, 'apps/web/app'), { recursive: true });
+    writeFileSync(path.join(root, 'apps/web/package.json'), JSON.stringify({ name: 'web', devDependencies: { '@react-router/dev': '^7.6.0' } }));
+    writeFileSync(path.join(root, 'apps/web/app/root.tsx'), SHELL);
+    return root;
+  }
+
+  it('resolves the workspace app as the widget shell directory', () => {
+    const root = makeMonorepoWithShell();
+    expect(path.relative(root, resolveWidgetShellDir(root, 'react-router'))).toBe('apps/web');
+  });
+
+  it('injects the widget into the workspace app shell, not the root', () => {
+    const root = makeMonorepoWithShell();
+    const appDir = resolveWidgetShellDir(root, 'react-router');
+
+    const result = ensureSourceWidget(appDir, UUID, 'app/root.tsx');
+
+    expect(result.action).toBe('added');
+    const shell = read(root, 'apps/web/app/root.tsx');
+    expect(shell).toContain('cdn.patchstack.com/patchstack-widget.js');
+    expect(shell).toContain(`data-site-uuid="${UUID}"`);
+    expect(shell).toContain(WIDGET_MARKER_ATTR);
+    // Nothing is written at the root.
+    expect(existsSync(path.join(root, 'index.html'))).toBe(false);
+  });
+
+  it('falls back to the root when the shell is there (a single-package project)', () => {
+    const root = mkdtempSync(path.join(tmpdir(), 'ps-single-w-'));
+    dirs.push(root);
+    writeFileSync(path.join(root, 'package.json'), JSON.stringify({ name: 'single' }));
+    writeFileSync(path.join(root, 'index.html'), '<html><body></body></html>');
+    expect(resolveWidgetShellDir(root, null)).toBe(root);
   });
 });
 
