@@ -89,6 +89,8 @@ const SEAMS: Record<string, Seam> = {
 
   'astro-middleware.ts#onRequest': async (api, served, ran) =>
     api.onRequest({ request: REQUEST() }, async () => (ran(), served)),
+  'react-router-guard.server.ts#patchstackRootMiddleware': async (api, served, ran) =>
+    api.patchstackRootMiddleware({ request: REQUEST() }, async () => (ran(), served)),
   'sveltekit-hooks.ts#handle': async (api, served, ran) =>
     api.handle({ event: { request: REQUEST() }, resolve: async () => (ran(), served) }),
   // Next and Nuxt fall through by answering nothing; the route runs after the middleware returns.

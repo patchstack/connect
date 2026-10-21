@@ -318,3 +318,76 @@ describe('NestJS adapter', () => {
     }
   });
 });
+
+describe('React Router adapter', () => {
+  function rrApp(root = 'app/root.tsx', rootSource?: string): string {
+    const dir = tmp('ps-rr-');
+    writeFileSync(path.join(dir, 'package.json'), JSON.stringify({
+      name: 'x', type: 'module',
+      dependencies: { 'react-router': '^7.3.0', '@react-router/node': '^7.3.0', '@react-router/serve': '^7.3.0' },
+      devDependencies: { '@react-router/dev': '^7.3.0' },
+    }));
+    writeFileSync(path.join(dir, '.patchstackrc.json'), JSON.stringify({ siteUuid: '550e8400-e29b-41d4-a716-446655440000' }));
+    mkdirSync(path.join(dir, path.dirname(root)), { recursive: true });
+    writeFileSync(path.join(dir, root), rootSource ?? [
+      "import { Outlet } from 'react-router';",
+      "export function Layout({ children }: { children: React.ReactNode }) { return <html><body>{children}</body></html>; }",
+      "export default function Root() { return <Outlet />; }",
+    ].join('\n') + '\n');
+    return dir;
+  }
+
+  it('scaffolds a server guard and wires the root middleware export, idempotently', () => {
+    const dir = rrApp();
+    try {
+      const res: any = runProtect(dir);
+      expect(res.status).toBe('wired');
+      expect(res.adapter).toBe('react-router');
+      expect(existsSync(path.join(dir, 'app/patchstack/guard.server.ts'))).toBe(true);
+      expect(existsSync(path.join(dir, 'app/patchstack/patchstack.rules.json'))).toBe(true);
+      const root = read(dir, 'app/root.tsx');
+      expect(root).toContain('import { patchstackRootMiddleware } from "./patchstack/guard.server"');
+      expect(root).toContain('export const middleware = [patchstackRootMiddleware]');
+      expect(runVerify(dir).wired).toBe(true);
+      // the UUID is baked into the server guard, not left as the placeholder
+      expect(read(dir, 'app/patchstack/guard.server.ts')).toContain('550e8400-e29b-41d4-a716-446655440000');
+
+      const before = read(dir, 'app/root.tsx');
+      runProtect(dir);
+      expect(read(dir, 'app/root.tsx')).toBe(before);
+      expect(count(read(dir, 'app/root.tsx'), 'export const middleware')).toBe(1);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('works with a src/ root too', () => {
+    const dir = rrApp('src/root.tsx');
+    try {
+      expect((runProtect(dir) as any).adapter).toBe('react-router');
+      expect(read(dir, 'src/root.tsx')).toContain('import { patchstackRootMiddleware } from "./patchstack/guard.server"');
+      expect(runVerify(dir).wired).toBe(true);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('leaves a root that already defines its own middleware untouched, and reports it unwired', () => {
+    const dir = rrApp('app/root.tsx', [
+      "import { Outlet } from 'react-router';",
+      "export const middleware = [async (_: any, next: any) => next()];",
+      "export default function Root() { return <Outlet />; }",
+    ].join('\n') + '\n');
+    try {
+      const res: any = runProtect(dir);
+      expect(res.status).not.toBe('wired');
+      // the guard + rules are still scaffolded, but the root is not rewritten
+      expect(existsSync(path.join(dir, 'app/patchstack/guard.server.ts'))).toBe(true);
+      expect(count(read(dir, 'app/root.tsx'), 'export const middleware')).toBe(1);
+      expect(read(dir, 'app/root.tsx')).not.toContain('patchstackRootMiddleware');
+      expect(runVerify(dir).wired).toBe(false);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
