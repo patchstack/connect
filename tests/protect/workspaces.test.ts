@@ -32,6 +32,8 @@ function makeMonorepo(opts: { rc?: boolean } = {}): string {
     dependencies: { 'react-router': '^7.6.0' },
     devDependencies: { '@react-router/dev': '^7.6.0', '@react-router/serve': '^7.6.0' },
   }));
+  writeFileSync(path.join(root, 'apps/web/react-router.config.ts'),
+    'import type { Config } from "@react-router/dev/config";\nexport default { ssr: true } satisfies Config;\n');
   writeFileSync(path.join(root, 'apps/web/app/root.tsx'),
     'import { Outlet } from "react-router";\nexport default function Root() { return <Outlet />; }\n');
   return root;

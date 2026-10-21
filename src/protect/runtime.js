@@ -857,11 +857,18 @@ export async function createProtection(options = {}) {
       if (activated) return {blocked:activated, client:undefined};
       const pending = requestRefresher?.check();
       if (pending) await pending;
-      // First real request on a new origin: tell Patchstack the deployment is live. Gated on reporting
-      // being on — the same enrolment that turns on detection reporting — so a local or unenrolled guard
-      // stays silent on the request path. Inline and best-effort (see live-report.js): a no-op after the
-      // first success and between failed attempts.
-      if (detections) {
+      // First real request on a new origin: tell Patchstack the deployment is live. Gated on having a
+      // credential (`rulesAuth` — the site key, or the bundled read-only reader), NOT on detection
+      // reporting being on. A guard serving live traffic is deployed whether or not its MANAGED rules have
+      // resolved: a keyless app whose rule fetch has not landed yet still screens on its bundled rules, and
+      // the reader still authenticates this report. Tying liveness to managed-rules reporting left such a
+      // deployment protected but forever "not deployed" on the dashboard. The one thing that does silence it
+      // is an EXPLICIT opt-out — `PATCHSTACK_REPORT_DETECTIONS=0` or `PATCHSTACK_TELEMETRY=0` — because that
+      // is the operator choosing to send nothing, not the environment being unable to. The reporter is also
+      // a no-op without a site, and skips local/preview origins. Inline and best-effort (see live-report.js).
+      const reportingOptedOut = detectionReporting === 'disabled-by-config'
+        || detectionReporting === 'disabled-by-telemetry-opt-out';
+      if (rulesAuth && !reportingOptedOut) {
         try {
           // The public address a visitor used, not `request.url` — behind a reverse proxy (every hosted
           // builder's deploy) that URL often carries the internal host the app binds to, so the forwarded

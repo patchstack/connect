@@ -6,6 +6,12 @@ import { existsSync } from 'node:fs';
 import { dirname, join, relative } from 'node:path';
 import { bakeSiteUuid, hasDependency, log, read, templatesDir } from '../util.js';
 import { sourceCompiler, parsedSource, type Compiler } from '../syntax.js';
+import {
+  ensureMiddlewareFlagEnabled,
+  hasMiddlewareFlag,
+  middlewareFlagFor,
+  reactRouterConfigFile,
+} from '../react-router-middleware.js';
 import { matchesGuardTemplate } from '../template-match.js';
 import { copyProjectFileSync, ensureProjectDirectorySync, writeProjectFileSync } from '../../../safe-file.js';
 import type { Adapter, WireOptions, WireResult, VerifyResult } from '../types.js';
@@ -106,6 +112,23 @@ function wire(cwd: string, opts: WireOptions): WireResult {
     changed.push(rulesRel(rootRel));
   }
 
+  // React Router ignores a route `middleware` export unless the matching future flag is on, so a guard
+  // wired as middleware runs on nothing without it. Turn it on in react-router.config for versions that
+  // need it (v8 has it on by default); report the one line to add when the config cannot be edited blind.
+  const flag = middlewareFlagFor(cwd);
+  if (flag !== null) {
+    const outcome = ensureMiddlewareFlagEnabled(cwd, flag);
+    const configRel = reactRouterConfigFile(cwd);
+    if (outcome === 'enabled' && configRel !== null) {
+      changed.push(configRel);
+      log(`enabled React Router middleware (future.${flag}) in ${configRel}; without it the guard is wired but never runs.`);
+    } else if (outcome === 'no-config') {
+      log(`React Router middleware is off: add react-router.config.ts with \`future: { ${flag}: true }\`, or the wired guard will not run.`);
+    } else if (outcome === 'manual') {
+      log(`React Router middleware is off: add \`future: { ${flag}: true }\` to your react-router.config so the wired guard runs.`);
+    }
+  }
+
   const source = read(join(cwd, rootRel));
   if (wiredRoot(ts, source, rootRel)) {
     return { ok: true, changed: [...new Set(changed)] };
@@ -125,20 +148,34 @@ function wire(cwd: string, opts: WireOptions): WireResult {
 function verify(cwd: string): VerifyResult {
   const ts = sourceCompiler(cwd);
   const rootRel = rootFile(cwd);
-  const wired = !!ts && rootRel !== null && wiredRoot(ts, read(join(cwd, rootRel)), rootRel)
+  const rootWired = !!ts && rootRel !== null && wiredRoot(ts, read(join(cwd, rootRel)), rootRel)
     && existsSync(join(cwd, guardRel(rootRel)))
     && matchesGuardTemplate(cwd, guardRel(rootRel), TEMPLATE)
     && existsSync(join(cwd, rulesRel(rootRel)));
-  return {
-    wired,
-    checks: [{
-      label: 'React Router root middleware wired',
-      ok: wired,
-      hint: rootRel === null
-        ? 'React Router root route not found (app/root.tsx or src/root.tsx)'
-        : `run \`patchstack-connect protect\`; a hand-defined middleware export needs ${IMPORT_NAME} added manually`,
-    }],
-  };
+
+  // A wired middleware export does nothing until React Router's middleware future flag is on, so the flag
+  // is part of being wired — not an optional extra. Versions that need none (v8) pass this trivially.
+  const flag = middlewareFlagFor(cwd);
+  const flagOn = flag === null || hasMiddlewareFlag(cwd, flag);
+
+  const checks: VerifyResult['checks'] = [{
+    label: 'React Router root middleware wired',
+    ok: rootWired,
+    hint: rootRel === null
+      ? 'React Router root route not found (app/root.tsx or src/root.tsx)'
+      : `run \`patchstack-connect protect\`; a hand-defined middleware export needs ${IMPORT_NAME} added manually`,
+  }];
+  if (flag !== null) {
+    checks.push({
+      label: `React Router middleware enabled (future.${flag})`,
+      ok: flagOn,
+      hint: reactRouterConfigFile(cwd) === null
+        ? `add react-router.config.ts with \`future: { ${flag}: true }\` — without it the guard is wired but never runs`
+        : `add \`future: { ${flag}: true }\` to your react-router.config — without it the guard is wired but never runs`,
+    });
+  }
+
+  return { wired: rootWired && flagOn, checks };
 }
 
 export const reactRouterAdapter: Adapter = {
