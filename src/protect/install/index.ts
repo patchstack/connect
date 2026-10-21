@@ -6,8 +6,10 @@
 // app is a gap in auto-wiring coverage to be closed by a new adapter or an agent-assisted install,
 // not a reason to leave the app unprotected quietly.
 
+import { relative } from 'node:path';
 import { classifyArchitecture } from '../../architecture.js';
 import { log } from './util.js';
+import { workspacePackageDirs } from './workspaces.js';
 import { tanstackSupabaseAdapter } from './adapters/tanstack-supabase.js';
 import { tanstackAdapter } from './adapters/tanstack.js';
 import { nextAdapter } from './adapters/next.js';
@@ -39,9 +41,62 @@ const ADAPTERS: Adapter[] = [
   expressAdapter,
 ];
 
+/**
+ * Wire the first adapter that recognises the app at `cwd`. Returns the wired result, a
+ * scaffolded-but-not-fully-wired result when an adapter matched but could not finish, or null when no
+ * adapter recognised the app at all.
+ *
+ * Every adapter that recognises the app is tried, most specific first. One that cannot wire this app and
+ * changed nothing makes way for the next: a TanStack Start app whose Supabase layout is not the one the
+ * specific adapter is written for is still a TanStack Start app with a server entry.
+ */
+function tryAdapters(cwd: string, opts: WireOptions): ProtectResult | null {
+  const matching = ADAPTERS.filter((a) => a.detect(cwd));
+  let first: ProtectResult | null = null;
+  for (const candidate of matching) {
+    const result = candidate.wire(cwd, opts);
+    const verification = candidate.verify(cwd);
+    if (result.ok && verification.wired) return { status: 'wired', adapter: candidate.name, changed: result.changed };
+    const plan = verification.checks.filter(check => !check.ok && !check.optional).map(check => check.hint ?? check.label).join('\n');
+    first ??= { status: 'scaffolded', adapter: candidate.name, changed: result.changed, plan };
+    if (result.changed.length > 0) break;
+  }
+
+  return first;
+}
+
+/**
+ * Wire the guard into each workspace package that holds a framework app.
+ *
+ * A builder's monorepo runs setup at the root — where the prompt and the lockfile are — but the app it
+ * serves lives in a package (`apps/web`). The root is not an app, so no adapter matches it, and a generic
+ * scaffold left there would never be loaded by the real server. The changed paths are reported relative to
+ * the root the command ran in, so the user reads `apps/web/app/root.tsx`, the path they recognise.
+ */
+function wireWorkspaces(cwd: string, opts: WireOptions): ProtectResult | null {
+  const apps = workspacePackageDirs(cwd).filter((dir) => ADAPTERS.some((a) => a.detect(dir)));
+  const wired: Array<{ rel: string; result: ProtectResult }> = [];
+  for (const dir of apps) {
+    const result = tryAdapters(dir, opts);
+    if (result !== null) wired.push({ rel: relative(cwd, dir).replace(/\\/g, '/'), result });
+  }
+  if (wired.length === 0) return null;
+
+  const changed = wired.flatMap(({ rel, result }) =>
+    ('changed' in result ? result.changed : []).map((file) => `${rel}/${file}`));
+  const adapter = wired.map(({ rel, result }) => `${'adapter' in result ? result.adapter : 'generic'} (${rel})`).join(', ');
+
+  if (wired.every(({ result }) => result.status === 'wired')) {
+    log(`wired the guard in the workspace app${wired.length > 1 ? 's' : ''}: ${wired.map((w) => w.rel).join(', ')}`);
+    return { status: 'wired', adapter, changed };
+  }
+  const plan = wired.map(({ result }) => (result.status === 'scaffolded' ? result.plan : '')).filter(Boolean).join('\n');
+
+  return { status: 'scaffolded', adapter, changed, plan };
+}
+
 /** Scaffold + wire the runtime guard into the app at `cwd`. Best-effort — never throws. */
 export function runProtect(cwd: string, opts: WireOptions = {}): ProtectResult {
-  let adapter;
   try {
     // Asked before any adapter, because an adapter recognises a framework, not a request path. SvelteKit
     // with `adapter-static` is still SvelteKit to its adapter, which would write a server hook that a
@@ -58,25 +113,22 @@ export function runProtect(cwd: string, opts: WireOptions = {}): ProtectResult {
       };
     }
 
-    // Every adapter that recognises the app, most specific first. One that cannot wire this app and
-    // changed nothing makes way for the next: a TanStack Start app whose Supabase layout is not the one
-    // the specific adapter is written for is still a TanStack Start app with a server entry.
-    const matching = ADAPTERS.filter((a) => a.detect(cwd));
-    let first: { name: string; changed: string[]; plan: string } | null = null;
-    for (const candidate of matching) {
-      adapter = candidate;
-      const result = candidate.wire(cwd, opts);
-      const verification = candidate.verify(cwd);
-      if (result.ok && verification.wired) return { status: 'wired', adapter: candidate.name, changed: result.changed };
-      const plan = verification.checks.filter(check => !check.ok && !check.optional).map(check => check.hint ?? check.label).join('\n');
-      first ??= { name: candidate.name, changed: result.changed, plan };
-      if (result.changed.length > 0) break;
+    const atCwd = tryAdapters(cwd, opts);
+    if (atCwd?.status === 'wired') return atCwd;
+
+    // No adapter recognised an app at the root the command ran in. Before scaffolding a generic guard
+    // there — which the app would never load in a monorepo — look for the app in a workspace package.
+    if (atCwd === null) {
+      const workspace = wireWorkspaces(cwd, opts);
+      if (workspace !== null) return workspace;
     }
-    if (first) return { status: 'scaffolded', adapter: first.name, changed: first.changed, plan: first.plan };
+
+    // An adapter matched the root but could not finish wiring it: report that, not a generic scaffold.
+    if (atCwd !== null) return atCwd;
   } catch (err) {
     // A wire/detect failure (read-only FS, EACCES, a bad source file) must not crash the CLI —
     // fall through to the generic scaffold + plan so the user still gets something actionable.
-    log(`adapter ${adapter?.name ?? ''} failed (${(err as Error)?.message ?? err}); falling back to a generic guard`);
+    log(`protect failed (${(err as Error)?.message ?? err}); falling back to a generic guard`);
   }
 
   // No adapter matched (or it failed) — DON'T silently skip. Scaffold the framework-agnostic guard
@@ -153,6 +205,27 @@ function credentialNote(cwd: string, adapterName: string): VerifyCheck[] {
 }
 
 /**
+ * Verify the guard at `cwd`, or null when no adapter recognises an app there.
+ *
+ * The adapter that wired this app, when one did; otherwise the most specific one that recognises it, so a
+ * half-finished wiring still reports against the right framework.
+ */
+function verifyAt(cwd: string): VerifyReport | null {
+  const matching = ADAPTERS.filter((a) => a.detect(cwd));
+  const adapter = matching.find((a) => a.verify(cwd).wired) ?? matching[0];
+  if (!adapter) return null;
+
+  const result = adapter.verify(cwd);
+
+  return {
+    stack: adapter.label,
+    applicable: true,
+    ...result,
+    checks: [...result.checks, ...credentialNote(cwd, adapter.name), ...reportingChecks(cwd)],
+  };
+}
+
+/**
  * Verify the guard is correctly wired (backs `protect --check`). Fail-open — never throws.
  *
  * Wiring decides the exit status; the reporting checks are informational and never do. A deployment that
@@ -180,18 +253,20 @@ export function runVerify(cwd: string): VerifyReport {
       };
     }
 
-    // The adapter that wired this app, when one did; otherwise the most specific one that recognises it.
-    const matching = ADAPTERS.filter((a) => a.detect(cwd));
-    const adapter = matching.find((a) => a.verify(cwd).wired) ?? matching[0];
-    if (adapter) {
-      const result = adapter.verify(cwd);
-      return {
-        stack: adapter.label,
-        applicable: true,
-        ...result,
-        checks: [...result.checks, ...credentialNote(cwd, adapter.name), ...reportingChecks(cwd)],
-      };
+    const atCwd = verifyAt(cwd);
+    if (atCwd !== null) return atCwd;
+
+    // No adapter recognised an app at the root: in a workspace repo the app is in a package. Report the
+    // one that is wired; failing that, the first that has an app, so `--check` describes the real app
+    // rather than a generic verdict about the root the command happened to run in.
+    let fallback: VerifyReport | null = null;
+    for (const dir of workspacePackageDirs(cwd)) {
+      const report = verifyAt(dir);
+      if (report === null) continue;
+      if (report.wired) return report;
+      fallback ??= report;
     }
+    if (fallback !== null) return fallback;
 
     const generic = genericVerify(cwd);
     return {

@@ -80,6 +80,28 @@ export function isSiteUuid(value: unknown): value is string {
 }
 
 /**
+ * The site config `scan` writes, searched from `startDir` up to the filesystem root.
+ *
+ * Normally it sits in the same directory as the guard. In a monorepo it does not: `scan` runs at the
+ * repo root (where the prompt and the lockfile are) and writes the config there, while the guard is wired
+ * into a workspace package (`apps/web`). Walking up finds the one the root provisioned, and for a
+ * single-package project finds it in `startDir` on the first step — no change to that case.
+ */
+function findConfigUp(startDir: string): string | null {
+  let dir = startDir;
+  // Bounded so a guard deep in a tree cannot adopt an unrelated config far above the project.
+  for (let i = 0; i < 8; i++) {
+    const candidate = join(dir, '.patchstackrc.json');
+    if (existsSync(candidate)) return candidate;
+    const parent = dirname(dir);
+    if (parent === dir) break;
+    dir = parent;
+  }
+
+  return null;
+}
+
+/**
  * Bake the site UUID written by `scan` into a managed runtime-guard template.
  *
  * The UUID is public project configuration (the Patchstack Connector exposes the
@@ -87,8 +109,8 @@ export function isSiteUuid(value: unknown): value is string {
  * unscanned projects remain inert and lets deployments override it explicitly.
  */
 export function bakeSiteUuid(cwd: string, guardRelPath: string): boolean {
-  const rc = join(cwd, '.patchstackrc.json');
-  if (!existsSync(rc)) {
+  const rc = findConfigUp(cwd);
+  if (rc === null) {
     log('no .patchstackrc.json — guard uses PATCHSTACK_SITE_UUID env or the bundled fallback');
     return false;
   }
