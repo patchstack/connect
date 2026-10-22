@@ -80,25 +80,39 @@ export function isSiteUuid(value: unknown): value is string {
 }
 
 /**
- * The site config `scan` writes, searched from `startDir` up to the filesystem root.
+ * The site UUID from the nearest `.patchstackrc.json` that names one, searched from `startDir` upward.
  *
- * Normally it sits in the same directory as the guard. In a monorepo it does not: `scan` runs at the
- * repo root (where the prompt and the lockfile are) and writes the config there, while the guard is wired
- * into a workspace package (`apps/web`). Walking up finds the one the root provisioned, and for a
- * single-package project finds it in `startDir` on the first step — no change to that case.
+ * Normally the config sits in the same directory as the guard. In a monorepo it does not: `scan` runs at
+ * the repo root (where the prompt and the lockfile are) and writes the site there, while the guard is
+ * wired into a workspace package (`apps/web`). That package can hold a config of its own that names no
+ * site (`{"widget": true}`), so a config without a `siteUuid` does not end the search — stopping there
+ * would leave the guard without a site, fetching no rules and reporting nothing. For a single-package
+ * project the first step finds it in `startDir`, as before.
  */
-function findConfigUp(startDir: string): string | null {
+export function findSiteUuidUp(startDir: string): { found: 'none' | 'unreadable' | 'missing' } | { found: 'uuid'; uuid: string } {
   let dir = startDir;
+  let seen: 'none' | 'unreadable' | 'missing' = 'none';
   // Bounded so a guard deep in a tree cannot adopt an unrelated config far above the project.
   for (let i = 0; i < 8; i++) {
     const candidate = join(dir, '.patchstackrc.json');
-    if (existsSync(candidate)) return candidate;
+    if (existsSync(candidate)) {
+      let uuid: unknown;
+      let readable = true;
+      try {
+        uuid = JSON.parse(read(candidate)).siteUuid;
+      } catch {
+        readable = false;
+      }
+      if (typeof uuid === 'string' && UUID_RE.test(uuid)) return { found: 'uuid', uuid };
+      // Reported by the nearest config, which is the one an operator would look at first.
+      if (seen === 'none') seen = readable ? 'missing' : 'unreadable';
+    }
     const parent = dirname(dir);
     if (parent === dir) break;
     dir = parent;
   }
 
-  return null;
+  return { found: seen };
 }
 
 /**
@@ -109,24 +123,18 @@ function findConfigUp(startDir: string): string | null {
  * unscanned projects remain inert and lets deployments override it explicitly.
  */
 export function bakeSiteUuid(cwd: string, guardRelPath: string): boolean {
-  const rc = findConfigUp(cwd);
-  if (rc === null) {
-    log('no .patchstackrc.json — guard uses PATCHSTACK_SITE_UUID env or the bundled fallback');
+  const site = findSiteUuidUp(cwd);
+  if (site.found !== 'uuid') {
+    log(
+      site.found === 'none'
+        ? 'no .patchstackrc.json — guard uses PATCHSTACK_SITE_UUID env or the bundled fallback'
+        : site.found === 'unreadable'
+          ? '.patchstackrc.json unreadable — skipping site-UUID bake'
+          : '.patchstackrc.json siteUuid missing or malformed — guard uses PATCHSTACK_SITE_UUID env or the bundled fallback',
+    );
     return false;
   }
-
-  let uuid: unknown;
-  try {
-    uuid = JSON.parse(read(rc)).siteUuid;
-  } catch {
-    log('.patchstackrc.json unreadable — skipping site-UUID bake');
-    return false;
-  }
-
-  if (typeof uuid !== 'string' || !UUID_RE.test(uuid)) {
-    log('.patchstackrc.json siteUuid missing or malformed — guard uses PATCHSTACK_SITE_UUID env or the bundled fallback');
-    return false;
-  }
+  const uuid = site.uuid;
 
   const guardPath = join(cwd, guardRelPath);
   if (!existsSync(guardPath)) return false;

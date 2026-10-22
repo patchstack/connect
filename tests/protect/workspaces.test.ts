@@ -66,6 +66,22 @@ describe('protect in a workspace monorepo', () => {
     expect(read(root, 'apps/web/app/patchstack/guard.server.ts')).toContain(`"${UUID}"`);
   });
 
+  it('bakes the root UUID even when the workspace app has a config of its own that names no site', () => {
+    const root = makeMonorepo();
+    // Widget setup in the app leaves this beside the guard; it must not hide the root's site.
+    writeFileSync(path.join(root, 'apps/web/.patchstackrc.json'), JSON.stringify({ widget: true }));
+    runProtect(root);
+    expect(read(root, 'apps/web/app/patchstack/guard.server.ts')).toContain(`"${UUID}"`);
+  });
+
+  it('prefers a site the workspace app names itself over the root one', () => {
+    const own = '0b7a2f4e-3c1d-4e5f-8a9b-1c2d3e4f5a6b';
+    const root = makeMonorepo();
+    writeFileSync(path.join(root, 'apps/web/.patchstackrc.json'), JSON.stringify({ siteUuid: own }));
+    runProtect(root);
+    expect(read(root, 'apps/web/app/patchstack/guard.server.ts')).toContain(`"${own}"`);
+  });
+
   it('reports the workspace app as wired from the root (protect --check)', () => {
     const root = makeMonorepo();
     runProtect(root);

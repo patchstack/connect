@@ -104,6 +104,10 @@ function wire(cwd: string, opts: WireOptions): WireResult {
     changed.push(guardRel(rootRel));
   } else if (!matchesGuardTemplate(cwd, guardRel(rootRel), TEMPLATE)) {
     log('Custom guard.server.ts left untouched; review its request/response wiring manually.');
+  } else if (!opts.demo && bakeSiteUuid(cwd, guardRel(rootRel))) {
+    // A managed guard written before the site existed (or before its config was found) still carries the
+    // placeholder; without a site it fetches no rules and reports nothing, so a re-run fills it in.
+    changed.push(guardRel(rootRel));
   }
 
   const rulesAbs = join(cwd, rulesRel(rootRel));
