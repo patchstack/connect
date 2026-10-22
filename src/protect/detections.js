@@ -538,7 +538,7 @@ export function createDetectionReporter(opts) {
     // Nothing to report against. A no-op rather than a throw: reporting is never worth failing a boot.
     // It answers the whole interface, so a caller never has to know which kind it holds.
     return {
-      record() {}, flush() {}, settle: () => Promise.resolve(), stop: () => Promise.resolve(), setRulesEtag() {}, announce() {}, dropped: () => 0,
+      record() {}, flush() {}, settle: () => Promise.resolve(), pending: () => false, stop: () => Promise.resolve(), setRulesEtag() {}, announce() {}, dropped: () => 0,
       health: () => ({
         sent: 0, delivered: 0, failed: 0, dropped: 0, retried: 0, reauthorized: 0, lastDeliveredAt: null,
         capability: { announced: 0, acknowledged: 0, failed: 0, retried: 0, lastAcknowledgedAt: null },
@@ -1104,6 +1104,12 @@ export function createDetectionReporter(opts) {
       kick();
     },
     flush,
+    /**
+     * Whether any recorded detection is still queued for delivery (not yet handed to a send). The request
+     * seam uses this to tell a buffer the background flush has not drained — which on a host that freezes
+     * between requests is the norm, its timer never firing — from one it has.
+     */
+    pending: () => queue.length > 0,
     /**
      * Resolve once everything recorded so far has been delivered (or given up on), WITHOUT stopping the
      * reporter — the primitive an edge host hands to `ctx.waitUntil` so a serverless runtime stays alive

@@ -32,7 +32,7 @@ async function buildProtection() {
   const mode = (typeof process === "undefined" ? undefined : process.env.PATCHSTACK_MODE) === "dry-run" ? "dry-run" : "block";
   const token = (typeof process === "undefined" ? undefined : process.env.PATCHSTACK_WAF_TOKEN);
   const siteUuid = PS_SITE_UUID.startsWith("__") ? (typeof process === "undefined" ? undefined : process.env.PATCHSTACK_SITE_UUID) : PS_SITE_UUID;
-  const refreshMs = (typeof process === "undefined" ? undefined : process.env.PATCHSTACK_ENVIRONMENT) === "sandbox" ? 15000 : 2700000;
+  const refreshMs = (typeof process === "undefined" ? undefined : process.env.PATCHSTACK_ENVIRONMENT) === "sandbox" ? 15000 : 300000;
   const common = { mode, egress: true, refreshMs } as const;
   return createProtection(
     siteUuid

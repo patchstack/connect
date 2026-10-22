@@ -288,6 +288,13 @@ export interface CreateProtectionOptions {
   reportDetections?: boolean;
   /** How long to buffer detections before posting a batch. Default 5000ms. */
   detectionFlushMs?: number;
+  /**
+   * How long a detect-only detection may sit queued on the request seam before a request delivers it
+   * instead of the background flush — the catch-up that makes the firewall log populate on a host that
+   * freezes between requests (its flush timer never fires). Comfortably above the flush interval by
+   * default, so a live server's timer always delivers first. Default 10000ms.
+   */
+  detectionStaleMs?: number;
   /** Optional Source-Host header for connector hostname checks. */
   sourceHost?: string;
   /** Optional fetch override for the block-log and detection reporters (tests). The rules client and
