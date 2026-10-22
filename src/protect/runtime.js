@@ -168,6 +168,11 @@ export async function createProtection(options = {}) {
   // How long a detect-only detection may sit on the request seam before a request delivers it rather than
   // the background flush (see DETECTION_STALE_MS). Configurable so a test need not wait out the real window.
   const detectionStaleMs = Number.isFinite(options.detectionStaleMs) ? Math.max(0, options.detectionStaleMs) : DETECTION_STALE_MS;
+  // When the oldest queued detection was first seen pending by a request, so a request can tell a buffer the
+  // background flush has drained from one it has abandoned. Held per protection, not per `fetchGuard()`:
+  // the shipped middleware templates call `protection.fetchGuard()(request)` on every request, so state
+  // kept on the returned guard would start over each time and never reach the staleness window.
+  let detectPendingSince = null;
 
   /**
    * The rule as a callback sees it: its identity, and nothing that carries policy.
@@ -1793,9 +1798,6 @@ export async function createProtection(options = {}) {
 
     // (request) => Response | null   (null = allow, caller proceeds). Request phase only.
     fetchGuard() {
-      // When the oldest queued detection on this seam was first seen pending, so a request can tell a buffer
-      // the background flush has drained from one it has abandoned. Per returned guard, reset on delivery.
-      let detectPendingSince = null;
       return async (request, ...hostArgs) => {
         const { blocked } = await screenFetchRequest(request, hostArgs);
         if (blocked && detections) {

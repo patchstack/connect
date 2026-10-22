@@ -78,7 +78,12 @@ describe('a guard without the site credential, shipped with a rules reader', () 
     await protection.stop();
   });
 
-  it('on a frozen host, delivers a buffered detect-only detection on a later request once it goes stale', async () => {
+  // The middleware templates call `protection.fetchGuard()(request)` on every request, so delivery must not
+  // depend on the caller holding on to one returned guard.
+  it.each([
+    ['one guard reused', false],
+    ['a fresh fetchGuard() per request, as the templates call it', true],
+  ])('on a frozen host, delivers a buffered detect-only detection on a later request once it goes stale (%s)', async (_label, freshPerRequest) => {
     const cwd = mkdtempSync(join(tmpdir(), 'ps-reader-'));
     dirs.push(cwd);
     vi.stubEnv('PATCHSTACK_API_KEY', '');
@@ -104,7 +109,8 @@ describe('a guard without the site credential, shipped with a rules reader', () 
       detectionFlushMs: 10 * 60_000,
       detectionStaleMs: 10,
     });
-    const guardFn = protection.fetchGuard();
+    const reused = protection.fetchGuard();
+    const guardFn = (request: Request) => (freshPerRequest ? protection.fetchGuard() : reused)(request);
 
     const delivered = () => calls
       .filter((c) => c.url.includes('/detections/'))
