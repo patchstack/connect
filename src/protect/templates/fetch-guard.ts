@@ -27,7 +27,7 @@ async function getProtection(bindings: unknown) {
       mode: value("PATCHSTACK_MODE") === "dry-run" ? "dry-run" : "block",
       rules: fallbackRules as never,
       cacheDir: ".patchstack",
-      refreshMs: value("PATCHSTACK_ENVIRONMENT") === "sandbox" ? 15000 : 2700000,
+      refreshMs: value("PATCHSTACK_ENVIRONMENT") === "sandbox" ? 15000 : 300000,
       egress: true,
     }).catch(error => { policies.delete(env); throw error; });
     policies.set(env, pending);

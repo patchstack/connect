@@ -1982,7 +1982,12 @@ export async function createProtection(options = {}) {
 
   let recovery = null;
   const requestInterval = options.requestRefreshMs ?? refreshMs ?? 0;
-  const requestBudget = Number.isFinite(options.requestRefreshTimeoutMs) ? Math.max(50, Math.min(options.requestRefreshTimeoutMs, 2000)) : 250;
+  // A request-triggered refresh is the ONLY one a freeze-between-requests host runs — its background timer
+  // never fires — and on such a host the fetch cannot continue after the response, so it has to finish
+  // in-request. The old 250ms budget aborted a cold fetch mid-handshake, so the refresh never completed and
+  // backed off: rules froze at boot until a redeploy. The budget has to cover a cold fetch. It still bounds
+  // only the one due request per interval (single-flight), and a warm host returns well under it.
+  const requestBudget = Number.isFinite(options.requestRefreshTimeoutMs) ? Math.max(50, Math.min(options.requestRefreshTimeoutMs, 3000)) : 2500;
   let activeRefresh = null;
   const performRefresh = async (fromRequest = false) => {
     if (refreshStopped) return {ok:false};
