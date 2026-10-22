@@ -8,7 +8,7 @@
 
 import { relative } from 'node:path';
 import { classifyArchitecture } from '../../architecture.js';
-import { log } from './util.js';
+import { findSiteUuidUp, log, unbakedGuards } from './util.js';
 import { workspacePackageDirs } from './workspaces.js';
 import { tanstackSupabaseAdapter } from './adapters/tanstack-supabase.js';
 import { tanstackAdapter } from './adapters/tanstack.js';
@@ -205,6 +205,24 @@ function credentialNote(cwd: string, adapterName: string): VerifyCheck[] {
 }
 
 /**
+ * Whether the guard carries the site this project records, or null when the project records none.
+ *
+ * A guard still holding the placeholder runs without a site: it blocks with the rules it shipped with,
+ * but fetches no rule changes and reports nothing. Setup fills the site in, so this fails only when that
+ * did not happen, and names the fix.
+ */
+function guardSiteCheck(cwd: string): VerifyCheck | null {
+  if (findSiteUuidUp(cwd).found !== 'uuid') return null;
+  const unbaked = unbakedGuards(cwd);
+
+  return {
+    label: 'the guard carries this project\'s Patchstack site',
+    ok: unbaked.length === 0,
+    hint: `${unbaked.join(', ')} has no site, so it fetches no rule updates and reports nothing — run \`npx @patchstack/connect protect\` from the project root`,
+  };
+}
+
+/**
  * Verify the guard at `cwd`, or null when no adapter recognises an app there.
  *
  * The adapter that wired this app, when one did; otherwise the most specific one that recognises it, so a
@@ -216,12 +234,14 @@ function verifyAt(cwd: string): VerifyReport | null {
   if (!adapter) return null;
 
   const result = adapter.verify(cwd);
+  const siteCheck = guardSiteCheck(cwd);
 
   return {
     stack: adapter.label,
     applicable: true,
     ...result,
-    checks: [...result.checks, ...credentialNote(cwd, adapter.name), ...reportingChecks(cwd)],
+    wired: result.wired && (siteCheck === null || siteCheck.ok),
+    checks: [...result.checks, ...(siteCheck === null ? [] : [siteCheck]), ...credentialNote(cwd, adapter.name), ...reportingChecks(cwd)],
   };
 }
 

@@ -1,6 +1,6 @@
 // Shared helpers for the `patchstack-connect protect` scaffolder (adapters + orchestrator).
 
-import { readFileSync, existsSync } from 'node:fs';
+import { readFileSync, existsSync, readdirSync, type Dirent } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { writeProjectFileSync } from '../../safe-file.js';
@@ -113,6 +113,42 @@ export function findSiteUuidUp(startDir: string): { found: 'none' | 'unreadable'
   }
 
   return { found: seen };
+}
+
+const SKIP_DIRS = new Set(['node_modules', '.git', 'dist', 'build', '.next', '.output', '.patchstack', '.vercel', '.netlify']);
+
+/**
+ * Managed guard files under `cwd` that still carry the site placeholder, relative to `cwd`.
+ *
+ * Only a guard Connect wrote contains the placeholder, so its presence while the project records a site
+ * means the site was never filled in: that guard fetches no rules and reports nothing. Depth-bounded and
+ * skips dependency and build output.
+ */
+export function unbakedGuards(cwd: string): string[] {
+  const found: string[] = [];
+  const walk = (dir: string, rel: string, depth: number): void => {
+    let entries: Dirent[];
+    try {
+      entries = readdirSync(dir, { withFileTypes: true });
+    } catch {
+      return;
+    }
+    for (const entry of entries) {
+      const childRel = rel === '' ? entry.name : `${rel}/${entry.name}`;
+      if (entry.isDirectory()) {
+        if (depth < 5 && !SKIP_DIRS.has(entry.name)) walk(join(dir, entry.name), childRel, depth + 1);
+      } else if (entry.isFile() && /\.(c|m)?(j|t)sx?$/.test(entry.name)) {
+        try {
+          if (read(join(dir, entry.name)).includes(SITE_UUID_PLACEHOLDER)) found.push(childRel);
+        } catch {
+          // Unreadable: nothing to report about it.
+        }
+      }
+    }
+  };
+  walk(cwd, '', 0);
+
+  return found;
 }
 
 /**
