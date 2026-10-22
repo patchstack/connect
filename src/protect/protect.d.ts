@@ -311,7 +311,7 @@ export interface CreateProtectionOptions {
    * Defaults to refreshMs; 0 disables. Positive values have a 1s minimum. No manifest/source scan
    * runs on this path. Concurrent requests share work; failures back off to at most 8x the interval. */
   requestRefreshMs?: number;
-  /** Maximum wait for a request-triggered refresh. Default 250ms; clamped to 50–2000ms.
+  /** Maximum wait for a request-triggered refresh. Default 2500ms; clamped to 50–3000ms.
    * Last-known-good rules remain in use on timeout. */
   requestRefreshTimeoutMs?: number;
   /** Answer a signed read-only OPTIONS activation challenge using the resolved Pulse credential.
