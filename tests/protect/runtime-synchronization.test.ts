@@ -73,6 +73,50 @@ it('bounds a hung request refresh, backs off and stops without holding subsequen
   scheduler.stop();vi.setSystemTime(Date.now()+100000);expect(scheduler.check()).toBeNull();
 });
 
+it('lets a sync request fetch before the interval, at most once per gap, and not past a backoff otherwise', async () => {
+  vi.useFakeTimers();
+  const tick = vi.fn(async () => ({ok:true}));
+  const scheduler = requestRefresh(tick,{intervalMs:300000,timeoutMs:100,forceGapMs:15000});
+  expect(scheduler.check()).toBeNull();
+  await scheduler.check(true); expect(tick).toHaveBeenCalledTimes(1);
+  expect(scheduler.check(true)).toBeNull(); expect(tick).toHaveBeenCalledTimes(1);
+  vi.setSystemTime(Date.now()+15000);
+  await scheduler.check(true); expect(tick).toHaveBeenCalledTimes(2);
+  expect(scheduler.check()).toBeNull();
+});
+
+it('applies a rule published since the last fetch on a request carrying the sync header, within the interval', async () => {
+  vi.useFakeTimers(); const api=service();
+  const p = await createProtection({...options,requestRefreshMs:300000});
+  try {
+    api.publish();
+    // Within the interval an ordinary request keeps the rules it has.
+    expect(await p.fetchGuard()(new Request('https://app.example.test/?q=attack'))).toBeNull();
+    const before = api.fetch.mock.calls.length;
+    const synced = await p.fetchGuard()(new Request('https://app.example.test/?q=attack',{headers:{'x-patchstack-sync':'1'}}));
+    expect(synced?.status).toBe(403);
+    expect(api.fetch.mock.calls.length-before).toBe(1);
+    // A second sync inside the gap does not fetch again.
+    await p.fetchGuard()(new Request('https://app.example.test/',{headers:{'x-patchstack-sync':'1'}}));
+    expect(api.fetch.mock.calls.length-before).toBe(1);
+  } finally { await p.stop(); }
+});
+
+it('applies a newly published rule on an express request carrying the sync header', async () => {
+  vi.useFakeTimers(); const api=service();
+  const p = await createProtection({...options,requestRefreshMs:300000});
+  try {
+    api.publish();
+    const req = {method:'GET',url:'/?q=attack',originalUrl:'/?q=attack',headers:{'x-patchstack-sync':'1'},query:{q:'attack'},body:{},socket:{remoteAddress:'127.0.0.1'}};
+    const response: any = {statusCode:200,setHeader:vi.fn()};
+    const end = new Promise<void>(resolve=> {response.end=()=>resolve();response.json=()=>resolve();response.send=()=>resolve();});
+    response.status=(code:number)=>{response.statusCode=code;return response;};response.type=()=>response;
+    const next=vi.fn(); p.express()(req,response,next);
+    await end;
+    expect(response.statusCode).toBe(403);
+  } finally {await p.stop();}
+});
+
 it('does not create request-driven traffic for a manual-only guard', async () => {
   vi.useFakeTimers();const api=service();const p=await createProtection(options);
   try {const before=api.fetch.mock.calls.length;vi.setSystemTime(Date.now()+1000000);await p.fetchGuard()(new Request('https://app.example.test/'));expect(api.fetch.mock.calls.length).toBe(before);}

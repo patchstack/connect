@@ -44,7 +44,7 @@ import { SOURCE_REQUEST } from './supabase-guard.js';
 import { createFirewallLogReporter, resolveApiBase, telemetryEnabled } from './firewall-log.js';
 import { canonicalBuildId, readBuildStamp } from '../build-id.js';
 import { activationResponse, ACTIVATION_HEADER } from './activation.js';
-import { requestRefresh } from './rules/request-refresh.js';
+import { requestRefresh, SYNC_HEADER } from './rules/request-refresh.js';
 
 // Supabase-tunnel guard for AI-builder apps (Lovable / TanStack Start + Supabase).
 export { createSupabaseGuard, GUARD_PATH } from './supabase-guard.js';
@@ -879,7 +879,7 @@ export async function createProtection(options = {}) {
     try {
       const activated = await answerActivation(request);
       if (activated) return {blocked:activated, client:undefined};
-      const pending = requestRefresher?.check();
+      const pending = requestRefresher?.check(Boolean(request?.headers?.get?.(SYNC_HEADER)));
       if (pending) await pending;
       // First real request on a new origin: tell Patchstack the deployment is live. Gated on having a
       // credential (`rulesAuth` — the site key, or the bundled read-only reader), NOT on detection
@@ -1750,7 +1750,7 @@ export async function createProtection(options = {}) {
   const answerActivation = request => options.activationCheck === false ? null : activationResponse(request, pulseAuth, runtimeStatus);
   const withRequestSync = handler => (req, res, next) => {
     const proceed = () => {
-      const pending = requestRefresher?.check();
+      const pending = requestRefresher?.check(Boolean(req.headers?.[SYNC_HEADER]));
       if (pending) pending.then(() => handler(req, res, next)).catch(next);
       else handler(req, res, next);
     };
