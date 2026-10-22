@@ -13,7 +13,7 @@ import { join } from 'node:path';
 
 import { reportingState, explainReportingState } from '../reporting-state.js';
 import type { VerifyCheck } from './types.js';
-import { read, hasResolvableCredential, isSiteUuid } from './util.js';
+import { read, hasResolvableCredential, isSiteUuid, findSiteUuidUp } from './util.js';
 
 /**
  * The site identity the guard would run with, resolved the way the guard resolves it.
@@ -29,6 +29,10 @@ function siteIdentity(
   cwd: string,
   env: Record<string, string | undefined>,
 ): { uuid: string | null; found: boolean } {
+  // The same search setup uses to bake the guard, so a workspace app reports the site its root recorded.
+  const site = findSiteUuidUp(cwd);
+  if (site.found === 'uuid') return { uuid: site.uuid, found: true };
+
   const rc = join(cwd, '.patchstackrc.json');
   let recorded: unknown;
 

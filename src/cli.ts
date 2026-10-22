@@ -109,6 +109,7 @@ import {
   type ClaimResult,
 } from './claim.js';
 import { runProtect, runVerify } from './protect/install/index.js';
+import { workspaceRootWithSite } from './protect/install/workspaces.js';
 import { formatRuntimeCheck, runRuntimeCheck, runtimeExitCode } from './protect/install/runtime/check.js';
 import { runMap } from './map-command.js';
 import { bundleRulesAllowed } from './bundled-rules.js';
@@ -1770,13 +1771,19 @@ async function runWidget(args: ParsedArgs): Promise<number> {
   const remove = args.flags.get('remove') === true;
   const paint = painter(useColor());
   const state = await collectGuideState(cwd);
-  const hint = state.widgetFileHint;
-  const jsxShell = hint !== null && !hint.toLowerCase().endsWith('.html') && hasEditableShell(state.framework) ? hint : null;
+  // In a monorepo the page is in the workspace app (apps/web) while the choice is saved at the root, as
+  // `scan` does. Shell paths are reported from the root.
+  const appDir = resolveWidgetShellDir(cwd, state.framework);
+  const app = appDir === cwd ? state : await collectGuideState(appDir);
+  const hint = app.widgetFileHint;
+  const jsxShell = hint !== null && !hint.toLowerCase().endsWith('.html') && hasEditableShell(app.framework) ? hint : null;
+  const atRoot = <T extends { shell: string | null }>(result: T): T =>
+    result.shell === null ? result : { ...result, shell: path.join(path.relative(cwd, appDir), result.shell).replace(/\\/g, '/') };
   const done = (text: string): void => console.log(` ${paint('green', '✔')} ${text}`);
 
   if (remove) {
     await persistWidgetChoice(cwd, false);
-    const result = removeSourceWidget(cwd, jsxShell);
+    const result = atRoot(removeSourceWidget(appDir, jsxShell));
     switch (result.action) {
       case 'removed':
         done(`Removed the Patchstack widget from ${result.shell}`);
@@ -1799,7 +1806,7 @@ async function runWidget(args: ParsedArgs): Promise<number> {
     return 1;
   }
   await persistWidgetChoice(cwd, true);
-  const result = ensureSourceWidget(cwd, state.siteUuid, jsxShell);
+  const result = atRoot(ensureSourceWidget(appDir, state.siteUuid, jsxShell));
   switch (result.action) {
     case 'added':
       done(`Added the Patchstack widget to ${result.shell}`);
@@ -2241,6 +2248,16 @@ async function main(): Promise<number> {
     return 0;
   }
 
+  // Inside a workspace package (apps/web) of a repo whose root records the site, these read and write the
+  // package's own config, which names no site: run them at the root, where the site and setup live.
+  if (ROOT_COMMANDS.has(args.command)) {
+    const root = workspaceRootWithSite(process.cwd());
+    if (root !== null) {
+      console.error(`Running at the project root (${root}), where this project's Patchstack site is recorded.`);
+      process.chdir(root);
+    }
+  }
+
   setRunCommand(args.command);
   if (!KNOWN_COMMANDS.has(args.command)) return runCommand(args);
   let code = 1;
@@ -2257,6 +2274,9 @@ const KNOWN_COMMANDS = new Set([
   'init', 'scan', 'vulns', 'next', 'summary', 'go-live', 'widget', 'status', 'uninstall', 'mark-build', 'protect',
   'demo', 'demo-guide', 'guide', 'setup', 'map', 'claim', 'login',
 ]);
+
+/** Commands that act on the whole project, so in a workspace package they run at the root that holds the site. */
+const ROOT_COMMANDS = new Set(['setup', 'scan', 'widget', 'protect']);
 
 /**
  * A run that sent nothing the site's activity log records still tells Patchstack it ran, by the site's

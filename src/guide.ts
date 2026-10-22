@@ -344,10 +344,26 @@ export function resolveWidgetFileHint(cwd: string, framework: string | null): st
 export function resolveWidgetShellDir(cwd: string, framework: string | null): string {
   if (resolveWidgetFileHint(cwd, framework) !== null) return cwd;
   for (const dir of workspacePackageDirs(cwd)) {
-    if (resolveWidgetFileHint(dir, framework) !== null) return dir;
+    // The root of a workspace repo usually declares no framework; the app's shell is named by its own.
+    if (resolveWidgetFileHint(dir, framework ?? frameworkOf(dir)) !== null) return dir;
   }
 
   return cwd;
+}
+
+/** The framework a package declares, read from its package.json like the checklist does. */
+function frameworkOf(dir: string): string | null {
+  try {
+    const pkg = JSON.parse(readFileSync(path.join(dir, 'package.json'), 'utf8')) as {
+      dependencies?: Record<string, string>;
+      devDependencies?: Record<string, string>;
+    };
+    const names = Object.keys({ ...pkg.dependencies, ...pkg.devDependencies });
+
+    return detectStack(names.map((name) => ({ name, version: '' })), {}).framework;
+  } catch {
+    return null;
+  }
 }
 
 /**

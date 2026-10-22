@@ -5,8 +5,8 @@
 // This resolves the workspace package directories declared in the root `package.json`, so the orchestrator
 // can look for an app in each. Dependency-free and best-effort: a repo it cannot read simply has none.
 
-import { existsSync, lstatSync, readdirSync, readFileSync } from 'node:fs';
-import { join } from 'node:path';
+import { existsSync, lstatSync, readdirSync, readFileSync, realpathSync } from 'node:fs';
+import { dirname, join, resolve } from 'node:path';
 
 /**
  * The directories of the packages a root `package.json` declares as workspaces.
@@ -66,4 +66,48 @@ export function workspacePackageDirs(cwd: string): string[] {
   }
 
   return [...dirs];
+}
+
+/**
+ * The workspace root whose site this package belongs to, when `cwd` is a workspace package that records no
+ * site of its own and an enclosing workspace root does.
+ *
+ * Setup records the site at the root of a workspace repo. A command run inside one of its packages
+ * (`apps/web`) would otherwise read the package's own config, find no site, and either write its choices
+ * where nothing else reads them or provision a second site for the same app. Null when `cwd` names its own
+ * site, is not a declared package of an enclosing root, or that root records no site.
+ */
+export function workspaceRootWithSite(cwd: string): string | null {
+  if (siteUuidIn(cwd) !== null) return null;
+  const here = realDir(cwd);
+  let dir = cwd;
+  // Bounded like the guard's own config search.
+  for (let i = 0; i < 8; i++) {
+    const parent = dirname(dir);
+    if (parent === dir) return null;
+    dir = parent;
+    if (siteUuidIn(dir) === null) continue;
+    return workspacePackageDirs(dir).some((pkg) => realDir(pkg) === here) ? dir : null;
+  }
+
+  return null;
+}
+
+const SITE_UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+function siteUuidIn(dir: string): string | null {
+  try {
+    const uuid: unknown = JSON.parse(readFileSync(join(dir, '.patchstackrc.json'), 'utf8')).siteUuid;
+    return typeof uuid === 'string' && SITE_UUID.test(uuid) ? uuid : null;
+  } catch {
+    return null;
+  }
+}
+
+function realDir(dir: string): string {
+  try {
+    return realpathSync(resolve(dir));
+  } catch {
+    return resolve(dir);
+  }
 }

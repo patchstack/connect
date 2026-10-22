@@ -3,7 +3,7 @@ import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, existsSync, rmSync
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { runProtect, runVerify } from '../../src/protect/install/index.js';
-import { workspacePackageDirs } from '../../src/protect/install/workspaces.js';
+import { workspacePackageDirs, workspaceRootWithSite } from '../../src/protect/install/workspaces.js';
 import { resolveWidgetShellDir } from '../../src/guide.js';
 import { ensureSourceWidget, WIDGET_MARKER_ATTR } from '../../src/widget.js';
 
@@ -66,6 +66,22 @@ describe('protect in a workspace monorepo', () => {
     expect(read(root, 'apps/web/app/patchstack/guard.server.ts')).toContain(`"${UUID}"`);
   });
 
+  it('bakes the root UUID even when the workspace app has a config of its own that names no site', () => {
+    const root = makeMonorepo();
+    // Widget setup in the app leaves this beside the guard; it must not hide the root's site.
+    writeFileSync(path.join(root, 'apps/web/.patchstackrc.json'), JSON.stringify({ widget: true }));
+    runProtect(root);
+    expect(read(root, 'apps/web/app/patchstack/guard.server.ts')).toContain(`"${UUID}"`);
+  });
+
+  it('prefers a site the workspace app names itself over the root one', () => {
+    const own = '0b7a2f4e-3c1d-4e5f-8a9b-1c2d3e4f5a6b';
+    const root = makeMonorepo();
+    writeFileSync(path.join(root, 'apps/web/.patchstackrc.json'), JSON.stringify({ siteUuid: own }));
+    runProtect(root);
+    expect(read(root, 'apps/web/app/patchstack/guard.server.ts')).toContain(`"${own}"`);
+  });
+
   it('reports the workspace app as wired from the root (protect --check)', () => {
     const root = makeMonorepo();
     runProtect(root);
@@ -81,6 +97,70 @@ describe('protect in a workspace monorepo', () => {
     // Still wired — protection does not depend on the credential — but the UUID falls back to the env var.
     expect(read(root, 'apps/web/app/root.tsx')).toContain('patchstackRootMiddleware');
     expect(read(root, 'apps/web/app/patchstack/guard.server.ts')).toContain('__PATCHSTACK_SITE_UUID__');
+  });
+});
+
+describe('a guard left without its site', () => {
+  it('fails protect --check when the project records a site the guard does not carry', () => {
+    const root = makeMonorepo();
+    runProtect(root);
+    const guard = path.join(root, 'apps/web/app/patchstack/guard.server.ts');
+    writeFileSync(guard, read(root, 'apps/web/app/patchstack/guard.server.ts').replace(`"${UUID}"`, '"__PATCHSTACK_SITE_UUID__"'));
+
+    const report = runVerify(root);
+    expect(report.wired).toBe(false);
+    const check = report.checks.find((c) => c.label.includes("carries this project's Patchstack site"));
+    expect(check?.ok).toBe(false);
+    expect(check?.hint).toContain('app/patchstack/guard.server.ts');
+  });
+
+  it('passes once protect fills the site in again', () => {
+    const root = makeMonorepo();
+    runProtect(root);
+    const guard = path.join(root, 'apps/web/app/patchstack/guard.server.ts');
+    writeFileSync(guard, read(root, 'apps/web/app/patchstack/guard.server.ts').replace(`"${UUID}"`, '"__PATCHSTACK_SITE_UUID__"'));
+
+    runProtect(root);
+    expect(read(root, 'apps/web/app/patchstack/guard.server.ts')).toContain(`"${UUID}"`);
+    expect(runVerify(root).wired).toBe(true);
+  });
+
+  it('does not ask for a site when the project records none', () => {
+    const root = makeMonorepo({ rc: false });
+    runProtect(root);
+    expect(runVerify(root).checks.some((c) => c.label.includes("carries this project's Patchstack site"))).toBe(false);
+  });
+});
+
+describe('workspaceRootWithSite', () => {
+  it('points a workspace package at the root that records the site', () => {
+    const root = makeMonorepo();
+    expect(workspaceRootWithSite(path.join(root, 'apps/web'))).toBe(root);
+  });
+
+  it('ignores a package config that names no site', () => {
+    const root = makeMonorepo();
+    writeFileSync(path.join(root, 'apps/web/.patchstackrc.json'), JSON.stringify({ widget: true }));
+    expect(workspaceRootWithSite(path.join(root, 'apps/web'))).toBe(root);
+  });
+
+  it('leaves a package that names its own site where it is', () => {
+    const root = makeMonorepo();
+    writeFileSync(path.join(root, 'apps/web/.patchstackrc.json'), JSON.stringify({ siteUuid: '0b7a2f4e-3c1d-4e5f-8a9b-1c2d3e4f5a6b' }));
+    expect(workspaceRootWithSite(path.join(root, 'apps/web'))).toBeNull();
+  });
+
+  it('does nothing when the root records no site, or for the root itself', () => {
+    const bare = makeMonorepo({ rc: false });
+    expect(workspaceRootWithSite(path.join(bare, 'apps/web'))).toBeNull();
+    const root = makeMonorepo();
+    expect(workspaceRootWithSite(root)).toBeNull();
+  });
+
+  it('does nothing for a folder that is not a declared package', () => {
+    const root = makeMonorepo();
+    mkdirSync(path.join(root, 'tools/script'), { recursive: true });
+    expect(workspaceRootWithSite(path.join(root, 'tools/script'))).toBeNull();
   });
 });
 
@@ -106,6 +186,14 @@ export default function Root() { return <Outlet />; }
   it('resolves the workspace app as the widget shell directory', () => {
     const root = makeMonorepoWithShell();
     expect(path.relative(root, resolveWidgetShellDir(root, 'react-router'))).toBe('apps/web');
+  });
+
+  it('finds the workspace app shell when the root declares no framework, as a real workspace root does', () => {
+    const root = makeMonorepoWithShell();
+    writeFileSync(path.join(root, 'apps/web/package.json'), JSON.stringify({
+      name: 'web', dependencies: { 'react-router': '^8.3.0' }, devDependencies: { '@react-router/dev': '^8.3.0' },
+    }));
+    expect(path.relative(root, resolveWidgetShellDir(root, null))).toBe('apps/web');
   });
 
   it('injects the widget into the workspace app shell, not the root', () => {

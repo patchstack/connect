@@ -1,6 +1,6 @@
 // Shared helpers for the `patchstack-connect protect` scaffolder (adapters + orchestrator).
 
-import { readFileSync, existsSync } from 'node:fs';
+import { readFileSync, existsSync, readdirSync, type Dirent } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { writeProjectFileSync } from '../../safe-file.js';
@@ -80,25 +80,75 @@ export function isSiteUuid(value: unknown): value is string {
 }
 
 /**
- * The site config `scan` writes, searched from `startDir` up to the filesystem root.
+ * The site UUID from the nearest `.patchstackrc.json` that names one, searched from `startDir` upward.
  *
- * Normally it sits in the same directory as the guard. In a monorepo it does not: `scan` runs at the
- * repo root (where the prompt and the lockfile are) and writes the config there, while the guard is wired
- * into a workspace package (`apps/web`). Walking up finds the one the root provisioned, and for a
- * single-package project finds it in `startDir` on the first step — no change to that case.
+ * Normally the config sits in the same directory as the guard. In a monorepo it does not: `scan` runs at
+ * the repo root (where the prompt and the lockfile are) and writes the site there, while the guard is
+ * wired into a workspace package (`apps/web`). That package can hold a config of its own that names no
+ * site (`{"widget": true}`), so a config without a `siteUuid` does not end the search — stopping there
+ * would leave the guard without a site, fetching no rules and reporting nothing. For a single-package
+ * project the first step finds it in `startDir`, as before.
  */
-function findConfigUp(startDir: string): string | null {
+export function findSiteUuidUp(startDir: string): { found: 'none' | 'unreadable' | 'missing' } | { found: 'uuid'; uuid: string } {
   let dir = startDir;
+  let seen: 'none' | 'unreadable' | 'missing' = 'none';
   // Bounded so a guard deep in a tree cannot adopt an unrelated config far above the project.
   for (let i = 0; i < 8; i++) {
     const candidate = join(dir, '.patchstackrc.json');
-    if (existsSync(candidate)) return candidate;
+    if (existsSync(candidate)) {
+      let uuid: unknown;
+      let readable = true;
+      try {
+        uuid = JSON.parse(read(candidate)).siteUuid;
+      } catch {
+        readable = false;
+      }
+      if (typeof uuid === 'string' && UUID_RE.test(uuid)) return { found: 'uuid', uuid };
+      // Reported by the nearest config, which is the one an operator would look at first.
+      if (seen === 'none') seen = readable ? 'missing' : 'unreadable';
+    }
     const parent = dirname(dir);
     if (parent === dir) break;
     dir = parent;
   }
 
-  return null;
+  return { found: seen };
+}
+
+const SKIP_DIRS = new Set(['node_modules', '.git', 'dist', 'build', '.next', '.output', '.patchstack', '.vercel', '.netlify']);
+
+/**
+ * Managed guard files under `cwd` that still carry the site placeholder, relative to `cwd`.
+ *
+ * Only a guard Connect wrote contains the placeholder, so its presence while the project records a site
+ * means the site was never filled in: that guard fetches no rules and reports nothing. Depth-bounded and
+ * skips dependency and build output.
+ */
+export function unbakedGuards(cwd: string): string[] {
+  const found: string[] = [];
+  const walk = (dir: string, rel: string, depth: number): void => {
+    let entries: Dirent[];
+    try {
+      entries = readdirSync(dir, { withFileTypes: true });
+    } catch {
+      return;
+    }
+    for (const entry of entries) {
+      const childRel = rel === '' ? entry.name : `${rel}/${entry.name}`;
+      if (entry.isDirectory()) {
+        if (depth < 5 && !SKIP_DIRS.has(entry.name)) walk(join(dir, entry.name), childRel, depth + 1);
+      } else if (entry.isFile() && /\.(c|m)?(j|t)sx?$/.test(entry.name)) {
+        try {
+          if (read(join(dir, entry.name)).includes(SITE_UUID_PLACEHOLDER)) found.push(childRel);
+        } catch {
+          // Unreadable: nothing to report about it.
+        }
+      }
+    }
+  };
+  walk(cwd, '', 0);
+
+  return found;
 }
 
 /**
@@ -109,24 +159,18 @@ function findConfigUp(startDir: string): string | null {
  * unscanned projects remain inert and lets deployments override it explicitly.
  */
 export function bakeSiteUuid(cwd: string, guardRelPath: string): boolean {
-  const rc = findConfigUp(cwd);
-  if (rc === null) {
-    log('no .patchstackrc.json — guard uses PATCHSTACK_SITE_UUID env or the bundled fallback');
+  const site = findSiteUuidUp(cwd);
+  if (site.found !== 'uuid') {
+    log(
+      site.found === 'none'
+        ? 'no .patchstackrc.json — guard uses PATCHSTACK_SITE_UUID env or the bundled fallback'
+        : site.found === 'unreadable'
+          ? '.patchstackrc.json unreadable — skipping site-UUID bake'
+          : '.patchstackrc.json siteUuid missing or malformed — guard uses PATCHSTACK_SITE_UUID env or the bundled fallback',
+    );
     return false;
   }
-
-  let uuid: unknown;
-  try {
-    uuid = JSON.parse(read(rc)).siteUuid;
-  } catch {
-    log('.patchstackrc.json unreadable — skipping site-UUID bake');
-    return false;
-  }
-
-  if (typeof uuid !== 'string' || !UUID_RE.test(uuid)) {
-    log('.patchstackrc.json siteUuid missing or malformed — guard uses PATCHSTACK_SITE_UUID env or the bundled fallback');
-    return false;
-  }
+  const uuid = site.uuid;
 
   const guardPath = join(cwd, guardRelPath);
   if (!existsSync(guardPath)) return false;
