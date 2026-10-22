@@ -78,6 +78,53 @@ describe('a guard without the site credential, shipped with a rules reader', () 
     await protection.stop();
   });
 
+  it('on a frozen host, delivers a buffered detect-only detection on a later request once it goes stale', async () => {
+    const cwd = mkdtempSync(join(tmpdir(), 'ps-reader-'));
+    dirs.push(cwd);
+    vi.stubEnv('PATCHSTACK_API_KEY', '');
+    vi.stubEnv('PATCHSTACK_PULSE_AUTH', '');
+    const calls: Array<{ url: string; init: RequestInit }> = [];
+    vi.stubGlobal('fetch', vi.fn(async (url: string, init: RequestInit = {}) => {
+      calls.push({ url: String(url), init });
+      if (String(url).endsWith('/token')) {
+        return new Response(JSON.stringify({ access_token: 'reader-token', expires_in: 3600 }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+      }
+      if (String(url).includes('/detections/')) return new Response('{}', { status: 202 });
+      // Dry-run: the rule detects without blocking.
+      return new Response(JSON.stringify({ firewall: [{ id: 'detect-rule', phase: 'request', rule_v2: [{ parameter: 'get.q', match: { type: 'contains', value: 'live-attack' } }] }], whitelists: [], whitelist_keys: {}, enforcement: 'dry-run' }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+    }));
+    const protection: any = await createProtection({
+      siteUuid: '550e8400-e29b-41d4-a716-446655440000',
+      pulseRulesUrl: 'https://x.test/monitor/pulse',
+      cwd, cacheDir: join(cwd, '.patchstack'),
+      rules: { firewall: [], whitelists: [], whitelist_keys: {}, _patchstack: { rules_reader: READER } } as never,
+      reportDetections: true,
+      // Simulate a freeze-between-requests host: the background flush effectively never runs, and a
+      // detection on the request seam goes stale almost at once.
+      detectionFlushMs: 10 * 60_000,
+      detectionStaleMs: 10,
+    });
+    const guardFn = protection.fetchGuard();
+
+    const delivered = () => calls
+      .filter((c) => c.url.includes('/detections/'))
+      .flatMap((c) => JSON.parse(String(c.init.body)).detections ?? []).length;
+
+    // The request that records the detection does NOT deliver it — a detect-only match returns null and the
+    // buffer is fresh, exactly as a live server would leave it for the background flush.
+    expect(await guardFn(new Request('https://app.test/search?q=live-attack'))).toBeNull();
+    expect(delivered(), 'buffered on the request that recorded it').toBe(0);
+
+    // The freeze: wall-clock passes with no background flush.
+    await new Promise((resolve) => setTimeout(resolve, 30));
+
+    // A later request finds the buffer stale and flushes it — no stop(), no timer.
+    await guardFn(new Request('https://app.test/'));
+    expect(delivered(), 'delivered by the later request once stale').toBeGreaterThan(0);
+
+    await protection.stop();
+  });
+
   it('on an edge host, delivers the block report via ctx.waitUntil before the runtime is frozen', async () => {
     const { protection, calls } = await guard({ rules_reader: READER });
     expect(protection.detectionReporting).toBe('on-unverified');

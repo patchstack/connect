@@ -121,6 +121,15 @@ function listOption(value, fallback, name, onError) {
  */
 const DETECTION_REQUEST_DELIVERY_MS = 2_000;
 
+/**
+ * How long a detection may sit queued on the request seam before a request delivers it itself. A detection
+ * older than this means the background flush has not run — the signature of a host that freezes between
+ * requests, where the flush timer never fires — so a later request drains it. Comfortably above the
+ * reporter's default flush interval, so on a live server the timer always delivers first and batching is
+ * untouched: this only ever fires where the timer could not.
+ */
+const DETECTION_STALE_MS = 10_000;
+
 export async function createProtection(options = {}) {
   const localBuildId = options.buildId != null ? canonicalBuildId(options.buildId) : readBuildStamp(options.rules);
   // A refresh cannot acquire the identity of source files changed underneath this loaded guard.
@@ -156,6 +165,9 @@ export async function createProtection(options = {}) {
   // WOULD have stopped, which is otherwise unobservable for a rule carrying `enforcement: dry-run`.
   // Minimal payload by design; see `detections.js`.
   let detections = null;
+  // How long a detect-only detection may sit on the request seam before a request delivers it rather than
+  // the background flush (see DETECTION_STALE_MS). Configurable so a test need not wait out the real window.
+  const detectionStaleMs = Number.isFinite(options.detectionStaleMs) ? Math.max(0, options.detectionStaleMs) : DETECTION_STALE_MS;
 
   /**
    * The rule as a callback sees it: its identity, and nothing that carries policy.
@@ -1781,15 +1793,34 @@ export async function createProtection(options = {}) {
 
     // (request) => Response | null   (null = allow, caller proceeds). Request phase only.
     fetchGuard() {
+      // When the oldest queued detection on this seam was first seen pending, so a request can tell a buffer
+      // the background flush has drained from one it has abandoned. Per returned guard, reset on delivery.
+      let detectPendingSince = null;
       return async (request, ...hostArgs) => {
         const { blocked } = await screenFetchRequest(request, hostArgs);
-        // A block just recorded a detection, and this seam has no execution context to defer its delivery
-        // to (React Router middleware). A hosted builder's runtime can freeze or end the instant it answers,
-        // which cuts off the fire-and-forget send on the request path — so wait for the report to land
-        // BEFORE handing back the 403, while the process is still alive. Bounded and fail-open: a slow or
-        // down endpoint delays an attacker's block by at most this budget, never holds it, and never throws.
         if (blocked && detections) {
+          // A block just recorded a detection, and this seam (React Router middleware) has no execution
+          // context to defer delivery to. A hosted builder's runtime can freeze or end the instant it
+          // answers, cutting off the fire-and-forget send — so wait for the report to land BEFORE handing
+          // back the 403, while the process is still alive. Bounded and fail-open: a slow or down endpoint
+          // delays an attacker's block by at most this budget, never holds it, and never throws.
           try { await detections.settle(DETECTION_REQUEST_DELIVERY_MS); } catch { /* fail open */ }
+          detectPendingSince = null;
+        } else if (detections && detections.pending()) {
+          // A detect-only match recorded a detection but did not block, so there is no 403 to gate on — and
+          // on a freeze-between-requests host the background flush never runs, so that detection would never
+          // reach the firewall log. Deliver it here, but ONLY once it has outlived the flush interval: on a
+          // live server the timer drains the buffer first (this never fires, batching intact); on a frozen
+          // host the buffer survives the freeze and a later request flushes it. Bounded and fail-open.
+          const now = Date.now();
+          if (detectPendingSince === null) {
+            detectPendingSince = now;
+          } else if (now - detectPendingSince >= detectionStaleMs) {
+            try { await detections.settle(DETECTION_REQUEST_DELIVERY_MS); } catch { /* fail open */ }
+            detectPendingSince = null;
+          }
+        } else {
+          detectPendingSince = null;
         }
 
         return blocked;
