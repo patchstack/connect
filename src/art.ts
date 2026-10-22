@@ -125,3 +125,11 @@ export function renderLogo(options: { useColor: boolean }): string[] {
     '',
   ];
 }
+
+/**
+ * The same mark for the Markdown summary, which an assistant passes on: two short lines in a code block,
+ * because Markdown has no colour and would reflow the blocks outside one.
+ */
+export function renderMarkdownLogo(): string[] {
+  return ['```', '████████  P A T C H S T A C K', '▄▄▄▄▀▀▀▀', '```', ''];
+}

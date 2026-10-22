@@ -2,16 +2,15 @@
 // then the progress checklist and the one next step. Technical detail is not part of it; the commands
 // print that only with --verbose.
 
-import { renderBox, renderFindings, renderMenu } from './art.js';
+import { renderBox, renderFindings, renderMarkdownLogo, renderMenu } from './art.js';
 import type { PackageSummary } from './client.js';
+import { SECRET_CONFIG_FILENAME } from './config.js';
 import {
   nextProgressStep,
   nextStepLines,
   nextStepTitle,
-  PROGRESS_STEPS,
   plainNextStepLines,
   plainNextStepTitle,
-  plainStepLabel,
   renderChecklist,
   renderProgress,
   type NextStepContext,
@@ -168,6 +167,12 @@ function renderConcise(
     lines.push(...report.confirmed.map((text) => ` ${paint(ANSI.green, '✔')} ${text}`), '');
   }
 
+  // Every file this run changed, one line each. The Markdown summary says only the part the person acts on.
+  const changed = groupChanges(report.changed ?? []);
+  if (changed.length > 0) {
+    lines.push(paint(ANSI.bold, 'Changed'), ...changed.map(({ files, what }) => `  ${files.map((file) => `\`${file}\``).join(', ')}: ${paint(ANSI.dim, what)}`), '');
+  }
+
   for (const item of report.missing.filter((entry) => entry.note === true)) {
     lines.push(`  ${paint(ANSI.dim, 'ℹ')} ${item.plain?.text ?? item.text}`);
     for (const hint of item.plain?.hint ?? item.hint ?? []) lines.push(`    ${paint(ANSI.dim, hint)}`);
@@ -177,6 +182,22 @@ function renderConcise(
   lines.push(...renderMenu(options.menu ?? [], { useColor: options.useColor }));
   if (lines[lines.length - 1] === '') lines.pop();
   return lines;
+}
+
+/** Changes by file, with files that got the same description sharing one entry. */
+function groupChanges(changes: Array<{ file: string; what: string }>): Array<{ files: string[]; what: string }> {
+  const byFile = new Map<string, string[]>();
+  for (const { file, what } of changes) {
+    const items = byFile.get(file) ?? [];
+    if (!items.includes(what)) items.push(what);
+    byFile.set(file, items);
+  }
+  const byWhat = new Map<string, string[]>();
+  for (const [file, items] of byFile) {
+    const what = items.join('; ');
+    byWhat.set(what, [...(byWhat.get(what) ?? []), file]);
+  }
+  return [...byWhat].map(([what, files]) => ({ files, what }));
 }
 
 /** The next step in a box: its title and the link or command to use. Any further lines follow below it. */
@@ -236,24 +257,25 @@ export function renderHookSummary(report: StatusReport, progress: Progress, cont
   return lines;
 }
 
+/** The word the person says to hear what comes next; `next` answers it. AGENT-INSTALL.md lists it. */
+export const NEXT_REPLY = 'done';
+
 /** The line the summary starts after. AGENT-INSTALL.md names it, so an assistant knows what to pass on. */
 export const SUMMARY_HEADING = '──── Summary ────';
 
 /** The line printed just before the summary, saying what it is for. */
-export const SUMMARY_INTRO = 'Setup is finished. The summary below is written for the person: show it as your final message, exactly as written, with every section, ending with the numbered menu.';
+export const SUMMARY_INTRO = `Setup is finished. The summary below is written for the person: show it as your final message, exactly as written, with every section. When they say "${NEXT_REPLY}", run npx @patchstack/connect next.`;
 
 export interface SummaryOptions {
   /** The widget tag is on the page, so the summary says where to see it. */
   widgetOnPage: boolean;
-  /** The file the widget tag is in, relative to the project, when it was found. */
-  widgetFile?: string | null;
 }
 
 /**
- * The same report as a short Markdown message, ready to be passed on as it is: a headline with what was
- * found, what to do now with the link written out in full, the four steps, one closing reminder, and a
- * numbered menu of what the person can ask for next. It is built from this run's results only, so it never says more than the report
- * above it, and a part with nothing new to say is left out.
+ * The same report as a short Markdown message, ready to be passed on as it is: the Patchstack mark, a
+ * headline with what was found, the one thing to do now with its link written out in full, and the word
+ * to say once it is done, which `next` answers. It is built from this run's results only, so it never says
+ * more than the report above it, and a part with nothing new to say is left out.
  */
 export function renderSummary(report: StatusReport, progress: Progress, context: NextStepContext, options: SummaryOptions): string[] {
   const findings = report.findings ?? null;
@@ -262,37 +284,32 @@ export function renderSummary(report: StatusReport, progress: Progress, context:
   const canProtect = protectionPossible(report);
   context = { ...context, noServer: !canProtect };
 
+  const rules = canProtect && (report.rules ?? 0) > 0 ? `${report.rules} protection ${report.rules === 1 ? 'rule' : 'rules'} available` : null;
   let headline: string;
   if (counted && findings.vulnerable > 0) {
     const vulnerabilities = findings.severity.high + findings.severity.medium + findings.severity.low + findings.severity.unknown;
     const worst = (['high', 'medium', 'low'] as const).find((level) => findings.severity[level] > 0);
-    headline = `**${checked ?? 'Patchstack'}: ${vulnerabilities} ${vulnerabilities === 1 ? 'vulnerability' : 'vulnerabilities'} in ${findings.vulnerable} ${findings.vulnerable === 1 ? 'package' : 'packages'}${worst !== undefined ? ` (highest severity: ${worst})` : ''}.**`;
+    headline = `${checked ?? 'Patchstack'}: ${vulnerabilities} ${vulnerabilities === 1 ? 'vulnerability' : 'vulnerabilities'} in ${findings.vulnerable} ${findings.vulnerable === 1 ? 'package' : 'packages'}${worst !== undefined ? ` (highest severity: ${worst})` : ''}`;
   } else if (counted) {
-    headline = `**${checked ?? 'Patchstack'}: no known vulnerabilities.**`;
+    headline = `${checked ?? 'Patchstack'}: no known vulnerabilities`;
   } else {
-    headline = checked !== null ? `**${checked}.** Patchstack is now watching them.` : '**Patchstack is now watching your app.**';
-  }
-  if (canProtect && (report.rules ?? 0) > 0) {
-    headline += ` ${report.rules} protection ${report.rules === 1 ? 'rule' : 'rules'} available.`;
+    headline = checked !== null ? `${checked}, now watching them` : 'Patchstack is now watching your app';
   }
 
-  const lines = ['### 🛡️ Patchstack is set up', '', headline, ''];
+  const lines = [...renderMarkdownLogo(), `### 🛡️ ${headline}`, ''];
+  // With counts, the protection rules are listed under what was found; without them, they go here.
+  if (rules !== null && !counted) lines.push(`${rules}.`, '');
 
-  const todo: string[] = [];
+  const steps: Array<{ lead: string; rest: string; detail: string[] }> = [];
   const next = nextProgressStep(progress);
   if (next !== null) {
     const vulnerable = (findings?.vulnerable ?? 0) > 0;
-    const title =
-      next === 'connected' && !canProtect
-        ? 'Connect your Patchstack account** to see the details'
-        : next === 'connected'
-        ? vulnerable
-          ? 'Connect your Patchstack account** to see the details and turn on protection'
-          : 'Connect your Patchstack account** to turn on protection'
-        : `${capitalise(plainNextStepTitle(next, context))}**`;
+    const rest =
+      next !== 'connected' ? '' : !canProtect ? ' to see the details' : vulnerable ? ' to see the details and turn on protection' : ' to turn on protection';
+    const lead = next === 'connected' ? 'Connect your Patchstack account' : capitalise(plainNextStepTitle(next, context));
     const [first] = plainNextStepLines(next, context);
     const action = first?.startsWith('Open ') === true ? first.slice('Open '.length) : first;
-    todo.push(`**${title}${action !== undefined ? `\n   ${action}` : ''}`);
+    steps.push({ lead, rest, detail: action !== undefined ? [action] : [] });
   }
   for (const item of report.missing) {
     const key = item.key ?? item.text;
@@ -300,24 +317,30 @@ export function renderSummary(report: StatusReport, progress: Progress, context:
     if (key === 'runtime-restart' && !canProtect) continue;
     // A step that is a command keeps it: without it the person is told what is wrong and not how to fix it.
     const run = (item.plain?.hint ?? item.hint ?? []).find((line) => line.startsWith('Run: '));
-    todo.push(`${item.plain?.text ?? item.text}${run !== undefined ? `\n   \`${run.slice('Run: '.length)}\`` : ''}`);
+    steps.push({ lead: '', rest: item.plain?.text ?? item.text, detail: run !== undefined ? [`\`${run.slice('Run: '.length)}\``] : [] });
   }
-  const outdated = findings?.outdated ?? 0;
-  const steps = todo;
-  if (steps.length > 0) {
+  if (steps.length === 1) {
+    // One step is the heading itself, with its link in a paragraph of its own so it renders on its own line.
+    const [step] = steps as [(typeof steps)[number]];
+    lines.push(`#### 👉 ${step.lead}${step.rest}`, '', ...step.detail.flatMap((line) => [line, '']));
+  } else if (steps.length > 1) {
     lines.push('#### 👉 What to do now');
-    // A single step needs no number; its link goes in a paragraph of its own so it renders on its own line.
-    if (steps.length === 1) lines.push(...steps[0]!.split('\n').flatMap((line, index) => (index === 0 ? [line] : ['', line.trimStart()])));
-    else lines.push(...steps.flatMap((entry, index) => `${index + 1}. ${entry}`.split('\n')));
+    steps.forEach((step, index) => {
+      lines.push(`${index + 1}. ${step.lead !== '' ? `**${step.lead}**` : ''}${step.rest}`, ...step.detail.map((line) => `   ${line}`));
+    });
     lines.push('');
+  }
+  if (steps.length > 0) {
+    lines.push(next === 'connected' ? `When you've connected, say **${NEXT_REPLY}**.` : `When that's done, say **${NEXT_REPLY}**.`, '');
   }
 
   if (canProtect && report.confirmed?.length) {
     lines.push('#### Protection checks', ...report.confirmed, '');
   }
 
+  const outdated = findings?.outdated ?? 0;
   // With nothing found, the headline already says it all.
-  if (counted && (findings.vulnerable > 0 || outdated > 0 || (canProtect && (report.rules ?? 0) > 0))) {
+  if (counted && (findings.vulnerable > 0 || outdated > 0 || rules !== null)) {
     const severity = (
       [
         ['🔴 High', findings.severity.high],
@@ -331,84 +354,83 @@ export function renderSummary(report: StatusReport, progress: Progress, context:
     const parts = [
       ...(severity.length > 0 ? severity : ['No known vulnerabilities']),
       ...(outdated > 0 ? [`${outdated} ${outdated === 1 ? 'package' : 'packages'} outdated`] : []),
-      ...(canProtect && (report.rules ?? 0) > 0 ? [`${report.rules} protection ${report.rules === 1 ? 'rule' : 'rules'} available`] : []),
+      ...(rules !== null ? [rules] : []),
     ];
     lines.push('#### What Patchstack found', parts.join(' · '), '');
   }
 
-  lines.push('#### Progress');
-  for (const { step } of PROGRESS_STEPS) {
-    lines.push(`${progress[step] ? '✅' : '⬜'} ${plainStepLabel(step, progress[step], context.environment, !canProtect)}`);
-  }
-  lines.push('');
-
-  // The person is owed an account of what changed in their project. Written here, so an assistant has no
-  // reason to write its own next to the summary.
-  const changed = new Map<string, string[]>();
-  for (const { file, what } of report.changed ?? []) {
-    const items = changed.get(file) ?? [];
-    if (!items.includes(what)) items.push(what);
-    changed.set(file, items);
-  }
-  if (changed.size > 0) {
-    lines.push('#### What changed in your project');
-    for (const [file, items] of changed) lines.push(`- \`${file}\`: ${items.join('; ')}`);
-    lines.push('');
-  }
-
-  if (options.widgetOnPage) {
-    const where = options.widgetFile != null ? ` (in \`${options.widgetFile}\`)` : '';
-    lines.push(`**Vulnerability overview:** a Patchstack widget now appears in the pre-production version of your app${where}. Refresh the preview if it did not appear.`, '');
-  }
-  for (const item of report.missing.filter((entry) => entry.note === true)) {
+  if (options.widgetOnPage) lines.push("**Refresh your app's preview** to see the Patchstack widget.", '');
+  // A fact about the app, not a step: the ones that matter here are what protection does not cover.
+  for (const item of report.missing.filter((entry) => entry.note === true && entry.key !== 'runtime-protection')) {
     lines.push(item.plain?.text ?? item.text, '');
   }
-  // Without a server, publishing is already an option in the menu below, so there is nothing to remind.
   if (canProtect) lines.push("Don't forget to republish or redeploy the app so the protection rules protect your live app.", '');
 
-  const replies = summaryReplies(report, progress, options);
-  if (replies.length > 0) {
-    lines.push('---', '', '### 💬 What next? Reply with a number', '');
-    replies.forEach((reply, index) => {
-      if (index > 0) lines.push('>');
-      lines.push(`> ${KEYCAPS[index]} **${reply.reply}**`);
-    });
-    lines.push('');
-  }
-  // In a later conversation the assistant has no memory of this one; the person needs the words to ask with.
-  lines.push(`_Any time later, just ask: "${SUMMARY_AGAIN}"_`);
+  // The person is owed an account of what changed. The setup output above lists every file; here it is
+  // the part they act on, so an assistant has no reason to write its own list next to the summary.
+  const changed = report.changed ?? [];
+  const scripts = changed.find(({ file, what }) => file === 'package.json' && (what === BUILD_SCRIPTS_CHANGE || what === INSTALL_SCRIPT_CHANGE));
+  const key = changed.some(({ file }) => file === SECRET_CONFIG_FILENAME);
+  const account = [
+    ...(scripts !== undefined ? [`Patchstack is now part of your ${scripts.what === BUILD_SCRIPTS_CHANGE ? 'install and build' : 'install'}.`] : []),
+    ...(key ? [`Your API key is in \`${SECRET_CONFIG_FILENAME}\`: git ignores it, so never share it.`] : []),
+  ];
+  if (account.length > 0) lines.push(`_${account.join(' ')}_`, '');
+
+  if (lines[lines.length - 1] === '') lines.pop();
   return lines;
 }
 
 /** What the person can ask, in a later conversation, to see this summary again. AGENT-INSTALL.md lists it. */
 export const SUMMARY_AGAIN = 'Show my Patchstack summary';
 
-const KEYCAPS = ['1️⃣', '2️⃣', '3️⃣', '4️⃣'] as const;
+/** What `setup` records for `package.json` when it wires the scripts, which the summary recognises. */
+export const BUILD_SCRIPTS_CHANGE = 'Patchstack in the install and build scripts';
+export const INSTALL_SCRIPT_CHANGE = 'a package check after each install';
 
-/** One thing the person can ask for after setup, and the command the assistant runs for it. */
-export interface SummaryReply {
-  reply: string;
-  command: string;
+/** The line printed before what `next` says, saying what it is for. */
+export const NEXT_INTRO = `The message below is written for the person: show it as written. When they say "${NEXT_REPLY}" again, run npx @patchstack/connect next again.`;
+
+export interface NextOptions {
+  /** The link to connect the site, or its dashboard once connected. */
+  link: string | null;
+  /** The go-live steps for the project's host, as `go-live` prints them without colour; null when the host is not known. */
+  goLive: string[] | null;
+  /** The hosts `go-live --host` knows, by name, to ask which one when the host is not known. */
+  hosts: string[];
 }
 
 /**
- * The menu the summary ends on: things the person can ask for by replying with a number, each answered by
- * a command AGENT-INSTALL.md lists. Only choices that apply to this run are offered.
+ * What `next` says: where the project stands and the one thing to do now, ending on the word to say once
+ * it is done. Connecting is the only step the CLI can see completed; deploying is shown in the dashboard.
  */
-export function summaryReplies(report: StatusReport, progress: Progress, options: SummaryOptions): SummaryReply[] {
-  const findings = report.findings ?? null;
-  const nothingFound = findings !== null && findings.total > 0 && findings.vulnerable === 0 && findings.outdated === 0;
-  const replies: SummaryReply[] = [];
-  if (!nothingFound) {
-    replies.push({
-      reply: (findings?.vulnerable ?? 1) > 0 ? 'Show me the vulnerabilities' : 'Show me what Patchstack found',
-      command: 'npx @patchstack/connect vulns',
-    });
+export function renderNext(progress: Progress, context: NextStepContext, options: NextOptions): string[] {
+  const next = nextProgressStep(progress);
+  if (next === 'connected') {
+    return [
+      "### ⏳ Your Patchstack account isn't connected yet",
+      '',
+      ...(options.link !== null ? [options.link, ''] : []),
+      `When you've connected, say **${NEXT_REPLY}**.`,
+    ];
   }
-  if (!progress.connected) replies.push({ reply: 'Check that my account is connected', command: 'npx @patchstack/connect status' });
-  if (!options.widgetOnPage) replies.push({ reply: 'Add the Patchstack widget to my app', command: 'npx @patchstack/connect widget' });
-  if (!progress.deployed) replies.push({ reply: 'Help me put my app live', command: 'npx @patchstack/connect go-live' });
-  return replies.slice(0, KEYCAPS.length);
+
+  const lines = [progress.connected ? '### ✅ Your Patchstack account is connected' : '### 🛡️ Patchstack', ''];
+  if (progress.connected && options.link !== null) lines.push(`See what Patchstack found in your dashboard: ${options.link}`, '');
+  if (next === null) return [...lines, 'Nothing else to do.'];
+
+  lines.push(`#### 👉 ${capitalise(plainNextStepTitle(next, context))}`, '');
+  if (next === 'deployed' && context.environment !== 'production') {
+    if (options.goLive === null) {
+      const names = `${options.hosts.slice(0, -1).join(', ')} or ${options.hosts[options.hosts.length - 1]}`;
+      return [...lines, `Where is your app hosted? Say its name: ${names}.`];
+    }
+    lines.push('```', ...options.goLive, '```', '', '_Your Patchstack dashboard shows your live app once it reports in._');
+    return lines;
+  }
+  lines.push(...nextStepLines(next, context), '');
+  if (next === 'deployed') return [...lines, '_Your Patchstack dashboard shows your live app once it reports in._'];
+  return [...lines, `When that's done, say **${NEXT_REPLY}**.`];
 }
 
 /** False when setup found no server, so there is no protection for the app to turn on. */

@@ -8,7 +8,7 @@ This versioned reference ships inside `@patchstack/connect` and documents each s
 - **Source and releases:** MIT-licensed, source at https://github.com/patchstack/connect. Each version is published to npm from that repository's GitHub Actions workflow with an npm provenance attestation.
 - **How to check it yourself:** `npm view @patchstack/connect` shows the live registry metadata, including the repository and the attestation. After installing, `npm audit signatures` verifies the registry signatures and provenance attestations of the installed packages, this one included.
 - **What it does:** it sends the project's package names and versions to Patchstack for vulnerability matching, adds the Patchstack Connector widget to the site when asked (`setup --widget`, or `widget`), installs a runtime exploit guard (`protect`) in the server's request path, and adds scan steps to the install and build scripts. `setup` and the `prebuild` hook also upload a structural map of the server (routes, input names, the packages behind each sink, file:line) so protection rules can target the app's own parameters — never source text or environment values. Run on its own, `map` sends nothing unless you pass `--upload`. The [Command reference](#command-reference) lists every command, what it reads and writes, and what it sends.
-- **How setup ends:** run outside a terminal, as you run it, `setup` ends with `──── Summary ────` and a short message written for the person: what Patchstack found, the link to connect the site, what is left to do and the next step. **That summary is your final message.** Show it exactly as written, with every section. It ends with "What next? Reply with a number" and a short menu of what the person can ask for — see the vulnerabilities, check the account is connected, add the widget, go live — so keep it; when the person replies with a number or asks for one in their own words, run its command (see "Commands for later"). Its "What changed in your project" section lists every file `setup` changed, so do not add a list of your own. Do not reword it, drop a section, or add your own: no recap, no account of the commands you ran. Add at most one line, after it, for something you did beyond `setup`. If the summary did not reach you (long output can be cut short), run `npx @patchstack/connect summary`: it prints the same summary again, from `.patchstack/summary.md`, where `setup` saves it. "The message you end on" below has the details, and "Commands for later" lists what to run when the person asks for more (`vulns` shows the vulnerabilities).
+- **How setup ends:** run outside a terminal, as you run it, `setup` ends with `──── Summary ────` and a short message written for the person: what Patchstack found, the link to connect the site, what is left to do and the next step. **That summary is your final message.** Show it exactly as written, with every section. It ends by telling the person to say "done" once they have done the one thing it asks — usually connecting their account. When they say "done", run `npx @patchstack/connect next`, which checks where the project stands and says the next thing to do; show what it prints the same way. Do not add a list of the files `setup` changed: the setup output lists them, so answer from it if the person asks. Do not reword it, drop a section, or add your own: no recap, no account of the commands you ran. Add at most one line, after it, for something you did beyond `setup`. If the summary did not reach you (long output can be cut short), run `npx @patchstack/connect summary`: it prints the same summary again, from `.patchstack/summary.md`, where `setup` saves it. "The message you end on" below has the details, and "Commands for later" lists what to run when the person asks for more (`vulns` shows the vulnerabilities).
 
 ## Choose the project path first
 
@@ -54,7 +54,7 @@ The pages get a build step, even though nothing is compiled. The build is what r
 4. Two lines are expected and need no fix:
    - The note `Blocking attacks needs a server, and none was found`. A plain HTML site has no server to protect. Do not add one, and do not offer to. `setup` leaves a generic guard in `patchstack/`, which nothing loads until a server does.
    - `✘ Deploy to protect your live app`. Publishing the pages is the person's step.
-5. End by passing on the `──── Summary ────` that `setup` prints, as in "The message you end on". It already says that the widget and the package checks are active and that blocking attacks needs a server. To preview it on their own machine, serve the folder (for example `python3 -m http.server`). Do not publish anything yourself.
+5. End by passing on the `──── Summary ────` that `setup` prints, as in "The message you end on". It already says what was checked and the one thing to do next. To preview it on their own machine, serve the folder (for example `python3 -m http.server`). Do not publish anything yourself.
 
 ### JS/Node applications — the usual path
 
@@ -82,6 +82,7 @@ Every command at a glance — what it does, whether it reads your source, what i
 | `demo-guide node-serialize` | Read-only companion: explains the prepare/run/prove/cleanup sequence and prints the next command. | Reads local protection wiring for verification | Nothing | Nothing |
 | `guide` | Print this project's setup status: what is left to do and the four steps, with tailored commands. `--full` adds this reference. | Reads local protection wiring for verification | Nothing | Nothing |
 | `status` | Re-print the site UUID + dashboard URL and check whether the site still exists (active / removed / could not verify) and whether it is connected to an account. | No | The connected note in `.patchstackrc.json`, when it changed | Site-existence and connection checks |
+| `next` | Say where the project stands and the one thing to do now: connect the account (with the link), or go live (with the same steps `go-live` prints, or asking where the app is hosted when the project does not say). Answers the "done" the summary ends on. | Reads the project files `guide` and `go-live` read | The connected note in `.patchstackrc.json`, when it changed | The site UUID, to the public claim page that says whether it is connected (skipped once `.patchstackrc.json` records that it is) |
 | `vulns` | Show what Patchstack found in this project's packages: vulnerabilities by severity and outdated packages, as counts, with the link that shows the details. Package names are shown in the dashboard once the site is connected. | No | Nothing | The site UUID, to the public claim page that returns the counts |
 | `go-live [--host <name>]` | Show how to add the project's API key to its host and deploy, in three steps. The host is read from project files (`vercel.json`, `netlify.toml`, `wrangler.toml`, `fly.toml`, `render.yaml`, `railway.json`, `amplify.yml`, `Procfile`, `.replit`, a Lovable project's packages) or named with `--host`. The commands it prints read the key from `.patchstackrc.local.json` as they run; it never prints the key. | Reads those project files only | Nothing | Nothing |
 | `widget [--remove]` | Add the Patchstack Connector widget tag to the root page, or take the tag Connect added out with `--remove` (a tag added by hand is left alone). Saves the choice as `"widget"` in `.patchstackrc.json`, which `scan` and `mark-build` follow; `setup --widget` saves the same choice. | Reads the root page to find where the tag goes | `.patchstackrc.json`; the widget `<script>` tag in the root HTML shell or framework root | Nothing |
@@ -140,71 +141,55 @@ This is a request, not a mechanism: nothing in the install depends on it. Do it 
 
 ### The message you end on
 
-When setup is finished, the person reads one short message, not a transcript of the install. When `setup` runs outside a terminal, its output ends with `──── Summary ────` and that message already written in Markdown from this run. **Show it as your final message, exactly as written, with every section** — including the closing reminder when there is one and the numbered menu it ends on, which tells the person what they can ask for next. Its "What changed in your project" section is the account of the files `setup` changed; do not add another. Do not reword it, drop a section, or add one of your own: no account of the commands you ran, no explanation of each change. Add at most one line, after it, for something you did beyond `setup` (another page you put the widget on, for example). When the output you got does not include the summary, run `npx @patchstack/connect summary` and show what it prints. Only when there is no summary at all, write the message yourself in this layout, filled in from the `setup` output:
+When setup is finished, the person reads one short message, not a transcript of the install. When `setup` runs outside a terminal, its output ends with `──── Summary ────` and that message already written in Markdown from this run. **Show it as your final message, exactly as written, with every section** — including the closing reminder when there is one and the line telling the person to say "done", which `next` answers. The setup output above it lists every file `setup` changed; do not add a list of your own. Do not reword it, drop a section, or add one of your own: no account of the commands you ran, no explanation of each change. Add at most one line, after it, for something you did beyond `setup` (another page you put the widget on, for example). When the output you got does not include the summary, run `npx @patchstack/connect summary` and show what it prints. Only when there is no summary at all, write the message yourself in this layout, filled in from the `setup` output:
 
-```markdown
-### 🛡️ Patchstack is set up
+````markdown
+```
+████████  P A T C H S T A C K
+▄▄▄▄▀▀▀▀
+```
 
-**Checked 69 packages: 5 vulnerabilities in 3 packages (highest severity: high).**
+### 🛡️ Checked 69 packages: 5 vulnerabilities in 3 packages (highest severity: high)
 
 #### 👉 What to do now
 1. **Connect your Patchstack account** to see the details and turn on protection
    https://api.patchstack.com/monitor/claim?site=…
 2. Restart your app to turn protection on
 
+When you've connected, say **done**.
+
 #### What Patchstack found
 🔴 High **1** · 🟠 Medium **3** · 🔵 Low **1** · 12 packages outdated · 12 protection rules available
 
-#### Progress
-✅ Patchstack installed
-⬜ Connect your Patchstack account
-✅ Packages checked in your preview
-⬜ Deploy to protect your live app
-
-#### What changed in your project
-- `package.json`: added @patchstack/connect; Patchstack steps in the install and build scripts
-- `index.html`: the Patchstack widget, just before </body>
-- `.patchstackrc.json`: your site's ID and connect link. Safe to commit
-- `.patchstackrc.local.json`: your API key. Never commit or upload it; git ignores it
-
-**Vulnerability overview:** a Patchstack widget now appears in the pre-production version of your app (in `index.html`). Refresh the preview if it did not appear.
+**Refresh your app's preview** to see the Patchstack widget.
 
 Don't forget to republish or redeploy the app so the protection rules protect your live app.
 
----
-
-### 💬 What next? Reply with a number
-
-> 1️⃣ **Show me the vulnerabilities**
->
-> 2️⃣ **Check that my account is connected**
->
-> 3️⃣ **Help me put my app live**
-
-_Any time later, just ask: "Show my Patchstack summary"_
-```
+_Patchstack is now part of your install and build. Your API key is in `.patchstackrc.local.json`: git ignores it, so never share it._
+````
 
 The parts always come in that order. Fill each from the output, and leave out a part the output gives you nothing for:
 
-1. **Headline.** What was checked and found, in one bold line. When the output gives no counts, write "Patchstack is now watching your app." Never estimate a count the output did not print.
-2. **What to do now.** The next step from the `Next:` line with its link or command written out in full on its own line, then each item under `To do` (at most three). Number them only when there is more than one.
-3. **What Patchstack found.** The severity counts, outdated packages and protection rules exactly as the output lists them. Leave it out when nothing was found: the headline already says so.
-4. **Progress.** The four steps from the output, ✅ for `✔` and ⬜ for `✘`.
-5. **What changed in your project.** One line per file setup changed, from the `Done` lines: `package.json`, the page the widget went into, `.patchstackrc.json`, `.patchstackrc.local.json` (never commit it), `.gitignore`.
-6. **Notes.** The widget line when setup added the widget; any line the output marks `ℹ`.
-7. **Going live.** One line, only when the app has a server for protection to load in. Do not deploy anything yourself.
-8. **What next.** The numbered menu from the table below: "Show me the vulnerabilities" unless nothing was found, "Check that my account is connected" until it is, "Add the Patchstack widget to my app" when the widget is not on the page, and "Help me put my app live" until the app is live. Then the closing line telling the person they can ask "Show my Patchstack summary" any time later.
+1. **Mark.** The two-line Patchstack mark in a code block, as in the layout above.
+2. **Headline.** What was checked and found, as the heading. When the output gives no counts, write "Patchstack is now watching your app." Never estimate a count the output did not print.
+3. **What to do now.** The next step from the `Next:` line with its link or command written out in full on its own line, then each item under `To do` (at most three). With one step, the step is the heading; number them only when there is more than one. Then: "When you've connected, say **done**." (or "When that's done, say **done**." for any other step).
+4. **What Patchstack found.** The severity counts, outdated packages and protection rules exactly as the output lists them. Leave it out when nothing was found: the headline already says so.
+5. **Notes.** "**Refresh your app's preview** to see the Patchstack widget." when setup added the widget; any line the output marks `ℹ`, except the one about no server.
+6. **Going live.** One line, only when the app has a server for protection to load in. Do not deploy anything yourself.
+7. **What changed.** One line in italics: that Patchstack is now part of the install and build, and where the API key is (git ignores it; never share it).
 
 ### Commands for later
 
-When the person asks for any of these after setup, run the command and pass on what it prints. Each is safe to run again. A reply with a number means the item with that number in the menu the summary ended on.
+When the person asks for any of these after setup, run the command and pass on what it prints. Each is safe to run again.
 
 | The person asks | Run | What it prints |
 |---|---|---|
+| "done" / "next" / "what now?" | `npx @patchstack/connect next` | Where the project stands and the one thing to do now: the link until the account is connected, then the steps to go live |
 | "Show me the vulnerabilities" / "Show me what Patchstack found" / "what did it find?" | `npx @patchstack/connect vulns` | Vulnerabilities by severity, outdated packages, and the link to the details |
 | "Check that my account is connected" / "Is it connected?" / "show me the link again" | `npx @patchstack/connect status` | The link, and whether the site is connected to an account |
 | "Add the Patchstack widget to my app" / "Add the widget" | `npx @patchstack/connect widget` | Adds the Patchstack widget to the page and saves the choice |
 | "Remove the widget" | `npx @patchstack/connect widget --remove` | Takes out the tag Connect added; a hand-added tag is left alone |
+| The name of their host, after `next` asks where the app is hosted ("Vercel", "Netlify", …) | `npx @patchstack/connect go-live --host <name>` | The three steps for that host |
 | "Help me put my app live" / "How do I go live?" / "set up my host" | `npx @patchstack/connect go-live` | Three steps for the project's host: add the key, commit, deploy |
 | "What is left to do?" | `npx @patchstack/connect guide` | The four steps and the next one |
 | "Show my Patchstack summary" / "Show me the summary again" | `npx @patchstack/connect summary` | The summary the last setup wrote, from `.patchstack/summary.md`. Sends nothing; writes nothing |
@@ -212,7 +197,7 @@ When the person asks for any of these after setup, run the command and pass on w
 
 Say only what the output says. Do not explain why setup could not finish a part, and do not add steps the output did not print. Never ask the person to copy their API key into a builder's settings or secrets: in an app that runs in the browser, a key saved there can end up in the published page. Never offer to wire protection in by hand when the output says no server was found. `go-live` prints the steps for the person's host when they are ready.
 
-Leave out the commands you ran, settings, and anything that worked as expected; the summary already says which files changed. If the person asks for the detail, give it then. `--verbose` prints it.
+Leave out the commands you ran, settings, and anything that worked as expected; the setup output already lists which files changed. If the person asks for the detail, give it then. `--verbose` prints it.
 
 **When the person later asks you to deploy, re-read "Deploying" below before running anything.** A deploy that skips the build, or uploads the project folder, publishes the API key and leaves the live site unrecognised.
 
@@ -444,7 +429,7 @@ made, not as an installation.
 
 A production build of a registered site that has **no** credential — a hosted builder's publish, which builds from the committed project and so never sees the git-ignored key file — does not send its manifest or its map. `scan` and `mark-build` POST `monitor/pulse/build/<your site uuid>` instead, with no credential and four fields: the manifest checksum, `environment: "production"`, what started the run (`trigger`), and (`mark-build` only) the marker result. **No package names, no address, no name, no environment variable values.** Patchstack records the build against the package list it last received with a key, and shows it as reported rather than deployed until the live page is seen running it. Any other run with no key sends nothing to an existing site; in a Lovable or Replit project that is not an error, so an install without the key goes on.
 
-Every request the CLI sends names the command that sent it (`X-Patchstack-Command`: `setup`, `scan`, `map`, `mark-build`, `dev` and so on) and what started it (`X-Patchstack-Trigger`: `install`, `build` or `other`). The claim-page check (`monitor/claim/preview`) also says whether the run holds the site's key (`X-Patchstack-Key`: `present` or `none`) — never the key itself — because a run without one sends nothing else. A command that sent nothing else the site's activity records — `summary`, `vulns`, `guide`, or any command in a copy without the key — then POSTs `monitor/pulse/run/<your site uuid>` once as it finishes, with no credential: the same three headers and a body of only its exit code (`{"exit_code": 0}`). Nothing about the project, its files or its packages is sent. These are names only — never arguments, paths or values — so the site's activity can show which run reached Patchstack.
+Every request the CLI sends names the command that sent it (`X-Patchstack-Command`: `setup`, `scan`, `map`, `mark-build`, `dev` and so on) and what started it (`X-Patchstack-Trigger`: `install`, `build` or `other`). The claim-page check (`monitor/claim/preview`) also says whether the run holds the site's key (`X-Patchstack-Key`: `present` or `none`) — never the key itself — because a run without one sends nothing else. A command that sent nothing else the site's activity records — `summary`, `vulns`, `next`, `guide`, or any command in a copy without the key — then POSTs `monitor/pulse/run/<your site uuid>` once as it finishes, with no credential: the same three headers and a body of only its exit code (`{"exit_code": 0}`). Nothing about the project, its files or its packages is sent. These are names only — never arguments, paths or values — so the site's activity can show which run reached Patchstack.
 
 It is server-only. Never put it in the widget tag, client bundles, or public env vars (`NEXT_PUBLIC_*`, etc.). Prefer `PATCHSTACK_API_KEY` in production; the git-ignored `.patchstackrc.local.json` is fine for local DX. If it is lost, `npx @patchstack/connect login` recovers it via dashboard approval — do not delete the file and re-provision, which would create a second site. Opt out of reporting with `PATCHSTACK_TELEMETRY=off`. If the project must not carry the widget, persist `"widget": false` in `.patchstackrc.json`; otherwise the next scan re-adds it.
 

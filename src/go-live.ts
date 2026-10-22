@@ -44,8 +44,10 @@ const HOST_ALIASES: Record<string, Host> = {
   netlify: 'netlify',
   cloudflare: 'cloudflare-pages',
   'cloudflare-pages': 'cloudflare-pages',
+  'cloudflare pages': 'cloudflare-pages',
   pages: 'cloudflare-pages',
   'cloudflare-workers': 'cloudflare-workers',
+  'cloudflare workers': 'cloudflare-workers',
   workers: 'cloudflare-workers',
   render: 'render',
   railway: 'railway',
@@ -54,6 +56,7 @@ const HOST_ALIASES: Record<string, Host> = {
   heroku: 'heroku',
   amplify: 'amplify',
   aws: 'amplify',
+  'aws amplify': 'amplify',
   replit: 'replit',
   lovable: 'lovable',
 };
