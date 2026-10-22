@@ -114,6 +114,13 @@ function listOption(value, fallback, name, onError) {
   return fallback;
 }
 
+/**
+ * How long `fetchGuard()` waits for a block's detection to be delivered before returning the 403, on a
+ * runtime with no execution context to defer the send to. Long enough for a normal POST to land, short
+ * enough that a slow or unreachable endpoint does not noticeably hold an attacker's block.
+ */
+const DETECTION_REQUEST_DELIVERY_MS = 2_000;
+
 export async function createProtection(options = {}) {
   const localBuildId = options.buildId != null ? canonicalBuildId(options.buildId) : readBuildStamp(options.rules);
   // A refresh cannot acquire the identity of source files changed underneath this loaded guard.
@@ -1774,7 +1781,19 @@ export async function createProtection(options = {}) {
 
     // (request) => Response | null   (null = allow, caller proceeds). Request phase only.
     fetchGuard() {
-      return async (request, ...hostArgs) => (await screenFetchRequest(request, hostArgs)).blocked;
+      return async (request, ...hostArgs) => {
+        const { blocked } = await screenFetchRequest(request, hostArgs);
+        // A block just recorded a detection, and this seam has no execution context to defer its delivery
+        // to (React Router middleware). A hosted builder's runtime can freeze or end the instant it answers,
+        // which cuts off the fire-and-forget send on the request path — so wait for the report to land
+        // BEFORE handing back the 403, while the process is still alive. Bounded and fail-open: a slow or
+        // down endpoint delays an attacker's block by at most this budget, never holds it, and never throws.
+        if (blocked && detections) {
+          try { await detections.settle(DETECTION_REQUEST_DELIVERY_MS); } catch { /* fail open */ }
+        }
+
+        return blocked;
+      };
     },
 
     // Wrap a fetch handler: screens the request, then the response (redact/block).
