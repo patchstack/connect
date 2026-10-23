@@ -1,0 +1,19 @@
+{
+  "name": "patchstack-connect",
+  "description": "Connect a JS/Node project to Patchstack: check its packages for known vulnerabilities, add runtime protection, and get one link to connect your Patchstack account.",
+  "version": "0.1.0",
+  "author": {
+    "name": "Patchstack",
+    "url": "https://patchstack.com"
+  },
+  "homepage": "https://github.com/patchstack/connect",
+  "repository": "https://github.com/patchstack/connect",
+  "license": "MIT",
+  "keywords": [
+    "security",
+    "vulnerabilities",
+    "npm",
+    "dependencies",
+    "patchstack"
+  ]
+}
