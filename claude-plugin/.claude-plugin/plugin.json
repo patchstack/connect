@@ -15,5 +15,9 @@
     "npm",
     "dependencies",
     "patchstack"
-  ]
+  ],
+  "documentationUrl": "https://github.com/patchstack/connect#claude-code-plugin",
+  "supportUrl": "https://github.com/patchstack/connect/issues",
+  "privacyPolicyUrl": "https://patchstack.com/privacy-policy/",
+  "termsOfServiceUrl": "https://patchstack.com/terms-and-conditions/"
 }
