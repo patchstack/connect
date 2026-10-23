@@ -2,8 +2,7 @@
 name: setup
 description: Set up Patchstack in the current JS/Node project — check its packages for known vulnerabilities, add runtime protection, and give the person one link to connect their Patchstack account. Use when the person asks to set up, install or add Patchstack, or to check their app's packages for vulnerabilities with Patchstack.
 allowed-tools:
-  - Bash(npx @patchstack/connect *)
-  - Bash(npx --yes @patchstack/connect *)
+  - Bash(npx --yes @patchstack/connect setup:*)
 ---
 
 # Set up Patchstack

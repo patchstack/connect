@@ -22,14 +22,20 @@ describe('the Claude Code plugin', () => {
     expect(skills.sort()).toEqual(['next', 'setup']);
   });
 
-  it.each(skills)('%s names only commands the CLI has, and pre-approves only the CLI', (name) => {
+  it.each(skills)('%s names only commands the CLI has, and pre-approves only the ones it runs', (name) => {
     const text = skillText(name);
-    const used = [...text.matchAll(/npx (?:--yes )?@patchstack\/connect ([a-z-]+)/g)].map((match) => match[1]);
-    expect(used.length).toBeGreaterThan(0);
+    const body = text.slice(text.indexOf('---', 4));
+    const used = new Set([...body.matchAll(/npx (?:--yes )?@patchstack\/connect ([a-z-]+)/g)].map((match) => match[1]));
+    expect(used.size).toBeGreaterThan(0);
     for (const command of used) expect(known, command).toContain(command);
     const allowed = text.slice(text.indexOf('allowed-tools:'), text.indexOf('---', 4)).split('\n').filter((line) => line.trim().startsWith('- '));
     expect(allowed.length).toBeGreaterThan(0);
-    for (const line of allowed) expect(line).toMatch(/^\s+- Bash\(npx (?:--yes )?@patchstack\/connect \*\)$/);
+    // One grant per Connect command the skill runs, never the whole CLI.
+    for (const line of allowed) {
+      const command = line.match(/^\s+- Bash\(npx (?:--yes )?@patchstack\/connect ([a-z-]+):\*\)$/)?.[1];
+      expect(command, line).toBeDefined();
+      expect(used, line).toContain(command);
+    }
   });
 
   it('tells Claude not to run the app, and to show the summary as written', () => {

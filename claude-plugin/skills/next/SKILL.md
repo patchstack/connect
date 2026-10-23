@@ -2,8 +2,10 @@
 name: next
 description: Say where the project's Patchstack setup stands and the one thing to do now. Use after Patchstack setup when the person says "done", "next", "what now?", asks whether their Patchstack account is connected, asks what Patchstack found, or asks to see their Patchstack summary again.
 allowed-tools:
-  - Bash(npx @patchstack/connect *)
-  - Bash(npx --yes @patchstack/connect *)
+  - Bash(npx @patchstack/connect next:*)
+  - Bash(npx @patchstack/connect go-live:*)
+  - Bash(npx @patchstack/connect vulns:*)
+  - Bash(npx @patchstack/connect summary:*)
 ---
 
 # Patchstack: what's next
