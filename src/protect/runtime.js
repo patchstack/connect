@@ -130,8 +130,13 @@ const DETECTION_REQUEST_DELIVERY_MS = 2_000;
  */
 const DETECTION_STALE_MS = 10_000;
 
-/** Default ceiling on how long a serving guard goes between request-triggered rules checks. */
-const REQUEST_REFRESH_MS = 30_000;
+/**
+ * How often a serving guard re-checks its rules in the background, between the request-triggered refreshes
+ * a request waits for. A host can run many copies of the app (Cloudflare Workers), each holding its own
+ * rules, and only a request reaches every copy: this brings a rule change to all of them within that time,
+ * without any request waiting for it. An unchanged answer is a bodiless 304.
+ */
+const BACKGROUND_CHECK_MS = 30_000;
 
 export async function createProtection(options = {}) {
   const localBuildId = options.buildId != null ? canonicalBuildId(options.buildId) : readBuildStamp(options.rules);
@@ -882,8 +887,9 @@ export async function createProtection(options = {}) {
     try {
       const activated = await answerActivation(request);
       if (activated) return {blocked:activated, client:undefined};
-      const pending = requestRefresher?.check(Boolean(request?.headers?.get?.(SYNC_HEADER)));
-      if (pending) await pending;
+      const refresh = requestRefresher?.check(Boolean(request?.headers?.get?.(SYNC_HEADER)));
+      if (refresh?.wait) await refresh.promise;
+      else if (refresh) keepAlive(hostArgs, refresh.promise);
       // First real request on a new origin: tell Patchstack the deployment is live. Gated on having a
       // credential (`rulesAuth` — the site key, or the bundled read-only reader), NOT on detection
       // reporting being on. A guard serving live traffic is deployed whether or not its MANAGED rules have
@@ -1753,8 +1759,8 @@ export async function createProtection(options = {}) {
   const answerActivation = request => options.activationCheck === false ? null : activationResponse(request, pulseAuth, runtimeStatus);
   const withRequestSync = handler => (req, res, next) => {
     const proceed = () => {
-      const pending = requestRefresher?.check(Boolean(req.headers?.[SYNC_HEADER]));
-      if (pending) pending.then(() => handler(req, res, next)).catch(next);
+      const refresh = requestRefresher?.check(Boolean(req.headers?.[SYNC_HEADER]));
+      if (refresh?.wait) refresh.promise.then(() => handler(req, res, next)).catch(next);
       else handler(req, res, next);
     };
     const challenge = req.headers?.[ACTIVATION_HEADER];
@@ -2017,10 +2023,7 @@ export async function createProtection(options = {}) {
   }
 
   let recovery = null;
-  // Checked more often than the timer polls. A host can run many copies of the app (Cloudflare Workers), each
-  // holding its own rules, and only a request reaches every copy: checking every 30 seconds while serving
-  // brings a rule change to all of them within that. An unchanged answer is a bodiless 304.
-  const requestInterval = options.requestRefreshMs ?? (refreshMs > 0 ? Math.min(refreshMs, REQUEST_REFRESH_MS) : 0);
+  const requestInterval = options.requestRefreshMs ?? refreshMs ?? 0;
   // A request-triggered refresh is the ONLY one a freeze-between-requests host runs — its background timer
   // never fires — and on such a host the fetch cannot continue after the response, so it has to finish
   // in-request. The old 250ms budget aborted a cold fetch mid-handshake, so the refresh never completed and
@@ -2079,6 +2082,7 @@ export async function createProtection(options = {}) {
 
   requestRefresher = requestRefresh(() => runRefreshTick(true), {
     intervalMs: live && (options.token || rulesAuth) && Number.isFinite(requestInterval) && requestInterval > 0 ? Math.max(1000, requestInterval) : 0,
+    backgroundMs: BACKGROUND_CHECK_MS,
     timeoutMs: requestBudget,
   });
 
@@ -2312,6 +2316,20 @@ function byPhase(rules, phase) {
 function baseContentType(ct) {
   return String(ct || '').toLowerCase().split(';')[0].trim();
 }
+/**
+ * Hand work that must outlive the response to the host's execution context (`ctx.waitUntil` on Cloudflare
+ * Workers), found by shape because hosts pass it in different positions. Without one the work simply runs
+ * on; a host that freezes before it finishes is covered by the next stale refresh.
+ */
+function keepAlive(hostArgs, promise) {
+  const ctx = hostArgs.find((arg) => arg && typeof arg === 'object' && typeof arg.waitUntil === 'function');
+  try {
+    ctx?.waitUntil(promise);
+  } catch {
+    /* a host that refuses it still has the next stale refresh */
+  }
+}
+
 function screenableContentType(ct) {
   const base = baseContentType(ct);
   if (base === 'text/event-stream') return 'skip'; // live token/SSE stream — never buffer
