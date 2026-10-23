@@ -308,7 +308,8 @@ export interface CreateProtectionOptions {
    */
   refreshMs?: number;
   /** Refresh stale rules on incoming requests, including after a host resumes a frozen instance.
-   * Defaults to refreshMs; 0 disables. Positive values have a 1s minimum. No manifest/source scan
+   * Past this the request waits for the fetch; every 30s before it a serving guard re-checks in the background
+   * without holding the request. Defaults to refreshMs; 0 disables. Positive values have a 1s minimum. No manifest/source scan
    * runs on this path. Concurrent requests share work; failures back off to at most 8x the interval. */
   requestRefreshMs?: number;
   /** Maximum wait for a request-triggered refresh. Default 2500ms; clamped to 50–3000ms.
