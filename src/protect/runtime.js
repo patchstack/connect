@@ -130,6 +130,9 @@ const DETECTION_REQUEST_DELIVERY_MS = 2_000;
  */
 const DETECTION_STALE_MS = 10_000;
 
+/** Default ceiling on how long a serving guard goes between request-triggered rules checks. */
+const REQUEST_REFRESH_MS = 30_000;
+
 export async function createProtection(options = {}) {
   const localBuildId = options.buildId != null ? canonicalBuildId(options.buildId) : readBuildStamp(options.rules);
   // A refresh cannot acquire the identity of source files changed underneath this loaded guard.
@@ -2014,7 +2017,10 @@ export async function createProtection(options = {}) {
   }
 
   let recovery = null;
-  const requestInterval = options.requestRefreshMs ?? refreshMs ?? 0;
+  // Checked more often than the timer polls. A host can run many copies of the app (Cloudflare Workers), each
+  // holding its own rules, and only a request reaches every copy: checking every 30 seconds while serving
+  // brings a rule change to all of them within that. An unchanged answer is a bodiless 304.
+  const requestInterval = options.requestRefreshMs ?? (refreshMs > 0 ? Math.min(refreshMs, REQUEST_REFRESH_MS) : 0);
   // A request-triggered refresh is the ONLY one a freeze-between-requests host runs — its background timer
   // never fires — and on such a host the fetch cannot continue after the response, so it has to finish
   // in-request. The old 250ms budget aborted a cold fetch mid-handshake, so the refresh never completed and

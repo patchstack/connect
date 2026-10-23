@@ -117,6 +117,31 @@ it('applies a newly published rule on an express request carrying the sync heade
   } finally {await p.stop();}
 });
 
+it('re-checks on a request every 30 seconds by default, even when the timer polls every 5 minutes', async () => {
+  vi.useFakeTimers(); const api=service();
+  const p = await createProtection({...options,refreshMs:300000});
+  try {
+    const before = api.fetch.mock.calls.length;
+    vi.setSystemTime(Date.now()+10000);
+    await p.fetchGuard()(new Request('https://app.example.test/'));
+    expect(api.fetch.mock.calls.length).toBe(before);
+    api.publish(); vi.setSystemTime(Date.now()+21000);
+    expect((await p.fetchGuard()(new Request('https://app.example.test/?q=attack')))?.status).toBe(403);
+    expect(api.fetch.mock.calls.length-before).toBe(1);
+  } finally { await p.stop(); }
+});
+
+it('keeps an explicit requestRefreshMs over the 30-second default', async () => {
+  vi.useFakeTimers(); const api=service();
+  const p = await createProtection({...options,refreshMs:300000,requestRefreshMs:120000});
+  try {
+    const before = api.fetch.mock.calls.length;
+    vi.setSystemTime(Date.now()+31000);
+    await p.fetchGuard()(new Request('https://app.example.test/'));
+    expect(api.fetch.mock.calls.length).toBe(before);
+  } finally { await p.stop(); }
+});
+
 it('does not create request-driven traffic for a manual-only guard', async () => {
   vi.useFakeTimers();const api=service();const p=await createProtection(options);
   try {const before=api.fetch.mock.calls.length;vi.setSystemTime(Date.now()+1000000);await p.fetchGuard()(new Request('https://app.example.test/'));expect(api.fetch.mock.calls.length).toBe(before);}
