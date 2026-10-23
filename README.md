@@ -110,6 +110,18 @@ you how to proceed. Any of these works:
   Codex CLI asks according to `approval_policy` in `~/.codex/config.toml`: approve the command when it
   asks, or run it yourself.
 
+### Claude Code plugin
+
+In Claude Code, install the plugin from this repository's marketplace:
+
+```
+/plugin install patchstack --marketplace patchstack/connect
+```
+
+Then ask Claude to set up Patchstack, or run `/patchstack:setup`. When you have connected your account, say "done".
+
+The plugin, in [`claude-plugin/`](claude-plugin/), contains two skills and nothing else: no hooks, MCP servers or scripts. `setup` runs `npx @patchstack/connect setup` and shows you the summary it prints; `next` runs `next`, `go-live`, `vulns` or `summary` for what you ask afterwards. Both pre-approve `npx @patchstack/connect` commands only, so Claude does not ask before running them; they do what the [CLI](#cli) section says.
+
 ## Quick start (zero configuration)
 
 ```bash
