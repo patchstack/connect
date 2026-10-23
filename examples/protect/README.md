@@ -33,24 +33,24 @@ version lives in `demo-target.mjs`; the demos refuse to run against any other.
 …and prints the proof line: *"CVE-2019-10744 in lodash@4.17.11 is blocked here, right now,
 by rule `demo-CVE-2019-10744` — until you upgrade to 4.17.12. No app redeploy required."*
 
-## Delivery + promotion chain (rule served by Pulse)
+## Delivery + promotion chain (rule served by Patchstack for JavaScript)
 
 `demo.mjs` wires the rule from a local file. To show the **real delivery path the pilot uses** —
-the rule served by Pulse over HTTP, fetched by the guard's own Pulse client, then **promoted from
-dry-run to block *remotely*** (Pulse flips the bundle's `enforcement`; the guard hot-swaps on
+the rule served by Patchstack for JavaScript over HTTP, fetched by the guard's own Patchstack for JavaScript client, then **promoted from
+dry-run to block *remotely*** (Patchstack for JavaScript flips the bundle's `enforcement`; the guard hot-swaps on
 refresh, no redeploy):
 
 ```bash
 npm run demo:pulse
 ```
 
-It stands up a mock Pulse rules endpoint (local loopback) and walks the chain end to end:
+It stands up a mock Patchstack for JavaScript rules endpoint (local loopback) and walks the chain end to end:
 
 | Step | |
 |---|---|
-| 1 | The rule is **fetched from Pulse over HTTP** by site UUID (not a local file). |
-| 2 | The guard adopts Pulse's `enforcement: dry-run` — the exploit is **detected + logged but served**. |
-| 3 | Pulse flips the bundle to `enforcement: block` (new ETag); a **refresh hot-swaps** the guard — no redeploy. |
+| 1 | The rule is **fetched from Patchstack for JavaScript over HTTP** by site UUID (not a local file). |
+| 2 | The guard adopts Patchstack for JavaScript's `enforcement: dry-run` — the exploit is **detected + logged but served**. |
+| 3 | Patchstack for JavaScript flips the bundle to `enforcement: block` (new ETag); a **refresh hot-swaps** the guard — no redeploy. |
 | 4 | The **same exploit** is now **blocked (403)**; the sink never runs; a benign request still returns 200. |
 | 5 | A refresh with no change **revalidates as `304 Not Modified`** (conditional fetch, no body re-sent). |
 

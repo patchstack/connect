@@ -1,8 +1,8 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { createProtection } from '../../src/protect/runtime.js';
 
-// The static-rule-through-Pulse chain the pilot ships and demo-pulse-chain.mjs showcases:
-// a rule is fetched from Pulse by site UUID, enforced through the .fetch() HTTP guard, then
+// The static-rule delivery chain the pilot ships and demo-pulse-chain.mjs showcases:
+// a rule is fetched from Patchstack for JavaScript by site UUID, enforced through the .fetch() HTTP guard, then
 // PROMOTED dry-run -> block remotely via a manual refresh, with ETag conditional revalidation.
 // (runtime-pulse.test.ts covers the server-fn guard + timer-driven hot-swap; this pins the
 // HTTP guard path, the manual refresh() promotion, and the 304 revalidation.)
@@ -20,7 +20,7 @@ const lodashRule = {
   ],
 };
 
-// A mock Pulse endpoint with a mutable enforcement + ETag that honors If-None-Match -> 304,
+// A mock Patchstack for JavaScript endpoint with a mutable enforcement + ETag that honors If-None-Match -> 304,
 // exactly like the mock server in demo-pulse-chain.mjs but with no real socket (CI-safe).
 function mockPulse() {
   const state = { enforcement: 'dry-run', etag: '"v1"' };
@@ -49,7 +49,7 @@ const benign = () => new Request('https://app.demo/api/settings', {
 });
 const appHandler = async () => new Response(JSON.stringify({ ok: true }), { status: 200, headers: { 'content-type': 'application/json' } });
 
-describe('static-rule-through-Pulse chain (HTTP guard + manual refresh promotion)', () => {
+describe('static-rule delivery chain (HTTP guard + manual refresh promotion)', () => {
   const prevMode = process.env.PATCHSTACK_MODE;
   afterEach(() => {
     if (prevMode === undefined) delete process.env.PATCHSTACK_MODE;
@@ -57,7 +57,7 @@ describe('static-rule-through-Pulse chain (HTTP guard + manual refresh promotion
     vi.restoreAllMocks();
   });
 
-  it('fetches from Pulse, honors dry-run, then a manual refresh promotes to block; ETag revalidates', async () => {
+  it('fetches from Patchstack for JavaScript, honors dry-run, then a manual refresh promotes to block; ETag revalidates', async () => {
     delete process.env.PATCHSTACK_MODE;
     const { state, calls, fetchMock } = mockPulse();
     vi.stubGlobal('fetch', fetchMock);
@@ -69,7 +69,7 @@ describe('static-rule-through-Pulse chain (HTTP guard + manual refresh promotion
       onDetect: (d: { rule?: { id?: string } }) => detections.push(d),
     });
 
-    // 1. Rule arrived over HTTP; guard adopted Pulse's dry-run enforcement.
+    // 1. Rule arrived over HTTP; guard adopted Patchstack for JavaScript's dry-run enforcement.
     expect(calls[0].status).toBe(200);
     expect(fetchMock.mock.calls[0][0]).toBe('https://x.test/monitor/pulse/rules/site-1');
     expect(p.mode).toBe('dry-run');
@@ -79,7 +79,7 @@ describe('static-rule-through-Pulse chain (HTTP guard + manual refresh promotion
     expect(dryRes.status).toBe(200);
     expect(detections.some((d) => d.rule?.id === 'PS-CVE-2019-10744')).toBe(true);
 
-    // 3. Remote promotion: Pulse flips enforcement -> block (new ETag); a manual refresh hot-swaps.
+    // 3. Remote promotion: Patchstack for JavaScript flips enforcement -> block (new ETag); a manual refresh hot-swaps.
     state.enforcement = 'block';
     state.etag = '"v2"';
     await p.refresh();

@@ -161,7 +161,7 @@ describe('PulseRuleClient', () => {
     expect(() => new PulseRuleClient({})).toThrow();
   });
 
-  it('parses enforcement from the Pulse rules response', async () => {
+  it('parses enforcement from the Patchstack for JavaScript rules response', async () => {
     vi.stubGlobal(
       'fetch',
       vi.fn(async () => new Response(JSON.stringify({ ...RULES, enforcement: 'dry-run' }), { status: 200 })),

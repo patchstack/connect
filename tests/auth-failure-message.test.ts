@@ -5,7 +5,7 @@ import { PatchstackError, type Config } from '../src/types.js';
 /**
  * A refusal has to say which of three things went wrong, because each has a different fix.
  *
- * Every Pulse route addressing an existing site requires a credential, so a rejection is the likeliest
+ * Every Patchstack for JavaScript route addressing an existing site requires a credential, so a rejection is the likeliest
  * failure a misconfigured project meets — and `Patchstack returned 401` is the one report that helps
  * nobody. This output is often read by an AI agent with no other source of the answer, so "which setup
  * step did I miss" has to be answerable from the text alone.

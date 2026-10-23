@@ -683,7 +683,7 @@ export function createDetectionReporter(opts) {
   const detectionsUrl = `${baseUrl}/detections/${encodeURIComponent(siteUuid)}`;
 
   const post = async (body, key, signal, transport) =>
-    // Through the shared Pulse path, which attaches the token and — on a 401 — discards it and retries
+    // Through the shared Patchstack for JavaScript path, which attaches the token and — on a 401 — discards it and retries
     // once with a fresh one. A cached token can stop being valid before it expires, and the server's
     // refusal is authoritative over our own clock; the batch's own headers, this key included, are
     // carried through both sends, so the redelivery is still recognisable as the same batch.

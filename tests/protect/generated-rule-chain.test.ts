@@ -8,7 +8,7 @@ import { fromFetchRequest } from '../../src/protect/engine/fetch.js';
 
 /**
  * The COORDINATE-PINNED rule chain: a rule generated from an app's own attack-surface map, served by
- * Pulse, and enforced through the HTTP guard.
+ * Patchstack for JavaScript, and enforced through the HTTP guard.
  *
  * Why this exists as its own file. The defect it guards against was not a broken matcher — it was a
  * composition: a rule bound to the right parameter, scoped to the right route, carrying the right
@@ -60,7 +60,7 @@ const misspelledScopeRule = {
 const unboundTemplate = { id: 'pulse-1-unbound', title: servedRule.title, rule_v2: FIXTURE.template.rule_v2 };
 
 /**
- * A mock Pulse endpoint whose per-rule enforcement can be flipped, which is how promotion reaches a
+ * A mock Patchstack for JavaScript endpoint whose per-rule enforcement can be flipped, which is how promotion reaches a
  * running guard. The site stays in `block` throughout: the point is that a generated rule's own
  * `dry-run` overrides it until promotion, so a site-wide mode change cannot promote a rule by accident.
  */
@@ -92,7 +92,7 @@ const THIRD_PARTY = 'https://app.demo/api/preview?url=https://api.stripe.example
 /** An internal destination on a route this rule is NOT scoped to. */
 const OTHER_ROUTE = 'https://app.demo/api/orders?url=http://169.254.169.254/';
 
-describe('generated coordinate-pinned rule, through Pulse and the HTTP guard', () => {
+describe('generated coordinate-pinned rule, through Patchstack for JavaScript and the HTTP guard', () => {
   const prevMode = process.env.PATCHSTACK_MODE;
   afterEach(() => {
     if (prevMode === undefined) delete process.env.PATCHSTACK_MODE;

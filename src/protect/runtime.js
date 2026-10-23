@@ -52,7 +52,7 @@ export { createSupabaseGuard, GUARD_PATH } from './supabase-guard.js';
 // app, and it has to be able to answer a verification request without carrying the logic itself.
 export { sentinelAnswer, VERIFY_HEADER } from './verify-sentinel.js';
 
-// Per-site live rule client (Pulse). Re-exported for callers/tests that want to use it directly.
+// Per-site live rule client (Patchstack for JavaScript). Re-exported for callers/tests that want to use it directly.
 export { PulseRuleClient };
 
 // Server-function guard. Modern Lovable apps mutate data through TanStack server functions
@@ -160,7 +160,7 @@ export async function createProtection(options = {}) {
         })
       : null;
 
-  // Every detection, enforced or not, to the Pulse detections endpoint. Distinct from the block log
+  // Every detection, enforced or not, to the Patchstack for JavaScript detections endpoint. Distinct from the block log
   // above: that records what was STOPPED, in the WordPress-compatible shape; this records what a rule
   // WOULD have stopped, which is otherwise unobservable for a rule carrying `enforcement: dry-run`.
   // Minimal payload by design; see `detections.js`.
@@ -252,7 +252,7 @@ export async function createProtection(options = {}) {
   // runtimes this guard is built for do not all have one: on a Worker or an edge function the file is
   // absent and only `PATCHSTACK_PULSE_AUTH` / `PATCHSTACK_API_KEY` can carry the credential.
   //
-  // Every site-addressed Pulse endpoint requires a verified, site-bound credential; only a first-time
+  // Every site-addressed Patchstack for JavaScript endpoint requires a verified, site-bound credential; only a first-time
   // provisioning call is anonymous. So a missing credential is not a future problem — the rules fetch is
   // refused now. And the refusal is invisible, because a failed fetch fails open onto the cached or
   // bundled bundle: the guard then screens every request, reports healthy, and never receives another
@@ -424,7 +424,7 @@ export async function createProtection(options = {}) {
   };
 
   await applyAndAcknowledge(bundle.source?.origin, preFetchState);
-  // Mode is mutable so a Pulse refresh can flip dry-run ↔ block when SaaS enables production.
+  // Mode is mutable so a Patchstack for JavaScript refresh can flip dry-run ↔ block when SaaS enables production.
   // Precedence: PATCHSTACK_MODE env (local override) > API enforcement > options.mode > dry-run.
   let mode = resolveMode(options, bundle);
   // Rule-derived runtime state. Held in `let` bindings the guard methods below close over, so a
@@ -1989,7 +1989,7 @@ export async function createProtection(options = {}) {
   }
 
   // Live rule refresh. The guard otherwise reads its rules once, at process start — so a rule that
-  // only becomes relevant after boot (a dependency added mid-session and flagged by Pulse, a
+  // only becomes relevant after boot (a dependency added mid-session and flagged by Patchstack for JavaScript, a
   // zero-day published) never applies until the process restarts. A refresh re-fetches and
   // hot-swaps the engines in place; the same tick can be driven by a poll loop (`refreshMs`), a
   // manual `protection.refresh()`, or an authenticated push (`protection.refreshHandler()`).
@@ -1999,7 +1999,7 @@ export async function createProtection(options = {}) {
   const refreshSecret = options.refreshSecret ?? (typeof process !== 'undefined' ? process.env.PATCHSTACK_REFRESH_SECRET : undefined);
   const refreshable = live && (refreshMs > 0 || Boolean(refreshSecret));
 
-  // On the Pulse (siteUuid) path, re-post the dependency manifest before re-fetching. A targeted
+  // On the Patchstack for JavaScript (siteUuid) path, re-post the dependency manifest before re-fetching. A targeted
   // `npm install <pkg>` fires no npm lifecycle hook, so nothing else re-scans; reporting here lets
   // the server flag a newly-added vulnerable dependency and the SAME tick's rule fetch pick up its
   // rule. Loaded once, up front, only when a refresh path is enabled — a refresh-off production
@@ -2177,7 +2177,7 @@ function headersSentError(verb) {
 
 /**
  * Resolve runtime enforcement mode.
- * Precedence: PATCHSTACK_MODE env > Pulse `enforcement` on the rules bundle > options.mode > dry-run.
+ * Precedence: PATCHSTACK_MODE env > Patchstack for JavaScript `enforcement` on the rules bundle > options.mode > dry-run.
  */
 function resolveMode(options, bundle) {
   const env = typeof process !== 'undefined' ? process.env?.PATCHSTACK_MODE : undefined;

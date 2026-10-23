@@ -60,7 +60,7 @@ export interface Config {
    */
   apiKey: string | null;
   /**
-   * Credential for the authenticated Pulse endpoints (ADR-0018). Exchanged for
+   * Credential for the authenticated Patchstack for JavaScript endpoints (ADR-0018). Exchanged for
    * a short-lived bearer token at `monitor/pulse/token`; never sent directly.
    * Falls back to `apiKey` when unset. Prefer `PATCHSTACK_PULSE_AUTH`.
    */

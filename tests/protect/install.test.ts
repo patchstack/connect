@@ -114,7 +114,7 @@ describe('runProtect scaffolder', () => {
     const ids = JSON.parse(read(dir, 'src/integrations/patchstack/rules.json')).firewall.map((r: any) => r.id);
     expect(ids.some((id: string) => id.startsWith('ps-fallback-'))).toBe(true);
     const guard = read(dir, 'src/integrations/patchstack/guard.ts');
-    expect(guard).toContain('123e4567-e89b-12d3-a456-426614174000'); // baked → live Pulse rules
+    expect(guard).toContain('123e4567-e89b-12d3-a456-426614174000'); // baked → live Patchstack for JavaScript rules
     expect(guard).not.toContain('__PATCHSTACK_SITE_UUID__');
   });
 

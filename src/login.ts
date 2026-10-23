@@ -98,7 +98,7 @@ export async function waitForApproval(
     return { status: 'failed', message: 'Patchstack approved the request but returned no credential.' };
   }
 
-  // Approving rotates the site's OAuth secret, which Pulse ingest and block-log reporting both
+  // Approving rotates the site's OAuth secret, which Patchstack for JavaScript ingest and block-log reporting both
   // authenticate with.
   await persistApiKey(process.cwd(), apiKey);
 
