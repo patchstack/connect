@@ -2,7 +2,7 @@
 name: setup
 description: Set up Patchstack in the current JS/Node project — check its packages for known vulnerabilities, add runtime protection, and give the person one link to connect their Patchstack account. Use when the person asks to set up, install or add Patchstack, or to check their app's packages for vulnerabilities with Patchstack.
 allowed-tools:
-  - Bash(npx --yes @patchstack/connect setup:*)
+  - Bash(npx @patchstack/connect setup:*)
 ---
 
 # Set up Patchstack
@@ -11,7 +11,7 @@ The person installed this plugin and asked for Patchstack in this project. Setup
 
 ## What setup does
 
-Run from the project's root, `npx --yes @patchstack/connect setup`:
+Run from the project's root, `npx @patchstack/connect setup`:
 
 - sends the project's package names and versions to Patchstack to check for known vulnerabilities, and creates a site for the project;
 - adds `@patchstack/connect` as a dependency and a package check to the install and build scripts in `package.json`;
@@ -23,7 +23,7 @@ It never starts, builds or deploys the app.
 
 ## Steps
 
-1. Run `npx --yes @patchstack/connect setup` in the project root. Read its whole output: do not cut it short with `tail` or `head`, because it ends with the summary.
+1. Run `npx @patchstack/connect setup` in the project root. Read its whole output: do not cut it short with `tail` or `head`, because it ends with the summary.
 2. Finish any `✘` line under `To do` that names a command for you to run. Do not start, restart or stop the person's app, and do not touch its data, to check the install. Checking protection needs an app the person already has running.
 3. End your turn by showing the person the text after `──── Summary ────`, exactly as written. They may not see the command's output, only your reply.
 
