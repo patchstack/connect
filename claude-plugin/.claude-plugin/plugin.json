@@ -1,5 +1,5 @@
 {
-  "name": "patchstack-connect",
+  "name": "patchstack",
   "description": "Connect a JS/Node project to Patchstack: check its packages for known vulnerabilities, add runtime protection, and get one link to connect your Patchstack account.",
   "version": "0.1.0",
   "author": {

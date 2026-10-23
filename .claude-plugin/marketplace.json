@@ -9,7 +9,7 @@
   },
   "plugins": [
     {
-      "name": "patchstack-connect",
+      "name": "patchstack",
       "source": "./claude-plugin",
       "description": "Check a JS/Node project's packages for known vulnerabilities, add runtime protection, and connect it to your Patchstack account.",
       "category": "security"
