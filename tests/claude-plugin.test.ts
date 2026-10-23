@@ -32,7 +32,8 @@ describe('the Claude Code plugin', () => {
     expect(allowed.length).toBeGreaterThan(0);
     // One grant per Connect command the skill runs, never the whole CLI.
     for (const line of allowed) {
-      const command = line.match(/^\s+- Bash\(npx (?:--yes )?@patchstack\/connect ([a-z-]+):\*\)$/)?.[1];
+      // No `npx` flags before the package: a grant like `npx --yes …` reads as covering any npx command.
+      const command = line.match(/^\s+- Bash\(npx @patchstack\/connect ([a-z-]+):\*\)$/)?.[1];
       expect(command, line).toBeDefined();
       expect(used, line).toContain(command);
     }
