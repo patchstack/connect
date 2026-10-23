@@ -31,7 +31,11 @@ beforeEach(() => {
     prebuild: 'patchstack-connect scan', postbuild: 'patchstack-connect mark-build', postinstall: 'patchstack-connect scan',
   } }));
   write('index.html', `<html><body><script src="https://cdn.patchstack.com/patchstack-widget.js" data-site-uuid="${uuid}" defer></script></body></html>`);
+  mkdirSync(path.join(dir, '.patchstack'));
+  write('.patchstack/summary.md', `### 🛡️ Checked 4 packages: no known vulnerabilities\n\n${dashboard}\n\nWhen you've connected, say **done**.\n`);
 });
+
+const summaryMessage = `### 🛡️ Checked 4 packages: no known vulnerabilities\n\n${dashboard}\n\nWhen you've connected, say **done**.`;
 
 afterEach(() => rmSync(dir, { recursive: true, force: true }));
 
@@ -42,7 +46,7 @@ describe('field-test install evidence', () => {
       if (process.env.PATCHSTACK_ENDPOINT !== ${JSON.stringify(endpoint)}) process.exit(2);
       console.log('guard is wired ✓');
     `);
-    const result = score(`Open [your dashboard](${dashboard}).`);
+    const result = score(summaryMessage);
     expect(result.passed).toBe(result.total);
     expect(result.audited).toBe(true);
     expect(result.refused).toBe(false);
@@ -108,6 +112,15 @@ describe('field-test install evidence', () => {
   it('accepts a static project without claiming runtime protection', () => {
     write('node_modules/@patchstack/connect/dist/cli.js', "console.log('no guard to wire — this project has no request path');");
     expect(score().checks.protectionVerified).toMatchObject({ pass: true, detail: expect.stringContaining('not applicable') });
+  });
+
+  it('counts the summary only when it reaches the message written for the person', () => {
+    expect(score(summaryMessage).checks.summaryPassedOn.pass).toBe(true);
+    expect(score(`USER MESSAGE\n${summaryMessage}`).checks.summaryPassedOn.pass).toBe(true);
+    // Read in the command's output but replaced by the agent's own recap.
+    expect(score(`${summaryMessage}\n\nUSER MESSAGE\nSetup ran. Connect here: ${dashboard}`).checks.summaryPassedOn.pass).toBe(false);
+    rmSync(path.join(dir, '.patchstack'), { recursive: true });
+    expect(score(summaryMessage).checks.summaryPassedOn.pass).toBe(false);
   });
 
   it('does not call a normal install message a refusal', () => {

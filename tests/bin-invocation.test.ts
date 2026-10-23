@@ -9,6 +9,7 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { readBuildStamp } from '../src/build-id.js';
 import { activationResponse } from '../src/protect/activation.js';
+import { SUMMARY_INTRO } from '../src/report.js';
 
 /**
  * The published `bin` has to actually run, invoked the way npm invokes it.
@@ -400,8 +401,14 @@ describe.skipIf(!built)('the packaged bin, invoked as npm invokes it', () => {
             expect(section).toContain('This does not prove blocking or protection on other URLs.');
           } else {
             expect(section).not.toContain('Protection answered at the checked URL');
-            expect(section).toContain(activation === 'stale' ? 'its loaded map is absent or different' : 'Check protection in your running app');
           }
+        }
+        // An activation the check could not confirm is for the assistant to act on: the report says it, the
+        // summary for the person does not.
+        if (activation !== 'current') {
+          const pending = activation === 'stale' ? 'its loaded map is absent or different' : 'Protection has not been checked in a running app yet';
+          expect(sections[0]).toContain(pending);
+          expect(sections[1]).not.toContain(pending);
         }
       } finally {
         server.closeAllConnections();
@@ -722,7 +729,7 @@ describe.skipIf(!built)('the packaged bin, invoked as npm invokes it', () => {
             expect(setup).toContain('npx @patchstack/connect widget');
             expect(setup).not.toMatch(/attack-surface|rule lookup/i);
             // Run outside a terminal, as an assistant runs it: the message to pass on comes last.
-            expect(setup).toContain('Setup is finished. The summary below is written for the person: show it as your final message, exactly as written, with every section. When they say "done", run npx @patchstack/connect next.\n──── Summary ────\n```\n████████  P A T C H S T A C K\n▄▄▄▄▀▀▀▀\n```\n\n### 🛡️ Checked ');
+            expect(setup).toContain(SUMMARY_INTRO + '\n──── Summary ────\n```\n████████  P A T C H S T A C K\n▄▄▄▄▀▀▀▀\n```\n\n### 🛡️ Checked ');
             // The coloured banner is for a person's terminal; piped output carries only the summary's two-line mark.
             expect(setup).not.toContain("Checking your app's packages for known vulnerabilities");
             expectPlain(setup);
