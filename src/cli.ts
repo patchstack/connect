@@ -1609,7 +1609,8 @@ async function runSetup(args: ParsedArgs): Promise<number> {
     }
     else report.missing.push({key:'runtime-activation', text:activation.message});
   } else if (!noServer) {
-    report.missing.push({ key: 'runtime-activation', text: 'Runtime protection has not been checked in the running app', hint: ['Your app may reload these changes automatically. Check it: npx @patchstack/connect protect --check --runtime-url <URL>. Restart/rebuild/deploy only if the new protection has not loaded. Setup does not start or deploy it.'], plain: { text: 'Check protection in your running app with npx @patchstack/connect protect --check --runtime-url <URL>', hint: ['Your app may reload these changes automatically. Restart or rebuild only if the check says they have not loaded.'] } });
+    // Checking needs an app that is already running; starting one is the person's call, not this step's.
+    report.missing.push({ key: 'runtime-activation', text: 'Runtime protection has not been checked in a running app', hint: ['Setup does not start, restart or deploy your app. If it is already running, check it: npx @patchstack/connect protect --check --runtime-url <URL>. It may reload these changes automatically; restart or rebuild only if the check says the new protection has not loaded.'], plain: { text: 'Protection has not been checked in a running app yet', hint: ['Setup does not start your app. If it is already running, check it with: npx @patchstack/connect protect --check --runtime-url <URL>'] } });
   }
   const after = await collectGuideState(process.cwd());
   // The generic installer can count a project as one protection applies to while finding no server in it.

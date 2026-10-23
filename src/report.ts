@@ -264,7 +264,7 @@ export const NEXT_REPLY = 'done';
 export const SUMMARY_HEADING = '──── Summary ────';
 
 /** The line printed just before the summary, saying what it is for. */
-export const SUMMARY_INTRO = `Setup is finished. The summary below is written for the person: show it as your final message, exactly as written, with every section. When they say "${NEXT_REPLY}", run npx @patchstack/connect next.`;
+export const SUMMARY_INTRO = `Setup is finished. The person may not see this command's output, only your reply. The summary below is written for them: put it in your final message exactly as written, with every section. When they say "${NEXT_REPLY}", run npx @patchstack/connect next.`;
 
 export interface SummaryOptions {
   /** The widget tag is on the page, so the summary says where to see it. */
@@ -300,7 +300,7 @@ export function renderSummary(report: StatusReport, progress: Progress, context:
   // With counts, the protection rules are listed under what was found; without them, they go here.
   if (rules !== null && !counted) lines.push(`${rules}.`, '');
 
-  const steps: Array<{ lead: string; rest: string; detail: string[] }> = [];
+  // One step, the person's: the steps an assistant can take itself stay in the report above the summary.
   const next = nextProgressStep(progress);
   if (next !== null) {
     const vulnerable = (findings?.vulnerable ?? 0) > 0;
@@ -309,28 +309,8 @@ export function renderSummary(report: StatusReport, progress: Progress, context:
     const lead = next === 'connected' ? 'Connect your Patchstack account' : capitalise(plainNextStepTitle(next, context));
     const [first] = plainNextStepLines(next, context);
     const action = first?.startsWith('Open ') === true ? first.slice('Open '.length) : first;
-    steps.push({ lead, rest, detail: action !== undefined ? [action] : [] });
-  }
-  for (const item of report.missing) {
-    const key = item.key ?? item.text;
-    if (item.note === true || COVERED_BY_CHECKLIST.has(key)) continue;
-    if (key === 'runtime-restart' && !canProtect) continue;
-    // A step that is a command keeps it: without it the person is told what is wrong and not how to fix it.
-    const run = (item.plain?.hint ?? item.hint ?? []).find((line) => line.startsWith('Run: '));
-    steps.push({ lead: '', rest: item.plain?.text ?? item.text, detail: run !== undefined ? [`\`${run.slice('Run: '.length)}\``] : [] });
-  }
-  if (steps.length === 1) {
-    // One step is the heading itself, with its link in a paragraph of its own so it renders on its own line.
-    const [step] = steps as [(typeof steps)[number]];
-    lines.push(`#### 👉 ${step.lead}${step.rest}`, '', ...step.detail.flatMap((line) => [line, '']));
-  } else if (steps.length > 1) {
-    lines.push('#### 👉 What to do now');
-    steps.forEach((step, index) => {
-      lines.push(`${index + 1}. ${step.lead !== '' ? `**${step.lead}**` : ''}${step.rest}`, ...step.detail.map((line) => `   ${line}`));
-    });
-    lines.push('');
-  }
-  if (steps.length > 0) {
+    // The link goes in a paragraph of its own, so it renders on its own line.
+    lines.push(`#### 👉 ${lead}${rest}`, '', ...(action !== undefined ? [action, ''] : []));
     lines.push(next === 'connected' ? `When you've connected, say **${NEXT_REPLY}**.` : `When that's done, say **${NEXT_REPLY}**.`, '');
   }
 
@@ -364,7 +344,6 @@ export function renderSummary(report: StatusReport, progress: Progress, context:
   for (const item of report.missing.filter((entry) => entry.note === true && entry.key !== 'runtime-protection')) {
     lines.push(item.plain?.text ?? item.text, '');
   }
-  if (canProtect) lines.push("Don't forget to republish or redeploy the app so the protection rules protect your live app.", '');
 
   // The person is owed an account of what changed. The setup output above lists every file; here it is
   // the part they act on, so an assistant has no reason to write its own list next to the summary.
@@ -389,7 +368,7 @@ export const BUILD_SCRIPTS_CHANGE = 'Patchstack in the install and build scripts
 export const INSTALL_SCRIPT_CHANGE = 'a package check after each install';
 
 /** The line printed before what `next` says, saying what it is for. */
-export const NEXT_INTRO = `The message below is written for the person: show it as written. When they say "${NEXT_REPLY}" again, run npx @patchstack/connect next again.`;
+export const NEXT_INTRO = `The person may not see this command's output, only your reply. The message below is written for them: put it in your reply as written. When they say "${NEXT_REPLY}" again, run npx @patchstack/connect next again.`;
 
 export interface NextOptions {
   /** The link to connect the site, or its dashboard once connected. */

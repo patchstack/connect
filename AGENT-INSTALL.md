@@ -61,7 +61,7 @@ The pages get a build step, even though nothing is compiled. The build is what r
 1. Check what is already done with `npx @patchstack/connect guide` (read-only). If the project is already provisioned, reuse it — see "Before you start — never install twice".
 2. Install `@patchstack/connect` as a runtime dependency with the project's package manager. If it is missing, `setup` adds it itself.
 3. Run `npx @patchstack/connect setup`. In a hosted builder, scope `PATCHSTACK_ENVIRONMENT=sandbox` to that command — see "Automated setup".
-4. Finish any `✘` line under `To do` in the report at the end of `setup`. "Automated setup" names each one.
+4. Finish any `✘` line under `To do` in the report at the end of `setup`. "Automated setup" names each one. Do not start, restart or stop the person's app, and do not touch its data, to check the install: `setup` never runs the app, and the protection check needs an app the person already has running.
 5. End by passing on the `──── Summary ────` that `setup` prints: what Patchstack found, the link, what is left to do and the next step, with a reminder to deploy when they are ready. See "The message you end on".
 
 **In a workspace repo** — a root `package.json` that declares `workspaces`, with the app in a package such as `apps/web` (Hostinger Horizons generates this shape) — run every command from the repo root. The site is recorded in the root's `.patchstackrc.json`, and `setup` wires the guard and the widget into the app package from there. Do not run `setup` inside the app package, and do not create a `.patchstackrc.json` there. When `setup`, `scan`, `widget` or `protect` is run inside a package of a repo whose root records the site, it runs at the root instead and prints `Running at the project root (…)`.
@@ -143,7 +143,7 @@ This is a request, not a mechanism: nothing in the install depends on it. Do it 
 
 ### The message you end on
 
-When setup is finished, the person reads one short message, not a transcript of the install. When `setup` runs outside a terminal, its output ends with `──── Summary ────` and that message already written in Markdown from this run. **Show it as your final message, exactly as written, with every section** — including the closing reminder when there is one and the line telling the person to say "done", which `next` answers. The setup output above it lists every file `setup` changed; do not add a list of your own. Do not reword it, drop a section, or add one of your own: no account of the commands you ran, no explanation of each change. Add at most one line, after it, for something you did beyond `setup` (another page you put the widget on, for example). When the output you got does not include the summary, run `npx @patchstack/connect summary` and show what it prints. Only when there is no summary at all, write the message yourself in this layout, filled in from the `setup` output:
+When setup is finished, the person reads one short message, not a transcript of the install. Many tools do not show the person a command's output, only your reply, so the summary reaches them only if you put it there. When `setup` runs outside a terminal, its output ends with `──── Summary ────` and that message already written in Markdown from this run. **Show it as your final message, exactly as written, with every section** — including the line telling the person to say "done", which `next` answers. It carries one step, the person's: the `✘` lines under `To do` are yours to finish (see "Automated setup"), and they stay out of it. The setup output above it lists every file `setup` changed; do not add a list of your own. Do not reword it, drop a section, or add one of your own: no account of the commands you ran, no explanation of each change. Add at most one line, after it, for something you did beyond `setup` (another page you put the widget on, for example). When the output you got does not include the summary, run `npx @patchstack/connect summary` and show what it prints. Only when there is no summary at all, write the message yourself in this layout, filled in from the `setup` output:
 
 ````markdown
 ```
@@ -153,10 +153,9 @@ When setup is finished, the person reads one short message, not a transcript of 
 
 ### 🛡️ Checked 69 packages: 5 vulnerabilities in 3 packages (highest severity: high)
 
-#### 👉 What to do now
-1. **Connect your Patchstack account** to see the details and turn on protection
-   https://api.patchstack.com/monitor/claim?site=…
-2. Restart your app to turn protection on
+#### 👉 Connect your Patchstack account to see the details and turn on protection
+
+https://api.patchstack.com/monitor/claim?site=…
 
 When you've connected, say **done**.
 
@@ -165,8 +164,6 @@ When you've connected, say **done**.
 
 **Refresh your app's preview** to see the Patchstack widget.
 
-Don't forget to republish or redeploy the app so the protection rules protect your live app.
-
 _Patchstack is now part of your install and build. Your API key is in `.patchstackrc.local.json`: git ignores it, so never share it._
 ````
 
@@ -174,11 +171,10 @@ The parts always come in that order. Fill each from the output, and leave out a 
 
 1. **Mark.** The two-line Patchstack mark in a code block, as in the layout above.
 2. **Headline.** What was checked and found, as the heading. When the output gives no counts, write "Patchstack is now watching your app." Never estimate a count the output did not print.
-3. **What to do now.** The next step from the `Next:` line with its link or command written out in full on its own line, then each item under `To do` (at most three). With one step, the step is the heading; number them only when there is more than one. Then: "When you've connected, say **done**." (or "When that's done, say **done**." for any other step).
+3. **What to do now.** The next step from the `Next:` line, as the heading, with its link or command written out in full on its own line. Only that step: the items under `To do` are yours to finish, not the person's. Then: "When you've connected, say **done**." (or "When that's done, say **done**." for any other step).
 4. **What Patchstack found.** The severity counts, outdated packages and protection rules exactly as the output lists them. Leave it out when nothing was found: the headline already says so.
 5. **Notes.** "**Refresh your app's preview** to see the Patchstack widget." when setup added the widget; any line the output marks `ℹ`, except the one about no server.
-6. **Going live.** One line, only when the app has a server for protection to load in. Do not deploy anything yourself.
-7. **What changed.** One line in italics: that Patchstack is now part of the install and build, and where the API key is (git ignores it; never share it).
+6. **What changed.** One line in italics: that Patchstack is now part of the install and build, and where the API key is (git ignores it; never share it).
 
 ### Commands for later
 

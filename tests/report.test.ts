@@ -191,10 +191,9 @@ describe('renderSummary', () => {
       ...LOGO,
       '### 🛡️ Checked 89 packages: 5 vulnerabilities in 3 packages (highest severity: high)',
       '',
-      '#### 👉 What to do now',
-      '1. **Connect your Patchstack account** to see the details and turn on protection',
-      `   ${context.claimUrl}`,
-      '2. Restart your app to turn protection on',
+      '#### 👉 Connect your Patchstack account to see the details and turn on protection',
+      '',
+      context.claimUrl,
       '',
       `When you've connected, say **done**.`,
       '',
@@ -202,8 +201,6 @@ describe('renderSummary', () => {
       '🔴 High **1** · 🟠 Medium **3** · 🔵 Low **1** · 12 packages outdated · 12 protection rules available',
       '',
       "**Refresh your app's preview** to see the Patchstack widget.",
-      '',
-      "Don't forget to republish or redeploy the app so the protection rules protect your live app.",
     ]);
   });
 
@@ -252,28 +249,22 @@ describe('renderSummary', () => {
     expect(renderSummary(report(), notConnected, context, { widgetOnPage: false }).join('\n')).not.toContain('API key');
   });
 
-  it('includes verified readiness and every outstanding action', () => {
+  it('gives the person one step and leaves the steps an assistant takes to the report', () => {
     const confirmed = 'Rules for this app are ready (none currently apply). This does not confirm active blocking.';
     const missing = [
-      { key: 'map-upload', text: 'Could not upload the map' },
-      { key: 'map-binding', text: 'Could not link the map' },
-      { key: 'map-rules', text: 'Rules are still being prepared' },
-      { key: 'runtime-activation', text: 'The running app could not be checked' },
+      { key: 'not-connected', text: 'Not connected to your Patchstack account' },
+      { key: 'rules-pull', text: 'Live rule lookup is incomplete', plain: { text: 'Could not fetch protection rules', hint: ['Run setup again.'] } },
+      { key: 'runtime-activation', text: 'Runtime protection has not been checked in a running app', plain: { text: 'Protection has not been checked in a running app yet' } },
+      { key: 'dev-only-install', text: 'Installed as a development tool only', plain: { text: 'Patchstack is installed for development only', hint: ['Run: npm install --save-prod @patchstack/connect'] } },
     ];
-    const text = renderSummary(report({ confirmed: [confirmed], missing }), notConnected, context, { widgetOnPage: false }).join('\n');
+    const input = report({ confirmed: [confirmed], missing });
+    const text = renderSummary(input, notConnected, context, { widgetOnPage: false }).join('\n');
 
+    expect(text).toContain('#### 👉 Connect your Patchstack account');
     expect(text).toContain(confirmed);
-    for (const item of missing) expect(text).toContain(item.text);
-  });
-
-  it('keeps the command that goes with a step, so the person is told how to fix it', () => {
-    const devOnly = {
-      key: 'dev-only-install',
-      text: 'Patchstack is installed as a development tool only',
-      plain: { text: 'Patchstack is installed for development only, so your live app cannot use it', hint: ['Run: npm install --save-prod @patchstack/connect'] },
-    };
-    const text = renderSummary(report({ missing: [devOnly] }), notConnected, context, { widgetOnPage: true }).join('\n');
-    expect(text).toContain('2. Patchstack is installed for development only, so your live app cannot use it\n   `npm install --save-prod @patchstack/connect`');
+    expect(text).not.toMatch(/What to do now|Could not fetch protection rules|running app|development only|redeploy/);
+    const status = renderStatus('Patchstack setup', input, notConnected, context, { useColor: false, concise: true }).join('\n');
+    for (const item of missing.slice(1)) expect(status).toContain(item.plain.text);
   });
 
   it('never states a count the run did not get', () => {
