@@ -50,7 +50,7 @@ export async function syncSetupProtection(cwd: string, config: Config, { waitMs 
     const defaultRules = buildRulesUrl(DEFAULT_ENDPOINT, config.siteUuid);
     if (rulesUrl !== defaultRules && process.env.PATCHSTACK_PULSE_RULES_URL !== base) {
       // Only an endpoint override gets here, so it is said with --verbose rather than as a step to take.
-      notices.push('A custom rules service was used for setup. Set PATCHSTACK_PULSE_RULES_URL to the same Pulse base in the server environment for runtime updates.');
+      notices.push('A custom rules service was used for setup. Set PATCHSTACK_PULSE_RULES_URL to the same Patchstack for JavaScript base in the server environment for runtime updates.');
     }
     const options = {
       siteUuid: config.siteUuid,

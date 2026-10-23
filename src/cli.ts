@@ -328,7 +328,7 @@ Options (for demo and demo-guide):
 Environment:
   PATCHSTACK_SITE_UUID    Site UUID
   PATCHSTACK_API_KEY      WP-format site API key for block-log reporting (never put in the widget)
-  PATCHSTACK_PULSE_AUTH   Only if Pulse ingest uses a different credential from block-logs
+  PATCHSTACK_PULSE_AUTH   Only if Patchstack for JavaScript ingest uses a different credential from block-logs
   PATCHSTACK_TELEMETRY    Set to off to disable block-log reporting
   PATCHSTACK_API_BASE     API origin for /oauth/token and /api/logs/log (default: https://api.patchstack.com)
   PATCHSTACK_ENDPOINT     API endpoint (default: https://api.patchstack.com/monitor/pulse/manifest)
@@ -910,7 +910,7 @@ async function runScan(
     say(`Created site ${response.uuid}. Saved it${claimUrl !== null ? ' and the link to connect it' : ''} to ${target}.`);
   }
   if (typeof response.api_key === 'string' && response.api_key.length > 0) {
-    // One credential for both paths: Pulse resolution falls back to apiKey, so
+    // One credential for both paths: Patchstack for JavaScript resolution falls back to apiKey, so
     // a second copy under pulseAuth bought nothing except an obligation to keep
     // the two in step. Never printed — only the path it landed in.
     const hadCredentialInConfig = await credentialInCommittedConfig(process.cwd());

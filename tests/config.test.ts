@@ -290,7 +290,7 @@ describe('resolveConfig', () => {
 });
 
 /**
- * One credential authenticates Pulse ingest and block-log reporting. These pin
+ * One credential authenticates Patchstack for JavaScript ingest and block-log reporting. These pin
  * the two things that must stay true for configs written by earlier versions.
  */
 describe('credential resolution', () => {
@@ -304,7 +304,7 @@ describe('credential resolution', () => {
 
   afterEach(() => rm(cwd, { recursive: true, force: true }));
 
-  it('uses apiKey for Pulse when no pulseAuth is present', async () => {
+  it('uses apiKey for Patchstack for JavaScript when no pulseAuth is present', async () => {
     await writeConfigFile(cwd, { siteUuid: VALID_UUID, apiKey: 'secret-987' });
 
     const config = await resolveConfig({ cwd });
@@ -321,7 +321,7 @@ describe('credential resolution', () => {
 
   it('drops a stale pulseAuth when the credential is replaced', async () => {
     // pulseAuth resolves ahead of apiKey, so a leftover copy would keep
-    // authenticating Pulse with the value the server just replaced.
+    // authenticating Patchstack for JavaScript with the value the server just replaced.
     await writeConfigFile(cwd, { siteUuid: VALID_UUID, apiKey: 'old-1', pulseAuth: 'old-1' });
 
     await persistApiKey(cwd, 'rotated-2');

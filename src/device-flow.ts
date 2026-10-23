@@ -68,7 +68,7 @@ export interface PollOutcome {
 }
 
 /**
- * The Pulse base for an endpoint override, so a run pointed at staging or a local API keeps its whole
+ * The Patchstack for JavaScript base for an endpoint override, so a run pointed at staging or a local API keeps its whole
  * flow — code, poll and the approval link the user opens — on that same host.
  */
 export function baseFrom(manifestEndpoint: string): string {

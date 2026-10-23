@@ -30,8 +30,8 @@ interface ConfigFile {
   /** WP-format `{secret}-{oauth.id}` for connector /api/logs/log. Server-only. */
   apiKey?: string;
   /**
-   * Credential for the authenticated Pulse endpoints (ADR-0018). Same format as
-   * `apiKey` and today the same value, but kept as its own field so the Pulse
+   * Credential for the authenticated Patchstack for JavaScript endpoints (ADR-0018). Same format as
+   * `apiKey` and today the same value, but kept as its own field so the Patchstack for JavaScript
    * and block-log paths can diverge without disturbing each other. Server-only.
    */
   pulseAuth?: string;
@@ -507,7 +507,7 @@ export async function persistTimeout(cwd: string, timeoutMs: number): Promise<st
 }
 
 /**
- * Persist the WP-format api_key issued at provision. Authenticates both the Pulse endpoints and connector
+ * Persist the WP-format api_key issued at provision. Authenticates both the Patchstack for JavaScript endpoints and connector
  * log reporting. Never embed it in the public Patchstack Connector.
  *
  * Written to the credential file, which setup adds to the project's ignore list — the public config is
@@ -533,9 +533,9 @@ export async function persistApiKey(cwd: string, apiKey: string): Promise<Secret
 }
 
 /**
- * Persist a Pulse-specific credential.
+ * Persist a separate credential for Patchstack for JavaScript.
  *
- * Only needed when Pulse ingest and block-log reporting must use *different*
+ * Only needed when Patchstack for JavaScript ingest and block-log reporting must use *different*
  * credentials; they share one today, so `persistApiKey` covers both. Retained
  * for callers that separate them.
  */

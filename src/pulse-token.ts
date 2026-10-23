@@ -5,7 +5,7 @@ import { readBoundedJson } from './bounded-response.js';
 import { connectHeaders } from './report-context.js';
 
 /**
- * Bearer tokens for the authenticated Pulse endpoints (ADR-0018).
+ * Bearer tokens for the authenticated Patchstack for JavaScript endpoints (ADR-0018).
  *
  * Deliberately separate from the block-log token flow in
  * `src/protect/firewall-log.js`: that path talks to the auth/ Lambda's
@@ -14,7 +14,7 @@ import { connectHeaders } from './report-context.js';
 
 const TOKEN_SKEW_MS = 60_000;
 
-/** Build the Pulse token URL corresponding to a manifest endpoint override. */
+/** Build the Patchstack for JavaScript token URL corresponding to a manifest endpoint override. */
 export function buildTokenUrl(manifestEndpoint: string): string {
   const url = new URL(manifestEndpoint);
   const path = url.pathname.replace(/\/$/, '');
@@ -66,7 +66,7 @@ export function clearPulseToken(config?: Config): void {
  *
  * Returns null whenever a token cannot be obtained — no credential, a rejected
  * exchange, a network failure. Callers then send the request unauthenticated,
- * and every site-addressed Pulse endpoint refuses it: only a first-time
+ * and every site-addressed Patchstack for JavaScript endpoint refuses it: only a first-time
  * provisioning call is anonymous. Returning null rather than throwing keeps that
  * refusal on the caller's own error path, where it can fall back or report.
  */
@@ -139,7 +139,7 @@ export async function getPulseToken(
 }
 
 /**
- * `Authorization` header for a Pulse request, or `{}` when unauthenticated.
+ * `Authorization` header for a Patchstack for JavaScript request, or `{}` when unauthenticated.
  * Spread into an existing header object so call sites stay one line.
  */
 export async function pulseAuthHeader(
@@ -151,7 +151,7 @@ export async function pulseAuthHeader(
 }
 
 /**
- * Send a Pulse request, attaching the bearer token and retrying once if the
+ * Send a Patchstack for JavaScript request, attaching the bearer token and retrying once if the
  * server rejects it.
  *
  * A cached token can stop being valid before it expires — the credential may
