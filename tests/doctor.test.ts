@@ -50,27 +50,35 @@ function project(patchstack: Record<string, unknown> | null = { rules_reader: RE
   return cwd;
 }
 
-/** Patchstack's token endpoint answering `status`, and a live app answering the page and the test attack. */
-function network({ token = 200, page = 200, attack = 403 }: { token?: number | 'down'; page?: number; attack?: number } = {}) {
+const minutesAgo = (minutes: number) => new Date(Date.now() - minutes * 60_000).toISOString();
+type SyncAnswer = { reader?: { at: string; rule_count: number } | null; site_key?: { at: string; rule_count: number } | null } | number;
+
+/** Patchstack's token and sync-status endpoints, and a live app answering the page and the test attack. */
+function network({ token = 200, page = 200, attack = 403, sync = { reader: { at: minutesAgo(3), rule_count: 17 }, site_key: null } }: { token?: number | 'down'; page?: number; attack?: number; sync?: SyncAnswer } = {}) {
   const calls: string[] = [];
-  const fetchImpl = vi.fn(async (input: string | URL) => {
+  const auth: string[] = [];
+  const fetchImpl = vi.fn(async (input: string | URL, init: RequestInit = {}) => {
     const url = String(input);
     calls.push(url);
     if (url.endsWith('/token')) {
       if (token === 'down') throw new Error('offline');
-      return new Response('{}', { status: token });
+      return new Response(token === 200 ? '{"access_token":"reader-token","expires_in":3600}' : '{}', { status: token });
+    }
+    if (url.includes('/sync-status/')) {
+      auth.push(String((init.headers as Record<string, string>)?.Authorization));
+      return typeof sync === 'number' ? new Response('{}', { status: sync }) : Response.json({ site_uuid: UUID, rules_fetches: { reader: null, site_key: null, ...sync } });
     }
     if (url.includes('file=')) return new Response(attack === 403 ? '{"error":"This request has been blocked by Patchstack."}' : '<html></html>', { status: attack });
     return new Response(`<html><script src="https://cdn.patchstack.com/patchstack-widget.js" data-site-uuid="${UUID}"></script></html>`, { status: page });
   }) as unknown as typeof fetch;
-  return { fetchImpl, calls };
+  return { fetchImpl, calls, auth };
 }
 
 const claimed = async (): Promise<ClaimPreview> => ({ state: 'claimed', summary: null });
 async function doctor(cwd: string, options: { url?: string; claimPreview?: () => Promise<ClaimPreview>; net?: ReturnType<typeof network>; config?: Partial<Config> } = {}) {
   const net = options.net ?? network();
   const state = await collectGuideState(cwd);
-  return runDoctorChecks(cwd, state, config(options.config), { url: options.url ?? null, fetchImpl: net.fetchImpl, claimPreview: options.claimPreview ?? claimed });
+  return runDoctorChecks(cwd, state, config(options.config), { url: options.url ?? null, fetchImpl: net.fetchImpl, claimPreview: options.claimPreview ?? claimed, settleMs: 0 });
 }
 const problems = (findings: DoctorFinding[]) => findings.filter((f) => f.status === 'problem').map((f) => f.text);
 
@@ -145,6 +153,40 @@ describe('doctor', () => {
       const findings = await doctor(project(), { url: 'https://app.example', net });
       expect(findings.find((f) => f.text.startsWith('The live app'))?.status).toBe('unknown');
       expect(net.calls.some((url) => url.includes('file='))).toBe(false);
+    });
+  });
+
+  describe('whether the published app fetches its rules', () => {
+    const syncText = (findings: DoctorFinding[]) => findings.find((f) => /fetched|never fetched|rules syncing/.test(f.text));
+
+    it('passes an app that fetched them recently, reading the record with the token and never fetching rules itself', async () => {
+      const net = network();
+      const finding = syncText(await doctor(project(), { net }));
+      expect(finding).toMatchObject({ status: 'ok', text: 'The published app fetched its rules from Patchstack 3 minutes ago (17 rules)' });
+      expect(net.auth).toEqual(['Bearer reader-token']);
+      expect(net.calls.some((url) => url.includes('/rules/'))).toBe(false);
+    });
+
+    it('treats an old fetch as a question until doctor has visited the app, then as a problem', async () => {
+      const stale = { reader: { at: minutesAgo(300), rule_count: 17 } };
+      expect(syncText(await doctor(project(), { net: network({ sync: stale }) }))?.status).toBe('unknown');
+      const visited = syncText(await doctor(project(), { url: 'https://app.example', net: network({ sync: stale }) }));
+      expect(visited).toMatchObject({ status: 'problem', text: 'The published app last fetched its rules from Patchstack 5 hours ago (17 rules), and did not fetch them when doctor just visited it' });
+    });
+
+    it('flags an app that has never fetched them once doctor has visited it', async () => {
+      const finding = syncText(await doctor(project(), { url: 'https://app.example', net: network({ sync: { reader: null } }) }));
+      expect(finding).toMatchObject({ status: 'problem', text: 'The published app has never fetched its rules from Patchstack, even when doctor just visited it' });
+    });
+
+    it('does not call a key-holding copy the published app', async () => {
+      const finding = syncText(await doctor(project(), { net: network({ sync: { reader: null, site_key: { at: minutesAgo(10), rule_count: 17 } } }) }));
+      expect(finding?.status).toBe('unknown');
+      expect(finding?.text).toContain('Only a copy holding the site key has fetched rules (10 minutes ago)');
+    });
+
+    it('says so when Patchstack does not report syncing yet', async () => {
+      expect(syncText(await doctor(project(), { net: network({ sync: 404 }) }))).toMatchObject({ status: 'unknown', text: 'Patchstack does not report rules syncing for this site yet' });
     });
   });
 

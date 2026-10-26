@@ -198,10 +198,12 @@ Usage:
                                                      project, and say how to fix each problem: install,
                                                      site, account, protection wiring, the guard's rules
                                                      file and its read-only credential, the map link and
-                                                     the build steps. Sends the site UUID to the public
-                                                     claim page and asks Patchstack whether it accepts the
-                                                     read-only credential; with --url, also requests the
-                                                     live app's page and one test attack. Writes nothing.
+                                                     the build steps, and whether the published app
+                                                     fetches its rules. Sends the site UUID to the public
+                                                     claim page, asks Patchstack whether it accepts the
+                                                     credentials and when the app last fetched rules;
+                                                     with --url, also requests the live app's page and
+                                                     one test attack. Writes nothing.
                                                      Exits 1 when it finds a problem
   patchstack-connect vulns                           Show what Patchstack found in this project's
                                                      packages: vulnerabilities by severity and

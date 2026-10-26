@@ -9,7 +9,7 @@ import { readFileSync } from 'node:fs';
 
 import { readBuildStamp } from './build-id.js';
 import { findRulesFile, ruleBundleOf } from './build-stamp.js';
-import { buildClaimUrl, type ClaimPreview } from './client.js';
+import { buildClaimUrl, buildSyncStatusUrl, type ClaimPreview } from './client.js';
 import { assertConnectableEndpoint } from './endpoint-policy.js';
 import { DEV_ONLY_INSTALL, guideMissing, needsSourceProductionMarker, type GuideState } from './guide.js';
 import { buildTokenUrl, parsePulseAuth } from './pulse-token.js';
@@ -34,16 +34,22 @@ export interface DoctorOptions {
   fetchImpl?: typeof fetch;
   /** Whether the site has an owner, from the public claim page. */
   claimPreview: (config: Config) => Promise<ClaimPreview>;
+  /** How long to give the live app to finish the rules check its visit started, before reading sync status. */
+  settleMs?: number;
 }
 
 const READER = /^rr_[0-9a-f]{48}-\d+$/;
 const PROBE = '../../../../etc/passwd';
 const LIVE_TIMEOUT_MS = 10_000;
+/** A published app re-checks its rules every few minutes while it has visitors; older than this is worth a look. */
+const SYNC_STALE_MS = 2 * 60 * 60 * 1000;
 
-/** Ask Patchstack whether it accepts a credential, without keeping the token it hands back. */
-async function credentialAccepted(config: Config, credential: string, fetchImpl: typeof fetch): Promise<'accepted' | 'refused' | 'unreachable'> {
+type Exchange = { verdict: 'accepted' | 'refused' | 'unreachable'; token: string | null };
+
+/** Ask Patchstack whether it accepts a credential. The token is used only for the sync-status read below. */
+async function exchangeCredential(config: Config, credential: string, fetchImpl: typeof fetch): Promise<Exchange> {
   const parsed = parsePulseAuth(credential);
-  if (parsed === null) return 'refused';
+  if (parsed === null) return { verdict: 'refused', token: null };
   try {
     const url = buildTokenUrl(config.endpoint);
     assertConnectableEndpoint(config, url);
@@ -54,31 +60,34 @@ async function credentialAccepted(config: Config, credential: string, fetchImpl:
       signal: AbortSignal.timeout(config.timeoutMs),
     });
 
-    return response.ok ? 'accepted' : response.status === 401 || response.status === 403 ? 'refused' : 'unreachable';
+    if (!response.ok) return { verdict: response.status === 401 || response.status === 403 ? 'refused' : 'unreachable', token: null };
+    const token = ((await response.json().catch(() => null)) as { access_token?: unknown } | null)?.access_token;
+
+    return { verdict: 'accepted', token: typeof token === 'string' && token !== '' ? token : null };
   } catch {
-    return 'unreachable';
+    return { verdict: 'unreachable', token: null };
   }
 }
 
 /** The guard's rules file: where it is, the read-only credential in it, and whether the map is linked. */
-async function rulesFileFindings(cwd: string, config: Config, fetchImpl: typeof fetch): Promise<DoctorFinding[]> {
+async function rulesFileFindings(cwd: string, config: Config, fetchImpl: typeof fetch): Promise<{ findings: DoctorFinding[]; token: string | null }> {
   const location = findRulesFile(cwd);
   if (location.kind === 'none') {
-    return [{
+    return { token: null, findings: [{
       status: 'problem',
       text: "Patchstack cannot find the guard's rules file, so setup cannot keep its rules current",
       fix: ['Run: npx @patchstack/connect protect', 'Then: npx @patchstack/connect setup'],
-    }];
+    }] };
   }
   if (location.kind === 'unreadable') {
-    return [{
+    return { token: null, findings: [{
       status: 'problem',
       text: `The guard's rules file is not valid JSON (${location.paths.join(', ')})`,
       fix: ['Restore it from version control, or delete it and run: npx @patchstack/connect protect', 'Then: npx @patchstack/connect setup'],
-    }];
+    }] };
   }
   if (location.kind === 'ambiguous') {
-    return [{
+    return { token: null, findings: [{
       status: 'problem',
       text: `Two Patchstack guards are installed, each with its own rules file (${location.paths.join(', ')})`,
       fix: [
@@ -86,7 +95,7 @@ async function rulesFileFindings(cwd: string, config: Config, fetchImpl: typeof 
         'Remove the other guard and its rules file, after checking nothing in the app imports that guard.',
         'Then: npx @patchstack/connect setup',
       ],
-    }];
+    }] };
   }
 
   let bundle: Record<string, unknown> | null = null;
@@ -96,6 +105,7 @@ async function rulesFileFindings(cwd: string, config: Config, fetchImpl: typeof 
     // Read as missing below.
   }
   const findings: DoctorFinding[] = [];
+  let token: string | null = null;
   const reader = (bundle?._patchstack as { rules_reader?: unknown } | undefined)?.rules_reader;
   if (typeof reader !== 'string' || !READER.test(reader)) {
     findings.push({
@@ -104,7 +114,8 @@ async function rulesFileFindings(cwd: string, config: Config, fetchImpl: typeof 
       fix: ['Run: npx @patchstack/connect setup (it writes the credential; it needs the site key on this machine)', 'Then publish the app again.'],
     });
   } else {
-    const verdict = await credentialAccepted(config, reader, fetchImpl);
+    const { verdict, token: readerToken } = await exchangeCredential(config, reader, fetchImpl);
+    token = readerToken;
     findings.push(
       verdict === 'accepted'
         ? { status: 'ok', text: 'The read-only rules credential works: the published app can fetch rule updates and report attacks' }
@@ -127,17 +138,87 @@ async function rulesFileFindings(cwd: string, config: Config, fetchImpl: typeof 
     findings.push({ status: 'ok', text: "The app's map is linked to the guard" });
   }
 
-  return findings;
+  return { findings, token };
+}
+
+/** "3 minutes ago", "5 hours ago", "2 days ago". */
+function ago(at: number, now: number): string {
+  const minutes = Math.max(0, Math.round((now - at) / 60_000));
+  if (minutes < 60) return `${minutes} minute${minutes === 1 ? '' : 's'} ago`;
+  const hours = Math.round(minutes / 60);
+  if (hours < 48) return `${hours} hour${hours === 1 ? '' : 's'} ago`;
+  const days = Math.round(hours / 24);
+  return `${days} day${days === 1 ? '' : 's'} ago`;
+}
+
+type Fetch = { at: string; rule_count: number | null } | null;
+
+/**
+ * Whether the published app fetches its rules, from Patchstack's own record of rules fetches.
+ *
+ * The published app fetches on the read-only credential; a copy holding the site key (the workspace, or a
+ * deployment that sets PATCHSTACK_API_KEY) on the key. doctor reads the record and never fetches rules
+ * itself, which would be recorded as a fetch. An app with no visitors does not fetch, so an old fetch is
+ * only a problem once `visited` says doctor has just sent the live app a request.
+ */
+async function syncFindings(config: Config, token: string, visited: boolean, fetchImpl: typeof fetch): Promise<DoctorFinding[]> {
+  let body: { rules_fetches?: { reader?: Fetch; site_key?: Fetch } };
+  try {
+    const url = buildSyncStatusUrl(config.endpoint, config.siteUuid as string);
+    assertConnectableEndpoint(config, url);
+    const response = await fetchImpl(url, {
+      headers: { Accept: 'application/json', Authorization: `Bearer ${token}`, ...connectHeaders() },
+      signal: AbortSignal.timeout(config.timeoutMs),
+    });
+    if (response.status === 404) return [{ status: 'unknown', text: 'Patchstack does not report rules syncing for this site yet' }];
+    if (!response.ok) return [{ status: 'unknown', text: 'Could not get the rules sync status from Patchstack' }];
+    body = (await response.json()) as typeof body;
+  } catch {
+    return [{ status: 'unknown', text: 'Could not reach Patchstack to check whether the published app fetches its rules' }];
+  }
+
+  const now = Date.now();
+  const reader = body.rules_fetches?.reader ?? null;
+  const key = body.rules_fetches?.site_key ?? null;
+  const at = (fetch: Fetch) => (fetch === null ? NaN : Date.parse(fetch.at));
+  const count = (fetch: Fetch) => (fetch?.rule_count == null ? '' : ` (${fetch.rule_count} rule${fetch.rule_count === 1 ? '' : 's'})`);
+  const visit = 'Run: npx @patchstack/connect doctor --url <your live app> (it visits the app, which makes it check its rules), then look again.';
+
+  if (reader !== null && now - at(reader) <= SYNC_STALE_MS) {
+    return [{ status: 'ok', text: `The published app fetched its rules from Patchstack ${ago(at(reader), now)}${count(reader)}` }];
+  }
+  const notSyncing = [
+    'Publish the app again on the latest @patchstack/connect.',
+    'Check the guard is wired: npx @patchstack/connect protect --check',
+    'Then: npx @patchstack/connect doctor --url <your live app>',
+  ];
+  if (reader !== null) {
+    const text = `The published app last fetched its rules from Patchstack ${ago(at(reader), now)}${count(reader)}`;
+    return [visited
+      ? { status: 'problem', text: `${text}, and did not fetch them when doctor just visited it`, fix: notSyncing }
+      : { status: 'unknown', text: `${text}. An app with no visitors does not fetch`, fix: [visit] }];
+  }
+  if (key !== null) {
+    return [{
+      status: 'unknown',
+      text: `Only a copy holding the site key has fetched rules (${ago(at(key), now)}): a published app that sets PATCHSTACK_API_KEY fetches that way; otherwise the published app has never fetched them`,
+      fix: visited ? notSyncing : [visit],
+    }];
+  }
+
+  return [visited
+    ? { status: 'problem', text: 'The published app has never fetched its rules from Patchstack, even when doctor just visited it', fix: notSyncing }
+    : { status: 'unknown', text: 'The published app has never fetched its rules from Patchstack', fix: ['If the app is published, ' + visit.charAt(0).toLowerCase() + visit.slice(1), 'If it is not published yet, publish it.'] }];
 }
 
 /** The live app: whether it carries the widget and whether its guard stops a test attack. */
-async function liveFindings(url: string, state: GuideState, fetchImpl: typeof fetch): Promise<DoctorFinding[]> {
+async function liveFindings(url: string, state: GuideState, fetchImpl: typeof fetch): Promise<{ findings: DoctorFinding[]; reached: boolean }> {
   let page: URL;
   try {
     page = new URL(url);
     if (page.protocol !== 'https:' && page.protocol !== 'http:') throw new Error('not http');
   } catch {
-    return [{ status: 'unknown', text: `${url} is not a web address; pass the live app's address, e.g. --url https://your-app.example` }];
+    return { reached: false, findings: [{ status: 'unknown', text: `${url} is not a web address; pass the live app's address, e.g. --url https://your-app.example` }] };
   }
 
   const findings: DoctorFinding[] = [];
@@ -146,7 +227,7 @@ async function liveFindings(url: string, state: GuideState, fetchImpl: typeof fe
     const html = await response.text();
     // A page that does not load says nothing about the guard either, so the test attack is not sent.
     if (!response.ok) {
-      return [{ status: 'unknown', text: `The live app answered ${response.status}, so it could not be checked (is it published? a private publish shows a sign-in page)` }];
+      return { reached: false, findings: [{ status: 'unknown', text: `The live app answered ${response.status}, so it could not be checked (is it published? a private publish shows a sign-in page)` }] };
     }
     if (!state.widgetOptOut && state.siteUuid !== null) {
       findings.push(
@@ -156,7 +237,7 @@ async function liveFindings(url: string, state: GuideState, fetchImpl: typeof fe
       );
     }
   } catch {
-    return [{ status: 'unknown', text: `Could not reach ${page.origin}` }];
+    return { reached: false, findings: [{ status: 'unknown', text: `Could not reach ${page.origin}` }] };
   }
 
   const probe = new URL(page);
@@ -181,7 +262,7 @@ async function liveFindings(url: string, state: GuideState, fetchImpl: typeof fe
     findings.push({ status: 'unknown', text: `Could not reach ${page.origin} for the test attack` });
   }
 
-  return findings;
+  return { findings, reached: true };
 }
 
 /**
@@ -237,8 +318,28 @@ export async function runDoctorChecks(cwd: string, state: GuideState, config: Co
     findings.push({ status: 'ok', text: 'Your pages carry the marker that tells Patchstack when the app is live' });
   }
 
-  if (state.protectionApplicable && state.protectionWired) findings.push(...await rulesFileFindings(cwd, config, fetchImpl));
-  if (options.url) findings.push(...await liveFindings(options.url, state, fetchImpl));
+  let readerToken: string | null = null;
+  if (state.protectionApplicable && state.protectionWired) {
+    const rules = await rulesFileFindings(cwd, config, fetchImpl);
+    findings.push(...rules.findings);
+    readerToken = rules.token;
+  }
+  let visited = false;
+  if (options.url) {
+    const live = await liveFindings(options.url, state, fetchImpl);
+    findings.push(...live.findings);
+    visited = live.reached;
+  }
+  if (state.protectionApplicable && state.protectionWired) {
+    // The site key on this machine when there is one, otherwise the read-only credential checked above.
+    const key = config.pulseAuth ?? config.apiKey;
+    const token = typeof key === 'string' && key !== '' ? (await exchangeCredential(config, key, fetchImpl)).token ?? readerToken : readerToken;
+    if (token !== null) {
+      // A visit can start the app's rules check in the background; give it a moment to be recorded.
+      if (visited) await new Promise((resolve) => setTimeout(resolve, options.settleMs ?? 3_000));
+      findings.push(...await syncFindings(config, token, visited, fetchImpl));
+    }
+  }
 
   // Problems first, in the order found, then what could not be checked, then what passed.
   const rank: Record<DoctorStatus, number> = { problem: 0, unknown: 1, ok: 2 };

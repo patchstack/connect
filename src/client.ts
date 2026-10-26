@@ -129,6 +129,13 @@ export function authFailureMessage(status: number, config: Config): string | nul
 }
 
 /** Build the live Patchstack for JavaScript rules URL corresponding to a manifest endpoint override. */
+/** Where a site's own credential reads when its app last fetched rules, beside the rules endpoint. */
+export function buildSyncStatusUrl(manifestEndpoint: string, siteUuid: string): string {
+  const url = new URL(buildRulesUrl(manifestEndpoint, siteUuid));
+  url.pathname = url.pathname.replace(/\/rules\/([^/]+)$/, '/sync-status/$1');
+  return url.toString();
+}
+
 export function buildRulesUrl(manifestEndpoint: string, siteUuid: string): string {
   const url = new URL(manifestEndpoint);
   const path = url.pathname.replace(/\/$/, '');
