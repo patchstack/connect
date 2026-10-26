@@ -214,7 +214,7 @@ export interface CreateProtectionOptions {
   token?: string;
   baseUrl?: string;
   /** Patchstack for JavaScript site UUID — pull live per-site rules from the Patchstack for JavaScript rules API (cached). */
-  siteUuid?: string;
+  siteUuid?: string | undefined;
   /**
    * WP-format site API key (`{secret}-{oauth.id}`) for authenticated block logs
    * via connector `POST /api/logs/log`. Falls back to `PATCHSTACK_API_KEY`, then
@@ -222,14 +222,14 @@ export interface CreateProtectionOptions {
    * `.patchstackrc.json` (where installs that predate the split still hold it).
    * Never put this in the public widget.
    */
-  apiKey?: string;
+  apiKey?: string | undefined;
   /**
    * Credential for the authenticated rules lookup. Falls back to
    * `PATCHSTACK_PULSE_AUTH`, then `pulseAuth` in `.patchstackrc.local.json` and
    * then in `.patchstackrc.json`, then to `apiKey`. Exchanged for a short-lived
    * token; never sent directly. Never put this in the public widget.
    */
-  pulseAuth?: string;
+  pulseAuth?: string | undefined;
   /** Override the Patchstack for JavaScript rules API base URL. */
   pulseRulesUrl?: string;
   /**
@@ -507,7 +507,7 @@ export const GUARD_PATH: string;
 /** Browser-tunnel guard: evaluate then forward to the app's own Supabase project (SSRF-pinned). */
 export function createSupabaseGuard(opts: {
   protection: Protection;
-  supabaseUrl?: string;
+  supabaseUrl?: string | undefined;
   fetchImpl?: typeof fetch;
   /** Maximum tunneled request body size. Default 1 MiB. */
   maxBodyBytes?: number;

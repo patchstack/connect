@@ -322,3 +322,21 @@ describe('when a build may write to the project', () => {
     expect(isPreBundleBuildHook({})).toBe(false);
   });
 });
+
+describe('stamping a hand-wired guard', () => {
+  it('finds the file a hand-written guard imports and stamps a copied cache entry as a plain bundle', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'ps-stamp-handwired-'));
+    mkdirSync(join(dir, 'src/lib'), { recursive: true });
+    writeFileSync(join(dir, 'src/server.ts'), "import { createProtection } from '@patchstack/connect/protect';\nconst rules = (await import('./lib/site-rules.json')).default;\nexport default createProtection({ rules });\n");
+    writeFileSync(join(dir, 'src/lib/site-rules.json'), JSON.stringify({ bundle: { firewall: [], whitelists: [], whitelist_keys: {} }, etag: 'W/"1"' }));
+    try {
+      expect(findRulesFile(dir)).toEqual({ kind: 'one', path: join(dir, 'src/lib/site-rules.json') });
+      expect(applyBuildStamp(dir, 'b'.repeat(64)).kind).toBe('stamped');
+      const written = JSON.parse(readFileSync(join(dir, 'src/lib/site-rules.json'), 'utf8'));
+      expect(Object.keys(written).sort()).toEqual(['_patchstack', 'firewall', 'whitelist_keys', 'whitelists']);
+      expect(written._patchstack.build_id).toBe('b'.repeat(64));
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});

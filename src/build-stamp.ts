@@ -15,7 +15,7 @@
 // A retained value would let a later build present an identity its coordinates did not earn.
 
 import { lstatSync, readFileSync, readdirSync, realpathSync } from 'node:fs';
-import { join, relative, sep } from 'node:path';
+import { join, relative, resolve, sep } from 'node:path';
 
 import { BUILD_STAMP_KEY, hasRawBuildStamp, readBuildStamp } from './build-id.js';
 import { stripComments } from './protect/install/source-scope.js';
@@ -83,6 +83,85 @@ function isRuleBundle(value: unknown): value is Record<string, unknown> {
     record.whitelist_keys !== null &&
     typeof record.whitelist_keys === 'object'
   );
+}
+
+/**
+ * The rule bundle a guard rules file holds, as a plain bundle.
+ *
+ * Usually the file is the bundle. A copy of the guard's runtime cache entry (`{ "bundle": …, "etag": … }`)
+ * holds it one level down; that is read as the bundle it carries, with its `_patchstack` namespace if any,
+ * so writing the file back turns it into an ordinary rules file. Null when neither shape is there.
+ */
+export function ruleBundleOf(value: unknown): Record<string, unknown> | null {
+  if (isRuleBundle(value)) return value;
+  if (value === null || typeof value !== 'object' || Array.isArray(value)) return null;
+  const record = value as Record<string, unknown>;
+  if (!isRuleBundle(record.bundle)) return null;
+  const namespace = record[BUILD_STAMP_KEY] ?? record.bundle[BUILD_STAMP_KEY];
+
+  return { ...record.bundle, ...(namespace === undefined ? {} : { [BUILD_STAMP_KEY]: namespace }) };
+}
+
+/** Relative `.json` specifiers a source file imports, statically, dynamically, by require or by URL. */
+const JSON_IMPORT = /(?:\bfrom\s*|\bimport\s*\(\s*|\brequire\s*\(\s*|\bnew\s+URL\s*\(\s*)["'](\.{1,2}\/[^"'\n]+?\.json)["']/g;
+
+/**
+ * JSON files a hand-wired guard passes to the protection runtime.
+ *
+ * A guard written by hand (or by an assistant) rather than scaffolded can keep its rules anywhere, under
+ * any name. The same ownership test as for a scaffolded guard applies: a source file that imports the
+ * public protection runtime and imports that exact file. Only files holding a rule bundle are returned.
+ */
+function importedRulesFiles(root: string, contained: (path: string) => boolean): string[] {
+  const found: string[] = [];
+  const walk = (dir: string, depth: number): void => {
+    if (depth > MAX_DEPTH || found.length > 8) return;
+    let entries: string[];
+    try {
+      entries = readdirSync(dir);
+    } catch {
+      return;
+    }
+    for (const name of entries) {
+      if (name.startsWith('.')) continue;
+      const path = join(dir, name);
+      let entry: ReturnType<typeof lstatSync>;
+      try {
+        entry = lstatSync(path);
+      } catch {
+        continue;
+      }
+      if (entry.isSymbolicLink()) continue;
+      if (entry.isDirectory()) {
+        if (!SKIP_DIRECTORIES.has(name)) walk(path, depth + 1);
+        continue;
+      }
+      if (!entry.isFile() || !GUARD_SOURCE.test(name) || entry.size > MAX_GUARD_SOURCE_BYTES) continue;
+      let source: string;
+      try {
+        source = readFileSync(path, 'utf8');
+      } catch {
+        continue;
+      }
+      if (!source.includes('@patchstack/connect/protect')) continue;
+      source = stripComments(source);
+      if (!source.includes('@patchstack/connect/protect')) continue;
+      for (const match of source.matchAll(JSON_IMPORT)) {
+        const target = resolve(dir, match[1]!);
+        if (!contained(target)) continue;
+        try {
+          const file = lstatSync(target);
+          if (!file.isFile() || file.isSymbolicLink()) continue;
+          if (ruleBundleOf(JSON.parse(readFileSync(target, 'utf8'))) !== null) found.push(target);
+        } catch {
+          // Not a readable bundle: not something this hook writes into.
+        }
+      }
+    }
+  };
+  walk(root, 0);
+
+  return found;
 }
 
 export type RulesFileLocation =
@@ -165,7 +244,7 @@ export function findRulesFile(cwd: string): RulesFileLocation {
       if (!contained(path)) continue;
       if (!guardImportsRulesFile(dir, name)) continue;
       try {
-        if (isRuleBundle(JSON.parse(readFileSync(path, 'utf8')))) found.push(path);
+        if (ruleBundleOf(JSON.parse(readFileSync(path, 'utf8'))) !== null) found.push(path);
       } catch {
         // Named like ours and not parseable. Recorded, so the caller can say that rather than saying
         // this project has no guard.
@@ -174,6 +253,20 @@ export function findRulesFile(cwd: string): RulesFileLocation {
     }
   };
   walk(cwd, 0);
+  const real = (path: string): string => {
+    try {
+      return realpathSync(path);
+    } catch {
+      return path;
+    }
+  };
+  const seen = new Set(found.map(real));
+  for (const path of importedRulesFiles(cwd, contained)) {
+    if (!seen.has(real(path))) {
+      seen.add(real(path));
+      found.push(path);
+    }
+  }
 
   if (found.length > 1) return { kind: 'ambiguous', paths: found.map((p) => relative(cwd, p)) };
   if (found.length === 1) return { kind: 'one', path: found[0]! };
@@ -243,14 +336,13 @@ export function applyBuildStamp(cwd: string, id: string | null): StampOutcome {
   } catch {
     return { kind: 'skipped', reason: `${file} is not valid JSON — left untouched` };
   }
-  if (!isRuleBundle(parsed)) return { kind: 'skipped', reason: `${file} is not a guard rules bundle` };
-
-  const bundle = parsed as Record<string, unknown>;
+  const bundle = ruleBundleOf(parsed);
+  if (bundle === null) return { kind: 'skipped', reason: `${file} is not a guard rules bundle` };
   const current = readBuildStamp(bundle);
   // Clearing keys off the RAW property, not the canonical reading of it. A malformed `build_id` reads as
   // null, so comparing canonical values would call a file that still carries `"deadbee"` unchanged and
   // leave it there — a stamp this build did not earn, surviving into the artifact.
-  if (id === null ? !hasRawBuildStamp(bundle) : current === id) return { kind: 'unchanged', file };
+  if (bundle === parsed && (id === null ? !hasRawBuildStamp(bundle) : current === id)) return { kind: 'unchanged', file };
 
   const namespace = { ...((bundle[BUILD_STAMP_KEY] ?? {}) as Record<string, unknown>) };
   if (id === null) delete namespace.build_id;

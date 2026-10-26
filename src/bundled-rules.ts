@@ -1,7 +1,7 @@
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 
-import { findRulesFile } from './build-stamp.js';
+import { findRulesFile, ruleBundleOf } from './build-stamp.js';
 import { writeProjectFileSync } from './safe-file.js';
 
 /** Starter signatures shipped with every guard. They stay in the file whatever the site's rules are. */
@@ -52,7 +52,10 @@ export function writeBundledRules(
   let current: Record<string, unknown>;
   try {
     raw = readFileSync(location.path, 'utf8');
-    current = JSON.parse(raw) as Record<string, unknown>;
+    // A copied runtime cache entry is read as the bundle it carries, so this write leaves a plain rules file.
+    const bundle = ruleBundleOf(JSON.parse(raw));
+    if (bundle === null) return 'skipped';
+    current = bundle;
   } catch {
     return 'skipped';
   }

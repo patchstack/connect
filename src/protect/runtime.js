@@ -139,6 +139,11 @@ const DETECTION_STALE_MS = 10_000;
 const BACKGROUND_CHECK_MS = 30_000;
 
 export async function createProtection(options = {}) {
+  // A copy of the runtime cache entry (`{ bundle, etag, … }`) passed as `rules` is read as the bundle it holds.
+  if (options.rules && !Array.isArray(options.rules) && !Array.isArray(options.rules.firewall)
+    && options.rules.bundle && Array.isArray(options.rules.bundle.firewall)) {
+    options = { ...options, rules: { ...options.rules.bundle, ...(options.rules._patchstack ? { _patchstack: options.rules._patchstack } : {}) } };
+  }
   const localBuildId = options.buildId != null ? canonicalBuildId(options.buildId) : readBuildStamp(options.rules);
   // A refresh cannot acquire the identity of source files changed underneath this loaded guard.
   options = { ...options, ...(localBuildId ? {buildId:localBuildId} : {}),
@@ -271,10 +276,12 @@ export async function createProtection(options = {}) {
   // trade a stale rule set for no rule set at all.
   if (options.siteUuid && !rulesAuth) {
     const message =
-      'Patchstack: no API credential resolved for site ' +
+      'Patchstack: this guard has no credential for site ' +
       options.siteUuid +
-      '. Rule updates will be rejected and this guard would keep running on its cached rules. ' +
-      'Set PATCHSTACK_API_KEY (or pass { pulseAuth }) — required on runtimes without a filesystem.';
+      ', so it cannot fetch rule updates or report attacks, and keeps the rules it was given. ' +
+      'No key is needed for this: the guard rules file that `npx @patchstack/connect setup` keeps current carries a ' +
+      'read-only rules credential (`_patchstack.rules_reader`). Pass that file as `rules` and run setup again. ' +
+      'Alternatively set PATCHSTACK_API_KEY in the deployment (or pass { pulseAuth }).';
     notify(onError, new Error(message), 'onError');
     console.warn(message);
   }
