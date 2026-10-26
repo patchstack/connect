@@ -494,7 +494,7 @@ It is server-only. Never put it in the widget tag, client bundles, or public env
    services and separately deployed functions are not protected by guarding the frontend server;
    keep backend authorization/RLS and install a guard at each independently exposed backend.
 
-   Generated guards refresh live rules every 45 minutes (15 seconds in an explicit sandbox). `PATCHSTACK_RULES_REFRESH_SECONDS`, set to a positive number in the app's environment, overrides that interval (minimum 5 seconds).
+   Generated guards refresh live rules every 5 minutes (15 seconds in an explicit sandbox), and while serving traffic also re-check them in the background every 30 seconds. `PATCHSTACK_RULES_REFRESH_SECONDS`, set to a positive number in the app's environment, overrides that interval (minimum 5 seconds).
    Express/Node guards enable bounded response filtering; Fastify filters buffered `onSend` output,
    leaving streams and bodyless replies untouched. Unmodified recognized helpers can be upgraded;
    customized helpers are preserved and flagged for manual review. Wiring checks inspect executable
@@ -588,6 +588,36 @@ check is not proof that every deployed route passes through it.
    seam; it does not prove route coverage or rule effectiveness. Record an unsupported probe or an
    unrecognized custom seam as unverified. Never add marker comments, dummy imports or unused calls
    merely to make the source check pass.
+
+### Wiring any Node.js app
+
+`setup` wires the frameworks it recognises by itself. For any other server-side JavaScript app it writes
+a generic guard file and lists the wiring under `To do`. This finishes it for any of them:
+
+1. **Use the guard file `setup` wrote.** `npx @patchstack/connect protect --check` names it. Import from
+   that file; do not call `createProtection` yourself, do not copy the `.patchstack/` folder (it is the
+   running guard's cache, not its rules), and do not move or rename the guard's rules file. That file
+   carries the site and the read-only rules credential, which let the deployed app fetch rule updates
+   and report attacks without the site key.
+2. **Find the one function that answers every request** in the deployed app (step 1 above), and wrap it
+   with the export that matches its shape:
+
+   | The request entry is | Use | For example |
+   | --- | --- | --- |
+   | `fetch(request, …)` returning a `Response`: Cloudflare Workers, Bun, Deno, Hono, an `export default { fetch }` module | `protectFetch` | `export default { fetch: protectFetch(app.fetch.bind(app)) }` |
+   | `(req, res)` on Node's `http` server, including what Koa's `app.callback()` returns | `patchstackMiddleware`, before anything reads the body | `http.createServer((req, res) => patchstackMiddleware(req, res, () => handler(req, res)))` |
+   | Express or Connect | `patchstackMiddleware`, registered first, before body parsers and routes | `app.use(patchstackMiddleware)` |
+   | Fastify | the plugin `protect` writes for it | run `npx @patchstack/connect protect` |
+
+   Keep any extra arguments the host passes (`env`, `ctx`) flowing through to the handler. The wrapped
+   handler is called once for an allowed request; a blocked one gets the guard's response instead.
+3. **Run `npx @patchstack/connect setup` again.** It writes the site's current rules and the read-only
+   credential into the guard's rules file. Then `npx @patchstack/connect protect --check` must exit 0.
+4. **Check that a request reaches it:** `protect --check --runtime` when the entry runs under plain
+   `node`, otherwise the local request test in step 4 above.
+
+If the entry matches none of these shapes, do not invent an adapter or write a guard of your own: leave
+it unwired and hand off as described in "When wiring cannot be completed".
 
 ### Framework entry points to inspect
 
