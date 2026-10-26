@@ -229,6 +229,17 @@ async function liveFindings(url: string, state: GuideState, fetchImpl: typeof fe
     if (!response.ok) {
       return { reached: false, findings: [{ status: 'unknown', text: `The live app answered ${response.status}, so it could not be checked (is it published? a private publish shows a sign-in page)` }] };
     }
+    // The build the live page names is how Patchstack knows what is published; without it the dashboard
+    // has to guess, and its "Unpublished changes" compares against that guess.
+    findings.push(
+      html.includes('__PATCHSTACK_BUILD__')
+        ? { status: 'ok', text: 'The live app tells Patchstack which build it runs' }
+        : {
+            status: 'problem',
+            text: 'The live app does not tell Patchstack which build it runs, so the dashboard has to guess what is published and its "Unpublished changes" can be wrong',
+            fix: ['Run: npx @patchstack/connect setup --widget (it adds the marker to your page layout)', 'Then publish the app again.'],
+          },
+    );
     if (!state.widgetOptOut && state.siteUuid !== null) {
       findings.push(
         html.includes('patchstack-widget.js') && html.includes(state.siteUuid)

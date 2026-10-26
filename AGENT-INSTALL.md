@@ -958,7 +958,7 @@ Three more endpoints the package can call, for completeness:
 ## Verifying the install
 
 - `npx @patchstack/connect status` re-prints the site UUID and dashboard URL, and checks whether the site still exists on Patchstack (`Site status: active / removed / could not be verified`).
-- `npx @patchstack/connect doctor` runs every check at once and prints each problem with its fix; `--url <live app>` adds the live app's widget and a test attack.
+- `npx @patchstack/connect doctor` runs every check at once and prints each problem with its fix; `--url <live app>` adds the live app: whether its page names the build it runs (without that, the dashboard has to guess what is published), the widget, and a test attack.
 - `npx @patchstack/connect protect --check` verifies from the source that the runtime guard is connected to the request path. It does not run the app. When the project records a site, it also fails if a guard Connect wrote does not carry it (`the guard carries this project's Patchstack site`): such a guard blocks with the rules it shipped with but fetches no rule updates and reports nothing. Run `npx @patchstack/connect protect` from the project root to fill the site in, then deploy.
 - `npx @patchstack/connect protect --check --runtime` additionally **starts the app** on a loopback port and sends it one request, to establish that a request reaches the guard seam. Opt-in, and the only command that runs the application; exit `0`/`1`/`2` as described in step 4.
 - Load the site in a browser — the widget should appear, as the "Connect this website" panel while the site is unclaimed. Refresh a page that was already open before the tag was added: the widget only loads with the page.

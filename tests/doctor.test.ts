@@ -54,7 +54,7 @@ const minutesAgo = (minutes: number) => new Date(Date.now() - minutes * 60_000).
 type SyncAnswer = { reader?: { at: string; rule_count: number } | null; site_key?: { at: string; rule_count: number } | null } | number;
 
 /** Patchstack's token and sync-status endpoints, and a live app answering the page and the test attack. */
-function network({ token = 200, page = 200, attack = 403, sync = { reader: { at: minutesAgo(3), rule_count: 17 }, site_key: null } }: { token?: number | 'down'; page?: number; attack?: number; sync?: SyncAnswer } = {}) {
+function network({ token = 200, page = 200, attack = 403, marker = true, sync = { reader: { at: minutesAgo(3), rule_count: 17 }, site_key: null } }: { token?: number | 'down'; page?: number; attack?: number; marker?: boolean; sync?: SyncAnswer } = {}) {
   const calls: string[] = [];
   const auth: string[] = [];
   const fetchImpl = vi.fn(async (input: string | URL, init: RequestInit = {}) => {
@@ -69,7 +69,8 @@ function network({ token = 200, page = 200, attack = 403, sync = { reader: { at:
       return typeof sync === 'number' ? new Response('{}', { status: sync }) : Response.json({ site_uuid: UUID, rules_fetches: { reader: null, site_key: null, ...sync } });
     }
     if (url.includes('file=')) return new Response(attack === 403 ? '{"error":"This request has been blocked by Patchstack."}' : '<html></html>', { status: attack });
-    return new Response(`<html><script src="https://cdn.patchstack.com/patchstack-widget.js" data-site-uuid="${UUID}"></script></html>`, { status: page });
+    const build = marker ? '<script data-patchstack-build="true">window.__PATCHSTACK_PROD__=true;window.__PATCHSTACK_BUILD__="a0acb5e0d15a";</script>' : '';
+    return new Response(`<html><head>${build}</head><script src="https://cdn.patchstack.com/patchstack-widget.js" data-site-uuid="${UUID}"></script></html>`, { status: page });
   }) as unknown as typeof fetch;
   return { fetchImpl, calls, auth };
 }
@@ -138,9 +139,17 @@ describe('doctor', () => {
       writeFileSync(join(cwd, '.patchstackrc.json'), JSON.stringify({ siteUuid: UUID, widget: true, claimed: true }));
       const findings = await doctor(cwd, { url: 'https://app.example' });
       expect(findings.filter((f) => f.text.startsWith('The live app')).map((f) => [f.status, f.text])).toEqual([
+        ['ok', 'The live app tells Patchstack which build it runs'],
         ['ok', 'The live app carries the Patchstack widget for this site'],
         ['ok', "The live app's guard blocked a test attack"],
       ]);
+    });
+
+    it('flags a live app whose page does not say which build it runs', async () => {
+      const findings = await doctor(project(), { url: 'https://app.example', net: network({ marker: false }) });
+      const finding = findings.find((f) => f.text.startsWith('The live app does not tell Patchstack which build'));
+      expect(finding?.status).toBe('problem');
+      expect(finding?.fix?.[0]).toContain('setup --widget');
     });
 
     it('flags a live app that lets the test attack through', async () => {
