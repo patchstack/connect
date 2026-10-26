@@ -189,6 +189,8 @@ patchstack-connect setup  [--widget] [options]     Run scan, add the widget with
 patchstack-connect init   <site-uuid>              Optional: pre-seed .patchstackrc.json with
                                                    an existing site UUID
 patchstack-connect status [options]                Show current configuration
+patchstack-connect doctor [--url <live app>]       Check that everything Patchstack needs works and
+                                                   say how to fix each problem
 patchstack-connect vulns                           Show vulnerabilities by severity and outdated
                                                    packages, with the link to the details
 patchstack-connect go-live [--host <name>]         Show how to add your API key to your host
