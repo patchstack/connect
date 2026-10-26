@@ -250,3 +250,69 @@ describe('a guard without the site credential, shipped with a rules reader', () 
     protection.stop();
   });
 });
+
+// Nitro (and srvx) call the app's fetch with the request alone and put the host's `waitUntil` on the
+// request itself; a host can also offer none at all. The block report must reach Patchstack either way.
+describe('delivering a block report on a host that passes no execution context argument', () => {
+  const reported = (calls: Array<{ url: string }>) => calls.some((c) => c.url.includes('/detections/'));
+
+  it('hands it to waitUntil on the request (Nitro)', async () => {
+    const { protection, calls } = await guard({ rules_reader: READER });
+    const pending: Promise<unknown>[] = [];
+    const request = Object.assign(new Request('https://app.test/search?q=live-attack'), { waitUntil: (p: Promise<unknown>) => { pending.push(p); } });
+
+    const response = await protection.fetch(() => new Response('ok'))(request);
+    expect(response.status).toBe(403);
+    expect(pending).toHaveLength(1);
+    await Promise.all(pending);
+    expect(reported(calls)).toBe(true);
+    await protection.stop();
+  });
+
+  it('hands it to the Cloudflare context Nitro keeps on the request', async () => {
+    const { protection, calls } = await guard({ rules_reader: READER });
+    const pending: Promise<unknown>[] = [];
+    const context = { waitUntil: (p: Promise<unknown>) => { pending.push(p); } };
+    const request = Object.assign(new Request('https://app.test/search?q=live-attack'), { runtime: { cloudflare: { context } } });
+
+    expect((await protection.fetch(() => new Response('ok'))(request)).status).toBe(403);
+    await Promise.all(pending);
+    expect(pending).toHaveLength(1);
+    expect(reported(calls)).toBe(true);
+    await protection.stop();
+  });
+
+  it('delivers it before answering when the host offers no waitUntil at all', async () => {
+    const cwd = mkdtempSync(join(tmpdir(), 'ps-reader-'));
+    dirs.push(cwd);
+    vi.stubEnv('PATCHSTACK_API_KEY', '');
+    vi.stubEnv('PATCHSTACK_PULSE_AUTH', '');
+    // A slow detections endpoint, in place before the guard starts: the report is only delivered once its
+    // response has come back.
+    let delivered = false;
+    vi.stubGlobal('fetch', vi.fn(async (url: string) => {
+      if (String(url).endsWith('/token')) return Response.json({ access_token: 'reader-token', expires_in: 3600 });
+      if (String(url).includes('/detections/')) {
+        await new Promise((resolve) => setTimeout(resolve, 50));
+        delivered = true;
+        return new Response('{}', { status: 202 });
+      }
+      return Response.json({ firewall: [{ id: 'live-rule', phase: 'request', action: 'block', rule_v2: [{ parameter: 'get.q', match: { type: 'contains', value: 'live-attack' } }] }], whitelists: [], whitelist_keys: {}, enforcement: 'block' });
+    }));
+    const protection: any = await createProtection({
+      siteUuid: '550e8400-e29b-41d4-a716-446655440000',
+      pulseRulesUrl: 'https://x.test/monitor/pulse',
+      cwd,
+      cacheDir: join(cwd, '.patchstack'),
+      rules: { firewall: [], whitelists: [], whitelist_keys: {}, _patchstack: { rules_reader: READER } } as never,
+      reportDetections: true,
+    });
+    delivered = false;
+
+    const response = await protection.fetch(() => new Response('ok'))(new Request('https://app.test/search?q=live-attack'));
+    expect(response.status).toBe(403);
+    // Delivered by the time the 403 is handed back: nothing is left in flight for the host to cut off.
+    expect(delivered).toBe(true);
+    await protection.stop();
+  });
+});
