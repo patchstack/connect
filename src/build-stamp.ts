@@ -299,17 +299,23 @@ function detectIndent(text: string): string | number {
   return whitespace.includes('\t') ? '\t' : whitespace.length;
 }
 
+interface LoadedRulesFile {
+  kind: 'loaded';
+  path: string;
+  file: string;
+  text: string;
+  parsed: unknown;
+  bundle: Record<string, unknown>;
+}
+
 /**
- * Write `id` into the guard's rules file, or remove any stamp when `id` is null.
+ * The guard's rules file, read and parsed, or why nothing may be written into it.
  *
  * Corrupt JSON is left exactly as it is. Replacing it with a fresh bundle would discard whatever the
- * app had — possibly rules it is relying on — to fix a field that only affects whether pinned rules may
- * enforce. Reporting that stamping was unavailable is the proportionate answer.
- *
- * Idempotent: a build whose identity has not changed rewrites nothing, so a committed file does not
- * churn on every local build.
+ * app had — possibly rules it is relying on — to fix metadata the rules themselves do not depend on.
+ * Reporting that stamping was unavailable is the proportionate answer.
  */
-export function applyBuildStamp(cwd: string, id: string | null): StampOutcome {
+function loadRulesFile(cwd: string): LoadedRulesFile | { kind: 'skipped'; reason: string } {
   const location = findRulesFile(cwd);
   if (location.kind === 'none') return { kind: 'skipped', reason: 'no guard rules file in this project' };
   if (location.kind === 'unreadable') {
@@ -338,6 +344,33 @@ export function applyBuildStamp(cwd: string, id: string | null): StampOutcome {
   }
   const bundle = ruleBundleOf(parsed);
   if (bundle === null) return { kind: 'skipped', reason: `${file} is not a guard rules bundle` };
+
+  return { kind: 'loaded', path: location.path, file, text, parsed, bundle };
+}
+
+/** Write the bundle back in the file's own indentation, or say why it could not be. */
+function saveRulesFile(cwd: string, loaded: LoadedRulesFile): { kind: 'skipped'; reason: string } | null {
+  const { text, bundle } = loaded;
+  const serialised = JSON.stringify(bundle, null, detectIndent(text)) + (text.endsWith('\n') ? '\n' : '');
+  try {
+    writeProjectFileSync(cwd, loaded.path, serialised, { encoding: 'utf8' });
+  } catch (err) {
+    return { kind: 'skipped', reason: `${loaded.file} could not be written (${(err as Error).message})` };
+  }
+
+  return null;
+}
+
+/**
+ * Write `id` into the guard's rules file, or remove any stamp when `id` is null.
+ *
+ * Idempotent: a build whose identity has not changed rewrites nothing, so a committed file does not
+ * churn on every local build.
+ */
+export function applyBuildStamp(cwd: string, id: string | null): StampOutcome {
+  const loaded = loadRulesFile(cwd);
+  if (loaded.kind === 'skipped') return loaded;
+  const { file, parsed, bundle } = loaded;
   const current = readBuildStamp(bundle);
   // Clearing keys off the RAW property, not the canonical reading of it. A malformed `build_id` reads as
   // null, so comparing canonical values would call a file that still carries `"deadbee"` unchanged and
@@ -351,12 +384,35 @@ export function applyBuildStamp(cwd: string, id: string | null): StampOutcome {
   if (Object.keys(namespace).length === 0) delete bundle[BUILD_STAMP_KEY];
   else bundle[BUILD_STAMP_KEY] = namespace;
 
-  const serialised = JSON.stringify(bundle, null, detectIndent(text)) + (text.endsWith('\n') ? '\n' : '');
-  try {
-    writeProjectFileSync(cwd, location.path, serialised, { encoding: 'utf8' });
-  } catch (err) {
-    return { kind: 'skipped', reason: `${file} could not be written (${(err as Error).message})` };
-  }
+  const failed = saveRulesFile(cwd, loaded);
+  if (failed !== null) return failed;
 
   return id === null ? { kind: 'cleared', file } : { kind: 'stamped', file, id };
+}
+
+/** A manifest checksum as `scan` computes it: twelve lowercase hex characters. */
+const MANIFEST_CHECKSUM = /^[0-9a-f]{12}$/;
+
+/**
+ * Write the checksum of the build about to be compiled into the guard's rules file.
+ *
+ * The guard sends it when it reports the deployment live, which names the build that deployment runs.
+ * Without it, a live report says only that some build is serving. Idempotent like the build stamp.
+ */
+export function applyManifestChecksum(cwd: string, checksum: string): StampOutcome {
+  if (!MANIFEST_CHECKSUM.test(checksum)) return { kind: 'skipped', reason: 'not a manifest checksum' };
+
+  const loaded = loadRulesFile(cwd);
+  if (loaded.kind === 'skipped') return loaded;
+  const { file, parsed, bundle } = loaded;
+  const namespace = { ...((bundle[BUILD_STAMP_KEY] ?? {}) as Record<string, unknown>) };
+  if (bundle === parsed && namespace.manifest_checksum === checksum) return { kind: 'unchanged', file };
+
+  namespace.manifest_checksum = checksum;
+  bundle[BUILD_STAMP_KEY] = namespace;
+
+  const failed = saveRulesFile(cwd, loaded);
+  if (failed !== null) return failed;
+
+  return { kind: 'stamped', file, id: checksum };
 }

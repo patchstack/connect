@@ -121,7 +121,7 @@ import { runDevelopment } from './dev-command.js';
 import { checkActivation } from './activation-check.js';
 import { syncSetupProtection } from './setup-sync.js';
 import { isInstallOrBuildHook, isPreBundleBuildHook, undeliveredReportLines } from './build-hook.js';
-import { applyBuildStamp } from './build-stamp.js';
+import { applyBuildStamp, applyManifestChecksum } from './build-stamp.js';
 import { detectStack, type StackDescriptor } from './stack.js';
 import { PatchstackError, type StoreManifestResponse } from './types.js';
 import { buildWidgetTag, ensureSourceWidget, ensureWidgetInHtml, removeSourceWidget } from './widget.js';
@@ -873,7 +873,15 @@ async function runScan(
   // Independent of the widget: the marker is how Patchstack recognises the live build, with or without
   // the widget on the page. The checksum is the manifest this run is posting — on a pre-build hook the
   // build about to be compiled — so the page says which build is live, the question the dashboard grades on.
-  reportSourceMarker(shellFramework, computeManifestChecksum(payload.packages), report);
+  const buildChecksum = computeManifestChecksum(payload.packages);
+  reportSourceMarker(shellFramework, buildChecksum, report);
+
+  // The same checksum goes into the guard's rules file before the bundler reads it, so the deployed
+  // guard can name its build when it reports the deployment live, page or no page.
+  if (isPreBundleBuildHook()) {
+    const named = applyManifestChecksum(process.cwd(), buildChecksum);
+    if (named.kind === 'stamped') say(`Named this build (${buildChecksum}) in ${named.file} for the guard's live report.`);
+  }
 
   const provisioning = config.siteUuid === null;
   if (provisioning) {

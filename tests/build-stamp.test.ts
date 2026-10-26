@@ -11,7 +11,7 @@ import { basename, dirname, join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 
 import { hasRawBuildStamp, readBuildStamp } from '../src/build-id.js';
-import { applyBuildStamp, findRulesFile } from '../src/build-stamp.js';
+import { applyBuildStamp, applyManifestChecksum, findRulesFile } from '../src/build-stamp.js';
 import { isPreBundleBuildHook } from '../src/build-hook.js';
 
 const A = 'a'.repeat(64);
@@ -292,6 +292,42 @@ describe('writing the stamp', () => {
     expect(outcome.kind).toBe('skipped');
     expect(readBuildStamp(JSON.parse(read(dir, 'patchstack.rules.json')))).toBeNull();
     expect(readBuildStamp(JSON.parse(read(dir, 'src/patchstack.rules.json')))).toBeNull();
+  });
+});
+
+describe('naming the build for the guard’s live report', () => {
+  const CHECKSUM = 'a1b2c3d4e5f6';
+
+  it('writes the checksum where the guard reads it, beside the other reserved fields', () => {
+    const dir = protectedProject('patchstack.rules.json', bundleText({ _patchstack: { build_id: A, rules_reader: 'reader' } }));
+    expect(applyManifestChecksum(dir, CHECKSUM)).toEqual({ kind: 'stamped', file: 'patchstack.rules.json', id: CHECKSUM });
+
+    const after = JSON.parse(read(dir, 'patchstack.rules.json'));
+    expect(after._patchstack).toEqual({ build_id: A, rules_reader: 'reader', manifest_checksum: CHECKSUM });
+    expect(after.firewall).toEqual(BUNDLE.firewall);
+  });
+
+  it('rewrites nothing for the same build, and replaces a previous one', () => {
+    const dir = protectedProject('patchstack.rules.json', bundleText());
+    applyManifestChecksum(dir, CHECKSUM);
+    const first = read(dir, 'patchstack.rules.json');
+
+    expect(applyManifestChecksum(dir, CHECKSUM)).toEqual({ kind: 'unchanged', file: 'patchstack.rules.json' });
+    expect(read(dir, 'patchstack.rules.json')).toBe(first);
+
+    expect(applyManifestChecksum(dir, 'ffffffffffff')).toMatchObject({ kind: 'stamped', id: 'ffffffffffff' });
+    expect(JSON.parse(read(dir, 'patchstack.rules.json'))._patchstack.manifest_checksum).toBe('ffffffffffff');
+  });
+
+  it('writes nothing that is not a checksum, and nothing into a project with no guard', () => {
+    const dir = protectedProject('patchstack.rules.json', bundleText());
+    const before = read(dir, 'patchstack.rules.json');
+    expect(applyManifestChecksum(dir, 'not-a-checksum').kind).toBe('skipped');
+    expect(read(dir, 'patchstack.rules.json')).toBe(before);
+
+    const bare = project({ 'rules.json': bundleText() });
+    expect(applyManifestChecksum(bare, CHECKSUM).kind).toBe('skipped');
+    expect(read(bare, 'rules.json')).toBe(bundleText());
   });
 });
 

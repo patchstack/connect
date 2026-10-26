@@ -838,6 +838,28 @@ describe.skipIf(!built)('the packaged bin, invoked as npm invokes it', () => {
         }
       });
 
+      it('names the build in the guard rules file on a pre-bundle build, and only then', async () => {
+        const server = await acceptingServer();
+        const dir = freshProject();
+        try {
+          const rules = path.join(dir, 'patchstack.rules.json');
+          writeFileSync(rules, `${JSON.stringify({ firewall: [], whitelists: [], whitelist_keys: {} }, null, 2)}\n`);
+          writeFileSync(
+            path.join(dir, 'guard.ts'),
+            'import { createProtection } from "@patchstack/connect/protect";\nimport rules from "./patchstack.rules.json";\nvoid createProtection({ rules });\n',
+          );
+
+          await scan(dir, server.endpoint, { npm_lifecycle_event: 'postinstall', npm_lifecycle_script: 'patchstack-connect scan' });
+          expect(JSON.parse(readFileSync(rules, 'utf8'))._patchstack?.manifest_checksum).toBeUndefined();
+
+          await scan(dir, server.endpoint, { npm_lifecycle_event: 'prebuild', npm_lifecycle_script: 'patchstack-connect scan' });
+          expect(JSON.parse(readFileSync(rules, 'utf8'))._patchstack?.manifest_checksum).toMatch(/^[0-9a-f]{12}$/);
+        } finally {
+          await server.close();
+          rmSync(dir, { recursive: true, force: true });
+        }
+      });
+
       it('says a network failure plainly, with the code for support', async () => {
         const dir = freshProject();
         try {
