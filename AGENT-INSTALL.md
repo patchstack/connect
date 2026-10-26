@@ -456,9 +456,15 @@ It is server-only. Never put it in the widget tag, client bundles, or public env
    or commit them. Source checks do not verify rule delivery or blocking in the running deployment.
 
    **TanStack Start:** the documented `src/server.ts` Fetch entry can be scaffolded without Supabase
-   or `src/start.ts`. Supported literal `createServerEntry({ fetch: ... })` configurations are wrapped
-   without changing host arguments or application error handling. The installed framework must expose
+   or `src/start.ts`. Supported literal `createServerEntry({ fetch: ... })` configurations, and a plain
+   `export default { fetch }` wrapper in `src/server.ts` (which a config can name with
+   `tanstackStart: { server: { entry: "server" } }`, as Lovable's template does), are wrapped without
+   changing host arguments or application error handling. The installed framework must expose
    `server-entry`; custom entry paths, spreads, getters and competing files need manual integration.
+   An entry that builds its own protection (`createProtection` imported from `@patchstack/connect`) is
+   left untouched: remove that code and its rules import, then run `protect` again. Do not hand-write a
+   guard in its place. The managed one carries the site's read-only rules credential in its rules file,
+   and a hand-written one cannot fetch rule updates or report detections without it.
    An app that deploys as a Cloudflare Worker (`@cloudflare/vite-plugin` with a `wrangler.jsonc`,
    `wrangler.json` or `wrangler.toml`) runs the module its wrangler `main` names, so the Vite config's
    entry setting does not decide it. When `main` is TanStack's own `@tanstack/react-start/server-entry`,

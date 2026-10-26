@@ -140,6 +140,61 @@ describe('native TanStack server boundary',()=>{
     expect(existsSync(join(cwd, 'src/server.ts'))).toBe(false);
   });
 
+  // A config wrapper pointing TanStack at its own server wrapper in src/server.ts (Lovable's template), with
+  // a plain `export default { fetch }` entry that calls TanStack's handler itself.
+  const ownWrapper = `import { renderFailure } from "./lib/failure";
+async function loadEntry() { return (await import("@tanstack/react-start/server-entry")).default; }
+export default {
+  async fetch(request: Request, env: unknown, ctx: unknown) {
+    try {
+      const entry = await loadEntry();
+      return await entry.fetch(request, env, ctx);
+    } catch {
+      return renderFailure();
+    }
+  },
+};
+`;
+
+  it.each(['"server"', '"./server"'])('wires a server wrapper the config names as the default entry (entry %s)', entry => {
+    const cwd = tanstack();
+    put(cwd, 'vite.config.ts', `import {defineConfig} from '@lovable.dev/vite-tanstack-config';\nexport default defineConfig({tanstackStart:{server:{entry:${entry}}}});`);
+    put(cwd, 'src/server.ts', ownWrapper);
+    expect(runProtect(cwd).status).toBe('wired');
+    const wired = read(cwd, 'src/server.ts');
+    expect(wired).toContain('import { protectFetch } from "./patchstack/guard";');
+    expect(wired).toContain('fetch: protectFetch(async function (request: Request, env: unknown, ctx: unknown)');
+    expect(wired).toContain('return renderFailure();');
+    expect((ts.createSourceFile('server.ts', wired, ts.ScriptTarget.Latest, true) as any).parseDiagnostics).toEqual([]);
+    expect(runVerify(cwd).wired).toBe(true);
+    runProtect(cwd);
+    expect(read(cwd, 'src/server.ts')).toBe(wired);
+  });
+
+  it.each([
+    'defineConfig({tanstackStart:{server:{entry:"server", preset:"node"}}})',
+    'defineConfig({tanstackStart:{server:{entry:"src/server"}}})',
+    'defineConfig({tanstackStart:{srcDirectory:"web", server:{entry:"server"}}})',
+  ])('still refuses a server option that may move the entry: %s', call => {
+    const cwd = tanstack();
+    put(cwd, 'vite.config.ts', `import {defineConfig} from '@lovable.dev/vite-tanstack-config';\nexport default ${call};`);
+    put(cwd, 'src/server.ts', ownWrapper);
+    expect(runProtect(cwd).status).toBe('scaffolded');
+    expect(read(cwd, 'src/server.ts')).toBe(ownWrapper);
+  });
+
+  it('leaves an entry that builds its own Patchstack protection alone, and says what to remove', () => {
+    const cwd = tanstack();
+    put(cwd, 'vite.config.ts', `import {defineConfig} from '@lovable.dev/vite-tanstack-config';\nexport default defineConfig({tanstackStart:{server:{entry:"server"}}});`);
+    const own = `import { createProtection } from "@patchstack/connect/protect";\n` + ownWrapper;
+    put(cwd, 'src/server.ts', own);
+    const logged: string[] = [];
+    vi.mocked(console.log).mockImplementation((line: unknown) => { logged.push(String(line)); });
+    expect(runProtect(cwd).status).toBe('scaffolded');
+    expect(read(cwd, 'src/server.ts')).toBe(own);
+    expect(logged.join('\n')).toContain('creates its own Patchstack protection');
+  });
+
   it.each(['vite.config.cjs','vite.config.cts','app.config.ts','rsbuild.config.ts'])('preserves unsupported configuration in %s', file => {
     const cwd = tanstack();
     put(cwd, file, 'module.exports = require("./options");');

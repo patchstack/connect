@@ -85,9 +85,22 @@ writeFileSync(
   ),
 );
 
+// The TanStack Start templates also go into Lovable apps, whose tsconfig turns on
+// exactOptionalPropertyTypes, so they are checked a second time with it on.
+const STRICT_OPTIONAL = ['fetch-guard.ts', 'guard.ts'];
+writeFileSync(
+  join(OUT, 'tsconfig.strict-optional.json'),
+  JSON.stringify(
+    { extends: './tsconfig.json', compilerOptions: { exactOptionalPropertyTypes: true }, include: [...STRICT_OPTIONAL, 'shims.d.ts'] },
+    null,
+    2,
+  ),
+);
+
 const tsc = join(ROOT, 'node_modules', '.bin', process.platform === 'win32' ? 'tsc.cmd' : 'tsc');
 try {
   execFileSync(tsc, ['--noEmit', '-p', join(OUT, 'tsconfig.json')], { stdio: 'inherit' });
+  execFileSync(tsc, ['--noEmit', '-p', join(OUT, 'tsconfig.strict-optional.json')], { stdio: 'inherit' });
   console.log(`template typecheck: OK (${templates.length} templates)`);
   rmSync(OUT, { recursive: true, force: true });
 } catch {

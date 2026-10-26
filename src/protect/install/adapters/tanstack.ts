@@ -72,6 +72,16 @@ function defaultEntryConfig(ts: Compiler, file: string, source: string): boolean
   }
   if (!ts.isObjectLiteralExpression(config)) return false;
   let unsafe = false;
+  // `server: { entry: "server" }` names src/server.ts, which is the default entry anyway (Lovable's template
+  // sets it to point TanStack at its own wrapper there). Any other value moves the entry.
+  const namesDefaultEntry = (value: import('typescript').Expression): boolean => {
+    const server = unwrap(value);
+    if (!ts.isObjectLiteralExpression(server) || server.properties.length !== 1) return false;
+    const entry = server.properties[0]!;
+    return ts.isPropertyAssignment(entry) && (ts.isIdentifier(entry.name) || ts.isStringLiteral(entry.name))
+      && entry.name.text === 'entry' && ts.isStringLiteral(unwrap(entry.initializer))
+      && ['server', './server'].includes((unwrap(entry.initializer) as import('typescript').StringLiteral).text);
+  };
   const visit = (node: import('typescript').Node) => {
     if (ts.isSpreadAssignment(node) || ts.isSpreadElement(node) || ts.isComputedPropertyName(node)) unsafe = true;
     if (ts.isObjectLiteralExpression(node)) {
@@ -79,9 +89,13 @@ function defaultEntryConfig(ts: Compiler, file: string, source: string): boolean
       for (const property of node.properties) {
         if (!ts.isPropertyAssignment(property) || (!ts.isIdentifier(property.name) && !ts.isStringLiteral(property.name))) { unsafe = true; continue; }
         const name = property.name.text;
-        if (names.has(name) || ['srcDirectory', 'serverEntry', 'entry', 'server', 'root'].includes(name)) unsafe = true;
+        if (names.has(name)) unsafe = true;
         names.add(name);
+        if (name === 'server' && namesDefaultEntry(property.initializer)) continue;
+        if (['srcDirectory', 'serverEntry', 'entry', 'server', 'root'].includes(name)) unsafe = true;
+        visit(property.initializer);
       }
+      return;
     }
     ts.forEachChild(node, visit);
   };
@@ -134,20 +148,28 @@ function entryProblem(cwd: string): string | null {
   return null;
 }
 
-/** Compose only the documented literal createServerEntry shape; never evaluate app config. */
+/**
+ * Compose only literal entry shapes; never evaluate app config. The entry is `createServerEntry({ fetch })`
+ * or a plain `export default { fetch }` object, the shape of a server wrapper the app keeps at src/server.ts
+ * (Lovable's template wraps TanStack's handler there for error pages).
+ */
 export function composeTanstackEntry(ts: Compiler, source: string): string | null {
   const tree = parsedSource(ts, ENTRY, source);
-  if (!tree || /\bprotectFetch\b/.test(source)) return null;
+  if (!tree || /\bprotectFetch\b/.test(source) || ownProtection(source)) return null;
   const imported = tree.statements.some(node => ts.isImportDeclaration(node)
     && ts.isStringLiteral(node.moduleSpecifier) && node.moduleSpecifier.text === '@tanstack/react-start/server-entry'
     && !node.importClause?.isTypeOnly && node.importClause?.namedBindings && ts.isNamedImports(node.importClause.namedBindings)
     && node.importClause.namedBindings.elements.some(e => !e.propertyName && !e.isTypeOnly && e.name.text === 'createServerEntry'));
-  if (!imported) return null;
   const exports = tree.statements.filter(ts.isExportAssignment);
   if (exports.length !== 1 || exports[0]!.isExportEquals) return null;
-  const call = exports[0]!.expression;
-  if (!ts.isCallExpression(call) || call.expression.getText(tree) !== 'createServerEntry' || call.arguments.length !== 1) return null;
-  const object = call.arguments[0]!;
+  const exported = exports[0]!.expression;
+  let object: import('typescript').Expression;
+  if (ts.isObjectLiteralExpression(exported)) object = exported;
+  else {
+    if (!imported) return null;
+    if (!ts.isCallExpression(exported) || exported.expression.getText(tree) !== 'createServerEntry' || exported.arguments.length !== 1) return null;
+    object = exported.arguments[0]!;
+  }
   if (!ts.isObjectLiteralExpression(object) || object.properties.some(p => ts.isSpreadAssignment(p) || !p.name || ts.isComputedPropertyName(p.name))) return null;
   const properties = object.properties.filter(p => p.name?.getText(tree) === 'fetch');
   if (properties.length !== 1) return null;
@@ -163,6 +185,11 @@ export function composeTanstackEntry(ts: Compiler, source: string): string | nul
   const insertion = tree.statements.filter(ts.isImportDeclaration).at(-1)?.end ?? 0;
   const result = patched.slice(0, insertion) + '\n' + IMPORT + '\n' + patched.slice(insertion);
   return parsedSource(ts, ENTRY, result) ? result : null;
+}
+
+/** Whether the entry builds its own Patchstack protection rather than importing the managed guard. */
+function ownProtection(source: string): boolean {
+  return /['"]@patchstack\/connect(?:\/protect)?['"]/.test(source);
 }
 
 function wiredEntry(ts: Compiler, source: string): boolean {
@@ -199,6 +226,10 @@ export const tanstackAdapter: Adapter = {
     const ts = sourceCompiler(cwd);
     if (problem || !ts) { log(`TanStack server entry left untouched: ${problem ?? 'parser unavailable'}.`); return {ok:false,changed:[]}; }
     const previous = existsSync(join(cwd, ENTRY)) ? read(join(cwd, ENTRY)) : DEFAULT;
+    if (ownProtection(previous) && !wiredEntry(ts, previous)) {
+      log(`${ENTRY} creates its own Patchstack protection, so it was left untouched. Remove that code (the createProtection call and the rules file it imports) and run protect again: the managed guard carries this site's read-only rules credential, which a hand-written one does not.`);
+      return {ok:false,changed:[]};
+    }
     const next = wiredEntry(ts, previous) ? previous : composeTanstackEntry(ts, previous);
     if (!next) { log('Custom TanStack server entry left untouched; wrap its final Fetch boundary manually.'); return {ok:false,changed:[]}; }
     const changed: string[] = [];
