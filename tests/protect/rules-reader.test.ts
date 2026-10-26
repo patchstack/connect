@@ -172,6 +172,16 @@ describe('a guard without the site credential, shipped with a rules reader', () 
     await protection.stop();
   });
 
+  it('names the build it runs in the live report when its rules file carries the checksum', async () => {
+    const { protection, calls } = await guard({ rules_reader: READER, manifest_checksum: 'a1b2c3d4e5f6' });
+
+    await protection.fetchGuard()(new Request('https://my-live-app.example.com/'));
+
+    const live = calls.find((c) => c.url.includes('/live/'));
+    expect(JSON.parse(String(live?.init.body))).toEqual({ origin: 'https://my-live-app.example.com', checksum: 'a1b2c3d4e5f6' });
+    await protection.stop();
+  });
+
   it('reports the forwarded public host, not the internal one, behind a reverse proxy', async () => {
     const { protection, calls } = await guard({ rules_reader: READER });
 
