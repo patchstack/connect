@@ -284,7 +284,7 @@ function wire(cwd: string, opts: WireOptions): WireResult {
     return { ok: false, changed };
   }
   // In demo mode, keep the local sample rules active — don't bake a site UUID (which would make
-  // the guard fetch live Pulse rules instead of the bundled demo set).
+  // the guard fetch live Patchstack for JavaScript rules instead of the bundled demo set).
   if (!opts.demo && bakeSiteUuid(cwd, GUARD_FILE)) changed.push(GUARD_FILE);
   try {
     if (start !== oldStart) {

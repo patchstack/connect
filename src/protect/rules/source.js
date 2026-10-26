@@ -1,5 +1,5 @@
 // Rule source: pick where the ruleset comes from — an explicit bundle, or the live API by site
-// UUID (Pulse) or token — fetch it (conditional/If-None-Match via the persisted etag), and fall
+// UUID (Patchstack for JavaScript) or token — fetch it (conditional/If-None-Match via the persisted etag), and fall
 // back through last-known-good → bundled → empty. Fail-open: a fetch/parse error never throws.
 // The `store` (see ./store.js) is passed in so a refresh reuses the same tiered cache.
 //
@@ -257,14 +257,14 @@ export async function resolveRules(options, store, ctx = {}) {
         synchronization: { buildId: identity.id, matched: confirmed !== null, mapRules: confirmed === null ? 'unknown' : res.mapRules, etag: res.etag ?? null } };
     }
     if (prior?.bundle) {
-      notify(options.onError, new Error(`pulse rule fetch failed (${res.error ?? 'no usable response'}); using cached bundle`), 'onError');
+      notify(options.onError, new Error(`Patchstack for JavaScript rule fetch failed (${res.error ?? 'no usable response'}); using cached bundle`), 'onError');
       return fromSource(served(normalizeBundle(prior.bundle, options), cacheConfirmed), 'cache', res.error ?? 'no usable response');
     }
     if (options.rules) {
-      notify(options.onError, new Error(`pulse rule fetch failed (${res.error ?? 'no usable response'}); using bundled fallback`), 'onError');
+      notify(options.onError, new Error(`Patchstack for JavaScript rule fetch failed (${res.error ?? 'no usable response'}); using bundled fallback`), 'onError');
       return fromSource(local(normalizeBundle(options.rules, options)), 'bundled', res.error ?? 'no usable response');
     }
-    notify(options.onError, new Error(`pulse rule fetch failed (${res.error ?? 'no usable response'}); no cache — running with no rules`), 'onError');
+    notify(options.onError, new Error(`Patchstack for JavaScript rule fetch failed (${res.error ?? 'no usable response'}); no cache — running with no rules`), 'onError');
     return fromSource(emptyBundle(), 'empty', res.error ?? 'no usable response');
   }
 

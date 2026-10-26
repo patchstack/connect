@@ -417,13 +417,13 @@ Connect also keeps two fields there itself. `"claimUrl"` is the link that connec
 
 The site UUID identifies the site and is **not** a secret — the Patchstack Connector ships the same UUID in client-side HTML.
 
-`apiKey` **is** a secret. One credential authenticates both paths: Pulse ingest (manifest, attack-surface map, package removal), where it is exchanged for a short-lived token rather than sent directly, and block-log reporting. Keep it out of the widget tag, client bundles and public env vars (`NEXT_PUBLIC_*`), and out of the committed config — `.patchstackrc.local.json` is git-ignored for that reason. For deploys, prefer `PATCHSTACK_API_KEY` in the platform's secret store.
+`apiKey` **is** a secret. One credential authenticates both paths: Patchstack for JavaScript ingest (manifest, attack-surface map, package removal), where it is exchanged for a short-lived token rather than sent directly, and block-log reporting. Keep it out of the widget tag, client bundles and public env vars (`NEXT_PUBLIC_*`), and out of the committed config — `.patchstackrc.local.json` is git-ignored for that reason. For deploys, prefer `PATCHSTACK_API_KEY` in the platform's secret store.
 
 If it is ever lost, `npx @patchstack/connect login` recovers it — approval happens in the dashboard and rotates the credential.
 
 The credential's file is never committed, so CI needs `PATCHSTACK_API_KEY` in the environment (and `PATCHSTACK_SITE_UUID` too where `.patchstackrc.json` is also absent). A production build that has the site UUID but no key — a hosted builder's publish, typically — reports only that the build ran: it POSTs the manifest checksum to `monitor/pulse/build/<uuid>` without a credential and without the package list or map, and Patchstack records it against the package list it last received with a key. Without a key, nothing else is sent to an existing site. Every CLI request names its command and trigger in `X-Patchstack-Command` and `X-Patchstack-Trigger` headers (names only), and the claim-page check says whether the run holds a key (`X-Patchstack-Key: present|none`, never the key). A command that sent nothing else the site's activity records POSTs `monitor/pulse/run/<uuid>` once as it finishes, keyless, with those headers and only its exit code. Precedence is CLI flag → env var → `.patchstackrc.local.json` → `.patchstackrc.json`.
 
-A `pulseAuth` field is still read if present, and `PATCHSTACK_PULSE_AUTH` still overrides, for deployments that authenticate Pulse ingest with a different credential from block-logs. Neither is written by default, and neither is needed when the two share one.
+A `pulseAuth` field is still read if present, and `PATCHSTACK_PULSE_AUTH` still overrides, for deployments that authenticate Patchstack for JavaScript ingest with a different credential from block-logs. Neither is written by default, and neither is needed when the two share one.
 
 ### Connecting straight to your account
 
@@ -479,7 +479,7 @@ npm install --save-exact node-serialize@0.0.4
 npx @patchstack/connect demo node-serialize
 ```
 
-The demo command does not install the vulnerable package. It verifies the exact version in the lockfile, posts the production npm manifest to the configured site, polls the corresponding Pulse rules endpoint for rule `18843`, runs the normal `protect` installer, checks that the guard is wired, and prints one exploit request plus one benign control request. It never starts or restarts the application and never sends either test request itself.
+The demo command does not install the vulnerable package. It verifies the exact version in the lockfile, posts the production npm manifest to the configured site, polls the corresponding Patchstack for JavaScript rules endpoint for rule `18843`, runs the normal `protect` installer, checks that the guard is wired, and prints one exploit request plus one benign control request. It never starts or restarts the application and never sends either test request itself.
 
 For a read-only walkthrough that can be run before or during the demo, use:
 

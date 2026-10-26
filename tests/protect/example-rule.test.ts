@@ -80,7 +80,7 @@ describe("Example rule — inline bundle via fetchGuard", () => {
 });
 
 describe("Example rule — full production fetch path (PulseRuleClient)", () => {
-  it('BLOCKED via live Pulse fetch: ?mytestparameter=1 -> 403', async () => {
+  it('BLOCKED via live Patchstack for JavaScript fetch: ?mytestparameter=1 -> 403', async () => {
     const fetchMock = vi.fn(async () =>
       new Response(JSON.stringify(bundle), {
         status: 200,

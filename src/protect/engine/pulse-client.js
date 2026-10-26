@@ -13,7 +13,7 @@ const REQUEST_PATH_HEADER = 'X-Patchstack-Request-Path';
 // revalidate on the same tick (spreads load / avoids a thundering herd against the rules API).
 const JITTER_FRACTION = 0.1;
 
-// Per-site rules client for Pulse (npm/JS) apps. The site UUID addresses the site in the path; it is
+// Per-site rules client for Patchstack for JavaScript apps. The site UUID addresses the site in the path; it is
 // not a credential — the endpoint requires a verified token bound to that same site, so a fetch without
 // one is refused. Fail-open regardless: any error returns success:false + empty rules so
 // createProtection falls back to the disk cache or the bundled rules.

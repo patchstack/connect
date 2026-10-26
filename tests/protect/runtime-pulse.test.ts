@@ -4,7 +4,7 @@ import { join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { createProtection, createServerFnGuard } from '../../src/protect/runtime.js';
 
-// A single-rule bundle mirroring the Pulse rules endpoint's { firewall, whitelists, whitelist_keys }.
+// A single-rule bundle mirroring the Patchstack for JavaScript rules endpoint's { firewall, whitelists, whitelist_keys }.
 const rules = {
   firewall: [
     {
@@ -20,7 +20,7 @@ const rules = {
 const okFetch = () =>
   vi.fn(async () => new Response(JSON.stringify({ firewall: rules.firewall, whitelists: [], whitelist_keys: {} }), { status: 200 }));
 
-describe('createProtection with a siteUuid (live Pulse rules)', () => {
+describe('createProtection with a siteUuid (live Patchstack for JavaScript rules)', () => {
   it('uses rules fetched by site UUID; blocks the exploit', async () => {
     vi.stubGlobal('fetch', okFetch());
     const protection = await createProtection({ siteUuid: 'site-1', pulseRulesUrl: 'https://x.test/monitor/pulse', mode: 'block' });
@@ -38,11 +38,11 @@ describe('createProtection with a siteUuid (live Pulse rules)', () => {
     vi.restoreAllMocks();
   });
 
-  it('prefers the siteUuid (Pulse) source over a WAF token', async () => {
+  it('prefers the siteUuid (Patchstack for JavaScript) source over a WAF token', async () => {
     const fetchMock = okFetch();
     vi.stubGlobal('fetch', fetchMock);
     await createProtection({ siteUuid: 'site-1', token: 'waf-token', pulseRulesUrl: 'https://x.test/monitor/pulse', mode: 'block' });
-    // siteUuid wins: only the Pulse URL is hit; the token/get-rules path is never taken.
+    // siteUuid wins: only the Patchstack for JavaScript URL is hit; the token/get-rules path is never taken.
     expect(fetchMock).toHaveBeenCalledTimes(1);
     expect(fetchMock.mock.calls[0][0]).toBe('https://x.test/monitor/pulse/rules/site-1');
     vi.restoreAllMocks();
@@ -80,7 +80,7 @@ describe('createProtection with a siteUuid (live Pulse rules)', () => {
   });
 });
 
-describe('createProtection Pulse enforcement field', () => {
+describe('createProtection Patchstack for JavaScript enforcement field', () => {
   const prevMode = process.env.PATCHSTACK_MODE;
 
   afterEach(() => {

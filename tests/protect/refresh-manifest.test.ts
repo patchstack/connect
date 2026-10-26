@@ -23,7 +23,7 @@ async function makeProject(withSite = true): Promise<string> {
 describe('reportManifest', () => {
   afterEach(() => vi.restoreAllMocks());
 
-  it('posts the lockfile manifest to the Pulse manifest endpoint for the configured site', async () => {
+  it('posts the lockfile manifest to the Patchstack for JavaScript manifest endpoint for the configured site', async () => {
     const dir = await makeProject();
     try {
       const fetchMock = vi.fn(
