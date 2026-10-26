@@ -896,7 +896,7 @@ export async function createProtection(options = {}) {
       if (activated) return {blocked:activated, client:undefined};
       const refresh = requestRefresher?.check(Boolean(request?.headers?.get?.(SYNC_HEADER)));
       if (refresh?.wait) await refresh.promise;
-      else if (refresh) keepAlive(hostArgs, refresh.promise);
+      else if (refresh) hostWaitUntil(request, hostArgs)?.(refresh.promise);
       // First real request on a new origin: tell Patchstack the deployment is live. Gated on having a
       // credential (`rulesAuth` — the site key, or the bundled read-only reader), NOT on detection
       // reporting being on. A guard serving live traffic is deployed whether or not its MANAGED rules have
@@ -1780,6 +1780,39 @@ export async function createProtection(options = {}) {
     }).catch(err => { notify(onError, err, 'onError'); proceed(); });
   };
 
+  /**
+   * Deliver this request's detections before it is answered, for a seam whose host offers no `waitUntil`.
+   *
+   * Such a host can freeze or end the process the instant it answers, cutting off a report still in
+   * flight, so a block waits for its report to land before the 403 goes out, and a detect-only match is
+   * delivered by a later request once it has outlived the flush interval. Bounded and fail-open.
+   */
+  const deliverInRequest = async (blocked) => {
+    if (blocked && detections) {
+      // A block just recorded a detection, and there is nothing to defer its delivery to. A hosted
+      // builder's runtime can freeze or end the instant it answers, cutting off the fire-and-forget send —
+      // so wait for the report to land BEFORE handing back the 403, while the process is still alive. Bounded and fail-open: a slow or down endpoint
+      // delays an attacker's block by at most this budget, never holds it, and never throws.
+      try { await detections.settle(DETECTION_REQUEST_DELIVERY_MS); } catch { /* fail open */ }
+      detectPendingSince = null;
+    } else if (detections && detections.pending()) {
+      // A detect-only match recorded a detection but did not block, so there is no 403 to gate on — and
+      // on a freeze-between-requests host the background flush never runs, so that detection would never
+      // reach the firewall log. Deliver it here, but ONLY once it has outlived the flush interval: on a
+      // live server the timer drains the buffer first (this never fires, batching intact); on a frozen
+      // host the buffer survives the freeze and a later request flushes it. Bounded and fail-open.
+      const now = Date.now();
+      if (detectPendingSince === null) {
+        detectPendingSince = now;
+      } else if (now - detectPendingSince >= detectionStaleMs) {
+        try { await detections.settle(DETECTION_REQUEST_DELIVERY_MS); } catch { /* fail open */ }
+        detectPendingSince = null;
+      }
+    } else {
+      detectPendingSince = null;
+    }
+  };
+
   const protection = {
     get mode() {
       return mode;
@@ -1816,30 +1849,7 @@ export async function createProtection(options = {}) {
     fetchGuard() {
       return async (request, ...hostArgs) => {
         const { blocked } = await screenFetchRequest(request, hostArgs);
-        if (blocked && detections) {
-          // A block just recorded a detection, and this seam (React Router middleware) has no execution
-          // context to defer delivery to. A hosted builder's runtime can freeze or end the instant it
-          // answers, cutting off the fire-and-forget send — so wait for the report to land BEFORE handing
-          // back the 403, while the process is still alive. Bounded and fail-open: a slow or down endpoint
-          // delays an attacker's block by at most this budget, never holds it, and never throws.
-          try { await detections.settle(DETECTION_REQUEST_DELIVERY_MS); } catch { /* fail open */ }
-          detectPendingSince = null;
-        } else if (detections && detections.pending()) {
-          // A detect-only match recorded a detection but did not block, so there is no 403 to gate on — and
-          // on a freeze-between-requests host the background flush never runs, so that detection would never
-          // reach the firewall log. Deliver it here, but ONLY once it has outlived the flush interval: on a
-          // live server the timer drains the buffer first (this never fires, batching intact); on a frozen
-          // host the buffer survives the freeze and a later request flushes it. Bounded and fail-open.
-          const now = Date.now();
-          if (detectPendingSince === null) {
-            detectPendingSince = now;
-          } else if (now - detectPendingSince >= detectionStaleMs) {
-            try { await detections.settle(DETECTION_REQUEST_DELIVERY_MS); } catch { /* fail open */ }
-            detectPendingSince = null;
-          }
-        } else {
-          detectPendingSince = null;
-        }
+        await deliverInRequest(blocked);
 
         return blocked;
       };
@@ -1850,18 +1860,18 @@ export async function createProtection(options = {}) {
       return async function (request, ...rest) {
         // A serverless/edge host (Cloudflare Workers, and the hosted builders that deploy onto it) freezes
         // the runtime the moment it answers the visitor — cancelling the detection report in flight, which
-        // arrives at the platform as a client-closed request and stores nothing. The host passes an
-        // execution context with `waitUntil` for exactly this: work that must outlive the response. Found
-        // by shape, not position, because the argument order differs by host; absent (a long-lived Node
-        // server), the flush interval delivers on its own and nothing here changes.
-        const ctx = rest.find((arg) => arg && typeof arg === 'object' && typeof arg.waitUntil === 'function');
-        const keepReportAlive = () => {
-          if (!ctx || !detections) return;
-          try {
-            ctx.waitUntil(detections.settle());
-          } catch {
-            /* a host that rejects waitUntil here still delivers on the next request's flush */
+        // arrives at the platform as a client-closed request and stores nothing. Where the host offers
+        // `waitUntil` (see hostWaitUntil) the report rides past the response; where it offers none, the
+        // report is delivered within the request, as fetchGuard does.
+        const keep = hostWaitUntil(request, rest);
+        // With `waitUntil` the report rides past the response; without it, it is delivered in the request.
+        const deliver = (blocked) => {
+          if (!detections) return undefined;
+          if (keep) {
+            keep(detections.settle());
+            return undefined;
           }
+          return deliverInRequest(blocked);
         };
 
         // The request phase's own resolution is carried into the response phase rather than the response
@@ -1870,13 +1880,13 @@ export async function createProtection(options = {}) {
         // not exist.
         const { blocked, client } = await screenFetchRequest(request, rest);
         if (blocked) {
-          keepReportAlive();
+          await deliver(true);
 
           return blocked;
         }
         const response = await handler.call(this, request, ...rest);
         const screened = await screenResp(response, reqContextFromFetch(request, client));
-        keepReportAlive();
+        await deliver(false);
 
         return screened;
       };
@@ -2324,17 +2334,26 @@ function baseContentType(ct) {
   return String(ct || '').toLowerCase().split(';')[0].trim();
 }
 /**
- * Hand work that must outlive the response to the host's execution context (`ctx.waitUntil` on Cloudflare
- * Workers), found by shape because hosts pass it in different positions. Without one the work simply runs
- * on; a host that freezes before it finishes is covered by the next stale refresh.
+ * The host's way to keep work alive after the response (`waitUntil` on Cloudflare Workers), or null.
+ *
+ * Hosts offer it in different places, so it is found by shape: an execution-context argument beside the
+ * request (a Worker's own `fetch(request, env, ctx)`), or on the request itself, where Nitro and srvx put
+ * it (`request.waitUntil`, `request.runtime.cloudflare.context`) because they call the app with the
+ * request alone. A host that refuses the work is treated as offering none.
  */
-function keepAlive(hostArgs, promise) {
-  const ctx = hostArgs.find((arg) => arg && typeof arg === 'object' && typeof arg.waitUntil === 'function');
-  try {
-    ctx?.waitUntil(promise);
-  } catch {
-    /* a host that refuses it still has the next stale refresh */
-  }
+function hostWaitUntil(request, hostArgs) {
+  const ctx = hostArgs.find((arg) => arg && typeof arg === 'object' && typeof arg.waitUntil === 'function')
+    ?? (request && typeof request.waitUntil === 'function' ? request : null)
+    ?? (typeof request?.runtime?.cloudflare?.context?.waitUntil === 'function' ? request.runtime.cloudflare.context : null);
+  if (!ctx) return null;
+
+  return (promise) => {
+    try {
+      ctx.waitUntil(promise);
+    } catch {
+      /* refused: what it carried is retried on a later request */
+    }
+  };
 }
 
 function screenableContentType(ct) {
