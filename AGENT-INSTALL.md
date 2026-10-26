@@ -462,9 +462,17 @@ It is server-only. Never put it in the widget tag, client bundles, or public env
    changing host arguments or application error handling. The installed framework must expose
    `server-entry`; custom entry paths, spreads, getters and competing files need manual integration.
    An entry that builds its own protection (`createProtection` imported from `@patchstack/connect`) is
-   left untouched: remove that code and its rules import, then run `protect` again. Do not hand-write a
-   guard in its place. The managed one carries the site's read-only rules credential in its rules file,
-   and a hand-written one cannot fetch rule updates or report detections without it.
+   left untouched. Prefer the managed guard: remove that code and its rules import, then run `protect`
+   again. Do not hand-write a guard in its place.
+
+   **Any guard, managed or hand-written, fetches rule updates without the site key** when the rules file
+   it passes as `rules` carries the read-only credential (`_patchstack.rules_reader`). `setup` and a
+   keyed `scan` write it, with the site's current rules, into the one JSON file a source importing
+   `@patchstack/connect/protect` passes in, wherever that file is and whatever it is called. A copy of
+   the guard's runtime cache (`{ "bundle": … }`) is read as the bundle it holds and rewritten as a plain
+   rules file. So when a guard reports that it has no credential, run `setup` again; do not ask the
+   person for the key. Setting `PATCHSTACK_API_KEY` in the deployment also works, and makes reports
+   verified.
    An app that deploys as a Cloudflare Worker (`@cloudflare/vite-plugin` with a `wrangler.jsonc`,
    `wrangler.json` or `wrangler.toml`) runs the module its wrangler `main` names, so the Vite config's
    entry setting does not decide it. When `main` is TanStack's own `@tanstack/react-start/server-entry`,

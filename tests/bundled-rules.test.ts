@@ -68,3 +68,56 @@ describe('writeBundledRules', () => {
     expect(writeBundledRules(dir, { firewall: [{ id: 'site-1' }] })).toBe('skipped');
   });
 });
+
+/** A project whose guard was written by hand: it keeps its rules elsewhere, under its own name. */
+function handWired(rules: unknown, importer = "const rules = (await import('./lib/site-rules.json')).default;"): string {
+  const dir = mkdtempSync(join(tmpdir(), 'ps-handwired-'));
+  dirs.push(dir);
+  mkdirSync(join(dir, 'src/lib'), { recursive: true });
+  writeFileSync(join(dir, 'src/server.ts'), `import { createProtection } from '@patchstack/connect/protect';\n${importer}\nexport const guard = createProtection({ siteUuid: 'x', rules });\n`);
+  writeFileSync(join(dir, 'src/lib/site-rules.json'), `${JSON.stringify(rules)}\n`);
+  return dir;
+}
+
+const readHandWired = (dir: string) => JSON.parse(readFileSync(join(dir, 'src/lib/site-rules.json'), 'utf8'));
+const reader = `rr_${'c'.repeat(48)}-7`;
+
+describe('a hand-wired guard', () => {
+  it('gets the site rules and the read-only credential in the file it imports, under any name and folder', () => {
+    const dir = handWired({ firewall: [], whitelists: [], whitelist_keys: {} });
+
+    expect(writeBundledRules(dir, { firewall: [{ id: 'site-1' }], whitelists: [], whitelist_keys: {} }, reader)).toBe('written');
+
+    const written = readHandWired(dir);
+    expect(written.firewall).toEqual([{ id: 'site-1' }]);
+    expect(written._patchstack.rules_reader).toBe(reader);
+  });
+
+  it('turns a copied runtime cache entry into a plain rules file that carries the credential', () => {
+    const dir = handWired({ bundle: { firewall: [{ id: 'old' }], whitelists: [], whitelist_keys: {}, enforcement: 'dry-run' }, etag: 'W/"1"', buildId: null, source: 'site:x@' });
+
+    expect(writeBundledRules(dir, { firewall: [{ id: 'site-1' }], whitelists: [], whitelist_keys: {}, enforcement: 'block' }, reader)).toBe('written');
+
+    const written = readHandWired(dir);
+    expect(Object.keys(written)).not.toContain('bundle');
+    expect(Object.keys(written)).not.toContain('etag');
+    expect(written.firewall).toEqual([{ id: 'site-1' }]);
+    expect(written.enforcement).toBe('block');
+    expect(written._patchstack.rules_reader).toBe(reader);
+  });
+
+  it('is found through a static import or require as well', () => {
+    for (const importer of ["import rules from './lib/site-rules.json';", "const rules = require('./lib/site-rules.json');"]) {
+      const dir = handWired({ firewall: [], whitelists: [], whitelist_keys: {} }, importer);
+      expect(writeBundledRules(dir, { firewall: [{ id: 'site-1' }] }, reader)).toBe('written');
+    }
+  });
+
+  it('leaves alone a JSON file that only code without the protection runtime imports', () => {
+    const dir = handWired({ firewall: [], whitelists: [], whitelist_keys: {} });
+    writeFileSync(join(dir, 'src/server.ts'), "const rules = (await import('./lib/site-rules.json')).default;\nexport default rules;\n");
+
+    expect(writeBundledRules(dir, { firewall: [{ id: 'site-1' }] }, reader)).toBe('skipped');
+    expect(readHandWired(dir).firewall).toEqual([]);
+  });
+});

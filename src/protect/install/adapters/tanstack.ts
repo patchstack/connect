@@ -227,7 +227,7 @@ export const tanstackAdapter: Adapter = {
     if (problem || !ts) { log(`TanStack server entry left untouched: ${problem ?? 'parser unavailable'}.`); return {ok:false,changed:[]}; }
     const previous = existsSync(join(cwd, ENTRY)) ? read(join(cwd, ENTRY)) : DEFAULT;
     if (ownProtection(previous) && !wiredEntry(ts, previous)) {
-      log(`${ENTRY} creates its own Patchstack protection, so it was left untouched. Remove that code (the createProtection call and the rules file it imports) and run protect again: the managed guard carries this site's read-only rules credential, which a hand-written one does not.`);
+      log(`${ENTRY} creates its own Patchstack protection, so it was left untouched. Setup keeps the rules file it passes current, read-only rules credential included, so it fetches rule updates without a key. To use the managed guard instead, remove that code (the createProtection call and that rules file) and run protect again.`);
       return {ok:false,changed:[]};
     }
     const next = wiredEntry(ts, previous) ? previous : composeTanstackEntry(ts, previous);
