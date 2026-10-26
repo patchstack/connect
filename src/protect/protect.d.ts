@@ -5,7 +5,7 @@ export interface RuleBundle {
   firewall: unknown[];
   whitelists: unknown[];
   whitelist_keys: Record<string, unknown>;
-  /** From the Pulse rules API when present (`block` = enforce, `dry-run` = detect only). */
+  /** From the Patchstack for JavaScript rules API when present (`block` = enforce, `dry-run` = detect only). */
   enforcement?: "block" | "dry-run";
 }
 
@@ -203,7 +203,7 @@ export declare function sentinelAnswer(offered: unknown): Promise<string | null>
 
 export interface CreateProtectionOptions {
   /**
-   * Fallback when the Pulse rules API does not send `enforcement`.
+   * Fallback when the Patchstack for JavaScript rules API does not send `enforcement`.
    * Overridden by `PATCHSTACK_MODE` when set, otherwise by API `enforcement`.
    * Default "dry-run". Scaffolded guards pass "block" when env is unset.
    */
@@ -213,7 +213,7 @@ export interface CreateProtectionOptions {
   /** Patchstack WAF token — pull live per-site rules from the API. */
   token?: string;
   baseUrl?: string;
-  /** Pulse site UUID — pull live per-site rules from the Pulse rules API (cached). */
+  /** Patchstack for JavaScript site UUID — pull live per-site rules from the Patchstack for JavaScript rules API (cached). */
   siteUuid?: string | undefined;
   /**
    * WP-format site API key (`{secret}-{oauth.id}`) for authenticated block logs
@@ -230,7 +230,7 @@ export interface CreateProtectionOptions {
    * token; never sent directly. Never put this in the public widget.
    */
   pulseAuth?: string | undefined;
-  /** Override the Pulse rules API base URL. */
+  /** Override the Patchstack for JavaScript rules API base URL. */
   pulseRulesUrl?: string;
   /**
    * When false, skip posting block events to connector `/api/logs/log`.
@@ -239,7 +239,7 @@ export interface CreateProtectionOptions {
   reportFirewallLog?: boolean;
   /**
    * Opt OUT of reporting every rule that fired — including one in `dry-run` that did not block — to the
-   * Pulse detections endpoint.
+   * Patchstack for JavaScript detections endpoint.
    *
    * Reporting is ON by default for a site enrolled with Patchstack that is running Patchstack-delivered
    * rules and has a resolvable credential; it is off for a local install and for a guard running its own
@@ -308,13 +308,14 @@ export interface CreateProtectionOptions {
    */
   refreshMs?: number;
   /** Refresh stale rules on incoming requests, including after a host resumes a frozen instance.
-   * Defaults to refreshMs; 0 disables. Positive values have a 1s minimum. No manifest/source scan
+   * Past this the request waits for the fetch; every 30s before it a serving guard re-checks in the background
+   * without holding the request. Defaults to refreshMs; 0 disables. Positive values have a 1s minimum. No manifest/source scan
    * runs on this path. Concurrent requests share work; failures back off to at most 8x the interval. */
   requestRefreshMs?: number;
   /** Maximum wait for a request-triggered refresh. Default 2500ms; clamped to 50–3000ms.
    * Last-known-good rules remain in use on timeout. */
   requestRefreshTimeoutMs?: number;
-  /** Answer a signed read-only OPTIONS activation challenge using the resolved Pulse credential.
+  /** Answer a signed read-only OPTIONS activation challenge using the resolved Patchstack for JavaScript credential.
    * No credential is sent by the caller; ordinary requests and invalid challenges keep app routing.
    * Set false to disable. Does not trigger a rules fetch or expose configuration/credentials. */
   activationCheck?: boolean;
@@ -328,7 +329,7 @@ export interface CreateProtectionOptions {
    * During a refresh, also re-post the dependency manifest (the runtime counterpart to `scan`) so a
    * dependency added after boot — e.g. via `npm install <pkg>`, which fires no npm lifecycle hook —
    * is reported and enforced without a restart. Defaults on when a `siteUuid` is set; set false to
-   * refresh rules only. Only meaningful with a Pulse `siteUuid` and a refresh path: `refreshMs > 0` or a
+   * refresh rules only. Only meaningful with a Patchstack for JavaScript `siteUuid` and a refresh path: `refreshMs > 0` or a
    * refresh secret. A manual `refresh()` re-posts too when either is configured.
    */
   reportManifest?: boolean;

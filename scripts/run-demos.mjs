@@ -44,7 +44,7 @@ const DEMOS = [
   {
     file: 'demo-pulse-chain.mjs',
     verdict: /ALL PASS/,
-    proof: /PROOF:.*shielded via a rule delivered by Pulse/,
+    proof: /PROOF:.*shielded via a rule delivered by Patchstack for JavaScript/,
   },
   {
     file: 'gallery.mjs',

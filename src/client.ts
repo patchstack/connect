@@ -100,7 +100,7 @@ export function buildEndpointUrl(base: string, siteUuid?: string | null): string
 /**
  * What a refusal means, in terms someone can act on.
  *
- * Every Pulse route that addresses an existing site requires a credential, so a rejection is now the
+ * Every Patchstack for JavaScript route that addresses an existing site requires a credential, so a rejection is now the
  * most likely failure a misconfigured project hits — and the three causes have three different fixes.
  * Reporting them as `Patchstack returned 401` names none of them, and this output is frequently read by
  * an AI agent that has no other way to find out what to do next.
@@ -128,7 +128,7 @@ export function authFailureMessage(status: number, config: Config): string | nul
   return null;
 }
 
-/** Build the live Pulse rules URL corresponding to a manifest endpoint override. */
+/** Build the live Patchstack for JavaScript rules URL corresponding to a manifest endpoint override. */
 export function buildRulesUrl(manifestEndpoint: string, siteUuid: string): string {
   const url = new URL(manifestEndpoint);
   const path = url.pathname.replace(/\/$/, '');
@@ -874,7 +874,7 @@ export async function postManifest(
 
   if (response.status === 404) {
     throw new PatchstackError(
-      safeDisplayString((parsed as { error?: unknown } | null)?.error) ?? 'Site not found. Check that your site UUID is correct and that the app is registered as a Pulse app in your Patchstack dashboard.',
+      safeDisplayString((parsed as { error?: unknown } | null)?.error) ?? 'Site not found. Check that your site UUID is correct and that the app is registered as a Patchstack for JavaScript app in your Patchstack dashboard.',
       'SITE_NOT_FOUND',
     );
   }

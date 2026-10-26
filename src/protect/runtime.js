@@ -52,7 +52,7 @@ export { createSupabaseGuard, GUARD_PATH } from './supabase-guard.js';
 // app, and it has to be able to answer a verification request without carrying the logic itself.
 export { sentinelAnswer, VERIFY_HEADER } from './verify-sentinel.js';
 
-// Per-site live rule client (Pulse). Re-exported for callers/tests that want to use it directly.
+// Per-site live rule client (Patchstack for JavaScript). Re-exported for callers/tests that want to use it directly.
 export { PulseRuleClient };
 
 // Server-function guard. Modern Lovable apps mutate data through TanStack server functions
@@ -130,6 +130,14 @@ const DETECTION_REQUEST_DELIVERY_MS = 2_000;
  */
 const DETECTION_STALE_MS = 10_000;
 
+/**
+ * How often a serving guard re-checks its rules in the background, between the request-triggered refreshes
+ * a request waits for. A host can run many copies of the app (Cloudflare Workers), each holding its own
+ * rules, and only a request reaches every copy: this brings a rule change to all of them within that time,
+ * without any request waiting for it. An unchanged answer is a bodiless 304.
+ */
+const BACKGROUND_CHECK_MS = 30_000;
+
 export async function createProtection(options = {}) {
   // A copy of the runtime cache entry (`{ bundle, etag, … }`) passed as `rules` is read as the bundle it holds.
   if (options.rules && !Array.isArray(options.rules) && !Array.isArray(options.rules.firewall)
@@ -165,7 +173,7 @@ export async function createProtection(options = {}) {
         })
       : null;
 
-  // Every detection, enforced or not, to the Pulse detections endpoint. Distinct from the block log
+  // Every detection, enforced or not, to the Patchstack for JavaScript detections endpoint. Distinct from the block log
   // above: that records what was STOPPED, in the WordPress-compatible shape; this records what a rule
   // WOULD have stopped, which is otherwise unobservable for a rule carrying `enforcement: dry-run`.
   // Minimal payload by design; see `detections.js`.
@@ -257,7 +265,7 @@ export async function createProtection(options = {}) {
   // runtimes this guard is built for do not all have one: on a Worker or an edge function the file is
   // absent and only `PATCHSTACK_PULSE_AUTH` / `PATCHSTACK_API_KEY` can carry the credential.
   //
-  // Every site-addressed Pulse endpoint requires a verified, site-bound credential; only a first-time
+  // Every site-addressed Patchstack for JavaScript endpoint requires a verified, site-bound credential; only a first-time
   // provisioning call is anonymous. So a missing credential is not a future problem — the rules fetch is
   // refused now. And the refusal is invisible, because a failed fetch fails open onto the cached or
   // bundled bundle: the guard then screens every request, reports healthy, and never receives another
@@ -431,7 +439,7 @@ export async function createProtection(options = {}) {
   };
 
   await applyAndAcknowledge(bundle.source?.origin, preFetchState);
-  // Mode is mutable so a Pulse refresh can flip dry-run ↔ block when SaaS enables production.
+  // Mode is mutable so a Patchstack for JavaScript refresh can flip dry-run ↔ block when SaaS enables production.
   // Precedence: PATCHSTACK_MODE env (local override) > API enforcement > options.mode > dry-run.
   let mode = resolveMode(options, bundle);
   // Rule-derived runtime state. Held in `let` bindings the guard methods below close over, so a
@@ -886,8 +894,9 @@ export async function createProtection(options = {}) {
     try {
       const activated = await answerActivation(request);
       if (activated) return {blocked:activated, client:undefined};
-      const pending = requestRefresher?.check(Boolean(request?.headers?.get?.(SYNC_HEADER)));
-      if (pending) await pending;
+      const refresh = requestRefresher?.check(Boolean(request?.headers?.get?.(SYNC_HEADER)));
+      if (refresh?.wait) await refresh.promise;
+      else if (refresh) keepAlive(hostArgs, refresh.promise);
       // First real request on a new origin: tell Patchstack the deployment is live. Gated on having a
       // credential (`rulesAuth` — the site key, or the bundled read-only reader), NOT on detection
       // reporting being on. A guard serving live traffic is deployed whether or not its MANAGED rules have
@@ -1757,8 +1766,8 @@ export async function createProtection(options = {}) {
   const answerActivation = request => options.activationCheck === false ? null : activationResponse(request, pulseAuth, runtimeStatus);
   const withRequestSync = handler => (req, res, next) => {
     const proceed = () => {
-      const pending = requestRefresher?.check(Boolean(req.headers?.[SYNC_HEADER]));
-      if (pending) pending.then(() => handler(req, res, next)).catch(next);
+      const refresh = requestRefresher?.check(Boolean(req.headers?.[SYNC_HEADER]));
+      if (refresh?.wait) refresh.promise.then(() => handler(req, res, next)).catch(next);
       else handler(req, res, next);
     };
     const challenge = req.headers?.[ACTIVATION_HEADER];
@@ -1996,7 +2005,7 @@ export async function createProtection(options = {}) {
   }
 
   // Live rule refresh. The guard otherwise reads its rules once, at process start — so a rule that
-  // only becomes relevant after boot (a dependency added mid-session and flagged by Pulse, a
+  // only becomes relevant after boot (a dependency added mid-session and flagged by Patchstack for JavaScript, a
   // zero-day published) never applies until the process restarts. A refresh re-fetches and
   // hot-swaps the engines in place; the same tick can be driven by a poll loop (`refreshMs`), a
   // manual `protection.refresh()`, or an authenticated push (`protection.refreshHandler()`).
@@ -2006,7 +2015,7 @@ export async function createProtection(options = {}) {
   const refreshSecret = options.refreshSecret ?? (typeof process !== 'undefined' ? process.env.PATCHSTACK_REFRESH_SECRET : undefined);
   const refreshable = live && (refreshMs > 0 || Boolean(refreshSecret));
 
-  // On the Pulse (siteUuid) path, re-post the dependency manifest before re-fetching. A targeted
+  // On the Patchstack for JavaScript (siteUuid) path, re-post the dependency manifest before re-fetching. A targeted
   // `npm install <pkg>` fires no npm lifecycle hook, so nothing else re-scans; reporting here lets
   // the server flag a newly-added vulnerable dependency and the SAME tick's rule fetch pick up its
   // rule. Loaded once, up front, only when a refresh path is enabled — a refresh-off production
@@ -2080,6 +2089,7 @@ export async function createProtection(options = {}) {
 
   requestRefresher = requestRefresh(() => runRefreshTick(true), {
     intervalMs: live && (options.token || rulesAuth) && Number.isFinite(requestInterval) && requestInterval > 0 ? Math.max(1000, requestInterval) : 0,
+    backgroundMs: BACKGROUND_CHECK_MS,
     timeoutMs: requestBudget,
   });
 
@@ -2184,7 +2194,7 @@ function headersSentError(verb) {
 
 /**
  * Resolve runtime enforcement mode.
- * Precedence: PATCHSTACK_MODE env > Pulse `enforcement` on the rules bundle > options.mode > dry-run.
+ * Precedence: PATCHSTACK_MODE env > Patchstack for JavaScript `enforcement` on the rules bundle > options.mode > dry-run.
  */
 function resolveMode(options, bundle) {
   const env = typeof process !== 'undefined' ? process.env?.PATCHSTACK_MODE : undefined;
@@ -2313,6 +2323,20 @@ function byPhase(rules, phase) {
 function baseContentType(ct) {
   return String(ct || '').toLowerCase().split(';')[0].trim();
 }
+/**
+ * Hand work that must outlive the response to the host's execution context (`ctx.waitUntil` on Cloudflare
+ * Workers), found by shape because hosts pass it in different positions. Without one the work simply runs
+ * on; a host that freezes before it finishes is covered by the next stale refresh.
+ */
+function keepAlive(hostArgs, promise) {
+  const ctx = hostArgs.find((arg) => arg && typeof arg === 'object' && typeof arg.waitUntil === 'function');
+  try {
+    ctx?.waitUntil(promise);
+  } catch {
+    /* a host that refuses it still has the next stale refresh */
+  }
+}
+
 function screenableContentType(ct) {
   const base = baseContentType(ct);
   if (base === 'text/event-stream') return 'skip'; // live token/SSE stream — never buffer

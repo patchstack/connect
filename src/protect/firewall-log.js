@@ -30,7 +30,7 @@ export function parseApiKey(apiKey) {
 }
 
 /**
- * Derive api.patchstack.com origin from a Pulse manifest/rules URL override.
+ * Derive api.patchstack.com origin from a Patchstack for JavaScript manifest/rules URL override.
  * @param {string | undefined} pulseOrManifestUrl
  */
 export function resolveApiBase(pulseOrManifestUrl) {

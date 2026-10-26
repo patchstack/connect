@@ -39,7 +39,7 @@ const DISCLOSED_AS: Record<string, { doc: RegExp; files?: string[] }> = {
   'monitor/pulse/manifest': { doc: /manifest/i },
   'monitor/pulse/rules': { doc: /monitor\/pulse\/rules|pulse rules/i },
   'monitor/pulse/input-map': { doc: /input-map/i },
-  // Built from the resolved Pulse base rather than a literal path, which is why the second extraction
+  // Built from the resolved Patchstack for JavaScript base rather than a literal path, which is why the second extraction
   // pattern exists — and why the first version of this file could not see it.
   detections: { doc: /monitor\/pulse\/detections/i, files: ['src/protect/detections.js'] },
   'monitor/pulse/live': { doc: /monitor\/pulse\/live/i, files: ['src/protect/live-report.js'] },

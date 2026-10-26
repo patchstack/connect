@@ -65,7 +65,7 @@ describe('login', () => {
       // credential in it is a credential in the repository.
       const written = JSON.parse(readFileSync('.patchstackrc.local.json', 'utf8'));
       expect(written.apiKey).toBe('new-secret-987');
-      // One credential for both paths. Pulse resolution falls back to apiKey, so a second copy is not
+      // One credential for both paths. Patchstack for JavaScript resolution falls back to apiKey, so a second copy is not
       // written.
       expect(written.pulseAuth).toBeUndefined();
       // And the project now ignores it. A rotated credential is no less of a secret than a fresh one.

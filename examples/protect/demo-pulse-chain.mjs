@@ -1,9 +1,9 @@
-// End-to-end STATIC-RULE-THROUGH-PULSE chain demo for @patchstack/connect/protect.
+// End-to-end static-rule delivery chain demo for @patchstack/connect/protect.
 //
 // Unlike demo.mjs (which wires rules from a local file), this proves the real delivery
-// path the pilot uses: a rule is served by Pulse over HTTP, fetched by the guard's own
-// Pulse client (ETag/conditional-fetch), and enforced in-app — then PROMOTED from dry-run
-// to block *remotely* (Pulse flips the bundle's `enforcement`; the guard hot-swaps on
+// path the pilot uses: a rule is served by Patchstack for JavaScript over HTTP, fetched by the guard's own
+// Patchstack for JavaScript client (ETag/conditional-fetch), and enforced in-app — then PROMOTED from dry-run
+// to block *remotely* (Patchstack for JavaScript flips the bundle's `enforcement`; the guard hot-swaps on
 // refresh, no redeploy). The exploit is a REAL unmodified vulnerable dependency
 // (lodash@4.17.11, CVE-2019-10744). Public CVE + demo rule only; no tokens/secrets.
 //
@@ -20,7 +20,7 @@ const SITE_UUID = '00000000-demo-4pul-se00-000000000001';
 let ok = true;
 const line = (pass, msg) => { ok = pass && ok; console.log(`  ${pass ? '✓' : '✗'}  ${msg}`); };
 
-// ── The one static rule Pulse will serve (a Step-0 rule: lodash prototype pollution). ──
+// ── The one static rule Patchstack for JavaScript will serve (a Step-0 rule: lodash prototype pollution). ──
 const lodashRule = {
   id: 'PS-CVE-2019-10744',
   title: 'Prototype pollution in lodash (defaultsDeep / merge / set)',
@@ -35,9 +35,9 @@ const lodashRule = {
   ],
 };
 
-// ── A mock Pulse rules endpoint (GET /rules/{uuid}) with ETag + remote enforcement flip. ──
+// ── A mock Patchstack for JavaScript rules endpoint (GET /rules/{uuid}) with ETag + remote enforcement flip. ──
 const pulse = {
-  enforcement: 'dry-run',       // what Pulse currently tells the site to do
+  enforcement: 'dry-run',       // what Patchstack for JavaScript currently tells the site to do
   etag: '"v1"',
   hits: [],                     // audit of what the guard fetched
 };
@@ -79,10 +79,10 @@ const benign = () => new Request('https://app.demo/api/settings', {
 const polluted = () => { const hit = ({}).polluted === 'yes'; delete Object.prototype.polluted; return hit; };
 
 console.log(`\nTarget: lodash@${LODASH}  (CVE-2019-10744, fixed in 4.17.12)`);
-console.log(`Pulse:  mock rules endpoint at ${PULSE_URL}/rules/${SITE_UUID}\n`);
+console.log(`Patchstack for JavaScript:  mock rules endpoint at ${PULSE_URL}/rules/${SITE_UUID}\n`);
 
 const detections = [];
-// The guard fetches its rules from Pulse by site UUID — the real pilot wiring.
+// The guard fetches its rules from Patchstack for JavaScript by site UUID — the real pilot wiring.
 const p = await createProtection({
   siteUuid: SITE_UUID,
   pulseRulesUrl: PULSE_URL,
@@ -90,20 +90,20 @@ const p = await createProtection({
 });
 
 try {
-  // 1. The rule arrived over HTTP (not a local file) and the guard is honoring Pulse's dry-run.
-  line(pulse.hits.length >= 1 && pulse.hits[0].status === 200, '1. rule fetched from Pulse over HTTP (siteUuid path)');
-  line(p.mode === 'dry-run', '2. guard adopted Pulse enforcement = dry-run (safe onramp)');
+  // 1. The rule arrived over HTTP (not a local file) and the guard is honoring Patchstack for JavaScript's dry-run.
+  line(pulse.hits.length >= 1 && pulse.hits[0].status === 200, '1. rule fetched from Patchstack for JavaScript over HTTP (siteUuid path)');
+  line(p.mode === 'dry-run', '2. guard adopted Patchstack for JavaScript enforcement = dry-run (safe onramp)');
 
   // 3. DRY-RUN: the exploit is DETECTED + logged, but still served → app stays vulnerable.
   await p.fetch(appHandler)(exploit());
   const detected = detections.some((d) => d.rule?.id === 'PS-CVE-2019-10744');
   line(detected && polluted(), '3. dry-run: exploit detected + logged, but served (still vulnerable)');
 
-  // 4. REMOTE PROMOTION: Pulse flips the bundle to block (new ETag). No app redeploy.
+  // 4. REMOTE PROMOTION: Patchstack for JavaScript flips the bundle to block (new ETag). No app redeploy.
   pulse.enforcement = 'block';
   pulse.etag = '"v2"';
   await p.refresh(); // one manual refresh tick (the poll loop / push endpoint drive the same tick)
-  line(p.mode === 'block', '4. remote promotion: Pulse flipped dry-run → block, guard hot-swapped');
+  line(p.mode === 'block', '4. remote promotion: Patchstack for JavaScript flipped dry-run → block, guard hot-swapped');
 
   // 5. BLOCK: replay the SAME exploit → rejected before the sink runs; prototype stays clean.
   const blockedRes = await p.fetch(appHandler)(exploit());
@@ -120,7 +120,7 @@ try {
   line(pulse.hits.length === before + 1 && last.status === 304, '7. refresh with no change → 304 Not Modified (conditional fetch)');
 
   console.log(
-    `\n   PROOF: CVE-2019-10744 in lodash@${LODASH} was shielded via a rule delivered by Pulse, ` +
+    `\n   PROOF: CVE-2019-10744 in lodash@${LODASH} was shielded via a rule delivered by Patchstack for JavaScript, ` +
     `then\n   promoted dry-run → block remotely and re-verified against the same exploit — ` +
     `no app\n   redeploy. This is the pilot's static-rule delivery + promotion chain, end to end.\n`,
   );
