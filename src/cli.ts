@@ -114,6 +114,7 @@ import { formatRuntimeCheck, runRuntimeCheck, runtimeExitCode } from './protect/
 import { runMap } from './map-command.js';
 import { bundleRulesAllowed } from './bundled-rules.js';
 import { getStringFlag } from './flags.js';
+import { renderDoctor, runDoctorChecks } from './doctor.js';
 import { isCanonicalUuid } from './endpoint-policy.js';
 import { setupProtection, wireBuildScripts, wireDevelopmentScript } from './setup.js';
 import { runDevelopment } from './dev-command.js';
@@ -137,6 +138,7 @@ function startScreen(color: boolean): string[] {
     '',
     'Then:',
     command('next', 'what to do next'),
+    command('doctor', 'check that everything works'),
     command('vulns', 'see what was found'),
     command('widget', 'show Patchstack inside your app (optional)'),
     command('go-live', 'how to go live on your host'),
@@ -192,6 +194,15 @@ Usage:
   patchstack-connect summary                         Print the summary the last setup wrote, from
                                                      .patchstack/summary.md. Sends nothing; writes
                                                      nothing
+  patchstack-connect doctor [--url <live app>]       Check that everything Patchstack needs works in this
+                                                     project, and say how to fix each problem: install,
+                                                     site, account, protection wiring, the guard's rules
+                                                     file and its read-only credential, the map link and
+                                                     the build steps. Sends the site UUID to the public
+                                                     claim page and asks Patchstack whether it accepts the
+                                                     read-only credential; with --url, also requests the
+                                                     live app's page and one test attack. Writes nothing.
+                                                     Exits 1 when it finds a problem
   patchstack-connect vulns                           Show what Patchstack found in this project's
                                                      packages: vulnerabilities by severity and
                                                      outdated packages, with the link to the
@@ -1693,6 +1704,18 @@ function runSummary(): number {
  * The one thing to do now, for the word the summary ends on. Connection lives on the server, so it is
  * looked up unless `.patchstackrc.json` already records it; everything else is read from the project.
  */
+/** Check everything Patchstack needs in this project and print each problem with its fix. */
+async function runDoctor(args: ParsedArgs): Promise<number> {
+  const cwd = process.cwd();
+  const config = await resolveCliConfig(args);
+  const state = await collectGuideState(cwd);
+  const url = getStringFlag(args.flags, 'url') ?? null;
+  const findings = await runDoctorChecks(cwd, state, config, { url, claimPreview: fetchClaimPreview });
+  for (const line of renderDoctor(findings, { url })) console.log(line);
+
+  return findings.some((finding) => finding.status === 'problem') ? 1 : 0;
+}
+
 async function runNext(args: ParsedArgs): Promise<number> {
   const config = await resolveCliConfig(args);
   if (config.siteUuid === null) {
@@ -2274,12 +2297,12 @@ async function main(): Promise<number> {
 
 /** Commands `runCommand` dispatches; anything else is an unknown command and sends no notice. */
 const KNOWN_COMMANDS = new Set([
-  'init', 'scan', 'vulns', 'next', 'summary', 'go-live', 'widget', 'status', 'uninstall', 'mark-build', 'protect',
+  'init', 'scan', 'vulns', 'next', 'doctor', 'summary', 'go-live', 'widget', 'status', 'uninstall', 'mark-build', 'protect',
   'demo', 'demo-guide', 'guide', 'setup', 'map', 'claim', 'login',
 ]);
 
 /** Commands that act on the whole project, so in a workspace package they run at the root that holds the site. */
-const ROOT_COMMANDS = new Set(['setup', 'scan', 'widget', 'protect']);
+const ROOT_COMMANDS = new Set(['setup', 'scan', 'widget', 'protect', 'doctor']);
 
 /**
  * A run that sent nothing the site's activity log records still tells Patchstack it ran, by the site's
@@ -2306,6 +2329,8 @@ async function runCommand(args: ParsedArgs): Promise<number> {
       return runSummary();
     case 'next':
       return runNext(args);
+    case 'doctor':
+      return runDoctor(args);
     case 'go-live':
       return runGoLive(args);
     case 'widget':
