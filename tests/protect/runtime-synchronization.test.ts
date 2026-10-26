@@ -67,8 +67,8 @@ it('bounds a hung request refresh, backs off and stops without holding subsequen
   const scheduler = requestRefresh(tick,{intervalMs:1000,timeoutMs:100});
   expect(scheduler.check()).toBeNull();
   vi.setSystemTime(Date.now()+1000);
-  const first=scheduler.check(); expect(scheduler.check()).toBe(first);
-  await vi.advanceTimersByTimeAsync(101);await first;
+  const first=scheduler.check(); expect(first?.wait).toBe(true); expect(scheduler.check()?.promise).toBe(first?.promise);
+  await vi.advanceTimersByTimeAsync(101);await first?.promise;
   expect(scheduler.check()).toBeNull(); expect(tick).toHaveBeenCalledOnce();
   scheduler.stop();vi.setSystemTime(Date.now()+100000);expect(scheduler.check()).toBeNull();
 });
@@ -78,10 +78,10 @@ it('lets a sync request fetch before the interval, at most once per gap, and not
   const tick = vi.fn(async () => ({ok:true}));
   const scheduler = requestRefresh(tick,{intervalMs:300000,timeoutMs:100,forceGapMs:15000});
   expect(scheduler.check()).toBeNull();
-  await scheduler.check(true); expect(tick).toHaveBeenCalledTimes(1);
+  await scheduler.check(true)?.promise; expect(tick).toHaveBeenCalledTimes(1);
   expect(scheduler.check(true)).toBeNull(); expect(tick).toHaveBeenCalledTimes(1);
   vi.setSystemTime(Date.now()+15000);
-  await scheduler.check(true); expect(tick).toHaveBeenCalledTimes(2);
+  await scheduler.check(true)?.promise; expect(tick).toHaveBeenCalledTimes(2);
   expect(scheduler.check()).toBeNull();
 });
 
@@ -115,6 +115,44 @@ it('applies a newly published rule on an express request carrying the sync heade
     await end;
     expect(response.statusCode).toBe(403);
   } finally {await p.stop();}
+});
+
+it('re-checks in the background every 30 seconds, so no request waits, and applies the change next', async () => {
+  vi.useFakeTimers(); const api=service();
+  const p = await createProtection({...options,refreshMs:300000});
+  try {
+    const before = api.fetch.mock.calls.length;
+    vi.setSystemTime(Date.now()+10000);
+    await p.fetchGuard()(new Request('https://app.example.test/'));
+    expect(api.fetch.mock.calls.length).toBe(before);
+    api.publish(); vi.setSystemTime(Date.now()+21000);
+    // The request that starts the check is answered with the rules it has; it does not wait for the fetch.
+    const waitUntil = vi.fn();
+    expect(await p.fetch(()=>new Response('ok'))(new Request('https://app.example.test/?q=attack'),{},{waitUntil}).then(r=>r.status)).toBe(200);
+    expect(waitUntil).toHaveBeenCalled();
+    await Promise.all(waitUntil.mock.calls.map(([work])=>work));
+    expect(api.fetch.mock.calls.length-before).toBe(1);
+    // The next request runs on the new rules.
+    expect((await p.fetchGuard()(new Request('https://app.example.test/?q=attack')))?.status).toBe(403);
+  } finally { await p.stop(); }
+});
+
+it('still makes the request wait once the rules are past the full interval', async () => {
+  vi.useFakeTimers(); const api=service();
+  const p = await createProtection({...options,refreshMs:300000});
+  try {
+    api.publish(); vi.setSystemTime(Date.now()+301000);
+    expect((await p.fetchGuard()(new Request('https://app.example.test/?q=attack')))?.status).toBe(403);
+  } finally { await p.stop(); }
+});
+
+it('waits once past an explicit requestRefreshMs', async () => {
+  vi.useFakeTimers(); const api=service();
+  const p = await createProtection({...options,refreshMs:300000,requestRefreshMs:60000});
+  try {
+    api.publish(); vi.setSystemTime(Date.now()+61000);
+    expect((await p.fetchGuard()(new Request('https://app.example.test/?q=attack')))?.status).toBe(403);
+  } finally { await p.stop(); }
 });
 
 it('does not create request-driven traffic for a manual-only guard', async () => {
