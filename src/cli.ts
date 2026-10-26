@@ -1581,7 +1581,7 @@ async function runSetup(args: ParsedArgs): Promise<number> {
   const uploaded = synced.map.upload;
   if (uploaded?.result === 'stored' || uploaded?.result === 'unchanged') {
     report.done.push(`Attack-surface map uploaded (revision ${uploaded.revision}; ${synced.map.endpoints ?? 0} detected entry points)`);
-    if (!synced.map.buildId && !noServer) report.missing.push({ key: 'map-binding', text: 'Map is not linked to runtime protection', hint: ['Finish the reported protection integration, then rerun setup. Rules for specific inputs can only detect, not block, until linked.'], plain: { text: 'Some attacks are only reported, not blocked yet', hint: ['Finish adding protection, then run setup again.'] } });
+    if (!synced.map.buildId && !noServer) report.missing.push({ key: 'map-binding', text: 'Map is not linked to runtime protection', hint: ['Run setup --verbose for the reason the map could not be linked, fix it, then rerun setup. Rules for specific inputs can only detect, not block, until linked.'], plain: { text: 'Some attacks are only reported, not blocked yet', hint: ['Run `npx @patchstack/connect setup --verbose`, fix the reason it gives, then run setup again.'] } });
   } else {
     report.missing.push({ key: 'map-upload', text: 'Attack-surface map was not uploaded', hint: [synced.map.error ?? uploaded?.message ?? 'Check connectivity and rerun setup.'], plain: { text: 'Could not send your app\'s layout to Patchstack', hint: ['Check your connection and run setup again.'] } });
   }
@@ -1594,7 +1594,9 @@ async function runSetup(args: ParsedArgs): Promise<number> {
         report.done.push(`Rules for this map are ready${synced.rules.count === 0 ? ' (no applicable rules)' : ''}`);
         report.confirmed = [`Rules for this app are ready${synced.rules.count === 0 ? ' (none currently apply)' : ''}. This does not confirm active blocking.`];
       } else {
-        report.missing.push({ key: 'map-rules', text: synced.rules.mapRules === 'pending' ? 'Rules for this map are still being prepared' : 'Rules readiness for this map is not confirmed', hint: ['The running guard will refresh automatically. Broad and hardening rules do not depend on map generation.'], plain: { text: synced.rules.mapRules === 'pending' ? 'Rules for this app are still being prepared' : 'Could not confirm whether rules for this app are ready', hint: ['Your running app will check again automatically.'] } });
+        // Readiness is judged for the linked map, so without a link it cannot be confirmed: fixing the link is the step.
+        const unlinked = synced.rules.mapRules !== 'pending' && !synced.map.buildId;
+        report.missing.push({ key: 'map-rules', text: synced.rules.mapRules === 'pending' ? 'Rules for this map are still being prepared' : 'Rules readiness for this map is not confirmed', hint: [unlinked ? 'Readiness follows the map link: fix the link above, then rerun setup.' : 'The running guard will refresh automatically. Broad and hardening rules do not depend on map generation.'], plain: { text: synced.rules.mapRules === 'pending' ? 'Rules for this app are still being prepared' : 'Could not confirm whether rules for this app are ready', hint: [unlinked ? 'This clears once the line above is fixed and setup runs again.' : 'Your running app will check again automatically.'] } });
       }
     }
   } else {
