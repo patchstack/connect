@@ -97,6 +97,7 @@ import {
   renderSummary,
   SUMMARY_HEADING,
   SUMMARY_INTRO,
+  summaryClosingLine,
   type StatusReport,
 } from './report.js';
 import { login, readPendingLogin, redeemIfApproved, startLogin, waitForApproval } from './login.js';
@@ -1655,7 +1656,8 @@ async function runSetup(args: ParsedArgs): Promise<number> {
   // An assistant reads this output and writes the person one message; a ready-made summary is what it
   // passes on. A terminal already shows the report above, and a build log is not read by a person.
   if (!isInstallOrBuildHook() && !runningInCi()) {
-    const summary = renderSummary({ ...report, missing }, guideProgress(after, reported), context, { widgetOnPage: after.widgetInstalled });
+    const progress = guideProgress(after, reported);
+    const summary = renderSummary({ ...report, missing }, progress, context, { widgetOnPage: after.widgetInstalled });
     // Kept, so `summary` can print it again: long setup output can be cut short before it reaches an assistant.
     try {
       ensureProjectDirectorySync(cwd, path.join(cwd, path.dirname(SUMMARY_FILE)));
@@ -1668,6 +1670,8 @@ async function runSetup(args: ParsedArgs): Promise<number> {
       console.log(SUMMARY_INTRO);
       console.log(SUMMARY_HEADING);
       for (const line of summary) console.log(line);
+      console.log('');
+      console.log(summaryClosingLine(progress.connected, context.claimUrl));
     }
   }
   return 0;
@@ -1707,6 +1711,15 @@ function runSummary(): number {
   console.log(SUMMARY_INTRO);
   console.log(SUMMARY_HEADING);
   console.log(summary);
+  // Ends the way setup does, from what `.patchstackrc.json` records: whether the site has an owner, and its link.
+  let recorded: { claimed?: unknown; claimUrl?: unknown } = {};
+  try {
+    recorded = JSON.parse(readFileSync(path.join(process.cwd(), '.patchstackrc.json'), 'utf8')) as typeof recorded;
+  } catch {
+    // No readable config: the closing line goes without the link.
+  }
+  console.log('');
+  console.log(summaryClosingLine(recorded.claimed === true, typeof recorded.claimUrl === 'string' ? recorded.claimUrl : null));
   return 0;
 }
 

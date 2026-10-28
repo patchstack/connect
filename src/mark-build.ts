@@ -375,17 +375,30 @@ interface JsxShellAnchor {
 }
 
 /**
- * Find a literal JSX opening tag at the start of a line. JSX attributes may
- * contain `>` inside strings or braced expressions, so the tag boundary needs
- * a small lexical scan rather than a character class. Self-closing tags cannot
- * carry the marker as a child and are skipped.
+ * Find a literal JSX opening tag: at the start of a line first, and failing that as one of the tags a
+ * `return` or an arrow function opens with, which is how a shell written on one line reads
+ * (`return <html lang="en"><body>…`) — a tag inside a string is not in such a chain. JSX
+ * attributes may contain `>` inside strings or braced expressions, so the tag boundary needs a small
+ * lexical scan rather than a character class. Self-closing tags cannot carry the marker as a child and are
+ * skipped.
  */
 function findJsxShellAnchor(
   source: string,
   tagName: 'head' | 'body',
   from = 0,
 ): JsxShellAnchor | null {
-  const candidates = new RegExp(`^([ \\t]*)<${tagName}(?=[\\s/>])`, 'gm');
+  return scanJsxShellAnchor(source, new RegExp(`^([ \\t]*)<${tagName}(?=[\\s/>])`, 'gm'), from)
+    ?? scanJsxShellAnchor(source, new RegExp(`(?<=(?:\\breturn|=>)\\s*\\(?\\s*(?:<[A-Za-z][^<>]*>\\s*)*)<${tagName}(?=[\\s/>])`, 'g'), from);
+}
+
+/** The leading whitespace of the line `index` is on. */
+function lineIndent(source: string, index: number): string {
+  const lineStart = source.lastIndexOf('\n', index - 1) + 1;
+
+  return /^[ \t]*/.exec(source.slice(lineStart))?.[0] ?? '';
+}
+
+function scanJsxShellAnchor(source: string, candidates: RegExp, from: number): JsxShellAnchor | null {
   candidates.lastIndex = from;
   let candidate: RegExpExecArray | null;
 
@@ -438,7 +451,7 @@ function findJsxShellAnchor(
       } else if (char === '>' && braces === 0) {
         const openingTag = source.slice(candidate.index, index + 1);
         if (/\/\s*>$/.test(openingTag)) break;
-        return { end: index + 1, indent: candidate[1] ?? '' };
+        return { end: index + 1, indent: candidate[1] ?? lineIndent(source, candidate.index) };
       }
     }
   }
