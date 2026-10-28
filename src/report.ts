@@ -266,6 +266,17 @@ export const SUMMARY_HEADING = '──── Summary ────';
 /** The line printed just before the summary, saying what it is for. */
 export const SUMMARY_INTRO = `Setup is finished. The person may not see this command's output, only your reply. The summary below is written for them: put it in your final message exactly as written, with every section. When they say "${NEXT_REPLY}", run npx @patchstack/connect next.`;
 
+/**
+ * The line setup's output ends on, after the summary. It is the line an assistant is surest to read, so it
+ * repeats what the intro asks and, while the site has no owner, carries the link the person needs: an
+ * assistant that reports only that the command succeeded leaves them with no way to see their results.
+ */
+export function summaryClosingLine(connected: boolean, claimUrl: string | null): string {
+  return !connected && claimUrl !== null
+    ? `Your reply to the person must include the summary above, as written, with this link to connect their Patchstack account: ${claimUrl}`
+    : 'Your reply to the person must include the summary above, as written: it is their result and their next step.';
+}
+
 export interface SummaryOptions {
   /** The widget tag is on the page, so the summary says where to see it. */
   widgetOnPage: boolean;
