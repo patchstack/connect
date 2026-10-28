@@ -563,6 +563,29 @@ describe('ensureMarkerInJsxShell', () => {
     expect(source).toBe(hand);
   });
 
+  it('anchors on a shell written on one line, as some builders generate the root layout', () => {
+    const oneLine = [
+      "export default function RootLayout({ children }: { children: React.ReactNode }) {",
+      '  return <html lang="en"><body className="antialiased">{children}</body></html>',
+      '}',
+      '',
+    ].join('\n');
+
+    const result = ensureMarkerInJsxShell(oneLine, 'next', 'abcdef123456');
+
+    expect(result.action).toBe('added');
+    expect(result.source).toContain('__PATCHSTACK_BUILD__="abcdef123456"');
+    expect(result.source.indexOf('#region patchstack')).toBeGreaterThan(result.source.indexOf('<body'));
+    const parsed = ts.createSourceFile('layout.tsx', result.source, ts.ScriptTarget.Latest, true, ts.ScriptKind.TSX);
+    expect((parsed as unknown as { parseDiagnostics: unknown[] }).parseDiagnostics).toEqual([]);
+    expect(ensureMarkerInJsxShell(result.source, 'next', 'abcdef123456').source).toBe(result.source);
+  });
+
+  it('does not take a tag inside a string on the same line for the shell', () => {
+    const { action } = ensureMarkerInJsxShell('export const shell = "<html><body>";\n', 'next');
+    expect(action).toBe('no-anchor');
+  });
+
   it('reports no-anchor when the file has no JSX shell to attach to', () => {
     const { action } = ensureMarkerInJsxShell('export const x = 1;\n', 'tanstack-start');
     expect(action).toBe('no-anchor');
