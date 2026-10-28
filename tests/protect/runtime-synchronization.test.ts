@@ -155,6 +155,33 @@ it('waits once past an explicit requestRefreshMs', async () => {
   } finally { await p.stop(); }
 });
 
+it('keeps the stale deadline when a background check fails or is cut off', async () => {
+  vi.useFakeTimers();
+  const tick = vi.fn(async () => { throw new Error('cut off'); });
+  const scheduler = requestRefresh(tick,{intervalMs:300000,backgroundMs:30000,timeoutMs:100});
+  vi.setSystemTime(Date.now()+31000);
+  const background = scheduler.check();
+  expect(background?.wait).toBe(false);
+  await background?.promise;
+  // A host with no waitUntil cuts every background check off; the refresh a request waits for still comes due.
+  vi.setSystemTime(Date.now()+270000);
+  expect(scheduler.check()?.wait).toBe(true);
+});
+
+it('hands a background check to Vercel\'s request context when the request is the only argument', async () => {
+  vi.useFakeTimers(); service();
+  const kept: Promise<unknown>[] = [];
+  const key = Symbol.for('@vercel/request-context');
+  (globalThis as any)[key] = { get: () => ({ waitUntil: (work: Promise<unknown>) => { kept.push(work); } }) };
+  const p = await createProtection({...options,refreshMs:300000});
+  try {
+    vi.setSystemTime(Date.now()+31000);
+    // As a Next.js middleware calls it: the request alone.
+    expect(await p.fetchGuard()(new Request('https://app.example.test/'))).toBeNull();
+    expect(kept).toHaveLength(1);
+  } finally { delete (globalThis as any)[key]; await p.stop(); }
+});
+
 it('does not create request-driven traffic for a manual-only guard', async () => {
   vi.useFakeTimers();const api=service();const p=await createProtection(options);
   try {const before=api.fetch.mock.calls.length;vi.setSystemTime(Date.now()+1000000);await p.fetchGuard()(new Request('https://app.example.test/'));expect(api.fetch.mock.calls.length).toBe(before);}

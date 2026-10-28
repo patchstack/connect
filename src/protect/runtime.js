@@ -2334,17 +2334,33 @@ function baseContentType(ct) {
   return String(ct || '').toLowerCase().split(';')[0].trim();
 }
 /**
+ * Vercel's context for the request being handled, which carries its `waitUntil`, or null.
+ *
+ * Vercel sets it on every function and middleware invocation; `@vercel/functions` reads it the same way.
+ * It is the only place a Next.js middleware that receives the request alone can reach `waitUntil`.
+ */
+function vercelRequestContext() {
+  try {
+    const context = globalThis[Symbol.for('@vercel/request-context')]?.get?.();
+    return typeof context?.waitUntil === 'function' ? context : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
  * The host's way to keep work alive after the response (`waitUntil` on Cloudflare Workers), or null.
  *
  * Hosts offer it in different places, so it is found by shape: an execution-context argument beside the
- * request (a Worker's own `fetch(request, env, ctx)`), or on the request itself, where Nitro and srvx put
+ * request (a Worker's own `fetch(request, env, ctx)`), on the request itself, where Nitro and srvx put
  * it (`request.waitUntil`, `request.runtime.cloudflare.context`) because they call the app with the
- * request alone. A host that refuses the work is treated as offering none.
+ * request alone, or in Vercel's request context. A host that refuses the work is treated as offering none.
  */
 function hostWaitUntil(request, hostArgs) {
   const ctx = hostArgs.find((arg) => arg && typeof arg === 'object' && typeof arg.waitUntil === 'function')
     ?? (request && typeof request.waitUntil === 'function' ? request : null)
-    ?? (typeof request?.runtime?.cloudflare?.context?.waitUntil === 'function' ? request.runtime.cloudflare.context : null);
+    ?? (typeof request?.runtime?.cloudflare?.context?.waitUntil === 'function' ? request.runtime.cloudflare.context : null)
+    ?? vercelRequestContext();
   if (!ctx) return null;
 
   return (promise) => {
