@@ -317,8 +317,20 @@ describe('buildSourceMarkerSnippet', () => {
   it('sets the marker the widget reads, behind the framework production gate', () => {
     const snippet = buildSourceMarkerSnippet('tanstack-start');
     expect(snippet).toContain('window.__PATCHSTACK_PROD__=true;');
-    expect(snippet).toContain('import.meta.env.PROD &&');
+    expect(snippet).toContain('import.meta.env.PROD ?');
     expect(snippet).toContain(MARKER_ATTR);
+  });
+
+  it('stamps a development build as a sandbox, and never marks it as the published site', () => {
+    for (const framework of ['tanstack-start', 'next', 'remix', 'react-router', 'gatsby', 'astro']) {
+      const snippet = buildSourceMarkerSnippet(framework, 'abcdef123456');
+      const otherwise = snippet.indexOf(') : (');
+      expect(otherwise, framework).toBeGreaterThan(snippet.indexOf('__PATCHSTACK_PROD__'));
+      const development = snippet.slice(otherwise);
+      expect(development, framework).toContain('window.__PATCHSTACK_ENV__="sandbox";');
+      expect(development, framework).not.toContain('__PATCHSTACK_PROD__');
+      expect(development, framework).not.toContain('__PATCHSTACK_BUILD__');
+    }
   });
 
   it('never emits an ungated marker, which would also hide the claim flow in dev', () => {
@@ -380,7 +392,7 @@ describe('ensureMarkerInJsxShell', () => {
     const { source, action } = ensureMarkerInJsxShell(doc(widgetLine), 'tanstack-start');
     expect(action).toBe('added');
     expect(source.indexOf('__PATCHSTACK_PROD__')).toBeLessThan(source.indexOf('patchstack-widget'));
-    expect(source).toContain('import.meta.env.PROD &&');
+    expect(source).toContain('import.meta.env.PROD ?');
   });
 
   it('falls back to <head> when no widget tag is present yet', () => {
@@ -619,8 +631,9 @@ describe('ensureMarkerInJsxShell on an Astro layout', () => {
 
     expect(action).toBe('added');
     expect(source).toContain(
-      '{import.meta.env.PROD && (\n      <script is:inline data-patchstack-build="true">' +
-        'window.__PATCHSTACK_PROD__=true;window.__PATCHSTACK_BUILD__="ac749db1ff30";</script>\n    )}',
+      '{import.meta.env.PROD ? (\n      <script is:inline data-patchstack-build="true">' +
+        'window.__PATCHSTACK_PROD__=true;window.__PATCHSTACK_BUILD__="ac749db1ff30";</script>\n    ) : (\n' +
+        '      <script is:inline data-patchstack-build="true">window.__PATCHSTACK_ENV__="sandbox";</script>\n    )}',
     );
     expect(source.indexOf('__PATCHSTACK_PROD__')).toBeGreaterThan(source.indexOf('  <head>'));
     expect(source.indexOf('__PATCHSTACK_PROD__')).toBeLessThan(source.indexOf('<BaseHead />'));

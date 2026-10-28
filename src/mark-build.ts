@@ -323,23 +323,27 @@ export function buildSourceMarkerSnippet(
   if (checksum !== null && checksum !== '') {
     statements.push(`window.__PATCHSTACK_BUILD__=${JSON.stringify(checksum)};`);
   }
+  // A development build is never the published site: it is what a builder's preview, or a local dev server,
+  // runs. It carries the sandbox stamp the widget reads (the same one `mark-build` writes into a sandbox
+  // build's HTML), so a preview on a host the widget does not know still shows the owner's panel.
+  const sandbox = 'window.__PATCHSTACK_ENV__="sandbox";';
   if (framework === ASTRO) {
     // `is:inline` keeps Astro from bundling the script into a module, which would run after the
     // deferred widget instead of before it.
     return (
-      `{${gate} && (\n` +
+      `{${gate} ? (\n` +
       `  <script is:inline ${MARKER_ATTR}="true">${statements.join('')}</script>\n` +
+      `) : (\n` +
+      `  <script is:inline ${MARKER_ATTR}="true">${sandbox}</script>\n` +
       `)}`
     );
   }
-  return (
-    `{${gate} && (\n` +
+  const script = (body: string) =>
     `  <script\n` +
     `    ${MARKER_ATTR}="true"\n` +
-    `    dangerouslySetInnerHTML={{ __html: '${statements.join('')}' }}\n` +
-    `  />\n` +
-    `)}`
-  );
+    `    dangerouslySetInnerHTML={{ __html: '${body}' }}\n` +
+    `  />\n`;
+  return `{${gate} ? (\n${script(statements.join(''))}) : (\n${script(sandbox)})}`;
 }
 
 /** Global the widget reads to decide it is running on a published build. */

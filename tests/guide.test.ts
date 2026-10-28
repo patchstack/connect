@@ -658,7 +658,7 @@ describe('guide', () => {
       expect(renderGuideChecklist(state, false)).toContain('Your live app does not tell Patchstack it is live yet');
       const output = renderGuideChecklist(state, false, {}, { verbose: true });
       expect(output).toContain('Run: npx @patchstack/connect scan');
-      expect(output).toContain('import.meta.env.PROD &&');
+      expect(output).toContain('import.meta.env.PROD ?');
       expect(output).toContain('window.__PATCHSTACK_PROD__=true;');
     });
 
