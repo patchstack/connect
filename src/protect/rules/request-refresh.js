@@ -11,7 +11,10 @@ export const SYNC_HEADER = 'x-patchstack-sync';
  * Two deadlines. Past `intervalMs` the rules are stale: the request waits for the fetch, because on a host
  * that freezes between requests nothing else will run it. Past `backgroundMs` (shorter) the rules are only
  * worth re-checking: the fetch starts but no request waits for it, and the caller hands it to the host to
- * finish (`waitUntil`) where it can. A background check the host cuts off is caught by the stale deadline.
+ * finish (`waitUntil`) where it can. A background check the host cuts off is caught by the stale deadline,
+ * which is why a failed background check backs off only the background deadline: counting it against the
+ * stale one would let a host that cuts every one of them off (no `waitUntil`) hold stale rules for 8 times
+ * the interval.
  *
  * `check()` returns null when nothing is due, or `{promise, wait}`: `wait` says whether this request
  * should hold for `promise`.
@@ -22,17 +25,27 @@ export function requestRefresh(tick, {intervalMs, backgroundMs = 0, timeoutMs, f
   let lastForced = -Infinity;
   let inflight = null;
   let failures = 0;
+  let backgroundFailures = 0;
   let stopped = false;
   function note(ok) {
     failures = ok ? 0 : Math.min(failures + 1, 3);
+    backgroundFailures = ok ? 0 : backgroundFailures;
     due = now() + intervalMs * (2 ** failures);
     backgroundDue = now() + backgroundMs * (2 ** failures);
   }
-  function start() {
+  // A background check that succeeded counts like any refresh; one that failed or was cut off moves only
+  // its own deadline, so the stale deadline still arrives on time.
+  function noteBackground(ok) {
+    if (ok) return note(true);
+    backgroundFailures = Math.min(backgroundFailures + 1, 3);
+    backgroundDue = now() + backgroundMs * (2 ** backgroundFailures);
+  }
+  function start(background = false) {
+    const settle = background ? noteBackground : note;
     let timer;
-    const work = Promise.resolve().then(tick).then(result => { note(result?.ok !== false); }, () => { note(false); });
+    const work = Promise.resolve().then(tick).then(result => { settle(result?.ok !== false); }, () => { settle(false); });
     // A broken transport or custom store must not hold an application request indefinitely.
-    const bounded = new Promise(resolve => { timer = setTimeout(() => { note(false); resolve(); }, timeoutMs); });
+    const bounded = new Promise(resolve => { timer = setTimeout(() => { settle(false); resolve(); }, timeoutMs); });
     inflight = Promise.race([work, bounded]).finally(() => { clearTimeout(timer); inflight = null; });
     return inflight;
   }
@@ -48,7 +61,7 @@ export function requestRefresh(tick, {intervalMs, backgroundMs = 0, timeoutMs, f
       return {promise: start(), wait: true};
     }
     if (backgroundMs > 0 && backgroundMs < intervalMs && now() >= backgroundDue) {
-      return {promise: start(), wait: false};
+      return {promise: start(true), wait: false};
     }
     return null;
   }
