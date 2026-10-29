@@ -1061,7 +1061,7 @@ Use this when the project **already has a site** but its credential is gone or r
 
 ### In a hosted builder
 
-In Lovable, Replit, Bolt and similar builders, `login` is the fix. The missing-key message also mentions `PATCHSTACK_API_KEY`: that is for CI and for hosts the person deploys to themselves, not for a builder's workspace.
+In Lovable, Replit, Bolt and similar builders, `login` is the fix. In a Lovable or Replit project the CLI's missing-key and rejected-key messages say so. Elsewhere they also name `PATCHSTACK_API_KEY`: that is for CI and for hosts the person deploys to themselves, not for a builder's workspace.
 
 - Do not ask the person for the key, do not open the builder's secrets or environment settings for it, and do not tell them to create or copy one in the Patchstack dashboard. Setup never shows the key, so the person has none to give you; `login` writes a new one.
 - If a `PATCHSTACK_API_KEY` secret was already added in the workspace, ask the person to remove it first. It is read before `.patchstackrc.local.json`, so a wrong value keeps being used after `login`.
@@ -1107,7 +1107,7 @@ You cannot complete this alone. It is deliberately a human-in-the-loop step: sta
 
 **Approving rotates the credential — the old one stops working immediately.** Anywhere it was configured needs the new value: CI secrets, hosting-platform env vars, preview environments, other developers' checkouts. Say this before they approve, not after.
 
-A hosted builder's published app runs without the key, so there is nothing to update in the builder's settings, even though `login` says to update hosting. Rotating does retire the read-only credential that app carries (see "Package and command behavior"). So after `login`, run `scan`, which writes the new one into the guard's rules file, and ask the person to publish again. Until they do, the live app cannot fetch new rules or report what it blocks.
+A hosted builder's published app runs without the key, so there is nothing to update in the builder's settings. Rotating does retire the read-only credential that app carries (see "Package and command behavior"). So after `login`, run `scan`, which writes the new one into the guard's rules file, and ask the person to publish again. Until they do, the live app cannot fetch new rules or report what it blocks.
 
 ### When it will not work
 

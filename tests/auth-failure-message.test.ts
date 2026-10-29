@@ -63,6 +63,46 @@ describe('authFailureMessage', () => {
   });
 });
 
+describe("in a hosted builder's project", () => {
+  // The person there has never been shown the key, so the only fix is `login`: a message that offers
+  // PATCHSTACK_API_KEY sends an agent to the builder's secrets form, asking for a value nobody has.
+  const LOVABLE = config({ hostedBuilder: 'lovable', environmentSource: 'builder' });
+
+  it('restores a missing key with login, and never asks for one', () => {
+    const said = authFailureMessage(401, LOVABLE)!;
+
+    expect(said).toContain('npx @patchstack/connect login');
+    expect(said).toContain('publish again');
+    expect(said).not.toContain('PATCHSTACK_API_KEY');
+  });
+
+  it('replaces a refused key with login, after any secret that would shadow it is removed', () => {
+    const said = authFailureMessage(401, { ...LOVABLE, pulseAuth: 'a-secret-40-chars-long-enough-for-this-1' })!;
+
+    expect(said).toContain('npx @patchstack/connect login');
+    expect(said).toMatch(/PATCHSTACK_API_KEY is set .*remove it first/);
+    expect(said).toContain('publish again');
+  });
+
+  it('keeps the environment variable where a deploy platform identified itself', () => {
+    // A builder's project deployed through Vercel or Netlify: that platform's environment is where the key belongs.
+    const deployed = config({ hostedBuilder: 'lovable', environmentSource: 'platform' });
+
+    expect(authFailureMessage(401, deployed)).toBe(authFailureMessage(401, config()));
+  });
+
+  it('a map upload without the key points the workspace at login', async () => {
+    const fetchMock = vi.fn();
+    vi.stubGlobal('fetch', fetchMock);
+
+    const outcome = await postInputMap(LOVABLE, { version: 3, endpoints: [] });
+
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect((outcome as { message: string }).message).toContain('npx @patchstack/connect login');
+    expect((outcome as { message: string }).message).not.toContain('PATCHSTACK_API_KEY');
+  });
+});
+
 describe('the write paths report a refusal in those terms', () => {
   it('map upload without a key is not sent, and says how to send it', async () => {
     const fetchMock = vi.fn();

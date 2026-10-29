@@ -127,6 +127,11 @@ export interface Config {
    * not this project, and it stops working within a day. Optional on the same terms as `siteUrl`.
    */
   claimToken?: string | null;
+  /**
+   * The hosted builder whose project this is (`lovable`, `replit`), from its declared dependencies, or null.
+   * Optional on the same terms as `siteUrl`.
+   */
+  hostedBuilder?: string | null;
 }
 
 /**

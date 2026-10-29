@@ -98,6 +98,28 @@ export function buildEndpointUrl(base: string, siteUuid?: string | null): string
 }
 
 /**
+ * Whether a missing or refused key is restored with `login` rather than set as PATCHSTACK_API_KEY.
+ *
+ * True in a hosted builder's project. The person there has never been shown the key, so they have
+ * nothing to paste into the builder's secrets, and the builder's workspace may not keep the git-ignored
+ * file the key lives in. A deploy platform that identified itself is the exception, even for a project a
+ * builder generated: its own environment is where the key belongs.
+ */
+export function restoresKeyWithLogin(config: Config): boolean {
+  return typeof config.hostedBuilder === 'string' && config.environmentSource !== 'platform';
+}
+
+/**
+ * What restores a builder workspace's key. `login` replaces the key, which also retires the read-only
+ * credential the published app carries; `scan` writes the new one into the guard's rules file, and only a
+ * publish takes it to the live app.
+ */
+const BUILDER_LOGIN_STEPS =
+  "In the builder's workspace, run npx @patchstack/connect login: the person approves one link, and a new key " +
+  'is saved there. Do not ask the person for a key; they have never been shown one. Then run scan, and publish ' +
+  'again so the live app gets the new read-only credential.';
+
+/**
  * What a refusal means, in terms someone can act on.
  *
  * Every Patchstack for JavaScript route that addresses an existing site requires a credential, so a rejection is now the
@@ -114,12 +136,18 @@ export function buildEndpointUrl(base: string, siteUuid?: string | null): string
  */
 export function authFailureMessage(status: number, config: Config): string | null {
   const hasCredential = typeof config.pulseAuth === 'string' && config.pulseAuth.length > 0;
+  const builder = restoresKeyWithLogin(config);
 
   if (status === 401 && !hasCredential) {
-    return "Patchstack needs this project's API key, and none is set here. Run npx @patchstack/connect login, or set PATCHSTACK_API_KEY.";
+    return builder
+      ? `Patchstack needs this project's API key, and none is set here. ${BUILDER_LOGIN_STEPS}`
+      : "Patchstack needs this project's API key, and none is set here. Run npx @patchstack/connect login, or set PATCHSTACK_API_KEY.";
   }
   if (status === 401) {
-    return "Patchstack did not accept this project's API key: it may have expired or been revoked, or the project may no longer exist. Run npx @patchstack/connect login to get a new one.";
+    return builder
+      ? "Patchstack did not accept this project's API key. If PATCHSTACK_API_KEY is set in the builder's workspace, " +
+          `remove it first: it is read before the key login saves. ${BUILDER_LOGIN_STEPS}`
+      : "Patchstack did not accept this project's API key: it may have expired or been revoked, or the project may no longer exist. Run npx @patchstack/connect login to get a new one.";
   }
   if (status === 403) {
     return 'This API key belongs to a different project. Check that siteUuid in .patchstackrc.json is the project the key was made for.';
@@ -258,7 +286,10 @@ export async function postInputMap(
   // The route refuses a map without the site's credential, so none is sent. A project copy that holds
   // the key (setup, or the development sync) uploads the same map under the same identity.
   if (!hasSiteCredential(config)) {
-    return { result: 'skipped', message: 'no API key here, so this build did not send it. The copy of the project that has the key sends it, or set PATCHSTACK_API_KEY here.' };
+    const message = restoresKeyWithLogin(config)
+      ? 'no API key here, so this build did not send it. The workspace sends it with its key; if this is the workspace, run npx @patchstack/connect login to restore the key.'
+      : 'no API key here, so this build did not send it. The copy of the project that has the key sends it, or set PATCHSTACK_API_KEY here.';
+    return { result: 'skipped', message };
   }
 
   const url = buildInputMapUrl(config.endpoint, config.siteUuid);

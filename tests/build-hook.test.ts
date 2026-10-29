@@ -93,6 +93,28 @@ describe('undeliveredReportLines', () => {
     expect(said).not.toContain('/srv/app');
   });
 
+  it("points a hosted builder's copy at login, not at a secret", () => {
+    // The direct `scan` an agent runs in a builder's workspace prints these lines too, so "set
+    // PATCHSTACK_API_KEY in the platform's environment" there sends it to the builder's secrets form.
+    const lovable = config({ hostedBuilder: 'lovable', environmentSource: 'builder' });
+    const missing = undeliveredReportLines(new PatchstackError('none configured', 'UNAUTHORIZED'), lovable, '/srv/app').join('\n');
+    const refused = undeliveredReportLines(
+      new PatchstackError('rejected', 'UNAUTHORIZED'),
+      { ...lovable, apiKey: 'a-secret', pulseAuth: 'a-secret' },
+      '/srv/app',
+    ).join('\n');
+
+    for (const said of [missing, refused]) {
+      expect(said).toContain('npx @patchstack/connect login');
+      expect(said).toContain('not');
+      expect(said).not.toContain("Set PATCHSTACK_API_KEY in the platform's environment");
+      expect(said).not.toContain('set the new value as PATCHSTACK_API_KEY');
+      expect(said).toContain('continuing the build');
+    }
+    // Still names where it looked, so a missing file can be told from an unread one.
+    expect(missing).toContain('/srv/app');
+  });
+
   it('adds no credential advice to a failure that is not about credentials', () => {
     // The control: a network failure with credential advice attached would send someone to set a variable
     // that changes nothing.

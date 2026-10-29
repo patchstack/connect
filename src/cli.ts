@@ -25,6 +25,7 @@ import {
   setRunCommand,
   hasSiteCredential,
   postRunNotice,
+  restoresKeyWithLogin,
 } from './client.js';
 import { runWasLogged } from './report-context.js';
 import { detectHostedBuilder } from './environment.js';
@@ -603,6 +604,9 @@ async function runLogin(args: ParsedArgs): Promise<number> {
   }
 
   const config = await resolveCliConfig(args);
+  // In a builder's workspace the published app runs without the key, so there is nothing to update in the
+  // builder's settings. What it does carry is the read-only credential, which the rotation also retires.
+  const builder = restoresKeyWithLogin(config);
 
   // Checked here rather than carried up from the write: the rotation happens several layers down, and the
   // claim belongs to the line that prints it.
@@ -611,7 +615,17 @@ async function runLogin(args: ParsedArgs): Promise<number> {
     // The value itself is never printed — only that it landed, and only that it is ignored when it is.
     console.log(`\n  ✓ Credential restored and saved to ${SECRET_CONFIG_FILENAME}.`);
     console.log(gitignoreOutcomeLine(ignore));
-    console.log('    The old credential no longer works. Update it in CI, hosting and other checkouts.\n');
+    // Both variables are read before the file, so either one left set keeps the old key in use.
+    for (const name of ['PATCHSTACK_API_KEY', 'PATCHSTACK_PULSE_AUTH']) {
+      if ((process.env[name] ?? '').trim() !== '') {
+        console.log(`    ${name} is set here and is read before ${SECRET_CONFIG_FILENAME}, so the old key is still the one used. Remove it.`);
+      }
+    }
+    console.log(
+      builder
+        ? '    The old credential no longer works, and neither does the read-only one the published app carries. Run scan, then publish again.\n'
+        : '    The old credential no longer works. Update it in CI, hosting and other checkouts.\n',
+    );
     return 0;
   };
 
@@ -637,7 +651,11 @@ async function runLogin(args: ParsedArgs): Promise<number> {
     // Said before approval, not after: the person deciding needs to know it is
     // a rotation, and an assistant relaying this has to pass the warning on.
     console.log("  Open the link and approve as the site's owner. This replaces the current credential,");
-    console.log('  so CI, deploys and other machines will need the new one.\n');
+    console.log(
+      builder
+        ? '  so the app has to be published again afterwards.\n'
+        : '  so CI, deploys and other machines will need the new one.\n',
+    );
   };
 
   // Nobody is watching this stream. Blocking here would hide the link until the
