@@ -774,6 +774,61 @@ describe.skipIf(!built)('the packaged bin, invoked as npm invokes it', () => {
           }
         });
 
+        it('ends a setup the claim token connected on the dashboard link Patchstack sent', async () => {
+          const dashboardUrl = 'https://app.example.com/site/123/monitoring';
+          const server = await acceptingServer({ state: 'claimed', site_id: 123, dashboard_url: dashboardUrl });
+          const dir = freshProject();
+          try {
+            const setup = await run(dir, server.endpoint, ['setup', '--claim-token', 'tok-123'], CONCISE);
+            const summary = setup.slice(setup.indexOf('──── Summary ────'), setup.lastIndexOf('\n\nYour reply to the person'));
+
+            expect(summary).toContain(`See what Patchstack found in your dashboard: ${dashboardUrl}`);
+            expect(setup.trimEnd().split('\n').at(-1)).toBe(
+              `Your reply to the person must include the summary above, as written, with this link to their Patchstack dashboard: ${dashboardUrl}`,
+            );
+            // The connect link is dropped once the site has an owner, so the file is not said to hold one.
+            expect(readConfig(dir)).not.toHaveProperty('claimUrl');
+            expect(setup).toContain('`.patchstackrc.json`: site ID, safe to commit');
+
+            const again = await run(dir, server.endpoint, ['summary'], CONCISE);
+            expect(again).toContain(`See what Patchstack found in your dashboard: ${dashboardUrl}`);
+            expect(again.trimEnd().split('\n').at(-1)).toMatch(/with this link to their Patchstack dashboard: .*\/monitor\/claim\?site=/);
+          } finally {
+            await server.close();
+            rmSync(dir, { recursive: true, force: true });
+          }
+        });
+
+        it('gives a site that already has an owner the link that takes its owner to it', async () => {
+          const server = createServer((req, res) => {
+            req.resume();
+            req.on('end', () => {
+              res.writeHead(200, { 'Content-Type': 'application/json' });
+              if (req.method === 'GET') {
+                res.end(JSON.stringify({ state: 'owned-by-you' }));
+                return;
+              }
+              res.end(JSON.stringify({ uuid: SITE, api_key: 'a-secret-40-chars-long-enough-for-this-1', stored: true, manifest_id: 7, checksum: 'abc' }));
+            });
+          });
+          await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+          const { port } = server.address() as AddressInfo;
+          const endpoint = `http://127.0.0.1:${port}/monitor/pulse/manifest`;
+          const dir = freshProject();
+          try {
+            const setup = await run(dir, endpoint, ['setup'], CONCISE);
+            const link = `http://127.0.0.1:${port}/monitor/claim?site=${SITE}`;
+
+            expect(setup).toContain(`See what Patchstack found in your dashboard: ${link}`);
+            expect(setup.trimEnd().split('\n').at(-1)).toBe(
+              `Your reply to the person must include the summary above, as written, with this link to their Patchstack dashboard: ${link}`,
+            );
+          } finally {
+            await new Promise<void>((resolve) => server.close(() => resolve()));
+            rmSync(dir, { recursive: true, force: true });
+          }
+        });
+
         it('adds the widget when setup is asked for it', async () => {
           const server = await acceptingServer();
           const dir = freshProject();

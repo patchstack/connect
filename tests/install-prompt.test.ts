@@ -52,7 +52,7 @@ describe('the install prompt', () => {
       { done: [], missing: [], checked: 3 },
       { installed: true, connected: false, synced: true, deployed: false },
       { installCommand: 'npm install --save @patchstack/connect', siteUuid: 's', claimUrl: 'https://example.com/claim', environment: 'sandbox' },
-      { widgetOnPage: true },
+      { widgetOnPage: true, dashboardUrl: null },
     ).join('\n');
     expect(summary).toMatch(/Refresh your app's preview\*\* to see the Patchstack widget/);
   });

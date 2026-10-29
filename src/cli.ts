@@ -770,8 +770,11 @@ async function runScan(
     report?: StatusReport;
     /** False prints only what this run did, without the checklist. */
     showRemainingSetup?: boolean;
-    /** What the report established, for a caller that prints its own checklist. */
-    onReported?: (outcome: Omit<Progress, 'installed'>) => void;
+    /**
+     * What the report established, for a caller that prints its own checklist, with the site's dashboard
+     * link when a claim token connected it in this run.
+     */
+    onReported?: (outcome: Omit<Progress, 'installed'>, dashboardUrl: string | null) => void;
   } = {},
 ): Promise<number> {
   const dryRun = args.flags.get('dry-run') === true;
@@ -924,11 +927,14 @@ async function runScan(
 
   // The server always returns the UUID. If we didn't have one, persist it so
   // every subsequent scan targets the same site.
+  const tokenConnected = response.claim?.state === 'claimed' || response.claim?.state === 'owned-by-you';
   if (provisioning && response.uuid !== undefined && response.uuid.length > 0) {
     const claimUrl = config.endpointTrusted !== false ? buildClaimUrl(config.endpoint, response.uuid) : null;
     const target = await persistSiteUuid(process.cwd(), response.uuid, claimUrl);
     report.done.push('Added this project to Patchstack');
-    recordChange(report, path.relative(process.cwd(), target) || target, 'site ID and connect link, safe to commit');
+    // A site the claim token connected loses the connect link before this run ends.
+    const saved = claimUrl !== null && !tokenConnected ? 'site ID and connect link' : 'site ID';
+    recordChange(report, path.relative(process.cwd(), target) || target, `${saved}, safe to commit`);
     say(`Created site ${response.uuid}. Saved it${claimUrl !== null ? ' and the link to connect it' : ''} to ${target}.`);
   }
   if (typeof response.api_key === 'string' && response.api_key.length > 0) {
@@ -974,7 +980,6 @@ async function runScan(
   } else if (claim !== null) {
     report.missing.push(notConnectedItem([`${claim.summary}.`, ...claim.hint]));
   }
-  const tokenConnected = response.claim?.state === 'claimed' || response.claim?.state === 'owned-by-you';
 
   // With a UUID in hand (existing or freshly provisioned), ensure the Patchstack widget's managed tag in
   // the source HTML shell so the next preview reload shows it. Best-effort; a failed post never reaches
@@ -997,7 +1002,7 @@ async function runScan(
     // Only the dashboard can see the live site; a production scan is reported, not confirmed.
     deployed: false,
   };
-  options.onReported?.(outcome);
+  options.onReported?.(outcome, claim?.connected === true ? claim.dashboardUrl : null);
 
   // Setup uploads its own map; this is the workspace's routine scan, which holds the key.
   if (options.report === undefined && (response.stored || response.reason === 'duplicate')) {
@@ -1560,10 +1565,12 @@ async function runSetup(args: ParsedArgs): Promise<number> {
   if (createdProject) recordChange(report, 'package.json', 'created, with a build step that copies your site into dist/');
   if (addedSelf) recordChange(report, 'package.json', 'added @patchstack/connect');
   let reported: Partial<Progress> = {};
+  let dashboardUrl: string | null = null;
   const scanCode = await runScan(args, {
     report,
-    onReported: (outcome) => {
+    onReported: (outcome, url) => {
       reported = outcome;
+      dashboardUrl = url;
     },
   });
   if (scanCode !== 0) {
@@ -1657,7 +1664,12 @@ async function runSetup(args: ParsedArgs): Promise<number> {
   // passes on. A terminal already shows the report above, and a build log is not read by a person.
   if (!isInstallOrBuildHook() && !runningInCi()) {
     const progress = guideProgress(after, reported);
-    const summary = renderSummary({ ...report, missing }, progress, context, { widgetOnPage: after.widgetInstalled });
+    // The claim link takes an owner who is signed in to the site, so it stands in when the server sent no link.
+    const link = progress.connected ? (dashboardUrl ?? context.claimUrl) : context.claimUrl;
+    const summary = renderSummary({ ...report, missing }, progress, context, {
+      widgetOnPage: after.widgetInstalled,
+      dashboardUrl: progress.connected ? link : null,
+    });
     // Kept, so `summary` can print it again: long setup output can be cut short before it reaches an assistant.
     try {
       ensureProjectDirectorySync(cwd, path.join(cwd, path.dirname(SUMMARY_FILE)));
@@ -1671,7 +1683,7 @@ async function runSetup(args: ParsedArgs): Promise<number> {
       console.log(SUMMARY_HEADING);
       for (const line of summary) console.log(line);
       console.log('');
-      console.log(summaryClosingLine(progress.connected, context.claimUrl));
+      console.log(summaryClosingLine(progress.connected, link));
     }
   }
   return 0;
@@ -1700,7 +1712,7 @@ async function syncWorkspace(config: Config): Promise<void> {
 const SUMMARY_FILE = path.join('.patchstack', 'summary.md');
 
 /** The summary the last setup wrote, with the same lines before it, so an assistant passes it on as it is. */
-function runSummary(): number {
+async function runSummary(args: ParsedArgs): Promise<number> {
   let summary: string;
   try {
     summary = readFileSync(path.join(process.cwd(), SUMMARY_FILE), 'utf8').trimEnd();
@@ -1712,14 +1724,17 @@ function runSummary(): number {
   console.log(SUMMARY_HEADING);
   console.log(summary);
   // Ends the way setup does, from what `.patchstackrc.json` records: whether the site has an owner, and its link.
-  let recorded: { claimed?: unknown; claimUrl?: unknown } = {};
+  let connected = false;
+  let link: string | null = null;
   try {
-    recorded = JSON.parse(readFileSync(path.join(process.cwd(), '.patchstackrc.json'), 'utf8')) as typeof recorded;
+    const config = await resolveCliConfig(args);
+    connected = config.claimed === true;
+    if (config.siteUuid !== null && config.endpointTrusted !== false) link = buildClaimUrl(config.endpoint, config.siteUuid);
   } catch {
     // No readable config: the closing line goes without the link.
   }
   console.log('');
-  console.log(summaryClosingLine(recorded.claimed === true, typeof recorded.claimUrl === 'string' ? recorded.claimUrl : null));
+  console.log(summaryClosingLine(connected, link));
   return 0;
 }
 
@@ -2349,7 +2364,7 @@ async function runCommand(args: ParsedArgs): Promise<number> {
     case 'vulns':
       return runVulns(args);
     case 'summary':
-      return runSummary();
+      return runSummary(args);
     case 'next':
       return runNext(args);
     case 'doctor':

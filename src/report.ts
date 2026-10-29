@@ -268,18 +268,24 @@ export const SUMMARY_INTRO = `Setup is finished. The person may not see this com
 
 /**
  * The line setup's output ends on, after the summary. It is the line an assistant is surest to read, so it
- * repeats what the intro asks and, while the site has no owner, carries the link the person needs: an
- * assistant that reports only that the command succeeded leaves them with no way to see their results.
+ * repeats what the intro asks and carries the link the person needs: the one that connects their account
+ * while the site has no owner, their dashboard once it has one. An assistant left without a link writes
+ * its own from the site ID, and no dashboard address is built from that.
  */
-export function summaryClosingLine(connected: boolean, claimUrl: string | null): string {
-  return !connected && claimUrl !== null
-    ? `Your reply to the person must include the summary above, as written, with this link to connect their Patchstack account: ${claimUrl}`
-    : 'Your reply to the person must include the summary above, as written: it is their result and their next step.';
+export function summaryClosingLine(connected: boolean, link: string | null): string {
+  if (link === null) {
+    return 'Your reply to the person must include the summary above, as written: it is their result and their next step.';
+  }
+  return connected
+    ? `Your reply to the person must include the summary above, as written, with this link to their Patchstack dashboard: ${link}`
+    : `Your reply to the person must include the summary above, as written, with this link to connect their Patchstack account: ${link}`;
 }
 
 export interface SummaryOptions {
   /** The widget tag is on the page, so the summary says where to see it. */
   widgetOnPage: boolean;
+  /** Where the person sees this site in their dashboard, once it is connected. */
+  dashboardUrl: string | null;
 }
 
 /**
@@ -310,6 +316,7 @@ export function renderSummary(report: StatusReport, progress: Progress, context:
   const lines = [...renderMarkdownLogo(), `### 🛡️ ${headline}`, ''];
   // With counts, the protection rules are listed under what was found; without them, they go here.
   if (rules !== null && !counted) lines.push(`${rules}.`, '');
+  if (progress.connected && options.dashboardUrl !== null) lines.push(`See what Patchstack found in your dashboard: ${options.dashboardUrl}`, '');
 
   // One step, the person's: the steps an assistant can take itself stay in the report above the summary.
   const next = nextProgressStep(progress);

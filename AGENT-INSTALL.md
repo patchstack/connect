@@ -137,7 +137,7 @@ The person who asked for this usually did not write the project and has never in
 - **Say what the wait is.** "It's downloading the pieces your site is built out of. Nothing is broken; this is just slow."
 - **Explain the product once, in plain words.** Your site is built out of hundreds of ready-made pieces of code. New security problems are found in them all the time. Patchstack keeps a list of the pieces this site uses and warns the owner when one of them turns out to be unsafe.
 - **Say what changes and what does not.** Nothing visitors see changes. A couple of small config files are added, and a line that lets Patchstack recognise the site.
-- **Hand over the link like a next step, not a log line.** When `setup` prints the dashboard link, say what it is for: "Open this link and sign in — that's what connects the site to your Patchstack account so you can see the reports."
+- **Hand over the link like a next step, not a log line.** When `setup` prints the dashboard link, say what it is for: "Open this link and sign in — that's what connects the site to your Patchstack account so you can see the reports." Once the site is connected, the link it prints opens the site in their dashboard: "Open this link to see what Patchstack found."
 - **Avoid these words with the user**: lockfile, dependency, manifest, npm, registry, UUID, environment variable, build artifact, package manager. Use them in commands, not in sentences addressed to the person.
 - **Say plainly whether the app is protected.** If they ask, the answer has three parts, and all three matter: the protection is installed in the project; until the site is connected to a Patchstack account that includes protection, Patchstack's rules report attacks without blocking them; and the live app has none of it until they publish again. Do not call the app protected before all three are true.
 - **Report a failure in terms of what they can do**, not what errored. If a step is genuinely unavailable on this platform, say which one and what it means for them, rather than reporting success.
@@ -677,6 +677,7 @@ AI model. A framework or hosting upgrade requires this review again.
 ## Rules
 
 - Never invent or guess a UUID — the scan provisions it, the widget silently no-ops on a fake one.
+- Never build a dashboard link from the site UUID. Dashboard addresses use a number the project does not hold, so a link made from `siteUuid` opens a missing page. Pass on the link `setup`, `status` or `next` prints.
 - Never invent or guess a claim token either. One is only ever handed to you by the person, from their own Patchstack dashboard; pass it with `--claim-token` (or `PATCHSTACK_CLAIM_TOKEN`) and nowhere else — not into `.patchstackrc.json`, not into a committed file, not into your reply.
 - The CLI never opens the dashboard link and never asks for Patchstack credentials.
 - Label hosted workspace scans with `PATCHSTACK_ENVIRONMENT=sandbox` in that process only. Leave production builds unset (a platform's own tier or production branch name, or the hosted builder the project belongs to, makes the build report `production`; a developer machine or a CI runner this does not know reports `local`) and never commit a sandbox label into files shared with production.
