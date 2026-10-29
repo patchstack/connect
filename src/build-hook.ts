@@ -71,14 +71,14 @@ export function undeliveredReportLines(err: PatchstackError, config: Config, cwd
     if (hasCredential) {
       lines.push(
         builder
-          ? "patchstack: the credential this copy holds was rejected. Replace it with npx @patchstack/connect login in the builder's workspace, not with a new secret."
+          ? "patchstack: the key here was refused. Replace it by running npx @patchstack/connect login in the builder's workspace, not by adding a new secret."
           : 'patchstack: the credential this environment holds was rejected. If `login` rotated it, set the new value as PATCHSTACK_API_KEY here.',
       );
     } else {
       lines.push(
         `patchstack: PATCHSTACK_API_KEY is not set, and neither ${SECRET_CONFIG_FILENAME} nor .patchstackrc.json in ${cwd} holds a credential.`,
         builder
-          ? `patchstack: ${SECRET_CONFIG_FILENAME} is git-ignored, so a copy of a builder's project may not have it. Restore it with npx @patchstack/connect login in the builder's workspace; do not add the key as a secret.`
+          ? `patchstack: the key is kept in ${SECRET_CONFIG_FILENAME}, which a builder may not keep. Restore it by running npx @patchstack/connect login in the builder's workspace; do not add the key as a secret.`
           : `patchstack: ${SECRET_CONFIG_FILENAME} is git-ignored, so a clean checkout never has it. Set PATCHSTACK_API_KEY in the platform's environment so builds can report.`,
       );
     }

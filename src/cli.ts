@@ -618,12 +618,12 @@ async function runLogin(args: ParsedArgs): Promise<number> {
     // Both variables are read before the file, so either one left set keeps the old key in use.
     for (const name of ['PATCHSTACK_API_KEY', 'PATCHSTACK_PULSE_AUTH']) {
       if ((process.env[name] ?? '').trim() !== '') {
-        console.log(`    ${name} is set here and is read before ${SECRET_CONFIG_FILENAME}, so the old key is still the one used. Remove it.`);
+        console.log(`    ${name} is set here and overrides the new key, so the old one is still used. Remove it.`);
       }
     }
     console.log(
       builder
-        ? '    The old credential no longer works, and neither does the read-only one the published app carries. Run scan, then publish again.\n'
+        ? '    The old key no longer works. Run scan, then publish again so the live site keeps getting new protection rules.\n'
         : '    The old credential no longer works. Update it in CI, hosting and other checkouts.\n',
     );
     return 0;

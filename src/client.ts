@@ -117,7 +117,7 @@ export function restoresKeyWithLogin(config: Config): boolean {
 const BUILDER_LOGIN_STEPS =
   "In the builder's workspace, run npx @patchstack/connect login: the person approves one link, and a new key " +
   'is saved there. Do not ask the person for a key; they have never been shown one. Then run scan, and publish ' +
-  'again so the live app gets the new read-only credential.';
+  'again so the live site keeps getting new protection rules.';
 
 /**
  * What a refusal means, in terms someone can act on.
@@ -146,7 +146,7 @@ export function authFailureMessage(status: number, config: Config): string | nul
   if (status === 401) {
     return builder
       ? "Patchstack did not accept this project's API key. If PATCHSTACK_API_KEY is set in the builder's workspace, " +
-          `remove it first: it is read before the key login saves. ${BUILDER_LOGIN_STEPS}`
+          `remove it first: it overrides the key login saves. ${BUILDER_LOGIN_STEPS}`
       : "Patchstack did not accept this project's API key: it may have expired or been revoked, or the project may no longer exist. Run npx @patchstack/connect login to get a new one.";
   }
   if (status === 403) {
