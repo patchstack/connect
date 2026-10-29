@@ -305,9 +305,9 @@ const DECLARED: Array<{ file: string; call: string; times: number; executesProje
   {
     file: 'src/bootstrap.ts',
     call: 'spawnSync',
-    times: 1,
+    times: 2,
     executesProjectCode: true,
-    what: "`setup` adds `@patchstack/connect` with the project's package manager when it is missing; like any install, that runs the project's install scripts",
+    what: "`setup` adds `@patchstack/connect` with the project's package manager when it is missing; like any install, that runs the project's install scripts. When the project only accepts an older version, setup finishes by running that installed version's own `setup`",
   },
   {
     file: 'src/protect/install/runtime/report-listeners.cjs',
