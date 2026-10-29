@@ -267,6 +267,13 @@ export const SUMMARY_HEADING = '──── Summary ────';
 export const SUMMARY_INTRO = `Setup is finished. The person may not see this command's output, only your reply. The summary below is written for them: put it in your final message exactly as written, with every section. When they say "${NEXT_REPLY}", run npx @patchstack/connect next.`;
 
 /**
+ * The line setup's output ends on when it stopped before doing anything, read by an assistant. An install
+ * that fails can scroll past in a long log; this keeps "it finished" from being the message the person gets.
+ */
+export const SETUP_NOT_FINISHED =
+  'Setup did not finish, so Patchstack is not set up and there is no link to connect it yet. Your reply to the person must say so, and what to do next.';
+
+/**
  * The line setup's output ends on, after the summary. It is the line an assistant is surest to read, so it
  * repeats what the intro asks and carries the link the person needs: the one that connects their account
  * while the site has no owner, their dashboard once it has one. An assistant left without a link writes

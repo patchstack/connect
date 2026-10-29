@@ -56,7 +56,7 @@ import {
 } from './config.js';
 import { painter, renderBox, renderFindings, renderLogo } from './art.js';
 import { detectHost, HOST_NAMES, parseHost, renderGoLive } from './go-live.js';
-import { createSiteProject, installSelf, isPlainHtmlSite } from './bootstrap.js';
+import { createSiteProject, installedCli, installSelf, isPlainHtmlSite, runInstalledSetup } from './bootstrap.js';
 import {
   buildInjectionSnippet,
   buildSandboxSnippet,
@@ -97,6 +97,7 @@ import {
   renderStatus,
   renderSummary,
   SUMMARY_HEADING,
+  SETUP_NOT_FINISHED,
   SUMMARY_INTRO,
   summaryClosingLine,
   type StatusReport,
@@ -1563,10 +1564,25 @@ async function runSetup(args: ParsedArgs): Promise<number> {
   const addedSelf = before.installed === null;
   if (addedSelf) {
     console.log('Adding Patchstack to this project…');
-    const installed = installSelf(cwd, before.packageManager, packageVersion(), { quiet: process.stdout.isTTY !== true });
+    const quiet = process.stdout.isTTY !== true;
+    const running = packageVersion();
+    // Its failure is not shown: the install below is the one that settles it, and says why if it fails too.
+    let installed = installSelf(cwd, before.packageManager, running, { quiet, showFailure: false });
     before = await collectGuideState(cwd);
     if (!installed.ok || before.installed === null) {
-      console.error(`Could not add Patchstack to this project. Run this, then run setup again:\n  ${installCommand(before.packageManager)}`);
+      // A package manager can refuse a version for being new: pnpm 11 and later skip anything published in the
+      // last day, which is often the release running here. Asked for no version, it picks the newest it allows.
+      installed = installSelf(cwd, before.packageManager, null, { quiet });
+      before = await collectGuideState(cwd);
+      const cli = installed.ok && before.installed !== null && before.installed.version !== running ? installedCli(cwd) : null;
+      if (cli !== null) {
+        console.log(`This project accepts @patchstack/connect ${before.installed!.version}, not ${running}, so setup continues with ${before.installed!.version}.`);
+        return runInstalledSetup(cli, process.argv.slice(2), cwd);
+      }
+    }
+    if (!installed.ok || before.installed === null) {
+      console.error(`Could not add Patchstack to this project, so setup did not finish. Run this, then run setup again:\n  ${installCommand(before.packageManager)}`);
+      if (quiet) console.log(SETUP_NOT_FINISHED);
       return 1;
     }
   }

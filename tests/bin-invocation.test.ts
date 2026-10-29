@@ -129,6 +129,74 @@ describe.skipIf(!built)('the packaged bin, invoked as npm invokes it', () => {
     }
   });
 
+  it('says plainly that setup did not finish when Patchstack cannot be added at all', () => {
+    // An assistant reads this output and tells the person how it went. The install error can scroll past
+    // in a long log, so the last line is the one that says it did not finish.
+    const project = mkdtempSync(path.join(tmpdir(), 'ps-bin-noinstall-'));
+    const fakeBin = mkdtempSync(path.join(tmpdir(), 'ps-bin-fake-pnpm-'));
+    try {
+      writeFileSync(path.join(project, 'package.json'), JSON.stringify({ name: 'shop', version: '1.0.0' }));
+      writeFileSync(path.join(project, 'pnpm-lock.yaml'), "lockfileVersion: '9.0'\n");
+      writeFileSync(path.join(fakeBin, 'pnpm'), '#!/bin/sh\nexit 1\n', { mode: 0o755 });
+      const result = spawnSync(process.execPath, [bin, 'setup', '--widget'], {
+        cwd: project,
+        encoding: 'utf8',
+        env: { ...process.env, PATH: `${fakeBin}${path.delimiter}${process.env.PATH}`, PATCHSTACK_ENDPOINT: 'http://127.0.0.1:1/monitor/pulse/manifest' },
+      });
+
+      expect(result.status).toBe(1);
+      expect(result.stderr).toContain('setup did not finish');
+      expect(result.stdout.trimEnd().split('\n').at(-1)).toMatch(/^Setup did not finish, so Patchstack is not set up/);
+      expect(existsSync(path.join(project, '.patchstackrc.json'))).toBe(false);
+    } finally {
+      rmSync(project, { recursive: true, force: true });
+      rmSync(fakeBin, { recursive: true, force: true });
+    }
+  });
+
+  it('finishes with the newest version the project accepts when it refuses the one running', () => {
+    // pnpm 11 and later skip a version published in the last day, so the release that `npx` just fetched is
+    // often refused. Without a version the package manager picks one it allows, and that version's own setup
+    // takes over, so the files written match the package the app imports.
+    const project = mkdtempSync(path.join(tmpdir(), 'ps-bin-older-'));
+    const fakeBin = mkdtempSync(path.join(tmpdir(), 'ps-bin-fake-pnpm-'));
+    try {
+      writeFileSync(path.join(project, 'package.json'), JSON.stringify({ name: 'shop', version: '1.0.0' }));
+      writeFileSync(path.join(project, 'pnpm-lock.yaml'), "lockfileVersion: '9.0'\n");
+      const installed = path.join(project, 'node_modules', '@patchstack', 'connect');
+      // Refuses `add @patchstack/connect@<version>`; `add @patchstack/connect` installs an older stand-in whose
+      // CLI records the arguments it was handed.
+      writeFileSync(
+        path.join(fakeBin, 'pnpm'),
+        [
+          '#!/bin/sh',
+          'case "$2" in *@patchstack/connect@*) echo "ERR_PNPM_NO_MATURE_MATCHING_VERSION" >&2; exit 1;; esac',
+          `mkdir -p '${installed}'`,
+          `printf '%s' '{"name":"@patchstack/connect","version":"0.0.1","bin":{"patchstack-connect":"./cli.js"}}' > '${installed}/package.json'`,
+          `printf '%s' 'require("fs").writeFileSync("handed.txt", process.argv.slice(2).join(" ")); console.log("older setup ran"); process.exit(0);' > '${installed}/cli.js'`,
+          `printf '%s' '{"name":"shop","version":"1.0.0","dependencies":{"@patchstack/connect":"^0.0.1"}}' > '${project}/package.json'`,
+          'exit 0',
+        ].join('\n') + '\n',
+        { mode: 0o755 },
+      );
+      const result = spawnSync(process.execPath, [bin, 'setup', '--widget'], {
+        cwd: project,
+        encoding: 'utf8',
+        env: { ...process.env, PATH: `${fakeBin}${path.delimiter}${process.env.PATH}`, PATCHSTACK_ENDPOINT: 'http://127.0.0.1:1/monitor/pulse/manifest' },
+      });
+
+      expect(result.status).toBe(0);
+      expect(result.stdout).toContain('setup continues with 0.0.1');
+      expect(result.stdout).toContain('older setup ran');
+      expect(readFileSync(path.join(project, 'handed.txt'), 'utf8')).toBe('setup --widget');
+      // The newer setup stopped at the hand-over: the older one is the only one that wrote anything.
+      expect(existsSync(path.join(project, '.patchstackrc.json'))).toBe(false);
+    } finally {
+      rmSync(project, { recursive: true, force: true });
+      rmSync(fakeBin, { recursive: true, force: true });
+    }
+  });
+
   /**
    * `--dry-run` is how someone finds out what a scan would send before sending it, so a field the preview
    * omits is a field nobody gets to object to. The request body is built once and used for both, and this

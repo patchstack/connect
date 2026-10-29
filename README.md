@@ -373,7 +373,9 @@ The explicit `dev -- <command>` wrapper also runs your selected application comm
 dependency manifest they read, or only its checksum from a production build that has no API key.
 One exception to "only read and write files": when `@patchstack/connect` is not in the project yet,
 `setup` adds it with your package manager (`npm install --save`, `pnpm add`, `yarn add` or `bun add`),
-and like any install that runs the project's install scripts.
+and like any install that runs the project's install scripts. If the package manager refuses the version
+that is running (pnpm 11 and later skip versions published in the last day), `setup` lets it add the newest
+version it allows, and then runs that installed version's `setup` with the same arguments.
 
 ## Configuration
 
