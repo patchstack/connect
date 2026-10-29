@@ -126,6 +126,14 @@ describe('resolveConfig', () => {
     });
   });
 
+  it("names the hosted builder a project belongs to, from its own package.json", async () => {
+    await writeFile(path.join(cwd, 'package.json'), JSON.stringify({ devDependencies: { 'lovable-tagger': '^1.1.0' } }));
+    expect((await resolveConfig({ cwd, cliSiteUuid: VALID_UUID })).hostedBuilder).toBe('lovable');
+
+    await writeFile(path.join(cwd, 'package.json'), JSON.stringify({ dependencies: { react: '^19.0.0' } }));
+    expect((await resolveConfig({ cwd, cliSiteUuid: VALID_UUID })).hostedBuilder).toBeNull();
+  });
+
   it('reads PATCHSTACK_TIMEOUT_MS from the environment', async () => {
     process.env.PATCHSTACK_TIMEOUT_MS = '5000';
     const config = await resolveConfig({ cwd, cliSiteUuid: VALID_UUID });

@@ -1,5 +1,6 @@
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
+import { restoresKeyWithLogin } from './client.js';
 import { SECRET_CONFIG_FILENAME } from './config.js';
 import { reportTrigger } from './report-context.js';
 import type { Config, PatchstackError } from './types.js';
@@ -53,7 +54,9 @@ export function isPreBundleBuildHook(env: NodeJS.ProcessEnv = process.env, cwd =
  *
  * The error's own message names the remedy for a developer machine. A build environment needs a different
  * one: it never has the credential file, `login` refuses to run there, and the only fix is the platform's
- * environment. Said for the credential cases only; a network or server failure has nothing to set.
+ * environment. A hosted builder's project is the exception: its workspace holds the key and sends the
+ * package list, so a key that is missing there is restored with `login`, never added as a secret (see
+ * restoresKeyWithLogin). Said for the credential cases only; a network or server failure has nothing to set.
  *
  * When no credential was found, the line names every source that was checked and where. Somebody who can
  * see the file on their own machine reads "none is configured" as "the file was not read", and the log is
@@ -64,14 +67,19 @@ export function undeliveredReportLines(err: PatchstackError, config: Config, cwd
 
   if (err.code === 'UNAUTHORIZED') {
     const hasCredential = typeof config.pulseAuth === 'string' && config.pulseAuth.length > 0;
+    const builder = restoresKeyWithLogin(config);
     if (hasCredential) {
       lines.push(
-        'patchstack: the credential this environment holds was rejected. If `login` rotated it, set the new value as PATCHSTACK_API_KEY here.',
+        builder
+          ? "patchstack: the key here was refused. Replace it by running npx @patchstack/connect login in the builder's workspace, not by adding a new secret."
+          : 'patchstack: the credential this environment holds was rejected. If `login` rotated it, set the new value as PATCHSTACK_API_KEY here.',
       );
     } else {
       lines.push(
         `patchstack: PATCHSTACK_API_KEY is not set, and neither ${SECRET_CONFIG_FILENAME} nor .patchstackrc.json in ${cwd} holds a credential.`,
-        `patchstack: ${SECRET_CONFIG_FILENAME} is git-ignored, so a clean checkout never has it. Set PATCHSTACK_API_KEY in the platform's environment so builds can report.`,
+        builder
+          ? `patchstack: the key is kept in ${SECRET_CONFIG_FILENAME}, which a builder may not keep. Restore it by running npx @patchstack/connect login in the builder's workspace; do not add the key as a secret.`
+          : `patchstack: ${SECRET_CONFIG_FILENAME} is git-ignored, so a clean checkout never has it. Set PATCHSTACK_API_KEY in the platform's environment so builds can report.`,
       );
     }
   }

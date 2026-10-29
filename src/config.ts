@@ -191,9 +191,10 @@ export async function resolveConfig(options: ResolveConfigOptions): Promise<Conf
   // environment, so `"environment": "sandbox"` written there for a workspace would otherwise ship the
   // live site without its marker, showing visitors the owner's panel. A label meant for one process
   // belongs in that process's PATCHSTACK_ENVIRONMENT, which still wins outright.
+  const hostedBuilder = detectHostedBuilder(options.cwd);
   const inferred =
     fromEnv.environment === undefined
-      ? inferEnvironment(process.env, detectHostedBuilder(options.cwd))
+      ? inferEnvironment(process.env, hostedBuilder)
       : null;
   const fileLabelOverruled =
     fromEnv.environment === undefined &&
@@ -256,6 +257,7 @@ export async function resolveConfig(options: ResolveConfigOptions): Promise<Conf
     widget: fromFile.widget !== false,
     claimed: fromFile.claimed === true,
     claimToken,
+    hostedBuilder,
   };
 }
 

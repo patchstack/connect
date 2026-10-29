@@ -198,6 +198,8 @@ When the person asks for any of these after setup, run the command and pass on w
 
 Say only what the output says. Do not explain why setup could not finish a part, and do not add steps the output did not print. Never ask the person to copy their API key into a builder's settings or secrets: in an app that runs in the browser, a key saved there can end up in the published page. Never offer to wire protection in by hand when the output says no server was found. `go-live` prints the steps for the person's host when they are ready.
 
+If a later `scan` says the project's API key is missing or was not accepted, run `login` as in "Recovering a lost credential — `login`". Do not ask the person for the key.
+
 Leave out the commands you ran, settings, and anything that worked as expected; the setup output already lists which files changed. If the person asks for the detail, give it then. `--verbose` prints it.
 
 **When the person later asks you to deploy, re-read "Deploying" below before running anything.** A deploy that skips the build, or uploads the project folder, publishes the API key and leaves the live site unrecognised.
@@ -1054,9 +1056,17 @@ is what fits a conversation.
 
 ## Recovering a lost credential — `login`
 
-Use this when the project **already has a site** but its credential is gone or rejected: `.patchstackrc.local.json` was deleted, the repo was cloned without it (it is git-ignored, so a fresh clone never has it), a container was recycled, or ingest started failing with 401. The site UUID `login` needs comes from the committed `.patchstackrc.json`.
+Use this when the project **already has a site** but its credential is gone or rejected: `.patchstackrc.local.json` was deleted, the repo was cloned without it (it is git-ignored, so a fresh clone never has it), a container was recycled, a hosted builder's workspace no longer has it (a builder may not keep git-ignored files), or ingest started failing with 401. The site UUID `login` needs comes from the committed `.patchstackrc.json`.
 
 > **Do not "fix" a missing credential by deleting `.patchstackrc.json` and running `scan` again.** That file holds the site UUID, and without it `scan` provisions a **second site** — the original, with all its history and its widget tag already live on the deployed page, is orphaned. `login` recovers the credential for the site you already have.
+
+### In a hosted builder
+
+In Lovable, Replit, Bolt and similar builders, `login` is the fix. In a Lovable or Replit project the CLI's missing-key and rejected-key messages say so. Elsewhere they also name `PATCHSTACK_API_KEY`: that is for CI and for hosts the person deploys to themselves, not for a builder's workspace.
+
+- Do not ask the person for the key, do not open the builder's secrets or environment settings for it, and do not tell them to create or copy one in the Patchstack dashboard. Setup never shows the key, so the person has none to give you; `login` writes a new one.
+- If a `PATCHSTACK_API_KEY` secret was already added in the workspace, ask the person to remove it first. It is read before `.patchstackrc.local.json`, so a wrong value keeps being used after `login`.
+- After `login`, run `scan`, then ask the person to publish again. See "Consequences to tell the user about" for why.
 
 ### What it does
 
@@ -1097,6 +1107,8 @@ You cannot complete this alone. It is deliberately a human-in-the-loop step: sta
 ### Consequences to tell the user about
 
 **Approving rotates the credential — the old one stops working immediately.** Anywhere it was configured needs the new value: CI secrets, hosting-platform env vars, preview environments, other developers' checkouts. Say this before they approve, not after.
+
+A hosted builder's published app runs without the key, so there is nothing to update in the builder's settings. Rotating does retire the read-only credential that app carries (see "Package and command behavior"). So after `login`, run `scan`, which writes the new one into the guard's rules file, and ask the person to publish again. Until they do, the live app cannot fetch new rules or report what it blocks.
 
 ### When it will not work
 
