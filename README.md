@@ -429,7 +429,7 @@ A `pulseAuth` field is still read if present, and `PATCHSTACK_PULSE_AUTH` still 
 
 ### Connecting straight to your account
 
-The dashboard's "Connect website" prompt carries a **claim token**. Pass it to the first `setup` (or `scan`) and the site it provisions is created in your account, so there is no dashboard link to open afterwards:
+The dashboard's "Connect website" prompt carries a **claim token**. Pass it to the first `setup` (or `scan`) and the site it provisions is created in your account, so there is nothing left to connect: `setup` ends on the link to the site in your dashboard instead:
 
 ```bash
 npx @patchstack/connect setup --claim-token <token>

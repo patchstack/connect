@@ -14,6 +14,7 @@ import {
   SUMMARY_AGAIN,
   SUMMARY_HEADING,
   SUMMARY_INTRO,
+  summaryClosingLine,
   type StatusReport,
 } from '../src/report.js';
 import type { NextStepContext, Progress } from '../src/progress.js';
@@ -185,7 +186,7 @@ const LOGO = ['```', '████████  P A T C H S T A C K', '▄▄▄
 
 describe('renderSummary', () => {
   it('writes the message to pass on: findings as the heading, what to do with the full link, and the word to say next', () => {
-    const lines = renderSummary(report({ rules: 12 }), notConnected, context, { widgetOnPage: true });
+    const lines = renderSummary(report({ rules: 12 }), notConnected, context, { widgetOnPage: true, dashboardUrl: null });
 
     expect(lines).toEqual([
       ...LOGO,
@@ -212,7 +213,7 @@ describe('renderSummary', () => {
       { file: SECRET_CONFIG_FILENAME, what: 'API key, ignored by git. Never commit it' },
       { file: 'index.html', what: 'the Patchstack widget' },
     ];
-    const lines = renderSummary(report({ checked: 42, findings: clean, missing: [noServerItem], changed }), notConnected, context, { widgetOnPage: true });
+    const lines = renderSummary(report({ checked: 42, findings: clean, missing: [noServerItem], changed }), notConnected, context, { widgetOnPage: true, dashboardUrl: null });
 
     expect(lines).toEqual([
       ...LOGO,
@@ -232,7 +233,7 @@ describe('renderSummary', () => {
 
   it('makes no protection claims for an app with no server, and leaves the missing server to the dashboard', () => {
     const input = report({ rules: 12, confirmed: ['Rules for this app are ready.'], missing: [noServerItem] });
-    const text = renderSummary(input, notConnected, context, { widgetOnPage: false }).join('\n');
+    const text = renderSummary(input, notConnected, context, { widgetOnPage: false, dashboardUrl: null }).join('\n');
 
     expect(text).not.toMatch(/protection rules|turn on protection|Restart your app/);
     expect(text).not.toContain('No server was found');
@@ -244,9 +245,9 @@ describe('renderSummary', () => {
 
   it('says only the parts of the project it changed', () => {
     const installOnly = [{ file: 'package.json', what: INSTALL_SCRIPT_CHANGE }];
-    expect(renderSummary(report({ changed: installOnly }), notConnected, context, { widgetOnPage: false }).join('\n')).toContain('_Patchstack is now part of your install._');
-    expect(renderSummary(report(), notConnected, context, { widgetOnPage: false }).join('\n')).not.toContain('part of your');
-    expect(renderSummary(report(), notConnected, context, { widgetOnPage: false }).join('\n')).not.toContain('API key');
+    expect(renderSummary(report({ changed: installOnly }), notConnected, context, { widgetOnPage: false, dashboardUrl: null }).join('\n')).toContain('_Patchstack is now part of your install._');
+    expect(renderSummary(report(), notConnected, context, { widgetOnPage: false, dashboardUrl: null }).join('\n')).not.toContain('part of your');
+    expect(renderSummary(report(), notConnected, context, { widgetOnPage: false, dashboardUrl: null }).join('\n')).not.toContain('API key');
   });
 
   it('gives the person one step and leaves the steps an assistant takes to the report', () => {
@@ -258,7 +259,7 @@ describe('renderSummary', () => {
       { key: 'dev-only-install', text: 'Installed as a development tool only', plain: { text: 'Patchstack is installed for development only', hint: ['Run: npm install --save-prod @patchstack/connect'] } },
     ];
     const input = report({ confirmed: [confirmed], missing });
-    const text = renderSummary(input, notConnected, context, { widgetOnPage: false }).join('\n');
+    const text = renderSummary(input, notConnected, context, { widgetOnPage: false, dashboardUrl: null }).join('\n');
 
     expect(text).toContain('#### 👉 Connect your Patchstack account');
     expect(text).toContain(confirmed);
@@ -267,8 +268,22 @@ describe('renderSummary', () => {
     for (const item of missing.slice(1)) expect(status).toContain(item.plain.text);
   });
 
+  it('gives a connected site its dashboard link, so an assistant never has to write one', () => {
+    const dashboardUrl = 'https://app.example.com/site/123/monitoring';
+    const lines = renderSummary(report({ missing: [] }), { ...notConnected, connected: true }, context, { widgetOnPage: false, dashboardUrl });
+
+    expect(lines.slice(LOGO.length, LOGO.length + 4)).toEqual([
+      '### 🛡️ Checked 89 packages: 5 vulnerabilities in 3 packages (highest severity: high)',
+      '',
+      `See what Patchstack found in your dashboard: ${dashboardUrl}`,
+      '',
+    ]);
+    expect(lines.join('\n')).not.toContain(context.claimUrl);
+    expect(renderSummary(report(), notConnected, context, { widgetOnPage: false, dashboardUrl }).join('\n')).not.toContain(dashboardUrl);
+  });
+
   it('never states a count the run did not get', () => {
-    const lines = renderSummary(report({ findings: null, rules: 12 }), notConnected, context, { widgetOnPage: false });
+    const lines = renderSummary(report({ findings: null, rules: 12 }), notConnected, context, { widgetOnPage: false, dashboardUrl: null });
     expect(lines[5]).toBe('### 🛡️ Checked 89 packages, now watching them');
     expect(lines[7]).toBe('12 protection rules available.');
   });
@@ -321,6 +336,20 @@ describe('renderNext', () => {
   it('says publish, not protect, for an app with no server', () => {
     const lines = renderNext({ ...notConnected, connected: true }, { ...context, noServer: true }, options);
     expect(lines).toContain('#### 👉 Publish your app');
+  });
+});
+
+describe('summaryClosingLine', () => {
+  it('carries the link to connect until the site has an owner, then the link to its dashboard', () => {
+    expect(summaryClosingLine(false, context.claimUrl)).toBe(
+      `Your reply to the person must include the summary above, as written, with this link to connect their Patchstack account: ${context.claimUrl}`,
+    );
+    expect(summaryClosingLine(true, 'https://app.example.com/site/7/monitoring')).toBe(
+      'Your reply to the person must include the summary above, as written, with this link to their Patchstack dashboard: https://app.example.com/site/7/monitoring',
+    );
+    expect(summaryClosingLine(true, null)).toBe(
+      'Your reply to the person must include the summary above, as written: it is their result and their next step.',
+    );
   });
 });
 
