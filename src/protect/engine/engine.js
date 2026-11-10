@@ -873,8 +873,15 @@ function ruleAppliesTo(when, resolver) {
       if (!methods.includes(actual) && !(actual === 'HEAD' && methods.includes('GET'))) return false;
     }
     if (when.path) {
+      // Two readings of the path, and the scope covers the request when either matches: the normalized
+      // URI, and the raw target as the transport received it (`REQUEST_PATH`, decoded once). A router
+      // matches the raw target, which can differ from the normalized one — a `#…` still on the request
+      // line, or `.`/`..` segments a URL parser resolved away — and a scope must not stand aside for a
+      // request its handler runs. Both are cut at the first `?` or `#`, as a router cuts them.
+      const pattern = String(when.path);
       const uri = String(resolver.resolve('server.REQUEST_URI')[0] ?? '/');
-      if (!pathMatches(String(when.path), uri.split('?')[0])) return false;
+      const paths = [uri.split(/[?#]/, 1)[0], ...resolver.resolve('server.REQUEST_PATH')];
+      if (!paths.some((path) => pathMatches(pattern, String(path)))) return false;
     }
     return true;
   } catch {

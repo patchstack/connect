@@ -151,6 +151,41 @@ describe('when.path — the glob form', () => {
   });
 });
 
+describe('when.path — the raw target an Express request carries', () => {
+  const bodyRule = {
+    id: 'scoped-body',
+    title: 'scoped-body',
+    when: { path: '/api/fetch' },
+    rule_v2: [{ parameter: 'post.url', match: { type: 'contains', value: 'internal' } }],
+  };
+  const blocked = async (originalUrl: string, url: string) => {
+    const p: any = await createProtection({ rules: { firewall: [bodyRule], whitelists: [] } as never, mode: 'block' });
+    const req = {
+      method: 'POST', url: originalUrl, originalUrl, headers: { 'content-type': 'application/json', host: 'app.test' },
+      query: {}, body: { url }, cookies: {}, files: {}, socket: { remoteAddress: '198.51.100.7' }, readableEnded: true,
+    };
+    let status = 0;
+    // Settles on whichever comes first: the guard passing the request on, or it answering with a block.
+    await new Promise<void>((resolve) => {
+      const res: any = {
+        statusCode: 200, setHeader() {}, getHeader() {}, removeHeader() {},
+        status(code: number) { status = code; return this; }, type() { return this; },
+        send() { resolve(); return this; }, json() { resolve(); return this; }, end() { resolve(); return this; },
+      };
+      p.express()(req, res, () => resolve());
+    });
+    p.stop();
+    return status === 403;
+  };
+
+  it('screens a body when the request line carries a #fragment that Express routes past', async () => {
+    expect(await blocked('/api/fetch#x', 'http://internal/')).toBe(true);
+    expect(await blocked('/api/fetch#x?a=1', 'http://internal/')).toBe(true);
+    expect(await blocked('/api/fetch#x', 'https://example.com/')).toBe(false);
+    expect(await blocked('/api/fetchx#/api/fetch', 'http://internal/')).toBe(false);
+  });
+});
+
 describe('when.method — the scope the generated rule already knew', () => {
   it('fires only on the named method', () => {
     expect(fires({ path: '/api/import', method: 'POST' }, '/api/import', 'POST')).toBe(true);
