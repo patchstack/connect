@@ -74,9 +74,9 @@ describe('request: structured-value evasion', () => {
   describe('structural rules beside a value nested far past any recursion limit', () => {
     let deep: any = [];
     for (let i = 0; i < 20_000; i++) deep = [deep];
-    const evaluate = (rule: any, body: any) =>
+    const evaluate = (rule: any, body: any, raw: { _rawBody?: string } = { _rawBody: '{}' }) =>
       new RuleEngine({ firewall: [{ id: 'structural', ...rule }] }).evaluate({
-        method: 'POST', url: '/', originalUrl: '/', query: {}, headers: {}, body, _rawBody: '{}',
+        method: 'POST', url: '/', originalUrl: '/', query: {}, headers: {}, body, ...raw,
       } as any);
 
     it('array_key_value still reaches the leaf beside it', () => {
@@ -92,9 +92,11 @@ describe('request: structured-value evasion', () => {
       expect(evaluate(rule, { tags: [deep, 'user'] }).blocked).toBe(false);
     });
 
-    it('all still sees a payload elsewhere in the body', () => {
+    it('all still sees a payload elsewhere in the body, where the runtime cannot serialise it', () => {
+      // No verbatim body, as on Express: the engine rebuilds one. Some Node versions' JSON.stringify
+      // overflows at this depth, and the rebuilt text is what still carries the payload then.
       const rule = { rule_v2: [{ parameter: 'all', match: { type: 'contains', value: '<script' } }] };
-      expect(evaluate(rule, { deep, c: '<script>x</script>' }).blocked).toBe(true);
+      expect(evaluate(rule, { deep, c: '<script>x</script>' }, {}).blocked).toBe(true);
     });
   });
 
