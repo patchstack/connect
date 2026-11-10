@@ -65,6 +65,25 @@ describe('multipart/form-data parsing', () => {
     expect(shaped._rawBody).toContain('<script>');
   });
 
+  it.each([
+    ['a decoy parameter whose name ends in boundary', `multipart/form-data; xboundary=decoy; boundary=${BOUNDARY}`],
+    ['a decoy boundary= inside an earlier quoted value', `multipart/form-data; note="a;boundary=decoy"; boundary=${BOUNDARY}`],
+    ['a quoted boundary', `multipart/form-data; boundary="${BOUNDARY}"`],
+  ])('splits on the boundary the application parses, past %s', async (_label, contentType) => {
+    const body = multipart([
+      { name: 'title', value: 'hello' },
+      { name: 'comment', value: '<script>x</script>' },
+      { name: 'avatar', value: '<svg onload=alert(1)>', filename: 'a.svg', type: 'image/svg+xml' },
+    ]);
+    const request = () => new Request('https://app/upload', { method: 'POST', headers: { 'content-type': contentType }, body });
+
+    const form = await request().formData();
+    const shaped: any = await fromFetchRequest(request());
+    expect(shaped.body.title).toBe(form.get('title'));
+    expect(shaped.body.comment).toBe(form.get('comment'));
+    expect(shaped.files.avatar).toMatchObject({ filename: (form.get('avatar') as File).name, type: 'image/svg+xml' });
+  });
+
   it('a post.<field> rule blocks a malicious multipart field', async () => {
     const rules = {
       firewall: [{ id: 'xss', title: 'xss', rule_v2: [{ parameter: ['post.title'], match: { type: 'contains', value: '<script' } }] }],
