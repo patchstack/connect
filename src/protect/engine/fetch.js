@@ -157,7 +157,7 @@ export function parseBody(rawBody, contentType) {
   const isAmbiguous = ct === '' || ct.startsWith('text/plain') || ct.includes('csp-report') || ct.includes('/json');
 
   if (isMultipart) {
-    const boundary = /boundary=("?)([^";]+)\1/i.exec(contentType)?.[2];
+    const boundary = contentTypeParameters(contentType).get('boundary');
     if (boundary) return parseMultipart(rawBody, boundary);
     return { body: {}, files: undefined };
   }
@@ -206,6 +206,55 @@ export function parseMultipart(rawBody, boundary) {
     }
   }
   return { body, files };
+}
+
+const TOKEN = /^[!#$%&'*+.^_`|~0-9A-Za-z-]+$/;
+
+/**
+ * The parameters of a Content-Type value, keyed by lower-cased name.
+ *
+ * Read the way `Request.formData()` (the WHATWG MIME type parser) and busboy read them, so the guard
+ * splits a multipart body on the same boundary the application's parser does: parameters are walked in
+ * order, a quoted value keeps any `;` or `=` it holds, the first occurrence of a name wins, and a
+ * parameter whose name is not a plain token — `boundary =x`, say — is skipped rather than trimmed into
+ * a match. Searching the header text instead would let `xboundary=`, or `boundary=` inside an earlier
+ * quoted value, stand in for the real parameter.
+ */
+function contentTypeParameters(value) {
+  const text = String(value ?? '');
+  const params = new Map();
+  let i = text.indexOf(';');
+  if (i === -1) return params;
+  while (i < text.length) {
+    i++; // past ';'
+    while (text[i] === ' ' || text[i] === '\t' || text[i] === '\r' || text[i] === '\n') i++;
+    let end = i;
+    while (end < text.length && text[end] !== ';' && text[end] !== '=') end++;
+    const name = text.slice(i, end).toLowerCase();
+    i = end;
+    if (text[i] !== '=') continue;
+    i++;
+    let val;
+    if (text[i] === '"') {
+      i++;
+      val = '';
+      while (i < text.length && text[i] !== '"') {
+        if (text[i] === '\\' && i + 1 < text.length) i++;
+        val += text[i++];
+      }
+      while (i < text.length && text[i] !== ';') i++;
+    } else {
+      end = text.indexOf(';', i);
+      if (end === -1) end = text.length;
+      let last = end;
+      while (last > i && (text[last - 1] === ' ' || text[last - 1] === '\t' || text[last - 1] === '\r' || text[last - 1] === '\n')) last--;
+      val = text.slice(i, last);
+      i = end;
+      if (val === '') continue;
+    }
+    if (TOKEN.test(name) && !params.has(name)) params.set(name, val);
+  }
+  return params;
 }
 
 /**
