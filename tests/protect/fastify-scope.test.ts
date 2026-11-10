@@ -134,6 +134,35 @@ describe('the scaffolded Fastify plugin', () => {
     await app.close();
   });
 
+  it('screens a HEAD request against a GET-scoped rule, which Fastify sends to the GET handler', async () => {
+    const patchstackFastify = await loadPlugin({
+      firewall: [
+        {
+          id: 'rm-fastify-head',
+          title: 'test rule',
+          when: { path: '/fetch', method: 'GET' },
+          rule_v2: [{ parameter: 'get.url', match: { type: 'contains', value: 'internal' } }],
+        },
+      ],
+      whitelists: [],
+    } as never);
+    const app = Fastify();
+    const reached: string[] = [];
+
+    await app.register(patchstackFastify as never);
+    app.get('/fetch', async (request) => {
+      reached.push(`${request.method} ${(request.query as { url: string }).url}`);
+      return 'ok';
+    });
+
+    expect((await app.inject({ method: 'HEAD', url: '/fetch?url=public' })).statusCode).toBe(200);
+    expect(reached).toEqual(['HEAD public']);
+    expect((await app.inject({ method: 'HEAD', url: '/fetch?url=internal' })).statusCode).toBe(403);
+    expect(reached).toEqual(['HEAD public']);
+
+    await app.close();
+  });
+
   it('screens a route inside a sibling plugin', async () => {
     // How a real application is organised: routes live in their own plugins, registered beside the guard
     // rather than under it. An encapsulated hook reaches none of them.

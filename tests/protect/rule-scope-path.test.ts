@@ -157,6 +157,13 @@ describe('when.method — the scope the generated rule already knew', () => {
     expect(fires({ path: '/api/import', method: 'POST' }, '/api/import', 'GET')).toBe(false);
     expect(fires({ path: '/api/import', method: ['POST', 'PUT'] }, '/api/import', 'PUT')).toBe(true);
   });
+
+  it('covers HEAD with a GET scope, since routers run the GET handler for it', () => {
+    expect(fires({ path: '/api/fetch', method: 'GET' }, '/api/fetch', 'HEAD')).toBe(true);
+    expect(fires({ path: '/api/fetch', method: ['post', 'get'] }, '/api/fetch', 'head')).toBe(true);
+    expect(fires({ path: '/api/fetch', method: 'POST' }, '/api/fetch', 'HEAD')).toBe(false);
+    expect(fires({ path: '/api/fetch', method: 'HEAD' }, '/api/fetch', 'GET')).toBe(false);
+  });
 });
 
 describe('the response phase scopes on the same reading', () => {
