@@ -148,33 +148,47 @@ function concatChunks(chunks, total) {
 // `text/plain`, `application/csp-report`, or with NO content-type must still populate post.<field>
 // (otherwise a field-scoped rule silently resolves to nothing). Unrecognized/binary bodies stay `{}`
 // and are still matchable via `raw`.
+//
+// The format is chosen by the media type alone — the part before the first `;` — since a parameter
+// value can hold any text, `multipart/form-data` included.
 export function parseBody(rawBody, contentType) {
-  const ct = String(contentType || '').toLowerCase();
-  const isJson = ct.includes('application/json') || /\+json\b/.test(ct);
-  const isForm = ct.includes('application/x-www-form-urlencoded');
-  const isMultipart = ct.includes('multipart/form-data');
+  const mediaType = String(contentType || '').split(';', 1)[0].trim().toLowerCase();
+  const isJson = mediaType === 'application/json' || /\+json\b/.test(mediaType);
+  const isForm = mediaType === 'application/x-www-form-urlencoded';
+  const isMultipart = mediaType === 'multipart/form-data';
   // "ambiguous" = a type an app commonly parses as JSON/form even though it isn't declared as such.
-  const isAmbiguous = ct === '' || ct.startsWith('text/plain') || ct.includes('csp-report') || ct.includes('/json');
+  const isAmbiguous =
+    mediaType === '' || mediaType === 'text/plain' || mediaType.includes('csp-report') || mediaType.includes('/json');
 
-  if (isMultipart) {
-    const boundary = contentTypeParameters(contentType).get('boundary');
-    if (boundary) return parseMultipart(rawBody, boundary);
-    return { body: {}, files: undefined };
-  }
-  if (isForm) {
-    const body = {};
-    for (const [k, v] of new URLSearchParams(rawBody)) appendOwn(body, k, v);
-    return { body, files: undefined };
+  if (isMultipart || isForm) {
+    let parsed = { body: {}, files: undefined };
+    if (isMultipart) {
+      const boundary = contentTypeParameters(contentType).get('boundary');
+      if (boundary) parsed = parseMultipart(rawBody, boundary);
+    } else {
+      for (const [k, v] of new URLSearchParams(rawBody)) appendOwn(parsed.body, k, v);
+    }
+    // A handler that reads the body as JSON whatever its declared type still gets these fields, so
+    // they are screened alongside whatever the declared format yielded.
+    const json = parseJsonObject(rawBody);
+    if (json) for (const key of Object.keys(json)) appendOwn(parsed.body, key, json[key]);
+    return parsed;
   }
   if (isJson || isAmbiguous) {
-    try {
-      const parsed = JSON.parse(rawBody);
-      if (parsed && typeof parsed === 'object') return { body: parsed, files: undefined };
-    } catch {
-      /* not JSON — leave body empty; `raw`/`all` still see the verbatim text */
-    }
+    const json = parseJsonObject(rawBody);
+    if (json) return { body: json, files: undefined };
   }
   return { body: {}, files: undefined };
+}
+
+/** The body parsed as JSON when that yields an object or array; otherwise null (`raw`/`all` still see it). */
+function parseJsonObject(rawBody) {
+  try {
+    const parsed = JSON.parse(rawBody);
+    return parsed && typeof parsed === 'object' ? parsed : null;
+  } catch {
+    return null;
+  }
 }
 
 export function parseMultipart(rawBody, boundary) {
