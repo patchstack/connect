@@ -76,6 +76,32 @@ describe('redact masks the span rather than withholding the response', () => {
     expect(text).not.toContain(SERVICE);
     expect(text).not.toContain(second);
   });
+
+  it('masks a copy that runs on into longer text, once the token is identified elsewhere', async () => {
+    const { text } = await screen(`<p>${SERVICE}</p><a href="/k/${SERVICE}.json">x${SERVICE}</a>`, 'text/html');
+    expect(text).not.toContain(SERVICE);
+    expect(text).toContain('.json">x');
+  });
+
+  it('masks many distinct tokens in time that grows with the body, not with its square', async () => {
+    const head = `${b64({ alg: 'HS256', typ: 'JWT' })}.`;
+    const body = (count: number) =>
+      `<p>${Array.from({ length: count }, (_, i) => `${head}${b64({ role: 'service_role', n: i })}.${sig}`).join(' ')}</p>`;
+    const fastest = async (count: number) => {
+      const html = body(count);
+      let best = Infinity;
+      for (let run = 0; run < 3; run++) {
+        const started = performance.now();
+        const { text } = await screen(html, 'text/html');
+        best = Math.min(best, performance.now() - started);
+        expect(text).not.toContain(head);
+      }
+      return best;
+    };
+    const half = await fastest(2000);
+    const full = await fastest(4000);
+    expect(full / half, `${half.toFixed(0)}ms then ${full.toFixed(0)}ms`).toBeLessThan(3);
+  });
 });
 
 describe('only a positive identification matches', () => {

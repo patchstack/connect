@@ -2874,12 +2874,11 @@ function applyRedactors(body, redactors, mask, transform) {
   for (const r of redactors) {
     if (r.re) out = out.replace(r.re, transform ? (m) => transform(m) : mask);
     else if (r.jwtClaim) {
-      // Spans are computed against the body as it stands, then each distinct token is replaced
-      // literally — so a response carrying two matching tokens loses both, and a token that appears
-      // twice loses both copies.
-      for (const token of jwtClaimSpans(out, r.jwtClaim.claim, r.jwtClaim.value)) {
-        out = out.split(token).join(transform ? transform(token) : mask);
-      }
+      // Spans are computed against the body as it stands, then every copy of every matching token is
+      // replaced literally — so a response carrying two matching tokens loses both, and a token that
+      // appears twice loses both copies, even where a copy runs on into longer text.
+      const tokens = jwtClaimSpans(out, r.jwtClaim.claim, r.jwtClaim.value);
+      if (tokens.length) out = replaceEveryCopy(out, tokens, (token) => (transform ? transform(token) : mask));
     } else if (r.literal) {
       // Detection (matchValue for contains/stripos) is case-insensitive, so mask case-insensitively
       // too — otherwise a `contains: "SECRET"` redactor detects `secret` but masks nothing, serving
@@ -2889,6 +2888,79 @@ function applyRedactors(body, redactors, mask, transform) {
     }
   }
   return out;
+}
+
+/**
+ * Replace every occurrence of any of the ASCII `needles` in `text`, in time linear in the text plus the
+ * needles. The needles come from the text being screened, so a pass per needle would be quadratic in a
+ * body an attacker can fill with distinct needles. One Aho-Corasick scan finds the longest needle ending
+ * at each position; occurrences that overlap are replaced together as one span.
+ */
+function replaceEveryCopy(text, needles, replace) {
+  const edges = new Map(); // node * 128 + char code -> child node
+  const depth = [0];
+  const terminal = [false];
+  for (const needle of needles) {
+    let node = 0;
+    for (let i = 0; i < needle.length; i++) {
+      const key = node * 128 + needle.charCodeAt(i);
+      let child = edges.get(key);
+      if (child === undefined) {
+        child = depth.length;
+        depth.push(i + 1);
+        terminal.push(false);
+        edges.set(key, child);
+      }
+      node = child;
+    }
+    terminal[node] = true;
+  }
+
+  // Breadth-first, so a node's failure link and longest match are known before its children's.
+  const fail = new Array(depth.length).fill(0);
+  const longest = new Array(depth.length).fill(0);
+  const children = new Array(depth.length);
+  for (const [key, child] of edges) {
+    const parent = key >> 7;
+    (children[parent] ??= []).push([key & 127, child]);
+  }
+  const step = (node, code) => {
+    if (code > 127) return 0;
+    for (;;) {
+      const next = edges.get(node * 128 + code);
+      if (next !== undefined) return next;
+      if (node === 0) return 0;
+      node = fail[node];
+    }
+  };
+  const queue = [0];
+  for (let head = 0; head < queue.length; head++) {
+    const node = queue[head];
+    for (const [code, child] of children[node] ?? []) {
+      fail[child] = node === 0 ? 0 : step(fail[node], code);
+      longest[child] = terminal[child] ? depth[child] : longest[fail[child]];
+      queue.push(child);
+    }
+  }
+
+  // Spans as [start, end), merged where they overlap. Ends only grow, so a stack merges them.
+  const spans = [];
+  let node = 0;
+  for (let i = 0; i < text.length; i++) {
+    node = step(node, text.charCodeAt(i));
+    if (!longest[node]) continue;
+    let start = i + 1 - longest[node];
+    while (spans.length && spans[spans.length - 1][1] > start) start = Math.min(start, spans.pop()[0]);
+    spans.push([start, i + 1]);
+  }
+
+  let out = '';
+  let cursor = 0;
+  for (const [start, end] of spans) {
+    out += text.slice(cursor, start) + replace(text.slice(start, end));
+    cursor = end;
+  }
+  return out + text.slice(cursor);
 }
 
 // A response-body redaction target (array_key_value masks the JSON body). A bare condition with no
