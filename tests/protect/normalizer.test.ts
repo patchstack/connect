@@ -131,6 +131,20 @@ describe('Normalizer Module', () => {
             assert.strictEqual(result.trim(), 'SELECT FROM');
         });
 
+        it('should collapse closed comments and keep an unclosed opener and what follows it', () => {
+            assert.strictEqual(removeSqlComments('a/*/b*/c/*!d*/e/*f/*g'), 'a c e/*f/*g');
+        });
+
+        it('should stay linear on a body-sized run of unclosed openers', () => {
+            const value = '*/' + '/*a'.repeat(350_000);
+            const started = performance.now();
+            const result = normalize(value);
+            const elapsed = performance.now() - started;
+            assert.strictEqual(removeSqlComments(value), value);
+            assert.ok(result.includes('/*a/*a'));
+            assert.ok(elapsed < 1000, `normalize took ${elapsed.toFixed(0)}ms`);
+        });
+
         it('should return non-strings unchanged', () => {
             assert.strictEqual(removeSqlComments(123), 123);
             assert.strictEqual(removeSqlComments(null), null);
