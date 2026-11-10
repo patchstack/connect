@@ -1,6 +1,8 @@
 import { describe, expect, it } from 'vitest';
 import { RuleEngine } from '../../src/protect/engine/engine.js';
 import { createProtection } from '../../src/protect/runtime.js';
+import { fromNodeRequest } from '../../src/protect/engine/node.js';
+import { REQUEST_TARGET } from '../../src/protect/engine/normalizer.js';
 
 // A `when.path` scope is what makes a generated per-endpoint rule safe to ship: it is the difference
 // between shielding one vulnerable handler and inspecting the whole app. So the scope has to cover the
@@ -183,6 +185,60 @@ describe('when.path — the raw target an Express request carries', () => {
     expect(await blocked('/api/fetch#x?a=1', 'http://internal/')).toBe(true);
     expect(await blocked('/api/fetch#x', 'https://example.com/')).toBe(false);
     expect(await blocked('/api/fetchx#/api/fetch', 'http://internal/')).toBe(false);
+  });
+});
+
+describe('when.path — dot segments a URL parser resolves and a router does not', () => {
+  const scoped = {
+    id: 'scoped-dots',
+    title: 'scoped-dots',
+    when: { path: '/files/*' },
+    rule_v2: [{ parameter: 'get.q', match: { type: 'contains', value: 'boom' } }],
+  };
+  const TARGETS = ['/files/../x', '/files/%2e%2e/x', '/files/%2E%2E', '/files/./x'];
+  /** A Request rebuilt from a raw target, carrying that target the way the Fastify plugin does. */
+  const rebuilt = (target: string) => {
+    const request = new Request(`https://app.test${target}`);
+    Object.defineProperty(request, REQUEST_TARGET, { value: target });
+    return request;
+  };
+
+  it.each(TARGETS)('fetchGuard screens %s when the host hands over the raw target', async (path) => {
+    const p: any = await createProtection({ rules: { firewall: [scoped], whitelists: [] } as never, mode: 'block' });
+    const guard = p.fetchGuard();
+    expect((await guard(rebuilt(`${path}?q=boom`)))?.status).toBe(403);
+    expect(await guard(rebuilt(`${path}?q=ok`))).toBeNull();
+    p.stop();
+  });
+
+  it.each(TARGETS)('the Node adapter screens %s from the target it already keeps', (path) => {
+    const url = `${path}?q=boom`;
+    const shaped = fromNodeRequest({ method: 'GET', url, headers: { host: 'app.test' }, socket: {} } as never);
+    expect(new RuleEngine({ firewall: [scoped] }).evaluate(shaped).blocked).toBe(true);
+  });
+
+  it('a target named in a header is not taken as the raw target', async () => {
+    const p: any = await createProtection({ rules: { firewall: [scoped], whitelists: [] } as never, mode: 'block' });
+    const request = new Request('https://app.test/x?q=boom', { headers: { 'x-request-target': '/files/../x' } });
+    expect(await p.fetchGuard()(request)).toBeNull();
+    p.stop();
+  });
+
+  it('the response phase scopes on the raw target too', async () => {
+    const p: any = await createProtection({
+      rules: {
+        firewall: [{
+          id: 'scoped-redact', title: 'scoped-redact', phase: 'response', action: 'redact', when: { path: '/files/*' },
+          rule_v2: [{ parameter: 'response.body', match: { type: 'contains', value: 'topsecret' } }],
+        }],
+        whitelists: [],
+      } as never,
+      mode: 'block',
+    });
+    const body = () => new Response('a topsecret b', { headers: { 'content-type': 'text/plain' } });
+    expect(await (await p.screenResponse(body(), rebuilt('/files/../x'))).text()).not.toContain('topsecret');
+    expect(await (await p.screenResponse(body(), new Request('https://app.test/files/../x'))).text()).toContain('topsecret');
+    p.stop();
   });
 });
 

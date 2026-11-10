@@ -107,7 +107,11 @@ export async function patchstackFastify(fastify) {
       // Only the screening copy changes; the route keeps its original body, headers and raw stream.
       if (parsed) headers.set("content-type", "application/json");
       headers.delete("content-length");
-      blocked = await guard(new Request(url, { method, headers, body }));
+      const screened = new Request(url, { method, headers, body });
+      // The URL parser resolves `.` and `..` segments, which Fastify's router still matches on, so the
+      // target Fastify received travels with the Request and path scopes are checked against it too.
+      Object.defineProperty(screened, Symbol.for("@patchstack/connect.requestTarget"), { value: request.url ?? "/" });
+      blocked = await guard(screened);
     } catch (err) {
       psStepAside(err);
       return;
@@ -136,6 +140,7 @@ export async function patchstackFastify(fastify) {
       }
       const original = new Response(typeof payload === "string" ? payload : new Uint8Array(payload).buffer, { status: reply.statusCode, headers });
       const context = new Request(`http://${request.headers?.host ?? "localhost"}${request.url ?? "/"}`, { method: request.method, headers: request.headers });
+      Object.defineProperty(context, Symbol.for("@patchstack/connect.requestTarget"), { value: request.url ?? "/" });
       const screened = await protection.screenResponse(original, context);
       if (screened === original) return payload;
       const body = Buffer.from(await screened.arrayBuffer());
