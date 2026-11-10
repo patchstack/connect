@@ -455,7 +455,17 @@ export class RequestResolver {
 
     const body = this.#req.body;
     if (body) {
-      parts.push(typeof body === 'string' ? body : JSON.stringify(body));
+      if (typeof body === 'string') {
+        parts.push(body);
+      } else {
+        // A runtime with a smaller stack can refuse to serialise a deeply nested body. The verbatim body
+        // below still carries the same text, so this part is dropped rather than the rule failing.
+        try {
+          parts.push(JSON.stringify(body));
+        } catch {
+          this.noteSkip('container-cap');
+        }
+      }
     }
     // Also fold in the verbatim body: a body the adapter couldn't structurally parse (an unusual
     // content-type, a non-JSON payload) leaves `body` empty, but the raw text must still be matchable

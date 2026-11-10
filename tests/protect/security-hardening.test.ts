@@ -70,6 +70,46 @@ describe('request: structured-value evasion', () => {
 
     expect(res.blocked).toBe(true);
   });
+
+  describe('structural rules beside a value nested far past any recursion limit', () => {
+    let deep: any = [];
+    for (let i = 0; i < 20_000; i++) deep = [deep];
+    const evaluate = (rule: any, body: any, raw: { _rawBody?: string } = { _rawBody: '{}' }) =>
+      new RuleEngine({ firewall: [{ id: 'structural', ...rule }] }).evaluate({
+        method: 'POST', url: '/', originalUrl: '/', query: {}, headers: {}, body, ...raw,
+      } as any);
+
+    it('array_key_value still reaches the leaf beside it', () => {
+      const rule = { rule_v2: [{ parameter: 'post.items', match: { type: 'array_key_value', key: 'name', match: { type: 'contains', value: '<script' } } }] };
+      expect(evaluate(rule, { items: [deep, { name: '<script>x</script>' }] }).blocked).toBe(true);
+      expect(evaluate(rule, { items: [deep, { name: 'plain' }] }).blocked).toBe(false);
+    });
+
+    it('array_in_array still compares the element beside it, and the scalars inside a nested one', () => {
+      const rule = { rule_v2: [{ parameter: 'post.tags', match: { type: 'array_in_array', value: ['admin'] } }] };
+      expect(evaluate(rule, { tags: [deep, 'admin'] }).blocked).toBe(true);
+      expect(evaluate(rule, { tags: [['x', ['admin']]] }).blocked).toBe(true);
+      expect(evaluate(rule, { tags: [deep, 'user'] }).blocked).toBe(false);
+    });
+
+    it('all still sees a payload elsewhere in the body, where the runtime cannot serialise it', () => {
+      // No verbatim body, as on Express: the engine rebuilds one. Some Node versions' JSON.stringify
+      // overflows at this depth, and the rebuilt text is what still carries the payload then.
+      const rule = { rule_v2: [{ parameter: 'all', match: { type: 'contains', value: '<script' } }] };
+      expect(evaluate(rule, { deep, c: '<script>x</script>' }, {}).blocked).toBe(true);
+    });
+  });
+
+  it('names a rule it could not evaluate among the skips, rather than counting it as no match', () => {
+    const res = new RuleEngine({
+      firewall: [
+        { id: 'unreadable', rule_v2: [{ parameter: {} as any, match: { type: 'contains', value: 'x' } }] },
+        { id: 'fine', rule_v2: [{ parameter: 'post.q', match: { type: 'contains', value: 'nothing-here' } }] },
+      ],
+    }).evaluate({ method: 'POST', url: '/', originalUrl: '/', query: {}, headers: {}, body: { q: 'x' } } as any);
+    expect(res.blocked).toBe(false);
+    expect(res.skips).toEqual(['rule-error:unreadable']);
+  });
 });
 
 describe('request: normalizer no longer deletes payload spans', () => {
