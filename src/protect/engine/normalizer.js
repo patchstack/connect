@@ -8,8 +8,10 @@
 import { setOwn } from './own.js';
 import { parseCookieHeader } from './cookies.js';
 
-// Adapters preserve the transport's target before URL parsing can collapse dot segments.
-export const REQUEST_TARGET = Symbol('requestTarget');
+// Adapters preserve the transport's target before URL parsing can collapse dot segments. Registered, so
+// a host seam that rebuilds a WHATWG Request (the scaffolded Fastify plugin) can set it on that Request
+// as an own property without importing engine internals; a visitor has no way to set one.
+export const REQUEST_TARGET = Symbol.for('@patchstack/connect.requestTarget');
 export const REQUEST_PATH = Symbol('requestPath');
 
 /** Path only, split before one percent-decoding pass. No filesystem or text normalization. */

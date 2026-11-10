@@ -20,7 +20,7 @@
 import { resolveClientIp } from './client-ip.js';
 import { RuleEngine } from './engine/index.js';
 import { matchValue, walkLeaves, safeRegExp, jwtClaimSpans } from './engine/engine.js';
-import { requestField } from './engine/normalizer.js';
+import { requestField, REQUEST_TARGET } from './engine/normalizer.js';
 import { captureValues, createPlanCache, permitsAnything } from './capture-plan.js';
 import { PulseRuleClient } from './engine/pulse-client.js';
 import { fromFetchRequest } from './engine/fetch.js';
@@ -967,8 +967,10 @@ export async function createProtection(options = {}) {
       // Resolving again here could disagree with it, and a response detection naming a different address
       // than the request detection for the same request describes two clients that do not exist.
       const resolved = client ?? { ip: null, source: 'unavailable' };
+      const target = requestField(request, REQUEST_TARGET);
 
       return {
+        ...(typeof target === 'string' ? { [REQUEST_TARGET]: target } : {}),
         method: request.method,
         originalUrl: u.pathname + u.search,
         headers,

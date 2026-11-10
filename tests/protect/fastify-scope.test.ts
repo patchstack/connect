@@ -5,6 +5,7 @@ import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import Fastify from 'fastify';
 import { Readable } from 'node:stream';
+import { connect } from 'node:net';
 import { createProtection } from '../../src/protect/runtime.js';
 
 /**
@@ -161,6 +162,48 @@ describe('the scaffolded Fastify plugin', () => {
     expect(reached).toEqual(['HEAD public']);
 
     await app.close();
+  });
+
+  it('checks a path scope against the target Fastify routed, not the one a URL parser resolved', async () => {
+    // Over a socket rather than `inject`, which resolves dot segments before Fastify ever sees them.
+    const patchstackFastify = await loadPlugin({
+      firewall: [
+        {
+          id: 'rm-fastify-dots',
+          title: 'test rule',
+          when: { path: '/files/*' },
+          rule_v2: [{ parameter: 'get.q', match: { type: 'contains', value: 'boom' } }],
+        },
+      ],
+      whitelists: [],
+    } as never);
+    const app = Fastify();
+    await app.register(patchstackFastify as never);
+    app.get('/files/*', async () => 'files');
+    app.get('/api/:id/view', async () => 'view');
+    await app.listen({ port: 0, host: '127.0.0.1' });
+    const { port } = app.server.address() as { port: number };
+    const status = (target: string) =>
+      new Promise<string>((resolve, reject) => {
+        const socket = connect(port, '127.0.0.1', () =>
+          socket.write(`GET ${target} HTTP/1.1\r\nHost: app.test\r\nConnection: close\r\n\r\n`),
+        );
+        let raw = '';
+        socket.on('data', (chunk) => (raw += chunk));
+        socket.on('end', () => resolve(raw.split('\r\n', 1)[0].split(' ')[1]));
+        socket.on('error', reject);
+      });
+
+    try {
+      for (const target of ['/files/../x', '/files/%2e%2e/x', '/files/%2E%2E', '/files/./x']) {
+        expect(await status(`${target}?q=ok`), target).toBe('200');
+        expect(await status(`${target}?q=boom`), target).toBe('403');
+      }
+      // A route outside the scope still answers, payload and all: the raw reading widens nothing else.
+      expect(await status('/api/../view?q=boom')).toBe('200');
+    } finally {
+      await app.close();
+    }
   });
 
   it('screens a route inside a sibling plugin', async () => {

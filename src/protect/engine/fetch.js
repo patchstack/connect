@@ -11,6 +11,7 @@ import { RuleEngine } from './engine.js';
 import { notify } from '../notify.js';
 import { parseCookieHeader } from './cookies.js';
 import { appendOwn, setOwn } from './own.js';
+import { REQUEST_TARGET, requestField } from './normalizer.js';
 
 // Cap how much request body we buffer for inspection. A larger body is left UNSCANNED
 // (fail-open) rather than buffered into memory — matches the node adapter's maxBodyBytes.
@@ -51,12 +52,16 @@ export async function fromFetchRequest(request, options = {}) {
   }
 
   const uri = url.pathname + url.search;
+  // `request.url` has already been through the URL parser, which resolves `.` and `..` segments that a
+  // router still matches on. A host that rebuilt this Request from a raw target hands that target over.
+  const target = requestField(request, REQUEST_TARGET);
   // The client address, resolved once for this request, with its provenance. A WHATWG Request exposes no
   // transport peer, so a generic Fetch runtime has none to observe and the answer is `unavailable` unless
   // the deployment declared a trust policy this runtime can satisfy.
   const client = resolveClientIp({ peer: options.peer, headers, trustedProxy: options.trustedProxy });
 
   return {
+    ...(typeof target === 'string' ? { [REQUEST_TARGET]: target } : {}),
     method,
     url: uri,
     originalUrl: uri,
