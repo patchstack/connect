@@ -466,23 +466,34 @@ function ctypeResult(strValue, isClass, matchVal) {
 // reaches, fanning out over arrays at EVERY segment (not just the last) — so `orders.customers.email`
 // visits the email of each customer of each order, for arbitrary-length / arbitrarily-nested arrays.
 // `cb` gets the container + key so callers can either read (match) or set (redact) the leaf.
+//
+// Iterative, so no depth of nesting in a visitor's body can overflow the stack and leave the rule to the
+// per-rule catch; the work is linear in the size of the value. Leaves are visited in document order, and
+// an array is entered once, so a value that reaches itself cannot loop.
 export function walkLeaves(node, segments, cb) {
-  if (node === null || typeof node !== 'object') return;
-  if (Array.isArray(node)) {
-    for (const el of node) walkLeaves(el, segments, cb);
-    return;
-  }
-  const [head, ...rest] = segments;
-  if (head === undefined || !Object.prototype.hasOwnProperty.call(node, head)) return;
-  if (rest.length === 0) {
-    const leaf = node[head];
+  const stack = [[node, 0]];
+  const entered = new Set();
+  while (stack.length) {
+    const [current, index] = stack.pop();
+    if (current === null || typeof current !== 'object') continue;
+    if (Array.isArray(current)) {
+      if (entered.has(current)) continue;
+      entered.add(current);
+      for (let i = current.length - 1; i >= 0; i--) stack.push([current[i], index]);
+      continue;
+    }
+    const head = segments[index];
+    if (head === undefined || !Object.prototype.hasOwnProperty.call(current, head)) continue;
+    if (index < segments.length - 1) {
+      stack.push([current[head], index + 1]);
+      continue;
+    }
+    const leaf = current[head];
     if (Array.isArray(leaf)) {
       for (let i = 0; i < leaf.length; i++) cb({ parent: leaf, key: i, value: leaf[i] });
     } else {
-      cb({ parent: node, key: head, value: leaf });
+      cb({ parent: current, key: head, value: leaf });
     }
-  } else {
-    walkLeaves(node[head], rest, cb);
   }
 }
 
@@ -1141,7 +1152,14 @@ export function matchValue(type, value, matchVal, matchObj) {
         return false;
       }
       const target = matchVal.map((x) => String(x));
-      return value.some((v) => target.includes(String(v)));
+      // An element that is itself a container is compared by the scalars inside it, through the bounded
+      // leaf walk: `String()` on a nested array recurses through `join` and overflows the stack on a deep
+      // enough one.
+      return value.some((v) =>
+        v !== null && typeof v === 'object'
+          ? collectLeafValues(v).leaves.some((leaf) => target.includes(String(leaf)))
+          : target.includes(String(v)),
+      );
     }
 
     case 'hostname': {
@@ -1294,7 +1312,9 @@ export class RuleEngine {
         }
       } catch (err) {
         // Skip this rule and keep evaluating the rest — one bad rule never blocks a
-        // request nor shadows the rules after it.
+        // request nor shadows the rules after it. The skip names the rule, so a request that left a rule
+        // unevaluated is counted as that, not as a request the rule found nothing in.
+        resolver.noteSkip(`rule-error:${rule?.id ?? rule?.title ?? 'unnamed'}`);
         this.#reportError(err);
       }
     }
