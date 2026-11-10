@@ -5,7 +5,7 @@
 // This resolves the workspace package directories declared in the root `package.json`, so the orchestrator
 // can look for an app in each. Dependency-free and best-effort: a repo it cannot read simply has none.
 
-import { existsSync, lstatSync, readdirSync, readFileSync, realpathSync } from 'node:fs';
+import { existsSync, lstatSync, readdirSync, readFileSync, realpathSync, statSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 
 /**
@@ -76,6 +76,13 @@ export function workspacePackageDirs(cwd: string): string[] {
  * (`apps/web`) would otherwise read the package's own config, find no site, and either write its choices
  * where nothing else reads them or provision a second site for the same app. Null when `cwd` names its own
  * site, is not a declared package of an enclosing root, or that root records no site.
+ *
+ * Adopting a root means running there — reading its config and, on a first setup, its package manager — so
+ * only a root that is plainly this user's own repository is adopted. The walk never leaves the repository
+ * (it goes no higher than a directory holding `.git`), and on a platform that has user ids it stops at a
+ * directory someone else owns or can write to, and refuses a root whose `package.json` or
+ * `.patchstackrc.json` is like that. A parent another local user controls, such as a project made directly
+ * under `/tmp`, is therefore never adopted.
  */
 export function workspaceRootWithSite(cwd: string): string | null {
   if (siteUuidIn(cwd) !== null) return null;
@@ -83,14 +90,35 @@ export function workspaceRootWithSite(cwd: string): string | null {
   let dir = cwd;
   // Bounded like the guard's own config search.
   for (let i = 0; i < 8; i++) {
+    if (existsSync(join(dir, '.git'))) return null;
     const parent = dirname(dir);
     if (parent === dir) return null;
     dir = parent;
+    if (!ownedByThisUser(dir)) return null;
     if (siteUuidIn(dir) === null) continue;
+    if (!ownedByThisUser(join(dir, 'package.json')) || !ownedByThisUser(join(dir, '.patchstackrc.json'))) return null;
     return workspacePackageDirs(dir).some((pkg) => realDir(pkg) === here) ? dir : null;
   }
 
   return null;
+}
+
+/**
+ * Whether `path` belongs to the user running this process and nobody else can write to it: owned by this
+ * user, not writable by others, and writable by its group only when that group is this process's own
+ * (the per-user group many systems create files under). True where the platform has no user ids, which
+ * leaves the repository boundary as the only limit there.
+ */
+function ownedByThisUser(path: string): boolean {
+  if (typeof process.getuid !== 'function') return true;
+  try {
+    const stats = statSync(path);
+    if (stats.uid !== process.getuid()) return false;
+    if (stats.mode & 0o002) return false;
+    return !(stats.mode & 0o020) || stats.gid === process.getgid?.();
+  } catch {
+    return false;
+  }
 }
 
 const SITE_UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;

@@ -1,5 +1,5 @@
-import { describe, expect, it, afterEach } from 'vitest';
-import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, existsSync, rmSync } from 'node:fs';
+import { describe, expect, it, afterEach, vi } from 'vitest';
+import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, existsSync, rmSync, chmodSync, statSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { runProtect, runVerify } from '../../src/protect/install/index.js';
@@ -161,6 +161,56 @@ describe('workspaceRootWithSite', () => {
     const root = makeMonorepo();
     mkdirSync(path.join(root, 'tools/script'), { recursive: true });
     expect(workspaceRootWithSite(path.join(root, 'tools/script'))).toBeNull();
+  });
+
+  describe('a root it would run in, that is not plainly this user’s own repository', () => {
+    const unix = typeof process.getuid === 'function';
+
+    it('adopts a root that is itself the repository, but never one above a repository', () => {
+      const root = makeMonorepo();
+      mkdirSync(path.join(root, '.git'));
+      expect(workspaceRootWithSite(path.join(root, 'apps/web'))).toBe(root);
+      mkdirSync(path.join(root, 'apps/web/.git'));
+      expect(workspaceRootWithSite(path.join(root, 'apps/web'))).toBeNull();
+    });
+
+    it.skipIf(!unix)('refuses a root that others can write to', () => {
+      const root = makeMonorepo();
+      chmodSync(root, 0o777);
+      expect(workspaceRootWithSite(path.join(root, 'apps/web'))).toBeNull();
+    });
+
+    it.skipIf(!unix)('refuses a root whose site config others can write to', () => {
+      const root = makeMonorepo();
+      chmodSync(path.join(root, '.patchstackrc.json'), 0o666);
+      expect(workspaceRootWithSite(path.join(root, 'apps/web'))).toBeNull();
+    });
+
+    it.skipIf(!unix)('refuses a root owned by another user', () => {
+      const root = makeMonorepo();
+      const uid = statSync(root).uid;
+      vi.spyOn(process, 'getuid').mockReturnValue(uid + 1);
+      try {
+        expect(workspaceRootWithSite(path.join(root, 'apps/web'))).toBeNull();
+      } finally {
+        vi.restoreAllMocks();
+      }
+      expect(workspaceRootWithSite(path.join(root, 'apps/web'))).toBe(root);
+    });
+
+    it('keeps the repository boundary where the platform has no user ids', () => {
+      const root = makeMonorepo();
+      const getuid = Object.getOwnPropertyDescriptor(process, 'getuid');
+      Object.defineProperty(process, 'getuid', { value: undefined, configurable: true });
+      try {
+        expect(workspaceRootWithSite(path.join(root, 'apps/web'))).toBe(root);
+        mkdirSync(path.join(root, 'apps/web/.git'));
+        expect(workspaceRootWithSite(path.join(root, 'apps/web'))).toBeNull();
+      } finally {
+        if (getuid) Object.defineProperty(process, 'getuid', getuid);
+        else delete (process as { getuid?: unknown }).getuid;
+      }
+    });
   });
 });
 
