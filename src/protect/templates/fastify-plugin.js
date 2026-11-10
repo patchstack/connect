@@ -31,8 +31,24 @@ async function getProtection() {
   return protection;
 }
 
+function psMode() {
+  return (typeof process === "undefined" ? undefined : process.env.PATCHSTACK_MODE) === "dry-run" ? "dry-run" : "block";
+}
+
+// The URL a request is screened under: Fastify's target alone, against a fixed origin. The visitor's
+// Host header stays a header on the screened request, where host-reading rules find it. Put in front of
+// the target it could end the authority early, so the guard would screen a different path and query
+// than the route Fastify runs, or make the URL unbuildable.
+function psScreeningUrl(target) {
+  try {
+    return new URL(target ?? "/", "http://localhost");
+  } catch {
+    return new URL("http://localhost/");
+  }
+}
+
 async function buildProtection() {
-  const mode = (typeof process === "undefined" ? undefined : process.env.PATCHSTACK_MODE) === "dry-run" ? "dry-run" : "block";
+  const mode = psMode();
   const token = (typeof process === "undefined" ? undefined : process.env.PATCHSTACK_WAF_TOKEN);
   const siteUuid = PS_SITE_UUID.startsWith("__") ? (typeof process === "undefined" ? undefined : process.env.PATCHSTACK_SITE_UUID) : PS_SITE_UUID;
   const refreshMs = (typeof process === "undefined" ? undefined : process.env.PATCHSTACK_ENVIRONMENT) === "sandbox" ? 15000 : 300000;
@@ -92,10 +108,9 @@ export async function patchstackFastify(fastify) {
     if (!protection) return; // the route answers this request, unscreened
     const guard = protection.fetchGuard();
     const method = (request.method ?? "GET").toUpperCase();
-    const host = request.headers?.host ?? "localhost";
-    const url = `http://${host}${request.url ?? "/"}`;
+    const url = psScreeningUrl(request.url);
     const hasBody = method !== "GET" && method !== "HEAD" && request.body != null;
-    let blocked;
+    let screened;
     try {
       const headers = new Headers();
       for (const [name, value] of Object.entries(request.headers)) {
@@ -107,10 +122,26 @@ export async function patchstackFastify(fastify) {
       // Only the screening copy changes; the route keeps its original body, headers and raw stream.
       if (parsed) headers.set("content-type", "application/json");
       headers.delete("content-length");
-      const screened = new Request(url, { method, headers, body });
+      screened = new Request(url, { method, headers, body });
       // The URL parser resolves `.` and `..` segments, which Fastify's router still matches on, so the
       // target Fastify received travels with the Request and path scopes are checked against it too.
       Object.defineProperty(screened, Symbol.for("@patchstack/connect.requestTarget"), { value: request.url ?? "/" });
+    } catch (err) {
+      // Nothing above depends on the protection, only on this request, so a failure here (a method the
+      // Request constructor refuses, say) is the request's doing and must not be its way past the guard.
+      // Reported for every such request, not once per process.
+      const dryRun = psMode() === "dry-run";
+      console.warn(
+        "[patchstack] a " + method + " request could not be screened (" + (err instanceof Error ? err.message : String(err)) + "); " +
+          (dryRun ? "passed on in dry-run mode" : "refused"),
+      );
+      if (dryRun) return;
+      reply.code(400);
+      reply.send("Bad Request");
+      return reply;
+    }
+    let blocked;
+    try {
       blocked = await guard(screened);
     } catch (err) {
       psStepAside(err);
@@ -139,8 +170,15 @@ export async function patchstackFastify(fastify) {
         }
       }
       const original = new Response(typeof payload === "string" ? payload : new Uint8Array(payload).buffer, { status: reply.statusCode, headers });
-      const context = new Request(`http://${request.headers?.host ?? "localhost"}${request.url ?? "/"}`, { method: request.method, headers: request.headers });
-      Object.defineProperty(context, Symbol.for("@patchstack/connect.requestTarget"), { value: request.url ?? "/" });
+      // A request the Request constructor refuses still has its response screened, by every rule that does
+      // not need the request to decide.
+      let context;
+      try {
+        context = new Request(psScreeningUrl(request.url), { method: request.method, headers: request.headers });
+        Object.defineProperty(context, Symbol.for("@patchstack/connect.requestTarget"), { value: request.url ?? "/" });
+      } catch {
+        context = undefined;
+      }
       const screened = await protection.screenResponse(original, context);
       if (screened === original) return payload;
       const body = Buffer.from(await screened.arrayBuffer());
