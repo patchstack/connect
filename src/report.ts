@@ -274,6 +274,14 @@ export const SETUP_NOT_FINISHED =
   'Setup did not finish, so Patchstack is not set up and there is no link to connect it yet. Your reply to the person must say so, and what to do next.';
 
 /**
+ * Printed just before the closing line in a hosted builder's workspace. The files setup writes reach the
+ * project only if the builder keeps them, and the assistant's reply is all the person sees, so the reply has
+ * to rest on the files being there. `doctor` reads them back.
+ */
+export const BUILDER_SAVED_CHECK =
+  'Before you reply, run npx @patchstack/connect doctor. If it says "Patchstack is not installed in this project", the changes setup made were not saved: tell the person setup did not finish, and run setup again.';
+
+/**
  * The line setup's output ends on, after the summary. It is the line an assistant is surest to read, so it
  * repeats what the intro asks and carries the link the person needs: the one that connects their account
  * while the site has no owner, their dashboard once it has one. An assistant left without a link writes

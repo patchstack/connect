@@ -9,7 +9,7 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { readBuildStamp } from '../src/build-id.js';
 import { activationResponse } from '../src/protect/activation.js';
-import { SUMMARY_INTRO } from '../src/report.js';
+import { BUILDER_SAVED_CHECK, SUMMARY_INTRO } from '../src/report.js';
 
 /**
  * The published `bin` has to actually run, invoked the way npm invokes it.
@@ -802,11 +802,33 @@ describe.skipIf(!built)('the packaged bin, invoked as npm invokes it', () => {
             const last = setup.trimEnd().split('\n').at(-1) ?? '';
             expect(last).toMatch(/^Your reply to the person must include the summary above, as written, with this link to connect their Patchstack account: /);
             expect(last).toContain(`/monitor/claim?site=${SITE}`);
+            // Only a hosted builder's project is asked to read its files back first.
+            expect(setup).not.toContain('Before you reply, run npx @patchstack/connect doctor');
             // The coloured banner is for a person's terminal; piped output carries only the summary's two-line mark.
             expect(setup).not.toContain("Checking your app's packages for known vulnerabilities");
             expectPlain(setup);
             expect(readFileSync(path.join(dir, 'index.html'), 'utf8')).not.toContain('patchstack-widget');
             expect(readConfig(dir).widget).toBe(false);
+          } finally {
+            await server.close();
+            rmSync(dir, { recursive: true, force: true });
+          }
+        });
+
+        it("asks the assistant in a hosted builder to check setup's files were kept before it replies", async () => {
+          // The files setup writes reach the project only if the builder keeps them, and the assistant's reply
+          // is all the person sees. doctor reads them back, so the line before the closing line asks for it.
+          const server = await acceptingServer();
+          const dir = freshProject();
+          try {
+            const pkg = JSON.parse(readFileSync(path.join(dir, 'package.json'), 'utf8'));
+            writeFileSync(path.join(dir, 'package.json'), JSON.stringify({ ...pkg, devDependencies: { 'lovable-tagger': '^1.1.7' } }));
+            const setup = await run(dir, server.endpoint, ['setup', '--widget'], CONCISE);
+            const lines = setup.trimEnd().split('\n');
+
+            expect(lines.at(-2)).toBe(BUILDER_SAVED_CHECK);
+            expect(lines.at(-1)).toMatch(/^Your reply to the person must include the summary above, as written, with this link to connect their Patchstack account: /);
+            expectPlain(setup);
           } finally {
             await server.close();
             rmSync(dir, { recursive: true, force: true });
