@@ -868,7 +868,9 @@ function ruleAppliesTo(when, resolver) {
     if (when.method) {
       const methods = (Array.isArray(when.method) ? when.method : [when.method]).map((m) => String(m).toUpperCase());
       const actual = String(resolver.resolve('server.REQUEST_METHOD')[0] ?? 'GET').toUpperCase();
-      if (!methods.includes(actual)) return false;
+      // Express, Fastify and Next run a route's GET handler for HEAD, with every server-side effect and
+      // only the body withheld, so a GET scope covers HEAD too.
+      if (!methods.includes(actual) && !(actual === 'HEAD' && methods.includes('GET'))) return false;
     }
     if (when.path) {
       const uri = String(resolver.resolve('server.REQUEST_URI')[0] ?? '/');
