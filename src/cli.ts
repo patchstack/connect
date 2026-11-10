@@ -433,18 +433,31 @@ function parseArgs(argv: string[]): ParsedArgs {
   };
 }
 
-/** The site/endpoint overrides every command accepts, resolved against the current directory. */
-function resolveCliConfig(
+/**
+ * The site and endpoint overrides every command accepts, resolved against the current directory. The
+ * first time a run resolves to an endpoint other than Patchstack's own, this says so on stderr, ahead of
+ * any request, and `main` says it again when the command returns. Both lines print at every verbosity.
+ */
+async function resolveCliConfig(
   args: ParsedArgs,
   extra: Omit<ResolveConfigOptions, 'cwd' | 'cliSiteUuid' | 'cliEndpoint'> = {},
 ): Promise<Config> {
-  return resolveConfig({
+  const cliEndpoint = getStringFlag(args.flags, 'endpoint');
+  const config = await resolveConfig({
     cwd: process.cwd(),
     cliSiteUuid: getStringFlag(args.flags, 'site-uuid'),
-    cliEndpoint: getStringFlag(args.flags, 'endpoint'),
+    cliEndpoint,
     ...extra,
   });
+  if (endpointNotice === null && config.endpoint !== DEFAULT_ENDPOINT) {
+    const source = cliEndpoint !== undefined ? '--endpoint' : process.env.PATCHSTACK_ENDPOINT ? 'PATCHSTACK_ENDPOINT' : '.patchstackrc.json';
+    endpointNotice = `patchstack: this run uses ${new URL(config.endpoint).host} (set by ${source}) instead of Patchstack's own ${new URL(DEFAULT_ENDPOINT).host}.`;
+    console.error(endpointNotice);
+  }
+  return config;
 }
+
+let endpointNotice: string | null = null;
 
 /**
  * Whether a build agent is running this. `CI=false` is how a platform says "not a CI build", so it
@@ -1703,6 +1716,7 @@ async function runSetup(args: ParsedArgs): Promise<number> {
     const summary = renderSummary({ ...report, missing }, progress, context, {
       widgetOnPage: after.widgetInstalled,
       dashboardUrl: progress.connected ? link : null,
+      ...(config.endpoint !== DEFAULT_ENDPOINT ? { endpointHost: new URL(config.endpoint).host } : {}),
     });
     // Kept, so `summary` can print it again: long setup output can be cut short before it reaches an assistant.
     try {
@@ -2361,6 +2375,7 @@ async function main(): Promise<number> {
   let code = 1;
   try {
     code = await runCommand(args);
+    if (endpointNotice !== null) console.error(endpointNotice);
     return code;
   } finally {
     await noticeUnloggedRun(args, code);

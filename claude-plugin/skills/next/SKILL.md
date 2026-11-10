@@ -2,10 +2,20 @@
 name: next
 description: Say where the project's Patchstack setup stands and the one thing to do now. Use after Patchstack setup when the person says "done", "next", "what now?", asks whether their Patchstack account is connected, asks what Patchstack found, or asks to see their Patchstack summary again.
 allowed-tools:
-  - Bash(npx @patchstack/connect next:*)
-  - Bash(npx @patchstack/connect go-live:*)
-  - Bash(npx @patchstack/connect vulns:*)
-  - Bash(npx @patchstack/connect summary:*)
+  - Bash(npx @patchstack/connect next)
+  - Bash(npx @patchstack/connect vulns)
+  - Bash(npx @patchstack/connect summary)
+  - Bash(npx @patchstack/connect go-live --host vercel)
+  - Bash(npx @patchstack/connect go-live --host netlify)
+  - Bash(npx @patchstack/connect go-live --host cloudflare-pages)
+  - Bash(npx @patchstack/connect go-live --host cloudflare-workers)
+  - Bash(npx @patchstack/connect go-live --host render)
+  - Bash(npx @patchstack/connect go-live --host railway)
+  - Bash(npx @patchstack/connect go-live --host fly)
+  - Bash(npx @patchstack/connect go-live --host heroku)
+  - Bash(npx @patchstack/connect go-live --host amplify)
+  - Bash(npx @patchstack/connect go-live --host replit)
+  - Bash(npx @patchstack/connect go-live --host lovable)
 ---
 
 # Patchstack: what's next
@@ -15,7 +25,7 @@ Run the command that matches what the person said, in the project root, and show
 | The person says | Run |
 |---|---|
 | "done", "next", "what now?", "is it connected?" | `npx @patchstack/connect next` |
-| The name of their host, after `next` asked where the app is hosted | `npx @patchstack/connect go-live --host <name>` |
+| The name of their host, after `next` asked where the app is hosted | `npx @patchstack/connect go-live --host <name>`, with `<name>` one of `vercel`, `netlify`, `cloudflare-pages`, `cloudflare-workers`, `render`, `railway`, `fly`, `heroku`, `amplify`, `replit`, `lovable` |
 | "What did Patchstack find?", "show me the vulnerabilities" | `npx @patchstack/connect vulns` |
 | "Show my Patchstack summary" | `npx @patchstack/connect summary` |
 
