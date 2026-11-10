@@ -1,4 +1,4 @@
-import { describe, it, expect, afterEach } from 'vitest';
+import { describe, it, expect, afterEach, vi } from 'vitest';
 import { readFileSync, mkdtempSync, writeFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -35,6 +35,26 @@ const RULES = {
   ],
   whitelists: [],
 };
+
+/**
+ * One request over a raw socket, written exactly as given. `inject` builds its request through a URL
+ * parser, so it cannot send a dot segment or an unusual Host header the way a client on the wire can.
+ */
+async function overSocket(app: { server: { address(): unknown } }, requestLine: string, host = 'app.test') {
+  const { port } = app.server.address() as { port: number };
+  return new Promise<{ status: string; body: string }>((resolve, reject) => {
+    const socket = connect(port, '127.0.0.1', () =>
+      socket.write(`${requestLine} HTTP/1.1\r\nHost: ${host}\r\nConnection: close\r\n\r\n`),
+    );
+    let raw = '';
+    socket.on('data', (chunk) => (raw += chunk));
+    socket.on('end', () => {
+      const [head, ...rest] = raw.split('\r\n\r\n');
+      resolve({ status: head.split('\r\n', 1)[0].split(' ')[1], body: rest.join('\r\n\r\n') });
+    });
+    socket.on('error', reject);
+  });
+}
 
 const dirs: string[] = [];
 const protections: Array<{ stop: () => void }> = [];
@@ -182,17 +202,8 @@ describe('the scaffolded Fastify plugin', () => {
     app.get('/files/*', async () => 'files');
     app.get('/api/:id/view', async () => 'view');
     await app.listen({ port: 0, host: '127.0.0.1' });
-    const { port } = app.server.address() as { port: number };
-    const status = (target: string) =>
-      new Promise<string>((resolve, reject) => {
-        const socket = connect(port, '127.0.0.1', () =>
-          socket.write(`GET ${target} HTTP/1.1\r\nHost: app.test\r\nConnection: close\r\n\r\n`),
-        );
-        let raw = '';
-        socket.on('data', (chunk) => (raw += chunk));
-        socket.on('end', () => resolve(raw.split('\r\n', 1)[0].split(' ')[1]));
-        socket.on('error', reject);
-      });
+
+    const status = async (target: string) => (await overSocket(app, `GET ${target}`)).status;
 
     try {
       for (const target of ['/files/../x', '/files/%2e%2e/x', '/files/%2E%2E', '/files/./x']) {
@@ -204,6 +215,90 @@ describe('the scaffolded Fastify plugin', () => {
     } finally {
       await app.close();
     }
+  });
+
+  describe('whatever Host header the visitor sends', () => {
+    const scopedRule = {
+      firewall: [
+        {
+          id: 'rm-fastify-host',
+          title: 'test rule',
+          when: { path: '/api/fetch' },
+          rule_v2: [{ parameter: 'get.url', match: { type: 'contains', value: 'internal' } }],
+        },
+      ],
+      whitelists: [],
+    };
+    const serve = async () => {
+      const app = Fastify();
+      await app.register((await loadPlugin(scopedRule as never)) as never);
+      app.get('/api/fetch', async () => 'ran');
+      app.route({ method: 'TRACE', url: '/api/fetch', handler: async () => 'ran' });
+      await app.listen({ port: 0, host: '127.0.0.1' });
+      return app;
+    };
+
+    // Each of these either made the screening URL unbuildable or moved the path and query.
+    it.each(['a b', '[', 'a@b', 'a:99999', '%', 'a?x=1', 'a#', 'a/b', '', 'a/api/fetch?url=ok&'])(
+      'screens the path and query Fastify routes, with Host %j',
+      async (host) => {
+        const app = await serve();
+        try {
+          expect((await overSocket(app, 'GET /api/fetch?url=internal', host)).status).toBe('403');
+          expect(await overSocket(app, 'GET /api/fetch?url=public', host)).toEqual({ status: '200', body: 'ran' });
+        } finally {
+          await app.close();
+        }
+      },
+    );
+
+    it('refuses, and reports each time, a request it cannot rebuild for screening', async () => {
+      const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      const app = await serve();
+      try {
+        expect((await overSocket(app, 'TRACE /api/fetch?url=public')).status).toBe('400');
+        expect((await overSocket(app, 'TRACE /api/fetch?url=public')).status).toBe('400');
+        expect(warn.mock.calls.filter(([line]) => String(line).includes('could not be screened'))).toHaveLength(2);
+      } finally {
+        await app.close();
+        warn.mockRestore();
+      }
+    });
+
+    it('passes such a request on in dry-run mode, still reporting it', async () => {
+      vi.stubEnv('PATCHSTACK_MODE', 'dry-run');
+      const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      const app = await serve();
+      try {
+        expect(await overSocket(app, 'TRACE /api/fetch?url=public')).toEqual({ status: '200', body: 'ran' });
+        expect(warn.mock.calls.some(([line]) => String(line).includes('passed on in dry-run mode'))).toBe(true);
+      } finally {
+        await app.close();
+        warn.mockRestore();
+        vi.unstubAllEnvs();
+      }
+    });
+
+    it('still screens the response when the Host header is malformed', async () => {
+      const app = Fastify();
+      await app.register(
+        (await loadPlugin({
+          firewall: [{ id: 'rm-fastify-redact', title: 'redact', phase: 'response', action: 'redact', rule_v2: [{ parameter: 'response.body', match: { type: 'contains', value: 'synthetic-secret' } }] }],
+          whitelists: [],
+        } as never)) as never,
+      );
+      app.get('/text', async (_req, reply) => reply.type('text/plain').send('a synthetic-secret b'));
+      await app.listen({ port: 0, host: '127.0.0.1' });
+      try {
+        for (const host of ['app.test', 'a b', 'a?x=1']) {
+          const { status, body } = await overSocket(app, 'GET /text', host);
+          expect(status, host).toBe('200');
+          expect(body, host).not.toContain('synthetic-secret');
+        }
+      } finally {
+        await app.close();
+      }
+    });
   });
 
   it('screens a route inside a sibling plugin', async () => {
