@@ -3,7 +3,7 @@
 // print that only with --verbose.
 
 import { renderBox, renderFindings, renderMarkdownLogo, renderMenu } from './art.js';
-import type { PackageSummary } from './client.js';
+import { DEFAULT_ENDPOINT, type PackageSummary } from './client.js';
 import { SECRET_CONFIG_FILENAME } from './config.js';
 import {
   nextProgressStep,
@@ -293,6 +293,8 @@ export interface SummaryOptions {
   widgetOnPage: boolean;
   /** Where the person sees this site in their dashboard, once it is connected. */
   dashboardUrl: string | null;
+  /** The host of the endpoint this run used, when it is not Patchstack's own. */
+  endpointHost?: string;
 }
 
 /**
@@ -321,6 +323,10 @@ export function renderSummary(report: StatusReport, progress: Progress, context:
   }
 
   const lines = [...renderMarkdownLogo(), `### 🛡️ ${headline}`, ''];
+  // Where the project's details went is the person's to judge, so an address other than Patchstack's is named to them.
+  if (options.endpointHost !== undefined) {
+    lines.push(`This setup sent your project's details to **${options.endpointHost}** instead of Patchstack's own address, ${new URL(DEFAULT_ENDPOINT).host}.`, '');
+  }
   // With counts, the protection rules are listed under what was found; without them, they go here.
   if (rules !== null && !counted) lines.push(`${rules}.`, '');
   if (progress.connected && options.dashboardUrl !== null) lines.push(`See what Patchstack found in your dashboard: ${options.dashboardUrl}`, '');

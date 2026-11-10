@@ -2,6 +2,7 @@ import { readFileSync, readdirSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
+import { HOST_NAMES } from '../src/go-live.js';
 
 const root = path.join(path.dirname(fileURLToPath(import.meta.url)), '..');
 const pluginDir = path.join(root, 'claude-plugin');
@@ -30,13 +31,20 @@ describe('the Claude Code plugin', () => {
     for (const command of used) expect(known, command).toContain(command);
     const allowed = text.slice(text.indexOf('allowed-tools:'), text.indexOf('---', 4)).split('\n').filter((line) => line.trim().startsWith('- '));
     expect(allowed.length).toBeGreaterThan(0);
-    // One grant per Connect command the skill runs, never the whole CLI.
+    // Each grant is one exact command line the skill runs. A wildcard would also cover flags the skill
+    // never passes, such as `--endpoint`, which sends the project's details somewhere else without the
+    // person being asked. No `npx` flags before the package either: `npx --yes …` reads as any npx command.
     for (const line of allowed) {
-      // No `npx` flags before the package: a grant like `npx --yes …` reads as covering any npx command.
-      const command = line.match(/^\s+- Bash\(npx @patchstack\/connect ([a-z-]+):\*\)$/)?.[1];
+      const [, command, flags] = line.match(/^\s+- Bash\(npx @patchstack\/connect ([a-z-]+)((?: --[a-z-]+(?: [a-z-]+)?)*)\)$/) ?? [];
       expect(command, line).toBeDefined();
       expect(used, line).toContain(command);
+      for (const [, flag] of flags.matchAll(/--([a-z-]+)/g)) expect(['widget', 'host'], line).toContain(flag);
     }
+  });
+
+  it('pre-approves go-live for each host it knows, and nothing else after --host', () => {
+    const grants = [...skillText('next').matchAll(/Bash\(npx @patchstack\/connect go-live --host ([a-z-]+)\)/g)].map((match) => match[1]);
+    expect(grants.sort()).toEqual(Object.keys(HOST_NAMES).sort());
   });
 
   it('tells Claude not to run the app, and to show the summary as written', () => {

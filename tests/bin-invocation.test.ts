@@ -951,6 +951,28 @@ describe.skipIf(!built)('the packaged bin, invoked as npm invokes it', () => {
         }
       });
 
+      it('names a non-default endpoint without --verbose, before the run and at its end', async () => {
+        const server = await acceptingServer();
+        const dir = freshProject();
+        try {
+          const host = new URL(server.endpoint).host;
+          const { stdout, stderr } = await promisify(execFile)('node', [bin, 'setup', '--endpoint', server.endpoint], {
+            cwd: dir,
+            env: { PATH: process.env.PATH, HOME: process.env.HOME },
+            encoding: 'utf8',
+          });
+          const notice = `patchstack: this run uses ${host} (set by --endpoint) instead of Patchstack's own api.patchstack.com.`;
+          expect(stderr.split('\n').filter((line) => line === notice)).toHaveLength(2);
+          expect(stderr.split('\n')[0]).toBe(notice);
+          expect(stderr.trimEnd().split('\n').at(-1)).toBe(notice);
+          const summary = stdout.slice(stdout.indexOf('──── Summary ────'));
+          expect(summary).toContain(`This setup sent your project's details to **${host}** instead of Patchstack's own address, api.patchstack.com.`);
+        } finally {
+          await server.close();
+          rmSync(dir, { recursive: true, force: true });
+        }
+      });
+
       it('keeps a build-hook scan to two lines', async () => {
         const server = await acceptingServer();
         const dir = freshProject();
@@ -1001,7 +1023,8 @@ describe.skipIf(!built)('the packaged bin, invoked as npm invokes it', () => {
 
           expect(result.status).toBe(1);
           expect(result.stderr.trim()).toBe(
-            'Could not reach Patchstack. Check your internet connection and try again. (NETWORK_ERROR)',
+            "patchstack: this run uses 127.0.0.1:1 (set by PATCHSTACK_ENDPOINT) instead of Patchstack's own api.patchstack.com.\n" +
+              'Could not reach Patchstack. Check your internet connection and try again. (NETWORK_ERROR)',
           );
         } finally {
           rmSync(dir, { recursive: true, force: true });
