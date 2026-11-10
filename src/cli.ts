@@ -97,6 +97,7 @@ import {
   renderStatus,
   renderSummary,
   SUMMARY_HEADING,
+  BUILDER_SAVED_CHECK,
   SETUP_NOT_FINISHED,
   SUMMARY_INTRO,
   summaryClosingLine,
@@ -1731,6 +1732,7 @@ async function runSetup(args: ParsedArgs): Promise<number> {
       console.log(SUMMARY_HEADING);
       for (const line of summary) console.log(line);
       console.log('');
+      if (typeof config.hostedBuilder === 'string') console.log(BUILDER_SAVED_CHECK);
       console.log(summaryClosingLine(progress.connected, link));
     }
   }
