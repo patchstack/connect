@@ -199,12 +199,26 @@ export function removeSqlComments(value) {
     // original — e.g. `#<script>…` becomes empty and evades an XSS rule, though the browser still
     // runs it. Keeping the content only ever ADDS matches (more of the value is inspected), never
     // hides one. SQLi keyword detection is unaffected — the keywords remain visible.
-    let result = value;
+    //
+    // One left-to-right scan keeps this linear in the value's length: once an opener has no closer
+    // after it, no later opener can have one either, so the rest is kept as it is. `/*!…*/` is an
+    // ordinary block comment here.
+    let result = '';
+    let cursor = 0;
+    while (cursor < value.length) {
+        const open = value.indexOf('/*', cursor);
+        if (open === -1) {
+            break;
+        }
+        const close = value.indexOf('*/', open + 2);
+        if (close === -1) {
+            break;
+        }
+        result += value.slice(cursor, open) + ' ';
+        cursor = close + 2;
+    }
 
-    result = result.replace(/\/\*[\s\S]*?\*\//g, ' ');
-    result = result.replace(/\/\*![\s\S]*?\*\//g, ' ');
-
-    return result;
+    return cursor === 0 ? value : result + value.slice(cursor);
 }
 
 export function removeNullBytes(value) {
