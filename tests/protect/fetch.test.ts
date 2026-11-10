@@ -123,6 +123,41 @@ describe('fetch adapter', () => {
     }
   });
 
+  for (const contentType of [
+    'application/x-www-form-urlencoded',
+    'multipart/form-data',
+    'application/json; x="multipart/form-data"',
+  ]) {
+    it(`screens post.<field> in a JSON body sent as ${contentType}`, async () => {
+      const guard = createFetchMiddleware({
+        firewall: [{ id: 'cmd', rule_v2: [{ parameter: 'post.cmd', match: { type: 'contains', value: '$(id)' } }] }],
+        whitelists: [],
+        whitelist_keys: {},
+      });
+      const request = (cmd: string) =>
+        new Request('https://app.dev/run', {
+          method: 'POST',
+          headers: { 'content-type': contentType },
+          body: JSON.stringify({ cmd, note: 'x=1&y=2' }),
+        });
+
+      assert.strictEqual((await request('$(id)').json()).cmd, '$(id)');
+      assert.strictEqual((await guard(request('$(id)')))?.status, 403);
+      assert.strictEqual(await guard(request('ls')), null);
+    });
+  }
+
+  it('still reads real form fields when the body is not JSON', async () => {
+    const shaped = await fromFetchRequest(
+      new Request('https://app.dev/write', {
+        method: 'POST',
+        headers: { 'content-type': 'application/x-www-form-urlencoded; note="application/json"' },
+        body: 'a=1&a=2&b=%7B%7D',
+      }),
+    );
+    assert.deepStrictEqual({ ...shaped.body }, { a: ['1', '2'], b: '{}' });
+  });
+
   it('fails open when a rule throws (never blocks on engine error)', async () => {
     const badEngine = { evaluate() { throw new Error('boom'); } };
     let captured = null;
