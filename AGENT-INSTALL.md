@@ -60,7 +60,7 @@ The pages get a build step, even though nothing is compiled. The build is what r
 
 1. Check what is already done with `npx @patchstack/connect guide` (read-only). If the project is already provisioned, reuse it — see "Before you start — never install twice".
 2. Install `@patchstack/connect` as a runtime dependency with the project's package manager. If it is missing, `setup` adds it itself.
-3. Run `npx @patchstack/connect setup`. In a hosted builder, scope `PATCHSTACK_ENVIRONMENT=sandbox` to that command — see "Automated setup".
+3. Run `npx @patchstack/connect setup`. In a hosted builder, scope `PATCHSTACK_ENVIRONMENT=sandbox` to that command — see "Automated setup". With the package installed, `npx` runs the copy in `node_modules/.bin`. Where a sandbox will not run `npx` at all, run the same installed CLI with `node node_modules/@patchstack/connect/dist/cli.js setup`.
 4. Finish any `✘` line under `To do` in the report at the end of `setup`. "Automated setup" names each one. Do not start, restart or stop the person's app, and do not touch its data, to check the install: `setup` never runs the app, and the protection check needs an app the person already has running.
 5. Run `npx @patchstack/connect doctor`. Fix every `✗` it reports, as its `Fix:` line says, and run it again until none is left. In a Lovable or Replit project, setup's output asks for this again, just before its last line: if `doctor` says "Patchstack is not installed in this project", the changes setup made were not kept, so tell the person setup did not finish and run it again. A `✗` marked "for the app owner" (connecting their Patchstack account, publishing the app) is not yours to fix: the summary already hands it to the person.
 6. End by passing on the `──── Summary ────` that `setup` prints: what Patchstack found, the link, what is left to do and the next step, with a reminder to deploy when they are ready. See "The message you end on".
@@ -763,6 +763,11 @@ would have stopped while it is still in dry-run. Two separate paths, with differ
   Switch it off with **`PATCHSTACK_REPORT_DETECTIONS=0`**, or `reportDetections: false` in
   `createProtection`, or `PATCHSTACK_TELEMETRY=off` which covers all telemetry. `reportDetections` is an
   opt-out only — passing `true` cannot switch reporting on for a site that is not enrolled.
+
+  For a guard `protect` wrote, prefer the environment variables: they need no code change. Adding
+  `reportDetections: false` or `reportFirewallLog: false` to that guard's own options is the one edit
+  `protect --check` still accepts as the guard it wrote. Any other change to the file makes it a custom
+  guard, which the check cannot vouch for.
 
   `protection.detectionReporting` names the current state locally, so a guard that is not reporting says
   which reason applies: `on`, `disabled-by-config`, `disabled-by-telemetry-opt-out`, `not-enrolled`,
