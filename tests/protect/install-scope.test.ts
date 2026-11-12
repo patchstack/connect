@@ -405,6 +405,42 @@ describe('choosing between candidate entries', () => {
   });
 });
 
+describe('a test file kept beside the entry', () => {
+  const ENTRY = [
+    "const express = require('express');",
+    'const app = express();',
+    'app.use(express.json());',
+    "app.get('/api', (req, res) => res.json({ ok: true }));",
+    'app.listen(3000);',
+    '',
+  ].join('\n');
+
+  const TEST = [
+    "const express = require('express');",
+    'const app = express();',
+    'app.use(express.json());',
+    'app.listen(0);',
+    '',
+  ].join('\n');
+
+  it.each(['src/server/entry.test.js', 'src/server/entry.spec.js'])(
+    'wires the entry, not %s',
+    (testFile) => {
+      // A test that starts its own app sorts ahead of the entry it sits beside. Wiring it guards nothing
+      // that serves traffic, and leaves the real entry reported as a second, unguarded server.
+      const cwd = project({ 'package.json': PACKAGE_JSON, 'src/server/entry.js': ENTRY, [testFile]: TEST });
+
+      expressAdapter.wire(cwd, { cwd, force: false } as never);
+      const report = expressAdapter.verify(cwd);
+
+      expect(readFileSync(join(cwd, 'src/server/entry.js'), 'utf8')).toContain('app.use(patchstackMiddleware)');
+      expect(readFileSync(join(cwd, testFile), 'utf8')).toBe(TEST);
+      expect(report.wired).toBe(true);
+      expect(report.checks.some((c) => c.label.includes('every server in this project has a guard'))).toBe(false);
+    },
+  );
+});
+
 describe('a name in a comment is not wiring', () => {
   it('does not stop the installer from wiring the file', () => {
     // Reported. A mention of the guard's name was read as "already wired", so setup declined to edit a

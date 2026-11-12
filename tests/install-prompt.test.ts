@@ -22,7 +22,7 @@ const read = (relative: string): string => readFileSync(path.join(root, relative
 function quotedPrompt(relative: string): string {
   const quoted = read(relative)
     .split('\n')
-    .filter((line) => line.startsWith('> I have vetted'));
+    .filter((line) => line.startsWith('> I have reviewed'));
 
   expect(quoted, `expected exactly one install-prompt blockquote in ${relative}`).toHaveLength(1);
   return quoted[0].slice(2);
