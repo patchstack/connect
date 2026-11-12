@@ -13,6 +13,12 @@ const SKIP_DIRS = new Set([
 ]);
 const MAX_DEPTH = 8;
 
+/**
+ * A test kept beside the code it covers (`entry.test.ts`, `entry.spec.js`), skipped for the same reason as
+ * the test directories above: an app a test starts serves no traffic, so a guard there protects nothing.
+ */
+const TEST_FILE = /\.(?:test|spec)\.(?:ts|js|mjs|cjs)$/;
+
 export interface AppInstance {
   relPath: string;
   appVar: string;
@@ -59,7 +65,7 @@ export function findAppInstance(cwd: string, re: RegExp): AppInstance | null {
       }
       if (st.isSymbolicLink()) continue;
       if (st.isDirectory()) walk(p, depth + 1);
-      else if (/\.(?:ts|js|mjs|cjs)$/.test(name)) {
+      else if (/\.(?:ts|js|mjs|cjs)$/.test(name) && !TEST_FILE.test(name)) {
         let src: string;
         try {
           src = readFileSync(p, 'utf8');
