@@ -197,6 +197,30 @@ describe('a guard without the site credential, shipped with a rules reader', () 
     await protection.stop();
   });
 
+  it.each(['express', 'node'] as const)('reports the live deployment from the %s middleware too', async (seam) => {
+    const { protection, calls } = await guard({ rules_reader: READER });
+
+    // A Node server behind a proxy: the request carries a path, and the public address rides the headers.
+    const req = {
+      method: 'GET',
+      url: '/',
+      originalUrl: '/',
+      headers: { host: '127.0.0.1:3000', 'x-forwarded-host': 'my-live-app.example.com', 'x-forwarded-proto': 'https' },
+      query: {},
+      body: {},
+      socket: { remoteAddress: '10.0.0.1' },
+      on() { return this; },
+    };
+    const res = { statusCode: 200, setHeader() {}, getHeader() {}, end() {}, on() { return this; }, once() { return this; }, emit() { return true; } };
+    await new Promise<void>((resolve) => protection[seam]()(req, res, () => resolve()));
+    await vi.waitFor(() => expect(calls.some((c) => c.url.includes('/live/'))).toBe(true));
+
+    const live = calls.find((c) => c.url.includes('/live/'));
+    expect(JSON.parse(String(live?.init.body))).toMatchObject({ origin: 'https://my-live-app.example.com' });
+    expect((live?.init.headers as Record<string, string>).Authorization).toBe('Bearer reader-token');
+    await protection.stop();
+  });
+
   it('reports /live on the reader even when managed rules have not resolved (screening on the bundle)', async () => {
     const cwd = mkdtempSync(join(tmpdir(), 'ps-reader-'));
     dirs.push(cwd);

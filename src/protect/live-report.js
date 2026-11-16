@@ -96,7 +96,7 @@ export function createLiveReporter(opts) {
   const siteUuid = opts.siteUuid;
   const pulseAuth = opts.pulseAuth;
   if (typeof siteUuid !== 'string' || siteUuid === '' || typeof pulseAuth !== 'string' || pulseAuth === '') {
-    return { note: async () => {} };
+    return { due: () => false, note: async () => {} };
   }
 
   const configured = opts.baseUrl ?? (typeof process !== 'undefined' ? process.env?.PATCHSTACK_PULSE_RULES_URL : undefined);
@@ -107,7 +107,23 @@ export function createLiveReporter(opts) {
   const reported = new Set();
   let nextAttemptAt = 0;
 
+  /**
+   * Would `note(origin)` send anything now? Synchronous, so a seam that answers in the same tick when
+   * there is nothing to report can keep doing so.
+   *
+   * @param {string | undefined} origin
+   */
+  const due = (origin) => {
+    if (typeof origin !== 'string' || origin === '' || reported.has(origin)) return false;
+    let host;
+    try { host = new URL(origin).hostname; } catch { return false; }
+    if (host === '' || isLocalHost(host)) return false;
+
+    return Date.now() >= nextAttemptAt;
+  };
+
   return {
+    due,
     /**
      * Report that this guard is serving `origin` (and, when known, the build it was cut from). A no-op
      * after the first success for that origin, and throttled between failed attempts.
@@ -116,11 +132,7 @@ export function createLiveReporter(opts) {
      * @param {string | undefined} [checksum]  the build fingerprint, when the guard was shipped with one
      */
     async note(origin, checksum) {
-      if (typeof origin !== 'string' || origin === '' || reported.has(origin)) return;
-      let host;
-      try { host = new URL(origin).hostname; } catch { return; }
-      if (host === '' || isLocalHost(host)) return;
-      if (Date.now() < nextAttemptAt) return;
+      if (!due(origin)) return;
       nextAttemptAt = Date.now() + RETRY_COOLDOWN_MS;
 
       try {

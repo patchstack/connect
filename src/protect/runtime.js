@@ -897,25 +897,7 @@ export async function createProtection(options = {}) {
       const refresh = requestRefresher?.check(Boolean(request?.headers?.get?.(SYNC_HEADER)));
       if (refresh?.wait) await refresh.promise;
       else if (refresh) hostWaitUntil(request, hostArgs)?.(refresh.promise);
-      // First real request on a new origin: tell Patchstack the deployment is live. Gated on having a
-      // credential (`rulesAuth` — the site key, or the bundled read-only reader), NOT on detection
-      // reporting being on. A guard serving live traffic is deployed whether or not its MANAGED rules have
-      // resolved: a keyless app whose rule fetch has not landed yet still screens on its bundled rules, and
-      // the reader still authenticates this report. Tying liveness to managed-rules reporting left such a
-      // deployment protected but forever "not deployed" on the dashboard. The one thing that does silence it
-      // is an EXPLICIT opt-out — `PATCHSTACK_REPORT_DETECTIONS=0` or `PATCHSTACK_TELEMETRY=0` — because that
-      // is the operator choosing to send nothing, not the environment being unable to. The reporter is also
-      // a no-op without a site, and skips local/preview origins. Inline and best-effort (see live-report.js).
-      const reportingOptedOut = detectionReporting === 'disabled-by-config'
-        || detectionReporting === 'disabled-by-telemetry-opt-out';
-      if (rulesAuth && !reportingOptedOut) {
-        try {
-          // The public address a visitor used, not `request.url` — behind a reverse proxy (every hosted
-          // builder's deploy) that URL often carries the internal host the app binds to, so the forwarded
-          // headers the proxy sets are what name the live site.
-          await liveReporter.note(publicOriginOf(request), options.rules?._patchstack?.manifest_checksum);
-        } catch { /* never let the live report affect screening */ }
-      }
+      await noteLive(request);
       shaped = await fromFetchRequest(request, {
         peer: peerOf(request, hostArgs),
         trustedProxy: options.trustedProxy,
@@ -1765,12 +1747,58 @@ export async function createProtection(options = {}) {
       scoped: [...requestRules, ...responseRules, ...egressRules].filter(rule => 'build_scope' in rule).length,
       scopedBlocking: [...requestRules, ...responseRules, ...egressRules].filter(rule => 'build_scope' in rule && ruleMode(rule) === 'block').length},
   });
+  /**
+   * First real request on a new origin: tell Patchstack the deployment is live.
+   *
+   * Gated on having a credential (`rulesAuth` — the site key, or the bundled read-only reader), NOT on
+   * detection reporting being on. A guard serving live traffic is deployed whether or not its MANAGED rules
+   * have resolved: a keyless app whose rule fetch has not landed yet still screens on its bundled rules, and
+   * the reader still authenticates this report. The one thing that silences it is an EXPLICIT opt-out —
+   * `PATCHSTACK_REPORT_DETECTIONS=0` or `PATCHSTACK_TELEMETRY=0` — because that is the operator choosing to
+   * send nothing, not the environment being unable to. The reporter is also a no-op without a site, and
+   * skips local origins. Inline and best-effort (see live-report.js); it never affects screening.
+   *
+   * Every seam calls this, because the server it runs on does not change what "deployed" means: a guard
+   * mounted as Express or Node middleware is as live as one wrapping a fetch handler.
+   *
+   * The origin is the public address a visitor used, not `request.url` — behind a reverse proxy (every
+   * hosted builder's deploy) that URL often carries the internal host the app binds to, so the forwarded
+   * headers the proxy sets are what name the live site.
+   */
+  const liveReportDue = (request) => {
+    const reportingOptedOut = detectionReporting === 'disabled-by-config'
+      || detectionReporting === 'disabled-by-telemetry-opt-out';
+    if (!rulesAuth || reportingOptedOut) return false;
+    try { return liveReporter.due(publicOriginOf(request)); } catch { return false; }
+  };
+  const noteLive = async (request) => {
+    if (!liveReportDue(request)) return;
+    try {
+      await liveReporter.note(publicOriginOf(request), options.rules?._patchstack?.manifest_checksum);
+    } catch { /* never let the live report affect screening */ }
+  };
+  /** A Node request as the one thing {@link noteLive} reads: its headers, behind a `get`. */
+  const nodeHeadersOf = (req) => ({
+    url: req.originalUrl || req.url || '/',
+    headers: {
+      get: (name) => {
+        const value = req.headers?.[name];
+        return Array.isArray(value) ? value.join(', ') : value ?? null;
+      },
+    },
+  });
   const answerActivation = request => options.activationCheck === false ? null : activationResponse(request, pulseAuth, runtimeStatus);
   const withRequestSync = handler => (req, res, next) => {
-    const proceed = () => {
+    const screen = () => {
       const refresh = requestRefresher?.check(Boolean(req.headers?.[SYNC_HEADER]));
       if (refresh?.wait) refresh.promise.then(() => handler(req, res, next)).catch(next);
       else handler(req, res, next);
+    };
+    // Screened in the same tick unless there is a live report to send first, which is once per origin.
+    const proceed = () => {
+      const request = nodeHeadersOf(req);
+      if (liveReportDue(request)) noteLive(request).then(screen, screen);
+      else screen();
     };
     const challenge = req.headers?.[ACTIVATION_HEADER];
     if (!challenge || options.activationCheck === false || !pulseAuth) return proceed();
