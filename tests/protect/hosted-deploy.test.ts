@@ -113,7 +113,7 @@ it.skipIf(!existsSync(join(root, 'dist/register.js')))('reports, deploys and rol
     const deploy = async (cwd: string, site: number) => {
       const env = options(cwd, site);
       // The explicit deployment path must also work from a host's npm prebuild hook.
-      await run(process.execPath, [cli, 'prepare-deploy', '--out', artifact], {
+      await run(process.execPath, [cli, 'prepare-deploy'], {
         ...env, env: { ...env.env, npm_lifecycle_event: 'prebuild' },
       });
       const data = readFileSync(join(cwd, artifact), 'utf8');
@@ -170,6 +170,16 @@ it.skipIf(!existsSync(join(root, 'dist/register.js')))('reports, deploys and rol
     expect(updated.buildId).not.toBe(first.buildId);
     expect(await start(next, 0)).toMatchObject({ results: [403, 200, 200], status: { matched: true, buildId: updated.buildId } });
     expect(await start(a, 0)).toMatchObject({ results: [200, 200, 200], status: { matched: false, buildId: first.buildId } });
+
+    const buildOptions = options(a, 0);
+    await run(process.execPath, [cli, 'prepare-deploy', '--out', 'other.json'], buildOptions);
+    expect(JSON.parse(readFileSync(join(a, 'other.json'), 'utf8'))).toEqual(first);
+    await expect(run(process.execPath, [cli, 'prepare-deploy', '--out'], buildOptions)).rejects.toThrow('--out requires');
+    expect(JSON.parse(readFileSync(join(a, artifact), 'utf8'))).toEqual(first);
+    await expect(run(process.execPath, [cli, 'prepare-deploy'], {
+      ...buildOptions, env: { ...buildOptions.env, PATCHSTACK_API_KEY: undefined },
+    })).rejects.toThrow('requires PATCHSTACK_SITE_UUID and PATCHSTACK_API_KEY');
+    expect(readFileSync(join(a, artifact), 'utf8')).toBe('null\n');
 
     rejectUpload = true;
     await expect(deploy(next, 0)).rejects.toThrow('no deployment metadata was produced');
