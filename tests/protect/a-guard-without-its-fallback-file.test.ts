@@ -53,7 +53,7 @@ async function loadGuard(name: string, rules: string | null): Promise<Record<str
   // asked for, so nothing here should fail for want of a method.
   const usable =
     '{ express: () => (_req, _res, next) => next(), node: () => (_req, _res, next) => next(),' +
-    ' fetchGuard: () => async () => null, screenResponse: async (response) => response }';
+    ' fetchGuard: () => async () => null, screenResponse: async (response) => response, screenNodeResponse: () => {} }';
   const record = `async (options) => { (globalThis.__psOptions ??= []).push(options); return ${usable}; }`;
   const stub = commonjs ? 'stub.cjs' : 'stub.mjs';
   writeFileSync(

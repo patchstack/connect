@@ -1148,7 +1148,7 @@ export async function createProtection(options = {}) {
   // Wrap a Node ServerResponse so its (buffered, text) body is screened before it's sent.
   // Opt-in (buffering can delay a streamed response); over 512 KiB it stops buffering and
   // passes through unscanned.
-  const wrapNodeResponse = (res, reqCtx) => {
+  const wrapNodeResponse = (res, reqCtx, headersOnly = false) => {
     const origWrite = res.write.bind(res);
     const origEnd = res.end.bind(res);
     // The response's own header operations, for this wrapper's use. While a `writeHead` is held the
@@ -1163,7 +1163,7 @@ export async function createProtection(options = {}) {
     const reallySent = () => Boolean(sentAccessor ? sentAccessor.call(res) : sentValue);
     const chunks = [];
     let size = 0;
-    let overflow = false;
+    let passBody = false;
     let withheld = false;
     // Whether the rules decided on headers alone have already been run for this response.
     let headScreened = false;
@@ -1530,20 +1530,34 @@ export async function createProtection(options = {}) {
         for (const c of chunks) origWrite(c);
         chunks.length = 0;
         origWrite(buf);
-        overflow = true;
+        passBody = true;
         recordSkip('response', 'body-cap', { bytes: size });
         return;
       }
       chunks.push(buf);
     };
+    const skipBody = (reason, cb) => {
+      const bodyless = res.req?.method === 'HEAD' || res.statusCode < 200 || [204, 205, 304].includes(res.statusCode);
+      if (reason && !bodyless) recordSkip('response', reason);
+      const unread = screenUnreadHead();
+      if (unread?.withhold) return sendWithheld(cb);
+      sendHead(unread);
+      passBody = true;
+    };
     res.write = function (chunk, enc, cb) {
+      if (!withheld && !passBody && chunks.length === 0) {
+        const value = effectiveHead().headers['content-type'];
+        const contentType = Array.isArray(value) ? value[0] : value;
+        if (baseContentType(contentType) === 'text/event-stream') skipBody('live-stream');
+        else if (headersOnly) skipBody('streamed-body');
+      }
       if (withheld) {
         if (typeof enc === 'function') enc();
         else if (typeof cb === 'function') cb();
 
         return true;
       }
-      if (overflow) return origWrite(chunk, enc, cb);
+      if (passBody) return origWrite(chunk, enc, cb);
       collect(chunk, enc);
       if (typeof enc === 'function') enc();
       else if (typeof cb === 'function') cb();
@@ -1557,14 +1571,18 @@ export async function createProtection(options = {}) {
 
         return res;
       }
-      if (overflow) { if (chunk != null) origWrite(chunk, enc); return origEnd(cb); }
+      if (!passBody && headersOnly) {
+        skipBody(chunk == null ? null : 'streamed-body', cb);
+        if (withheld) return res;
+      }
+      if (passBody) return origEnd(chunk, enc, cb);
       collect(chunk, enc);
       if (withheld) {
         if (typeof cb === 'function') cb();
 
         return res;
       }
-      if (overflow) return origEnd(cb); // collect just flushed head + final chunk on overflow
+      if (passBody) return origEnd(cb); // collect flushed the head and final chunk on overflow
       hardenOnce();
 
       const passThrough = (changes) => {
@@ -1874,6 +1892,15 @@ export async function createProtection(options = {}) {
     // upstream response. It resolves once here, which is the only resolution for this call.
     screenResponse: (response, request, ...hostArgs) =>
       screenResp(response, request ? reqContextFromFetch(request, clientForResponse(request, hostArgs)) : undefined),
+
+    screenNodeResponse(response, request, options) {
+      if (!nodeHttp?.ServerResponse || !(response instanceof nodeHttp.ServerResponse)) {
+        recordSkip('response', 'unsupported-node-response');
+        return;
+      }
+      wrapNodeResponse(response, request ? reqContextFromFetch(request, clientForResponse(request, [])) : undefined,
+        options?.headersOnly === true);
+    },
 
     // (request) => Response | null   (null = allow, caller proceeds). Request phase only.
     fetchGuard() {
