@@ -15,6 +15,10 @@ const fetchRoute = `async ({ request }) => {
   const body = await request.json();
   return Response.json(${output});
 }`;
+const tanstackDependencies = {
+  '@tanstack/react-start': '1.168.60', '@tanstack/react-router': '1.170.41',
+  '@vitejs/plugin-react': '6.3.0', react: '19.3.1', 'react-dom': '19.3.1', vite: '8.3.8',
+};
 const fixtures = {
   astro: {
     dependencies: { astro: '7.4.12', '@astrojs/node': '11.1.13' },
@@ -91,8 +95,7 @@ export default function App() { return <Outlet />; }`,
     start: ['node_modules/.bin/react-router-serve', './build/server/index.js'],
   },
   tanstack: {
-    dependencies: { '@tanstack/react-start': '1.168.60', '@tanstack/react-router': '1.170.41',
-      '@vitejs/plugin-react': '6.3.0', nitro: '3.0.261103-rc', react: '19.3.1', 'react-dom': '19.3.1', vite: '8.3.8' },
+    dependencies: { ...tanstackDependencies, nitro: '3.0.261103-rc' },
     files: {
       'vite.config.ts': `import { defineConfig } from 'vite';
 import { tanstackStart } from '@tanstack/react-start/plugin/vite';
@@ -142,6 +145,32 @@ main();`,
     rules: 'patchstack/rules.json',
     start: ['server.cjs'],
   },
+};
+
+fixtures['tanstack-worker'] = {
+  ...fixtures.tanstack,
+  dependencies: {
+    ...tanstackDependencies,
+    '@cloudflare/vite-plugin': '1.70.0',
+    wrangler: '4.164.0',
+  },
+  files: {
+    ...fixtures.tanstack.files,
+    'vite.config.ts': `import { defineConfig } from 'vite';
+import { cloudflare } from '@cloudflare/vite-plugin';
+import { tanstackStart } from '@tanstack/react-start/plugin/vite';
+import react from '@vitejs/plugin-react';
+export default defineConfig({
+  plugins: [cloudflare({ viteEnvironment: { name: 'ssr' } }), tanstackStart(), react()],
+});`,
+    'wrangler.jsonc': JSON.stringify({
+      name: 'framework-fixture',
+      main: '@tanstack/react-start/server-entry',
+      compatibility_date: '2026-11-01',
+      compatibility_flags: ['nodejs_compat'],
+    }),
+  },
+  start: port => ['node_modules/vite/bin/vite.js', 'preview', '--host', '127.0.0.1', '--port', String(port), '--strictPort'],
 };
 
 function fastifyFixture(format) {
@@ -264,7 +293,8 @@ async function check(protectedApp, liveBuild) {
   }
   const flags = protectedApp && fixture.preload ? ['--import', '@patchstack/connect/register/fastify'] : [];
   if (liveBuild) flags.push('--import', './host/live.mjs');
-  const app = spawn(process.execPath, [...flags, ...fixture.start], { cwd, env: processEnv, stdio: ['ignore', 'pipe', 'pipe'] });
+  const entry = typeof fixture.start === 'function' ? fixture.start(port) : fixture.start;
+  const app = spawn(process.execPath, [...flags, ...entry], { cwd, env: processEnv, stdio: ['ignore', 'pipe', 'pipe'] });
   let log = '';
   for (const stream of [app.stdout, app.stderr]) stream.on('data', part => { log += part; });
   const post = label => fetch(processEnv.ORIGIN + '/fixture', {

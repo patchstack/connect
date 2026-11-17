@@ -440,6 +440,27 @@ jobs:
       - name: Build and probe a real Nuxt app
         run: node scripts/framework-consumers.mjs nuxt packed/*.tgz
 
+  vite-framework-consumers:
+    name: Vite framework consumer (${{ matrix.framework }})
+    needs: pack
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        framework: [tanstack-worker, react-router]
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24.x
+      - uses: actions/download-artifact@v8
+        with:
+          name: packed-tarball
+          path: packed
+      - name: Build and probe the app
+        run: node scripts/framework-consumers.mjs "${{ matrix.framework }}" packed/*.tgz
+
   next-consumers:
     name: Next.js ${{ matrix.next }} (${{ matrix.bundler }}) production integration
     needs: pack
@@ -492,6 +513,7 @@ jobs:
       - tanstack-consumer
       - fastify-startup
       - nuxt-consumer
+      - vite-framework-consumers
     runs-on: ubuntu-latest
 
     steps:

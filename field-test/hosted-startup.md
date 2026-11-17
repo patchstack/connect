@@ -80,3 +80,29 @@ Optionally set `PS_FASTIFY_FALLBACK_RULES_URL` to a second loopback endpoint tha
 delivers the sandbox site's unfiltered bundle. The same mismatched build must
 then load the rule in detect-only mode and still return 200. Verify the two
 recorded matches share a rule revision and only the first was enforced.
+
+## AI builder deployment targets
+
+Select the adapter from the deployed server entry. Build tools listed in
+`package.json` can also produce static output. Install protection separately
+at any backend the browser calls directly.
+
+| Builder | Documented deployment shape | Connect integration |
+| --- | --- | --- |
+| GoDaddy Airo AI Builder | Exports code as a ZIP. GoDaddy's separate Node.js Hosting product runs apps on Node 22 using their build and start scripts. [Airo export](https://www.godaddy.com/en-in/help/download-my-airo-ai-builder-files-and-code-42993), [Node.js Hosting requirements](https://www.godaddy.com/help/nodejs-hosting-faq-42915) | Inspect the exported entry. Supported Fastify apps can use the preload on Node hosting when the host controls startup. Managed Airo publishing needs its own deployment verification. |
+| Hostinger Horizons | Typically React and Vite with Node.js backend code. Integrated backend projects can also use PocketBase. [Horizons overview](https://www.hostinger.com/support/11004356-hostinger-horizons-creating-and-managing-your-projects/), [Integrated backend](https://www.hostinger.com/changelog) | Use the framework adapter for a supported server-rendered project. A static Vite export supports inventory scanning. PocketBase and separate managed APIs need a separate protection boundary. |
+| Lovable | Current TanStack Start apps run on Cloudflare Workers. Earlier React/Vite apps were static and used separate backend functions. [Lovable deployment stack](https://lovable.dev/blog/building-apps-using-tanstack-start) | Use the TanStack Fetch adapter on the Worker. Separate functions and direct Supabase calls need their own coverage. |
+| IONOS | MyWebsite Now publishes within IONOS. Momentum AI App & Site Builder can export PHP, Node.js, and static files. [MyWebsite export limits](https://www.ionos.com/help/websites-stores/organize-websites-and-stores/website-builders-overview-of-export-options/), [Momentum export](https://www.ionos.co.uk/help/ai/using-the-ai-app-site-builder/exporting-data-from-the-ai-app-site-builder/) | Select the adapter from the exported Node app's actual entry. PHP and static sites need their own protection coverage. |
+
+Exercise representative builds locally against a packed Connect artifact. The
+Worker fixture runs the production bundle in local `workerd`. The React Router
+fixture uses the server-rendered framework mode.
+
+```sh
+npm run test:frameworks -- tanstack-worker "$tarball"
+npm run test:frameworks -- react-router "$tarball"
+```
+
+For a managed builder rollout, repeat the check against a sandbox deployed
+through the builder itself. Inspect the emitted entry and verify that a
+request actually reaches the guard before enabling blocking.

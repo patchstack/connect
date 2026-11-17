@@ -18,20 +18,39 @@ const EXTENSIONS = ['ts', 'js', 'mts', 'mjs', 'tsx', 'jsx', 'cts', 'cjs'];
 /** TanStack Start's own server entry, which a Cloudflare Worker runs when wrangler's `main` names it. */
 const PACKAGE_ENTRY = '@tanstack/react-start/server-entry';
 const WRANGLER_CONFIGS = ['wrangler.jsonc', 'wrangler.json', 'wrangler.toml'];
-const MAIN = /^(\s*"main"\s*:\s*|main\s*=\s*)"([^"]*)"/m;
 
-/**
- * The Cloudflare Worker this app deploys as, when it builds with `@cloudflare/vite-plugin`: its wrangler
- * config and the module that config names as `main`. That module is what the Worker runs, so the vite
- * config's own entry setting does not decide it. Null when the app is not a Cloudflare Worker build, or
- * its Worker entry cannot be read.
- */
-function workerEntry(cwd: string, configs: string[]): { file: string; main: string } | null {
+type WorkerMain = { value: string; start: number; end: number };
+
+function readWorkerMain(cwd: string, file: string, source: string): WorkerMain | null {
+  if (file.endsWith('.toml')) {
+    const [root] = source.split(/^\s*\[/m, 1);
+    const matches = [...(root ?? '').matchAll(/^[ \t]*main[ \t]*=[ \t]*("[^"\r\n]*")[ \t]*(?:#.*)?$/gm)];
+    const match = matches.length === 1 ? matches[0] : undefined;
+    const quoted = match?.[1];
+    if (!match || quoted === undefined) return null;
+    const start = match.index + match[0].indexOf(quoted);
+    return { value: quoted.slice(1, -1), start, end: start + quoted.length };
+  }
+
+  const ts = sourceCompiler(cwd);
+  if (!ts) return null;
+  const tree = ts.parseJsonText(file, source);
+  if ((tree as typeof tree & { parseDiagnostics: unknown[] }).parseDiagnostics.length) return null;
+  const statement = tree.statements.length === 1 ? tree.statements[0] : undefined;
+  if (!statement || !ts.isExpressionStatement(statement) || !ts.isObjectLiteralExpression(statement.expression)) return null;
+  const properties = statement.expression.properties.filter((property): property is import('typescript').PropertyAssignment =>
+    ts.isPropertyAssignment(property) && ts.isStringLiteral(property.name) && property.name.text === 'main');
+  const value = properties.length === 1 ? properties[0]?.initializer : undefined;
+  return value && ts.isStringLiteral(value)
+    ? { value: value.text, start: value.getStart(tree), end: value.end }
+    : null;
+}
+
+/** Read the entry explicitly configured for the Cloudflare Vite build. */
+function workerEntry(cwd: string, configs: string[]): { file: string; main: WorkerMain | null } | null {
   if (!configs.some(file => read(join(cwd, file)).includes('@cloudflare/vite-plugin'))) return null;
   const file = WRANGLER_CONFIGS.find(name => existsSync(join(cwd, name)));
-  const main = file ? MAIN.exec(read(join(cwd, file)))?.[2] : undefined;
-
-  return file && main !== undefined ? { file, main } : null;
+  return file ? { file, main: readWorkerMain(cwd, file, read(join(cwd, file))) } : null;
 }
 
 /** Whether a wrangler `main` names the managed server entry. */
@@ -134,7 +153,8 @@ function entryProblem(cwd: string): string | null {
   // the managed one (`protect` does that); anything else is the app's own and is left to it.
   const worker = workerEntry(cwd, configs);
   if (worker) {
-    return runsManagedEntry(worker.main) || worker.main === PACKAGE_ENTRY
+    if (!worker.main) return `cannot determine the Cloudflare Worker entry (\`main\` in ${worker.file})`;
+    return runsManagedEntry(worker.main.value) || worker.main.value === PACKAGE_ENTRY
       ? null
       : `the Cloudflare Worker entry (\`main\` in ${worker.file}) is a custom module; wrap its Fetch handler manually`;
   }
@@ -250,9 +270,10 @@ export const tanstackAdapter: Adapter = {
       changed.push(ENTRY);
     }
     const worker = workerEntry(cwd, viteConfigs(cwd));
-    if (worker && worker.main === PACKAGE_ENTRY) {
+    if (worker?.main?.value === PACKAGE_ENTRY) {
       const config = read(join(cwd, worker.file));
-      writeProjectFileSync(cwd, join(cwd, worker.file), config.replace(MAIN, (_, key: string) => `${key}"./${ENTRY}"`));
+      const { start, end } = worker.main;
+      writeProjectFileSync(cwd, join(cwd, worker.file), config.slice(0, start) + JSON.stringify(`./${ENTRY}`) + config.slice(end));
       changed.push(worker.file);
       log(`Cloudflare Worker entry (\`main\` in ${worker.file}) now runs ${ENTRY}.`);
     }
@@ -263,8 +284,8 @@ export const tanstackAdapter: Adapter = {
     const ts = sourceCompiler(cwd);
     const problem = entryProblem(cwd);
     const worker = workerEntry(cwd, viteConfigs(cwd));
-    const workerProblem = worker && !runsManagedEntry(worker.main)
-      ? `the Cloudflare Worker runs \`${worker.main}\` (\`main\` in ${worker.file}), not ${ENTRY}; run protect`
+    const workerProblem = worker?.main && !runsManagedEntry(worker.main.value)
+      ? `the Cloudflare Worker runs \`${worker.main.value}\` (\`main\` in ${worker.file}), not ${ENTRY}; run protect`
       : null;
     const wired = !problem && !workerProblem && !!ts && existsSync(join(cwd,ENTRY)) && wiredEntry(ts,read(join(cwd,ENTRY)))
       && matchesGuardTemplate(cwd,GUARD,'fetch-guard.ts') && existsSync(join(cwd,'src/patchstack/rules.json'));
