@@ -60,3 +60,18 @@ compares the uploaded build ID with a different local ID, and checks the
 service's verdict in both cases. Use a sandbox site reserved for this fixture
 because each run uploads an app map. Rule delivery and a matching build do not
 establish that this fixture has any generated rules to enforce.
+
+## Build-scoped rule check against a local service
+
+Use `PS_FASTIFY_LOCAL_SAAS=http://127.0.0.1:<port>/monitor/pulse` with the
+same command above. Run once to upload the fixture's map. In the local service,
+attach a synthetic request rule to that map's build for `POST /fixture`. Match
+the literal `fixture-block` in `post.label` and configure the sandbox site for
+blocking. Rerun the same fixture and tarball with `PS_FASTIFY_SCOPE_RULE` set to
+the served rule ID. The matching build returns 403. The other build's lookup
+omits the rule and returns 200.
+
+Optionally set `PS_FASTIFY_FALLBACK_RULES_URL` to a second loopback endpoint that
+delivers the sandbox site's unfiltered bundle. The same mismatched build must
+then load the rule in detect-only mode and still return 200. Verify the two
+recorded matches share a rule revision and only the first was enforced.
