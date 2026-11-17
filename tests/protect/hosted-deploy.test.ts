@@ -105,7 +105,7 @@ it.skipIf(!existsSync(join(root, 'dist/register.js')))('reports, deploys and rol
       env: {
         PATH: process.env.PATH, SystemRoot: process.env.SystemRoot,
         NODE_OPTIONS: nodeOptions,
-        PATCHSTACK_ENDPOINT: base + '/manifest', PATCHSTACK_PULSE_RULES_URL: base,
+        PATCHSTACK_ENDPOINT: base + '/manifest', PATCHSTACK_PULSE_RULES_URL: base + '/',
         PATCHSTACK_API_KEY: 'synthetic-key-' + (site + 1), PATCHSTACK_SITE_UUID: sites[site],
         PATCHSTACK_ENVIRONMENT: 'production', PATCHSTACK_MODE: 'block', PATCHSTACK_DEPLOYMENT_FILE: artifact,
       },
@@ -149,6 +149,16 @@ it.skipIf(!existsSync(join(root, 'dist/register.js')))('reports, deploys and rol
           expect.objectContaining({ rule_id: 'fixture-' + (index + 1), enforced: true }),
         ]) }) }));
     }
+    const egressOptions = options(a, 0, '--import=@patchstack/connect/register');
+    await run(process.execPath, ['--input-type=module', '--eval', `
+      import assert from 'node:assert/strict';
+      import { protection } from '@patchstack/connect/register';
+      assert.equal((await protection.refresh()).ok, true);
+      assert.equal(protection.synchronization.matched, true);
+      await assert.rejects(fetch(process.env.PATCHSTACK_PULSE_RULES_URL), /blocked an outbound request/);
+      await protection.stop();
+    `], { ...egressOptions, env: { ...egressOptions.env, PATCHSTACK_EGRESS: '1' } });
+
     await expect(start(a, 1)).rejects.toThrow('must contain a completed build for PATCHSTACK_SITE_UUID');
     rulesUnavailable = true;
     expect(await start(a, 0)).toMatchObject({ results: [403, 200, 200], status: { source: { origin: 'cache', ok: false } } });

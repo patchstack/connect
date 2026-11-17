@@ -8,15 +8,16 @@ import { isCanonicalUuid, isCredential, safeRemoteUrl } from './endpoint-policy.
 const siteUuid = process.env.PATCHSTACK_SITE_UUID;
 const apiKey = process.env.PATCHSTACK_API_KEY;
 const mode = process.env.PATCHSTACK_MODE;
-const pulseRulesUrl = process.env.PATCHSTACK_PULSE_RULES_URL;
+const configuredRulesUrl = process.env.PATCHSTACK_PULSE_RULES_URL;
+const pulseRulesUrl = safeRemoteUrl(configuredRulesUrl)?.replace(/\/+$/, '');
 
 if (!isCanonicalUuid(siteUuid)) throw new Error('Patchstack preload requires PATCHSTACK_SITE_UUID.');
 if (!isCredential(apiKey)) throw new Error('Patchstack preload requires a valid PATCHSTACK_API_KEY.');
 if (mode !== undefined && mode !== 'block' && mode !== 'dry-run') {
   throw new Error('PATCHSTACK_MODE must be block or dry-run.');
 }
-if (pulseRulesUrl !== undefined && safeRemoteUrl(pulseRulesUrl) === null) {
-  throw new Error('PATCHSTACK_PULSE_RULES_URL must use HTTPS or a loopback HTTP URL.');
+if (configuredRulesUrl !== undefined && (!pulseRulesUrl || /[?#]/.test(pulseRulesUrl))) {
+  throw new Error('PATCHSTACK_PULSE_RULES_URL must be an HTTPS or loopback HTTP base URL without a query or fragment.');
 }
 
 function deploymentForSite(site: string): HostedDeployment | undefined {
@@ -40,6 +41,9 @@ function deploymentForSite(site: string): HostedDeployment | undefined {
 }
 
 const deployment = deploymentForSite(siteUuid.toLowerCase());
+// The configured service has its own transport so screening application egress cannot freeze rule updates.
+const fetchAtStartup = globalThis.fetch.bind(globalThis);
+const serviceFetch: typeof fetch = (input, init) => fetchAtStartup(input, { ...init, redirect: 'error' });
 
 export const protection: Protection = await createProtection({
   siteUuid: siteUuid.toLowerCase(),
@@ -48,6 +52,8 @@ export const protection: Protection = await createProtection({
   apiKey,
   pulseAuth: apiKey,
   pulseRulesUrl,
+  fetchImpl: serviceFetch,
+  ruleFetchImpl: serviceFetch,
   mode: mode ?? 'block',
   egress: process.env.PATCHSTACK_EGRESS === '1',
   refreshMs: process.env.PATCHSTACK_ENVIRONMENT === 'sandbox' ? 15_000 : 300_000,

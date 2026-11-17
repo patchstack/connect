@@ -55,6 +55,7 @@ describe.skipIf(!existsSync(register))('built Node preload', () => {
           PATCHSTACK_PULSE_RULES_URL: 'https://rules.example.test/monitor/pulse',
           PATCHSTACK_MODE: 'block',
           PATCHSTACK_EGRESS: '0',
+          PATCHSTACK_DEPLOYMENT_FILE: undefined,
         },
         encoding: 'utf8',
         timeout: 10_000,
