@@ -124,6 +124,7 @@ import { setupProtection, wireBuildScripts, wireDevelopmentScript } from './setu
 import { runDevelopment } from './dev-command.js';
 import { checkActivation } from './activation-check.js';
 import { syncSetupProtection } from './setup-sync.js';
+import { prepareDeploy } from './prepare-deploy.js';
 import { isInstallOrBuildHook, isPreBundleBuildHook, undeliveredReportLines } from './build-hook.js';
 import { applyBuildStamp, applyManifestChecksum } from './build-stamp.js';
 import { detectStack, type StackDescriptor } from './stack.js';
@@ -186,6 +187,9 @@ Usage:
                                                      file; a pre-bundle --upload also stamps the existing
                                                      guard rules file; --follow-symlinks leaves the project dir).
                                                      Uses the app's own TypeScript
+  patchstack-connect prepare-deploy --out <file>      Report dependencies and upload the input map for
+                                                     a host-managed site. Write its deployment metadata
+                                                     for the Node preload. Requires site credentials
   patchstack-connect init   <site-uuid>              Optional: pre-seed .patchstackrc.json
                                                      with an existing site UUID
   patchstack-connect status [options]                Show current configuration and whether the
@@ -2373,6 +2377,7 @@ async function main(): Promise<number> {
   }
 
   setRunCommand(args.command);
+  if (args.command === 'prepare-deploy') return prepareDeploy(getStringFlag(args.flags, 'out'));
   if (!KNOWN_COMMANDS.has(args.command)) return runCommand(args);
   let code = 1;
   try {

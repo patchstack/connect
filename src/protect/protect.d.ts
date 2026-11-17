@@ -443,6 +443,8 @@ export interface CreateProtectionOptions {
    * the same effect as passing nothing.
    */
   buildId?: string;
+  /** Package manifest checksum for the running deployment report. */
+  manifestChecksum?: string;
   /**
    * Take responsibility for `rules` you supply yourself, including any `build_scope` they carry.
    *
