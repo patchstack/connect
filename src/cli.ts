@@ -125,6 +125,7 @@ import { runDevelopment } from './dev-command.js';
 import { checkActivation } from './activation-check.js';
 import { syncSetupProtection } from './setup-sync.js';
 import { prepareDeploy } from './prepare-deploy.js';
+import { verifyDeploy } from './verify-deploy.js';
 import { isInstallOrBuildHook, isPreBundleBuildHook, undeliveredReportLines } from './build-hook.js';
 import { applyBuildStamp, applyManifestChecksum } from './build-stamp.js';
 import { detectStack, type StackDescriptor } from './stack.js';
@@ -190,6 +191,10 @@ Usage:
   patchstack-connect prepare-deploy [--out <file>]    Report dependencies and upload the input map for
                                                      a host-managed site. Write PATCHSTACK_DEPLOYMENT_FILE
                                                      (or --out). Requires site credentials
+  patchstack-connect verify-deploy [--url <url>]     Wait for signed readiness at PATCHSTACK_READINESS_URL
+                                                     (or --url), using the deployment metadata.
+                                                     --timeout <seconds> defaults to 60. --require-block
+                                                     also requires blocking mode
   patchstack-connect init   <site-uuid>              Optional: pre-seed .patchstackrc.json
                                                      with an existing site UUID
   patchstack-connect status [options]                Show current configuration and whether the
@@ -371,7 +376,7 @@ Examples:
   npx @patchstack/connect demo-guide node-serialize
 `;
 
-const VALUE_FLAGS = new Set(['site-uuid', 'endpoint', 'dir', 'url', 'out', 'claim-token', 'host', 'runtime-url']);
+const VALUE_FLAGS = new Set(['site-uuid', 'endpoint', 'dir', 'url', 'out', 'timeout', 'claim-token', 'host', 'runtime-url']);
 
 /** Set from `--verbose`. The default output is a plain status report; this adds the technical lines. */
 let verbose = false;
@@ -2384,6 +2389,21 @@ async function main(): Promise<number> {
       return 1;
     }
     return prepareDeploy(out);
+  }
+  if (args.command === 'verify-deploy') {
+    const url = getStringFlag(args.flags, 'url');
+    const rawTimeout = getStringFlag(args.flags, 'timeout');
+    const seconds = args.flags.has('timeout') ? Number(rawTimeout) : 60;
+    if ((args.flags.has('url') && !url?.trim()) || !Number.isInteger(seconds) || seconds < 1 || seconds > 300) {
+      console.error('verify-deploy expects an explicit --url if supplied, and --timeout between 1 and 300 seconds.');
+      return 1;
+    }
+    const requireBlock = args.flags.get('require-block');
+    if (requireBlock !== undefined && requireBlock !== true) {
+      console.error('--require-block takes no value.');
+      return 1;
+    }
+    return verifyDeploy(url, seconds, requireBlock === true);
   }
   if (!KNOWN_COMMANDS.has(args.command)) return runCommand(args);
   let code = 1;

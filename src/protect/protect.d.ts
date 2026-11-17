@@ -454,6 +454,8 @@ export interface CreateProtectionOptions {
   buildId?: string;
   /** Package manifest checksum for the running deployment report. */
   manifestChecksum?: string;
+  /** Recheck build rule readiness more frequently during the first minute after startup. */
+  startupRulesRetry?: boolean;
   /**
    * Take responsibility for `rules` you supply yourself, including any `build_scope` they carry.
    *

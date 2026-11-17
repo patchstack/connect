@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { spawn, spawnSync } from 'node:child_process';
+import { execFile, spawn, spawnSync } from 'node:child_process';
 import { once } from 'node:events';
 import { createServer as createHttpServer } from 'node:http';
 import { copyFileSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
@@ -7,6 +7,7 @@ import { createServer } from 'node:net';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { promisify } from 'node:util';
 import { ACTIVATION_HEADER, activationChallenge, verifyActivationResponse } from '../src/protect/activation.js';
 
 const output = `({ label: body.label, sample: 'fixture-private' })`;
@@ -221,8 +222,18 @@ function run(command, args, childEnv = env) {
   const child = spawnSync(command, args, { cwd, env: childEnv, encoding: 'utf8', timeout: 180_000 });
   assert.equal(child.status, 0, [child.error?.message, child.stdout, child.stderr].join('\n').replaceAll(cwd, '<fixture>'));
 }
+const packageDir = 'node_modules/@patchstack/connect';
+const cli = join(packageDir, 'dist/cli.js');
+const deployment = 'host/deployment.json';
+const exec = promisify(execFile);
 const fixtureSite = '11111111-1111-4111-8111-111111111111';
+const fixtureCredentials = { PATCHSTACK_SITE_UUID: fixtureSite, PATCHSTACK_API_KEY: 'synthetic-key-1' };
 let localRulesUrl;
+let revalidatedFixtureRules = false;
+
+function runHostedCli(args, childEnv) {
+  return exec(process.execPath, [cli, ...args], { cwd, env: childEnv, timeout: 45_000 });
+}
 
 async function check(protectedApp, liveBuild) {
   const listener = createServer().listen(0, '127.0.0.1');
@@ -245,9 +256,9 @@ async function check(protectedApp, liveBuild) {
     });
   } else if (protectedApp && localRulesUrl) {
     Object.assign(processEnv, {
-      PATCHSTACK_SITE_UUID: fixtureSite,
-      PATCHSTACK_API_KEY: 'synthetic-key-1',
+      ...fixtureCredentials,
       PATCHSTACK_PULSE_RULES_URL: localRulesUrl,
+      PATCHSTACK_DEPLOYMENT_FILE: deployment,
       PATCHSTACK_MODE: 'block',
     });
   }
@@ -262,6 +273,23 @@ async function check(protectedApp, liveBuild) {
   });
   let scopedCheckCompleted = false;
   try {
+    if (protectedApp && fixture.preload) {
+      const expected = {
+        ...processEnv,
+        PATCHSTACK_DEPLOYMENT_FILE: deployment,
+        PATCHSTACK_READINESS_URL: processEnv.ORIGIN + '/fixture',
+      };
+      if (liveBuild?.matched === false) {
+        await assert.rejects(runHostedCli(['verify-deploy', '--timeout', '2'], expected), /different deployment metadata/);
+        console.log('Readiness refused a different deployment.');
+      } else {
+        const args = ['verify-deploy', '--timeout', '25'];
+        if (processEnv.PATCHSTACK_MODE === 'block') args.push('--require-block');
+        const { stdout } = await runHostedCli(args, expected);
+        assert.match(stdout, /Deployment ready at the checked URL/);
+        console.log(stdout.trim());
+      }
+    }
     let normal;
     for (let attempt = 0; attempt < (liveBuild ? 350 : 200) && app.exitCode === null; attempt++) {
       try { normal = await post('ordinary'); break; } catch { await new Promise(done => setTimeout(done, 100)); }
@@ -287,7 +315,7 @@ async function check(protectedApp, liveBuild) {
       assert.equal(status.buildId, buildId);
       assert.equal(status.matched, liveBuild.matched);
       assert.equal(status.source.ok, true);
-      assert.equal(status.source.origin, 'api');
+      assert.ok(['api', 'cache'].includes(status.source.origin));
       console.log(reported);
       if (scopedRule) {
         assert.equal(status.mode, 'block');
@@ -350,14 +378,12 @@ try {
   run('npm', ['install', '--no-audit', '--no-fund', '--ignore-scripts']);
   if (fixture.build) run(process.execPath, fixture.build);
   await check(false);
-  const packageDir = 'node_modules/@patchstack/connect';
   if (fixture.preload) {
     if (live) {
       mkdirSync(join(cwd, 'host'), { recursive: true });
       copyFileSync(fileURLToPath(new URL('./fastify-startup-live.mjs', import.meta.url)), join(cwd, 'host/live.mjs'));
     }
   } else {
-    const cli = join(packageDir, 'dist/cli.js');
     run(process.execPath, [cli, 'protect']);
     run(process.execPath, [cli, 'protect', '--check']);
     readFileSync(join(cwd, fixture.rules));
@@ -370,28 +396,60 @@ try {
       rule_v2: [{ parameter: 'response.header.x-fixture', match: { type: 'regex', value: '/fixture-stream-private/' } }] },
   ], whitelists: [], whitelist_keys: {} });
   if (fixture.preload && !live) {
-    mockRules = createHttpServer((incoming, reply) => {
-      incoming.resume();
-      if (incoming.method === 'POST' && incoming.url === '/monitor/pulse/token') {
+    let reportedBuild;
+    let lookups = 0;
+    mockRules = createHttpServer(async (incoming, reply) => {
+      const path = incoming.url;
+      if (incoming.method === 'POST' && path === '/monitor/pulse/token') {
+        incoming.resume();
         reply.writeHead(200, { 'content-type': 'application/json' }).end('{"access_token":"synthetic-token"}');
-      } else if (incoming.method === 'GET' && incoming.url === `/monitor/pulse/rules/${fixtureSite}`
-        && incoming.headers.authorization === 'Bearer synthetic-token') {
-        reply.writeHead(200, { 'content-type': 'application/json' }).end(fixtureBundle);
+        return;
+      }
+      if (incoming.headers.authorization !== 'Bearer synthetic-token') {
+        incoming.resume();
+        reply.writeHead(401).end();
+        return;
+      }
+      if (incoming.method === 'POST' && path === `/monitor/pulse/manifest/${fixtureSite}`) {
+        incoming.resume();
+        reply.writeHead(200, { 'content-type': 'application/json' }).end(JSON.stringify({ uuid: fixtureSite, stored: true }));
+      } else if (incoming.method === 'POST' && path === `/monitor/pulse/input-map/${fixtureSite}`) {
+        let map = '';
+        for await (const chunk of incoming.setEncoding('utf8')) map += chunk;
+        reportedBuild = JSON.parse(map).build_id;
+        reply.writeHead(200, { 'content-type': 'application/json' }).end('{"result":"stored","revision":1}');
+      } else if (incoming.method === 'GET' && path === `/monitor/pulse/rules/${fixtureSite}`
+        && reportedBuild && incoming.headers['x-patchstack-build'] === reportedBuild) {
+        const etag = '"fixture-bundle"';
+        reply.setHeader('X-Patchstack-Build-Match', 'match');
+        reply.setHeader('X-Patchstack-Build-ID', reportedBuild);
+        reply.setHeader('X-Patchstack-Map-Rules', ++lookups === 1 ? 'pending' : 'ready');
+        reply.setHeader('ETag', etag);
+        if (incoming.headers['if-none-match'] === etag) {
+          revalidatedFixtureRules = true;
+          reply.writeHead(304).end();
+        } else reply.writeHead(200, { 'content-type': 'application/json' }).end(fixtureBundle);
       } else {
+        incoming.resume();
         reply.writeHead(404).end();
       }
     });
     mockRules.listen(0, '127.0.0.1');
     await once(mockRules, 'listening');
     localRulesUrl = `http://127.0.0.1:${mockRules.address().port}/monitor/pulse`;
+    mkdirSync(join(cwd, 'host'), { recursive: true });
+    await runHostedCli(['prepare-deploy'], {
+      ...env, ...fixtureCredentials, PATCHSTACK_ENVIRONMENT: 'sandbox', PATCHSTACK_DEPLOYMENT_FILE: deployment,
+      PATCHSTACK_ENDPOINT: localRulesUrl + '/manifest',
+    });
   } else if (!fixture.preload) {
     put(fixture.rules, fixtureBundle);
   }
   if (fixture.build) run(process.execPath, fixture.build);
   if (live) {
-    const deployment = 'host/deployment.json';
-    run(process.execPath, [join(packageDir, 'dist/cli.js'), 'prepare-deploy', '--out', deployment], {
+    await runHostedCli(['prepare-deploy'], {
       ...env, PATCHSTACK_SITE_UUID: siteUuid, PATCHSTACK_API_KEY: apiKey, PATCHSTACK_ENVIRONMENT: 'sandbox',
+      PATCHSTACK_DEPLOYMENT_FILE: deployment,
       ...(localSaas ? { PATCHSTACK_ENDPOINT: localSaas + '/manifest' } : {}),
     });
     await check(true, { file: deployment, matched: true, scopedOutcome: 'block' });
@@ -405,6 +463,7 @@ try {
     }
   } else {
     await check(true);
+    if (fixture.preload) assert.equal(revalidatedFixtureRules, true, 'Readiness must follow a conditional rules check.');
   }
   if (fixture.preload) {
     for (const [file, source] of Object.entries(fixture.files)) assert.equal(readFileSync(join(cwd, file), 'utf8'), source);
