@@ -37,6 +37,12 @@
       },
       "default": "./dist/index.js"
     },
+    "./register": {
+      "import": {
+        "types": "./dist/register.d.ts",
+        "default": "./dist/register.js"
+      }
+    },
     "./protect": {
       "workerd": "./dist/protect.edge.js",
       "worker": "./dist/protect.edge.js",

@@ -39,6 +39,16 @@ export default defineConfig([
     external: ['typescript'],
   },
   {
+    entry: { register: 'src/register.ts' },
+    format: ['esm'],
+    dts: true,
+    clean: false,
+    sourcemap: true,
+    esbuildOptions: noEmbeddedSources,
+    target: 'node20',
+    external: ['@patchstack/connect/protect'],
+  },
+  {
     // Vendored runtime protection engine (node-waf + createProtection + Supabase guard),
     // exported as @patchstack/connect/protect. The scaffolded app guard imports this.
     entry: { protect: 'src/protect/runtime.js' },
