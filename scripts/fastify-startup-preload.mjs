@@ -16,18 +16,25 @@ const fastify = requireFromEntry(factoryPath);
 const factoryUrl = pathToFileURL(factoryPath).href;
 const facadeUrl = new URL('./facade.mjs', import.meta.url).href;
 
+let protection;
+
 export function createGuardedApp(...options) {
-  return fastify(...options).register(patchstackFastify);
+  return fastify(...options).register(patchstackFastify, { protection });
 }
 Object.assign(createGuardedApp, fastify);
 createGuardedApp.fastify = createGuardedApp;
 createGuardedApp.default = createGuardedApp;
 
-registerHooks({
-  resolve(specifier, context, nextResolve) {
-    const resolved = nextResolve(specifier, context);
-    if (specifier !== 'fastify') return resolved;
-    if (resolved.url !== factoryUrl) throw new Error('The Fastify startup fixture only covers one installed copy.');
-    return { url: facadeUrl, format: 'module', shortCircuit: true };
-  },
-});
+export function installFastifyHook(liveProtection) {
+  protection = liveProtection;
+  registerHooks({
+    resolve(specifier, context, nextResolve) {
+      const resolved = nextResolve(specifier, context);
+      if (specifier !== 'fastify') return resolved;
+      if (resolved.url !== factoryUrl) throw new Error('The Fastify startup fixture only covers one installed copy.');
+      return { url: facadeUrl, format: 'module', shortCircuit: true };
+    },
+  });
+}
+
+if (process.env.PS_FASTIFY_LIVE !== '1') installFastifyHook();

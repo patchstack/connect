@@ -41,3 +41,22 @@ dependency activity and outbound calls. A separate loader experiment could
 observe which package versions really load, then evaluate version-specific
 patches. Package replacement has its own compatibility and rollback
 requirements and is outside this fixture.
+
+## Live Linux smoke test
+
+For a dedicated sandbox site, supply `PATCHSTACK_SITE_UUID` and
+`PATCHSTACK_API_KEY` through the Linux runner's environment. From the same
+checkout used to build the tarball, run either Fastify fixture with
+`PS_FASTIFY_LIVE=1`.
+
+```sh
+PS_FASTIFY_LIVE=1 npm run test:frameworks -- fastify-startup-esm "$tarball"
+PS_FASTIFY_LIVE=1 npm run test:frameworks -- fastify-startup-cjs "$tarball"
+```
+
+This uploads the fixture's package inventory and input map, starts Fastify in
+dry-run mode, and checks a signed activation response over loopback HTTP. It
+compares the uploaded build ID with a different local ID, and checks the
+service's verdict in both cases. Use a sandbox site reserved for this fixture
+because each run uploads an app map. Rule delivery and a matching build do not
+establish that this fixture has any generated rules to enforce.

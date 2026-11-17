@@ -80,13 +80,14 @@ function psStepAside(err: unknown) {
 
   return null;
 }
-export async function patchstackFastify(fastify: any) {
+export async function patchstackFastify(fastify: any, options: { protection?: Awaited<ReturnType<typeof createProtection>> } = {}) {
+  const activeProtection = async () => options.protection ?? getProtection().catch(psStepAside);
   // Built here, at registration, and NOT only on the first request: building the protection is also
   // what installs egress screening, and an app's startup work makes outbound calls before any request
   // arrives. A failure is swallowed rather than propagated, because registering a plugin must not be
   // able to fail — and the hook asks again, so a build that failed at startup is retried rather than
   // leaving every route unscreened for the life of the process.
-  await getProtection().catch(psStepAside);
+  await activeProtection();
 
   fastify.addHook("preHandler", async (request: any, reply: any) => {
     // `protect --check --runtime` asks whether a request actually reaches this seam. Answered before
@@ -102,7 +103,7 @@ export async function patchstackFastify(fastify: any) {
 
       return reply;
     }
-    const protection = await getProtection().catch(psStepAside);
+    const protection = await activeProtection();
     if (!protection) return; // the route answers this request, unscreened
     const guard = protection.fetchGuard();
     const method = (request.method ?? "GET").toUpperCase();
@@ -146,16 +147,15 @@ export async function patchstackFastify(fastify: any) {
       return;
     }
     if (blocked) {
-      const contentType = blocked.headers.get("content-type");
       reply.code(blocked.status);
-      if (contentType) reply.header("content-type", contentType);
+      blocked.headers.forEach((value, name) => reply.header(name, value));
       reply.send(await blocked.text());
       return reply; // stop the request here
     }
   });
 
   fastify.addHook("onSend", async (request: any, reply: any, payload: any) => {
-    const protection = await getProtection().catch(psStepAside);
+    const protection = await activeProtection();
     if (!protection) return payload;
     try {
       // A request the Request constructor refuses still has its response screened, by every rule that does
