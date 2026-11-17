@@ -27,3 +27,5 @@ export const protection: Protection = await createProtection({
   reportManifest: false,
   cacheDir: join(process.cwd(), '.patchstack'),
 });
+
+export const expressProtection = protection.express({ screenResponses: true });
