@@ -25,3 +25,6 @@ console.log('copied protect types -> dist/protect.d.ts, dist/protect.d.cts');
 mkdirSync('dist/protect/runtime', { recursive: true });
 copyFileSync('src/protect/install/runtime/report-listeners.cjs', 'dist/protect/runtime/report-listeners.cjs');
 console.log('copied listener reporter -> dist/protect/runtime/report-listeners.cjs');
+
+// Keep the loader and its ESM facade as separate files for Node resolution.
+cpSync('src/hosted', 'dist/hosted', { recursive: true });

@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import { spawn, spawnSync } from 'node:child_process';
 import { once } from 'node:events';
+import { createServer as createHttpServer } from 'node:http';
 import { copyFileSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { createServer } from 'node:net';
 import { tmpdir } from 'node:os';
@@ -181,8 +182,7 @@ fixtures.fastify = fastifyFixture('cjs');
 for (const format of ['esm', 'cjs']) {
   fixtures['fastify-startup-' + format] = {
     ...fastifyFixture(format),
-    rules: 'host/rules.json',
-    preload: './host/preload.mjs',
+    preload: true,
   };
 }
 
@@ -221,6 +221,9 @@ function run(command, args, childEnv = env) {
   const child = spawnSync(command, args, { cwd, env: childEnv, encoding: 'utf8', timeout: 180_000 });
   assert.equal(child.status, 0, [child.error?.message, child.stdout, child.stderr].join('\n').replaceAll(cwd, '<fixture>'));
 }
+const fixtureSite = '11111111-1111-4111-8111-111111111111';
+let localRulesUrl;
+
 async function check(protectedApp, liveBuild) {
   const listener = createServer().listen(0, '127.0.0.1');
   await once(listener, 'listening');
@@ -240,9 +243,16 @@ async function check(protectedApp, liveBuild) {
         PS_FASTIFY_SCOPE_EXPECT: liveBuild.scopedOutcome,
       } : {}),
     });
+  } else if (protectedApp && localRulesUrl) {
+    Object.assign(processEnv, {
+      PATCHSTACK_SITE_UUID: fixtureSite,
+      PATCHSTACK_API_KEY: 'synthetic-key-1',
+      PATCHSTACK_PULSE_RULES_URL: localRulesUrl,
+      PATCHSTACK_MODE: 'block',
+    });
   }
-  const preload = liveBuild ? './host/live.mjs' : fixture.preload;
-  const flags = protectedApp && preload ? ['--import', preload] : [];
+  const flags = protectedApp && fixture.preload ? ['--import', '@patchstack/connect/register/fastify'] : [];
+  if (liveBuild) flags.push('--import', './host/live.mjs');
   const app = spawn(process.execPath, [...flags, ...fixture.start], { cwd, env: processEnv, stdio: ['ignore', 'pipe', 'pipe'] });
   let log = '';
   for (const stream of [app.stdout, app.stderr]) stream.on('data', part => { log += part; });
@@ -332,6 +342,7 @@ async function check(protectedApp, liveBuild) {
     }
   }
 }
+let mockRules;
 try {
   put('package.json', JSON.stringify({ name: 'framework-fixture', private: true, type: 'module',
     dependencies: { ...fixture.dependencies, '@patchstack/connect': `file:${resolve(tarball)}` } }));
@@ -341,32 +352,43 @@ try {
   await check(false);
   const packageDir = 'node_modules/@patchstack/connect';
   if (fixture.preload) {
-    mkdirSync(join(cwd, 'host'), { recursive: true });
-    copyFileSync(fileURLToPath(new URL('./fastify-startup-preload.mjs', import.meta.url)), join(cwd, fixture.preload));
     if (live) {
+      mkdirSync(join(cwd, 'host'), { recursive: true });
       copyFileSync(fileURLToPath(new URL('./fastify-startup-live.mjs', import.meta.url)), join(cwd, 'host/live.mjs'));
     }
-    put('host/facade.mjs', `import { createGuardedApp } from './preload.mjs';
-export { createGuardedApp as fastify, createGuardedApp as default, createGuardedApp as 'module.exports' };
-export const { errorCodes, LogController } = createGuardedApp;`);
-    copyFileSync(join(cwd, packageDir, 'dist/protect/templates/fastify-plugin.js'), join(cwd, 'host/fastify-guard.mjs'));
   } else {
     const cli = join(packageDir, 'dist/cli.js');
     run(process.execPath, [cli, 'protect']);
     run(process.execPath, [cli, 'protect', '--check']);
     readFileSync(join(cwd, fixture.rules));
   }
-  put(fixture.rules, JSON.stringify({ firewall: [
+  const fixtureBundle = JSON.stringify({ firewall: [
     { id: 'fixture-request', rule_v2: [{ parameter: 'post.label', match: { type: 'equals', value: 'fixture-block' } }] },
     { id: 'fixture-response', phase: 'response', action: 'redact', when: { path: '/fixture', method: 'POST' },
       rule_v2: [{ parameter: 'response.body', match: { type: 'contains', value: 'fixture-private' } }] },
     { id: 'fixture-stream-header', phase: 'response', action: 'redact', when: { path: '/stream' },
       rule_v2: [{ parameter: 'response.header.x-fixture', match: { type: 'regex', value: '/fixture-stream-private/' } }] },
-  ], whitelists: [], whitelist_keys: {} }));
+  ], whitelists: [], whitelist_keys: {} });
+  if (fixture.preload && !live) {
+    mockRules = createHttpServer((incoming, reply) => {
+      incoming.resume();
+      if (incoming.method === 'POST' && incoming.url === '/monitor/pulse/token') {
+        reply.writeHead(200, { 'content-type': 'application/json' }).end('{"access_token":"synthetic-token"}');
+      } else if (incoming.method === 'GET' && incoming.url === `/monitor/pulse/rules/${fixtureSite}`
+        && incoming.headers.authorization === 'Bearer synthetic-token') {
+        reply.writeHead(200, { 'content-type': 'application/json' }).end(fixtureBundle);
+      } else {
+        reply.writeHead(404).end();
+      }
+    });
+    mockRules.listen(0, '127.0.0.1');
+    await once(mockRules, 'listening');
+    localRulesUrl = `http://127.0.0.1:${mockRules.address().port}/monitor/pulse`;
+  } else if (!fixture.preload) {
+    put(fixture.rules, fixtureBundle);
+  }
   if (fixture.build) run(process.execPath, fixture.build);
   if (live) {
-    // A separate local bundle would make a broken live policy look healthy.
-    put(fixture.rules, JSON.stringify({ firewall: [], whitelists: [], whitelist_keys: {} }));
     const deployment = 'host/deployment.json';
     run(process.execPath, [join(packageDir, 'dist/cli.js'), 'prepare-deploy', '--out', deployment], {
       ...env, PATCHSTACK_SITE_UUID: siteUuid, PATCHSTACK_API_KEY: apiKey, PATCHSTACK_ENVIRONMENT: 'sandbox',
@@ -390,5 +412,7 @@ export const { errorCodes, LogController } = createGuardedApp;`);
   if (live) console.log(`PASS ${name}: Linux live-rule and build-identity checks with unchanged application source`);
   else console.log(`PASS ${name}: HTTP request screening, normal body parsing and response redaction${fixture.stream ? ' including stream headers' : ''}`);
 } finally {
+  mockRules?.close();
+  mockRules?.closeAllConnections();
   rmSync(cwd, { recursive: true, force: true });
 }

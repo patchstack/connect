@@ -557,6 +557,21 @@ the app already needs. The ESM preload and the middleware import use the same
 guard instance. CommonJS apps can load the same export with `await import()`
 during their async startup.
 
+The Fastify startup pilot attaches the existing adapter without editing the app
+source or copying a plugin file. On a Node runtime with synchronous module
+hooks and `require(esm)`, start a Fastify 5.12.1 app that imports one installed
+copy of Fastify by package name with:
+
+```sh
+node --import @patchstack/connect/register/fastify server.js
+```
+
+Use the same site environment as the base preload. The pilot supports
+unbundled ESM and CommonJS entry points. For other Fastify versions, bundled
+apps, or app entries that load Fastify before the hook, use the framework's
+plugin integration. Activate either the preload adapter or the in-app adapter
+once per app.
+
 To bind the guard to the map for a deployment, run this from the app's source
 directory with the site UUID and API key set. Set `PATCHSTACK_ENVIRONMENT` to
 `production` or `sandbox` for the deployment tier. Use an existing, separate
@@ -574,7 +589,9 @@ succeed. The preload refuses an incomplete file or one for a different site.
 It reports the manifest checksum with live status and presents the map identity
 when fetching rules. Patchstack still needs to confirm the map before scoped
 rules can block. A rollback should start the older artifact with its original
-metadata. If that map is no longer confirmed, its scoped rules only detect.
+metadata. The rules service selects rules for the build presented, and the
+guard only enforces a scoped rule when its build is confirmed. A scoped rule
+that arrives without confirmation can only detect.
 Serialize deployments for the same site to keep the latest reported map aligned
 with the build you activate. For a custom Patchstack service, configure
 `PATCHSTACK_ENDPOINT` for the build and the corresponding

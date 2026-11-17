@@ -20,7 +20,9 @@ byte-for-byte identical, parsed JSON still reaches the app, a matching request
 is blocked, scoped response rules redact values, and a stream's first chunk
 reaches the client while the response is still open. The tests ran on Node
 22.22, 24.21 and 26.8. The hook runs via an explicit `node --import` argument,
-so the host can leave `NODE_OPTIONS` untouched.
+so the host can leave `NODE_OPTIONS` untouched. The live fixture starts the
+package's `@patchstack/connect/register/fastify` export, then runs the separate
+test probe. A deployed app only needs the package preload.
 
 For a partner pilot, start with one app per process and add the hook through
 the service manager or container command. Verify the framework and package
