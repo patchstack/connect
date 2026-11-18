@@ -6,6 +6,7 @@ import { createServer } from 'node:net';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { ACTIVATION_HEADER, activationChallenge, verifyActivationResponse } from '../src/protect/activation.js';
 
 const output = `({ label: body.label, sample: 'fixture-private' })`;
 const fetchRoute = `async ({ request }) => {
@@ -167,6 +168,7 @@ app.get('/stream', async (request, reply) => {
     .send(Readable.from(chunks()));
 });
 app.post('/fixture', async ({ body }) => ${output});
+app.options('/fixture', async () => ({ ok: true }));
 app.listen({ port: Number(process.env.PORT), host: '127.0.0.1' });
 ` },
     rules: 'patchstack/rules.json',
@@ -188,24 +190,39 @@ for (const format of ['esm', 'cjs']) {
 const [name, tarball] = process.argv.slice(2);
 assert.ok(Object.hasOwn(fixtures, name) && tarball, `Usage: node scripts/framework-consumers.mjs <${Object.keys(fixtures).join('|')}> <tarball>`);
 const fixture = fixtures[name];
+const live = process.env.PS_FASTIFY_LIVE === '1';
+const siteUuid = process.env.PATCHSTACK_SITE_UUID;
+const apiKey = process.env.PATCHSTACK_API_KEY;
+if (live) {
+  assert.ok(fixture.preload && process.platform === 'linux', 'Live mode requires a Linux Fastify startup fixture.');
+  assert.ok(siteUuid && apiKey, 'Live mode needs a dedicated sandbox site and API key.');
+}
 const cwd = mkdtempSync(join(tmpdir(), 'ps-framework-'));
-const env = Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith('PATCHSTACK_') && key !== 'NODE_OPTIONS'));
+const env = Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith('PATCHSTACK_') && key !== 'NODE_OPTIONS' && !key.startsWith('PS_FASTIFY_')));
 Object.assign(env, { ASTRO_TELEMETRY_DISABLED: '1', NUXT_TELEMETRY_DISABLED: '1', CI: '1', HOST: '127.0.0.1' });
 const put = (file, source) => {
   mkdirSync(dirname(join(cwd, file)), { recursive: true });
   writeFileSync(join(cwd, file), source);
 };
-function run(command, args) {
-  const child = spawnSync(command, args, { cwd, env, encoding: 'utf8', timeout: 180_000 });
+function run(command, args, childEnv = env) {
+  const child = spawnSync(command, args, { cwd, env: childEnv, encoding: 'utf8', timeout: 180_000 });
   assert.equal(child.status, 0, [child.error?.message, child.stdout, child.stderr].join('\n').replaceAll(cwd, '<fixture>'));
 }
-async function check(protectedApp) {
+async function check(protectedApp, liveBuild) {
   const listener = createServer().listen(0, '127.0.0.1');
   await once(listener, 'listening');
   const port = listener.address().port;
   await new Promise(done => listener.close(done));
   const processEnv = { ...env, PORT: String(port), ORIGIN: `http://127.0.0.1:${port}` };
-  const flags = protectedApp && fixture.preload ? ['--import', fixture.preload] : [];
+  if (liveBuild) {
+    Object.assign(processEnv, {
+      PS_FASTIFY_LIVE: '1', PS_FASTIFY_EXPECT_MATCH: liveBuild.matched ? '1' : '0',
+      PATCHSTACK_SITE_UUID: siteUuid, PATCHSTACK_API_KEY: apiKey,
+      PATCHSTACK_DEPLOYMENT_FILE: liveBuild.file, PATCHSTACK_ENVIRONMENT: 'sandbox', PATCHSTACK_MODE: 'dry-run',
+    });
+  }
+  const preload = liveBuild ? './host/live.mjs' : fixture.preload;
+  const flags = protectedApp && preload ? ['--import', preload] : [];
   const app = spawn(process.execPath, [...flags, ...fixture.start], { cwd, env: processEnv, stdio: ['ignore', 'pipe', 'pipe'] });
   let log = '';
   for (const stream of [app.stdout, app.stderr]) stream.on('data', part => { log += part; });
@@ -215,13 +232,34 @@ async function check(protectedApp) {
   });
   try {
     let normal;
-    for (let attempt = 0; attempt < 200 && app.exitCode === null; attempt++) {
+    for (let attempt = 0; attempt < (liveBuild ? 350 : 200) && app.exitCode === null; attempt++) {
       try { normal = await post('ordinary'); break; } catch { await new Promise(done => setTimeout(done, 100)); }
     }
     assert.equal(normal?.status, 200, log.replaceAll(cwd, '<fixture>'));
     const result = await normal.json();
     assert.equal(result.label, 'ordinary');
     assert.equal(typeof result.sample, 'string');
+    if (liveBuild) {
+      const reported = log.split('\n').find(line => line.startsWith('Fastify live pilot '));
+      assert.ok(reported, 'The host startup hook did not report SaaS rule delivery.');
+      const url = processEnv.ORIGIN + '/fixture';
+      const challenge = await activationChallenge(apiKey, url);
+      const probe = await fetch(url, {
+        method: 'OPTIONS', redirect: 'error', headers: { [ACTIVATION_HEADER]: challenge },
+        signal: AbortSignal.timeout(3000),
+      });
+      assert.equal(probe.status, 200);
+      const status = await verifyActivationResponse(apiKey, challenge, await probe.text(), probe.headers.get(ACTIVATION_HEADER));
+      const { buildId } = JSON.parse(readFileSync(join(cwd, liveBuild.file), 'utf8'));
+      assert.ok(status, 'Fastify did not return a signed activation response.');
+      assert.equal(status.siteUuid, siteUuid);
+      assert.equal(status.buildId, buildId);
+      assert.equal(status.matched, liveBuild.matched);
+      assert.equal(status.source.ok, true);
+      assert.equal(status.source.origin, 'api');
+      console.log(reported);
+      return;
+    }
     if (protectedApp) assert.doesNotMatch(result.sample, /fixture-private/);
     else assert.equal(result.sample, 'fixture-private');
     assert.equal((await post('fixture-block')).status, protectedApp ? 403 : 200);
@@ -270,6 +308,9 @@ try {
   if (fixture.preload) {
     mkdirSync(join(cwd, 'host'), { recursive: true });
     copyFileSync(fileURLToPath(new URL('./fastify-startup-preload.mjs', import.meta.url)), join(cwd, fixture.preload));
+    if (live) {
+      copyFileSync(fileURLToPath(new URL('./fastify-startup-live.mjs', import.meta.url)), join(cwd, 'host/live.mjs'));
+    }
     put('host/facade.mjs', `import { createGuardedApp } from './preload.mjs';
 export { createGuardedApp as fastify, createGuardedApp as default, createGuardedApp as 'module.exports' };
 export const { errorCodes, LogController } = createGuardedApp;`);
@@ -288,11 +329,26 @@ export const { errorCodes, LogController } = createGuardedApp;`);
       rule_v2: [{ parameter: 'response.header.x-fixture', match: { type: 'regex', value: '/fixture-stream-private/' } }] },
   ], whitelists: [], whitelist_keys: {} }));
   if (fixture.build) run(process.execPath, fixture.build);
-  await check(true);
+  if (live) {
+    // A separate local bundle would make a broken live policy look healthy.
+    put(fixture.rules, JSON.stringify({ firewall: [], whitelists: [], whitelist_keys: {} }));
+    const deployment = 'host/deployment.json';
+    run(process.execPath, [join(packageDir, 'dist/cli.js'), 'prepare-deploy', '--out', deployment], {
+      ...env, PATCHSTACK_SITE_UUID: siteUuid, PATCHSTACK_API_KEY: apiKey, PATCHSTACK_ENVIRONMENT: 'sandbox',
+    });
+    await check(true, { file: deployment, matched: true });
+    const unmatched = JSON.parse(readFileSync(join(cwd, deployment), 'utf8'));
+    unmatched.buildId = (unmatched.buildId[0] === '0' ? '1' : '0') + unmatched.buildId.slice(1);
+    put('host/unmatched.json', JSON.stringify(unmatched));
+    await check(true, { file: 'host/unmatched.json', matched: false });
+  } else {
+    await check(true);
+  }
   if (fixture.preload) {
     for (const [file, source] of Object.entries(fixture.files)) assert.equal(readFileSync(join(cwd, file), 'utf8'), source);
   }
-  console.log(`PASS ${name}: HTTP request screening, normal body parsing and response redaction${fixture.stream ? ' including stream headers' : ''}`);
+  if (live) console.log(`PASS ${name}: Linux live-rule and build-identity checks with unchanged application source`);
+  else console.log(`PASS ${name}: HTTP request screening, normal body parsing and response redaction${fixture.stream ? ' including stream headers' : ''}`);
 } finally {
   rmSync(cwd, { recursive: true, force: true });
 }
