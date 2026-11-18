@@ -1774,7 +1774,7 @@ export async function createProtection(options = {}) {
   const noteLive = async (request) => {
     if (!liveReportDue(request)) return;
     try {
-      await liveReporter.note(publicOriginOf(request), options.rules?._patchstack?.manifest_checksum);
+      await liveReporter.note(publicOriginOf(request), options.manifestChecksum ?? options.rules?._patchstack?.manifest_checksum);
     } catch { /* never let the live report affect screening */ }
   };
   /** A Node request as the one thing {@link noteLive} reads: its headers, behind a `get`. */

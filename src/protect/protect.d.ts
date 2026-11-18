@@ -298,8 +298,10 @@ export interface CreateProtectionOptions {
   /** Optional Source-Host header for connector hostname checks. */
   sourceHost?: string;
   /** Optional fetch override for the block-log and detection reporters (tests). The rules client and
-   *  the manifest re-post use the global `fetch`. */
+   *  the manifest re-post use the global `fetch` by default. */
   fetchImpl?: typeof fetch;
+  /** Optional transport for site UUID rule delivery and its credential exchange. */
+  ruleFetchImpl?: typeof fetch;
   /**
    * Re-fetch and hot-swap the live rules every N ms. For long-lived runtimes that aren't restarted
    * on change (an AI builder's sandbox/preview) so a rule that becomes relevant after boot still
@@ -443,6 +445,8 @@ export interface CreateProtectionOptions {
    * the same effect as passing nothing.
    */
   buildId?: string;
+  /** Package manifest checksum for the running deployment report. */
+  manifestChecksum?: string;
   /**
    * Take responsibility for `rules` you supply yourself, including any `build_scope` they carry.
    *

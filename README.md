@@ -557,6 +557,29 @@ the app already needs. The ESM preload and the middleware import use the same
 guard instance. CommonJS apps can load the same export with `await import()`
 during their async startup.
 
+To bind the guard to the map for a deployment, run this from the app's source
+directory with the site UUID and API key set. Set `PATCHSTACK_ENVIRONMENT` to
+`production` or `sandbox` for the deployment tier. Use an existing, separate
+artifact directory per deployment and keep the JSON alongside that build:
+
+```sh
+patchstack-connect prepare-deploy --out ./patchstack-deployment.json
+```
+
+Set `PATCHSTACK_DEPLOYMENT_FILE` to that JSON file in the running server. The
+command requires a lockfile and reports the dependency inventory and structural
+input map. It writes only the selected output file. It exits nonzero on
+a failed upload and marks the selected output incomplete until both uploads
+succeed. The preload refuses an incomplete file or one for a different site.
+It reports the manifest checksum with live status and presents the map identity
+when fetching rules. Patchstack still needs to confirm the map before scoped
+rules can block. A rollback should start the older artifact with its original
+metadata. If that map is no longer confirmed, its scoped rules only detect.
+Serialize deployments for the same site to keep the latest reported map aligned
+with the build you activate. For a custom Patchstack service, configure
+`PATCHSTACK_ENDPOINT` for the build and the corresponding
+`PATCHSTACK_PULSE_RULES_URL` for the server.
+
 ## Programmatic API
 
 ```ts

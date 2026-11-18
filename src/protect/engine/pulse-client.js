@@ -33,11 +33,12 @@ export class PulseRuleClient {
   #ttlEffective = 0;
   #etag;
   #pulseAuth;
+  #fetchImpl;
 
   #detectionState;
   #buildId;
 
-  constructor({ siteUuid, baseUrl, cacheTtl, etag, timeoutMs, pulseAuth, detectionState, buildId } = {}) {
+  constructor({ siteUuid, baseUrl, cacheTtl, etag, timeoutMs, pulseAuth, detectionState, buildId, fetchImpl } = {}) {
     // Bounded so app STARTUP can't hang on a slow API: hosted platforms fail a deploy whose health
     // check is slow, and we always have a cache/bundled fallback to boot from.
     this.#timeoutMs = Number(timeoutMs) > 0 ? Number(timeoutMs) : 30_000;
@@ -47,6 +48,7 @@ export class PulseRuleClient {
     this.#cacheTtl = Number.isFinite(cacheTtl) && cacheTtl > 0 ? cacheTtl : DEFAULT_CACHE_TTL;
     this.#etag = etag ?? null;
     this.#pulseAuth = pulseAuth ?? null;
+    this.#fetchImpl = fetchImpl;
     // Whether this guard reports detections, declared on a request it already makes.
     //
     // Detections are only sent when a rule fires, so silence at the server means one of three things —
@@ -77,13 +79,14 @@ export class PulseRuleClient {
     }
     const url = `${this.#baseUrl}/rules/${encodeURIComponent(this.#siteUuid)}`;
     try {
+      const fetchRules = this.#fetchImpl ?? globalThis.fetch;
       // Sent without an `Authorization` header when no credential resolved or the exchange failed.
       // The server refuses that, and the refusal is handled the same way as any other failure: fall
       // back to cached or bundled rules. Attempting it anyway is deliberate — protection must never
       // hinge on the token path, and the runtime warns at boot when no credential resolves.
       const auth = await pulseAuthHeader(
         { pulseAuth: this.#pulseAuth, endpoint: this.#baseUrl, timeoutMs: this.#timeoutMs },
-        fetch,
+        fetchRules,
       );
       const headers = { Accept: 'application/json', ...auth };
       // Claimed only on an authenticated request. Fetching rules must never hinge on getting a token
@@ -111,7 +114,7 @@ export class PulseRuleClient {
         headers[REQUEST_PATH_HEADER] = '1';
       }
       if (this.#etag) headers['If-None-Match'] = this.#etag;
-      const response = await fetch(url, { method: 'GET', headers, signal: AbortSignal.timeout(this.#timeoutMs) });
+      const response = await fetchRules(url, { method: 'GET', headers, signal: AbortSignal.timeout(this.#timeoutMs) });
 
       if (response.status === 304) {
         this.#touch(now); // revalidated — reset the clock (fresh jitter)

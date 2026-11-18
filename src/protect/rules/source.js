@@ -221,6 +221,7 @@ export async function resolveRules(options, store, ctx = {}) {
       etag: sameBuild ? prior?.etag : null,
       timeoutMs,
       pulseAuth: ctx.pulseAuth,
+      fetchImpl: options.ruleFetchImpl,
       detectionState: ctx.detectionState,
       buildId: identity.id,
     });

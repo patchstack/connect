@@ -151,7 +151,7 @@ export async function runMapDetailed(flags: Flags, options: MapOptions = {}): Pr
     // Setup prepares the next startup; a prebuild upload prepares the next bundle. Both write the
     // identity of THIS map into the imported rules file. A standalone manual map remains unbound.
     let buildId: string | null = null;
-    if (options.setup || isPreBundleBuildHook()) {
+    if (options.setup || (!options.declare && isPreBundleBuildHook())) {
       let candidate: string | null = null;
       let identityError: string | null = null;
       try {
