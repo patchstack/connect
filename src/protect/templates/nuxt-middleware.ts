@@ -78,6 +78,7 @@ export default defineEventHandler(async (event) => {
     if (contentType) setResponseHeader(event, "content-type", contentType);
     return blocked.text(); // 403 — blocked before it reaches your route
   }
-  protection.screenNodeResponse(event.node?.res, request);
+  // Keep incrementally written responses streaming while screening their headers.
+  protection.screenNodeResponse(event.node?.res, request, { streamOnWrite: true });
 });
 // #endregion patchstack-nuxt

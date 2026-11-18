@@ -1148,7 +1148,9 @@ export async function createProtection(options = {}) {
   // Wrap a Node ServerResponse so its (buffered, text) body is screened before it's sent.
   // Opt-in (buffering can delay a streamed response); over 512 KiB it stops buffering and
   // passes through unscanned.
-  const wrapNodeResponse = (res, reqCtx, headersOnly = false) => {
+  const wrapNodeResponse = (res, reqCtx, opts) => {
+    const headersOnly = opts?.headersOnly === true;
+    const streamOnWrite = opts?.streamOnWrite === true;
     const origWrite = res.write.bind(res);
     const origEnd = res.end.bind(res);
     // The response's own header operations, for this wrapper's use. While a `writeHead` is held the
@@ -1549,7 +1551,7 @@ export async function createProtection(options = {}) {
         const value = effectiveHead().headers['content-type'];
         const contentType = Array.isArray(value) ? value[0] : value;
         if (baseContentType(contentType) === 'text/event-stream') skipBody('live-stream');
-        else if (headersOnly) skipBody('streamed-body');
+        else if (headersOnly || streamOnWrite) skipBody('streamed-body');
       }
       if (withheld) {
         if (typeof enc === 'function') enc();
@@ -1898,8 +1900,7 @@ export async function createProtection(options = {}) {
         recordSkip('response', 'unsupported-node-response');
         return;
       }
-      wrapNodeResponse(response, request ? reqContextFromFetch(request, clientForResponse(request, [])) : undefined,
-        options?.headersOnly === true);
+      wrapNodeResponse(response, request ? reqContextFromFetch(request, clientForResponse(request, [])) : undefined, options);
     },
 
     // (request) => Response | null   (null = allow, caller proceeds). Request phase only.

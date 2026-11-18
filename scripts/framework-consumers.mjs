@@ -54,10 +54,10 @@ export async function* stream() {
   yield 'data: finished\\n\\n';
 }`,
       'server/routes/stream.get.ts': `import { Readable } from 'node:stream';
-import { sendStream, setResponseHeader } from 'h3';
+import { getQuery, sendStream, setResponseHeader } from 'h3';
 import { stream } from '../fixture-stream';
 export default defineEventHandler(event => {
-  setResponseHeader(event, 'content-type', 'text/event-stream');
+  setResponseHeader(event, 'content-type', getQuery(event).text ? 'text/plain' : 'text/event-stream');
   setResponseHeader(event, 'x-fixture', 'fixture-stream-private');
   return sendStream(event, Readable.from(stream()));
 });`,
@@ -71,7 +71,7 @@ export default defineEventHandler(() => { finishStream(); return { ok: true }; }
     rules: 'server/middleware/patchstack.rules.json',
     build: ['node_modules/.bin/nuxt', 'build'],
     start: ['.output/server/index.mjs'],
-    stream: [''],
+    stream: ['', '?text=1'],
   },
   'react-router': {
     dependencies: { '@react-router/dev': '8.5.1', '@react-router/serve': '8.5.1', react: '19.3.1',

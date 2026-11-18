@@ -33,6 +33,7 @@ const PREVIOUS: Record<string, string | readonly string[]> = {
   'nuxt-middleware.ts': [
     'e377c48cc8c08d20c61c6119bb5f4c8991f0eed3ebd31310b8a0fc6eb5505e4e',
     'c4d1cf018db3d8c25d09b4b042c24059db97af5d0ea1847ddb75ab8f6baa8eae',
+    'e2beb775a8bbbac1d5523018910d43b557c090f7f2c8e6bda782e9dedfd78b65',
   ],
   'next-middleware.ts': '65c163cdb2ddda4fe53c1a3cd20aa6ab63ad7595a66985d9141d595374ecfab3',
   'next-guard.ts': 'e37c4d67619df9d850a7d94b567bd76841b6ac8e774a5b442689482f5374c451',
