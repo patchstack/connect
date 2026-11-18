@@ -338,6 +338,24 @@ export default defineConfig(({ command }) => ({
     expect([read(cwd, 'src/server.ts'), read(cwd, 'wrangler.jsonc')]).toEqual(files);
   });
 
+  it('rewrites only the root entry in compact Worker configuration', () => {
+    const cwd = worker();
+    const source = JSON.stringify({ name: 'app', vars: { main: 'example' }, main: '@tanstack/react-start/server-entry' });
+    put(cwd, 'wrangler.jsonc', source);
+    expect(runProtect(cwd).status).toBe('wired');
+    expect(read(cwd, 'wrangler.jsonc')).toBe(source.replace('@tanstack/react-start/server-entry', './src/server.ts'));
+    expect(runVerify(cwd).wired).toBe(true);
+  });
+
+  it('leaves an entry defined only in a named environment untouched', () => {
+    const cwd = worker();
+    const source = JSON.stringify({ env: { preview: { main: '@tanstack/react-start/server-entry' } } });
+    put(cwd, 'wrangler.jsonc', source);
+    expect(runProtect(cwd).status).not.toBe('wired');
+    expect(runVerify(cwd).wired).toBe(false);
+    expect(read(cwd, 'wrangler.jsonc')).toBe(source);
+  });
+
   it('accepts a hand-wired entry in another quote style, and names the Worker entry as what is missing', () => {
     const cwd = worker();
     expect(runProtect(cwd).status).toBe('wired');

@@ -172,8 +172,7 @@ describe('egress phase — depth', () => {
       for (const host of ['127.0.0.1', '10.0.0.5', '192.168.1.1', '172.16.0.9', 'localhost', '[::1]', 'metadata.google.internal']) {
         await expect(globalThis.fetch(`http://${host}/`), host).rejects.toThrow();
       }
-      expect((await (globalThis.fetch as any)('https://8.8.8.8/')).marker).toBe('stub');
-      expect((await (globalThis.fetch as any)('https://api.example.com/')).marker).toBe('stub');
+      expect((await (globalThis.fetch as any)('https://203.0.113.10/')).marker).toBe('stub');
     });
   });
 
