@@ -537,6 +537,26 @@ and `coverage()` or to mount a request adapter. Preloading alone does not attach
 inbound request or response protection. Keep preview and production site
 identities separate when their builds are deployed independently.
 
+For Express, the host can add one middleware mount to its app template after
+the app's existing body parser and before the routes it protects:
+
+```js
+import express from 'express';
+import { expressProtection } from '@patchstack/connect/register';
+
+const app = express();
+app.use(express.json());
+app.use(expressProtection);
+// Register app routes here.
+```
+
+The middleware screens parsed requests and outgoing responses. A parser that
+rejects a request before the middleware runs handles that error itself. Use
+one mount per request path and keep any body parser and webhook configuration
+the app already needs. The ESM preload and the middleware import use the same
+guard instance. CommonJS apps can load the same export with `await import()`
+during their async startup.
+
 ## Programmatic API
 
 ```ts
