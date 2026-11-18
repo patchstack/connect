@@ -156,19 +156,9 @@ async function patchstackFastify(fastify) {
   });
 
   fastify.addHook("onSend", async (request, reply, payload) => {
-    // Do not consume streams, hijacked responses, or bodyless status codes.
-    if ((typeof payload !== "string" && !Buffer.isBuffer(payload))
-      || request.method === "HEAD" || reply.statusCode < 200 || [204, 205, 304].includes(reply.statusCode)) return payload;
     const protection = await getProtection().catch(psStepAside);
     if (!protection) return payload;
     try {
-      const headers = new Headers();
-      for (const [name, value] of Object.entries(reply.getHeaders())) {
-        for (const item of Array.isArray(value) ? value : [value]) {
-          if (item !== undefined) headers.append(name, String(item));
-        }
-      }
-      const original = new Response(typeof payload === "string" ? payload : new Uint8Array(payload).buffer, { status: reply.statusCode, headers });
       // A request the Request constructor refuses still has its response screened, by every rule that does
       // not need the request to decide.
       let context;
@@ -178,6 +168,19 @@ async function patchstackFastify(fastify) {
       } catch {
         context = undefined;
       }
+      if ((typeof payload !== "string" && !Buffer.isBuffer(payload))
+        || request.method === "HEAD" || reply.statusCode < 200 || [204, 205, 304].includes(reply.statusCode)) {
+        // The Node guard can harden headers and account for skipped bodies without reading the stream here.
+        protection.screenNodeResponse(reply.raw, context, { headersOnly: true });
+        return payload;
+      }
+      const headers = new Headers();
+      for (const [name, value] of Object.entries(reply.getHeaders())) {
+        for (const item of Array.isArray(value) ? value : [value]) {
+          if (item !== undefined) headers.append(name, String(item));
+        }
+      }
+      const original = new Response(typeof payload === "string" ? payload : new Uint8Array(payload).buffer, { status: reply.statusCode, headers });
       const screened = await protection.screenResponse(original, context);
       if (screened === original) return payload;
       const body = Buffer.from(await screened.arrayBuffer());

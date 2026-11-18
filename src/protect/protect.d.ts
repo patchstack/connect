@@ -52,6 +52,9 @@ export interface Protection {
    * and `content-length`.
    */
   screenResponse(response: Response, request?: Request, ...hostArgs: unknown[]): Promise<Response>;
+  /** Attach screening before a native Node ServerResponse sends its headers.
+   * Set headersOnly when the host must pass the response body through without buffering. */
+  screenNodeResponse(response: unknown, request?: Request, options?: { headersOnly?: boolean }): void;
   express(options?: { screenResponses?: boolean }): (req: unknown, res: unknown, next: () => void) => void;
   /**
    * Node / Connect middleware that reads the request body itself and exposes it as `req.body`.

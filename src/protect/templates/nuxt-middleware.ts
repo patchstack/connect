@@ -1,5 +1,5 @@
 // Patchstack runtime guard for Nuxt / Nitro — server middleware. Managed by `patchstack-connect protect`.
-// Runs the request-phase WAF (+ egress SSRF) on every request. Nuxt runs each file in
+// Screens requests and native Node responses (+ egress SSRF). Nuxt runs each file in
 // `server/middleware/` as independent middleware, so this file coexists with your own.
 import { defineEventHandler, getRequestURL, readRawBody, setResponseStatus, setResponseHeader } from "h3";
 import { createProtection } from "@patchstack/connect/protect";
@@ -70,13 +70,14 @@ export default defineEventHandler(async (event) => {
   const method = event.method ?? "GET";
   // readRawBody caches on the event, so your route handlers can still read the body.
   const body = method !== "GET" && method !== "HEAD" ? await readRawBody(event) : undefined;
-  const blocked = await protection
-    .fetchGuard()(new Request(getRequestURL(event), { method, headers: event.headers, body: body ?? undefined }));
+  const request = new Request(getRequestURL(event), { method, headers: event.headers, body: body ?? undefined });
+  const blocked = await protection.fetchGuard()(request);
   if (blocked) {
     setResponseStatus(event, blocked.status);
     const contentType = blocked.headers.get("content-type");
     if (contentType) setResponseHeader(event, "content-type", contentType);
     return blocked.text(); // 403 — blocked before it reaches your route
   }
+  protection.screenNodeResponse(event.node?.res, request);
 });
 // #endregion patchstack-nuxt
