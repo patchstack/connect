@@ -15,7 +15,7 @@ import { notify } from '../notify.js';
 const JITTER_FRACTION = 0.1;
 const MAX_BACKOFF_MULTIPLIER = 8; // cap consecutive-failure backoff at 8× the base interval
 
-export function startRefresh(tick, { refreshMs, onError } = {}) {
+export function startRefresh(tick, { refreshMs, startupInterval, onError } = {}) {
   let stopped = false;
   let failures = 0;
   let timer = null;
@@ -24,7 +24,7 @@ export function startRefresh(tick, { refreshMs, onError } = {}) {
     if (stopped) return;
     const backoff = Math.min(2 ** failures, MAX_BACKOFF_MULTIPLIER);
     const jitter = 1 - Math.random() * JITTER_FRACTION; // shorten by up to 10% so clients don't align
-    const delay = refreshMs * backoff * jitter;
+    const delay = Math.min(refreshMs, startupInterval?.() ?? refreshMs) * backoff * jitter;
     timer = setTimeout(run, delay);
     timer?.unref?.();
   };

@@ -1807,7 +1807,9 @@ export async function createProtection(options = {}) {
       },
     },
   });
-  const answerActivation = request => options.activationCheck === false ? null : activationResponse(request, pulseAuth, runtimeStatus);
+  const answerActivation = request => options.activationCheck === false ? null : activationResponse(request, pulseAuth, () => ({
+    ...runtimeStatus(), manifestChecksum: options.manifestChecksum ?? null,
+  }));
   const withRequestSync = handler => (req, res, next) => {
     const screen = () => {
       const refresh = requestRefresher?.check(Boolean(req.headers?.[SYNC_HEADER]));
@@ -2173,8 +2175,11 @@ export async function createProtection(options = {}) {
     protection.refreshHandler = () => makeRefreshHandler(refreshTick, refreshSecret);
   }
 
+  const startupDeadline = options.startupRulesRetry === true && localBuildId ? Date.now() + 60_000 : 0;
+  const startupInterval = () => Date.now() < startupDeadline
+    && (ruleSource.ok !== true || synchronization?.matched !== true || synchronization.mapRules !== 'ready') ? 5000 : undefined;
   const loop = refreshMs > 0 && live
-    ? startRefresh(refreshTick, { refreshMs, onError })
+    ? startRefresh(refreshTick, { refreshMs, startupInterval, onError })
     : null;
   // No loop to try again later, and the first resolution was not clean: retry until it is, rather than
   // serving stale or fallback rules for the life of the process. Only with a credential to ask with: the

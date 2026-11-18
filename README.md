@@ -600,6 +600,28 @@ with the build you activate. For a custom Patchstack service, configure
 `PATCHSTACK_ENDPOINT` for the build and the corresponding
 `PATCHSTACK_PULSE_RULES_URL` for the server.
 
+### Gate traffic on signed readiness
+
+With the candidate process running, set `PATCHSTACK_READINESS_URL` to a route
+served by that candidate and run:
+
+```sh
+patchstack-connect verify-deploy
+```
+
+The verifier reads the same deployment file and site credentials as the
+preload. It polls the selected URL with signed OPTIONS requests and checks the
+site, map identity, manifest checksum, and rules service's readiness verdict.
+Zero applicable rules is a valid ready state. The verifier exits nonzero if the
+candidate cannot prove readiness within 60 seconds. Use `--url` to select a
+candidate explicitly, `--timeout <seconds>` to change the wait, or
+`--require-block` when the candidate should already run in blocking mode.
+
+Point the verifier at the candidate before sending it production traffic. A
+shared live URL could reach a different replica. Check each candidate the host
+will admit. The verifier checks the chosen route and the guard's loaded
+metadata. Use a separate enforcement test to prove specific rule behavior.
+
 ## Programmatic API
 
 ```ts

@@ -59,7 +59,10 @@ PS_FASTIFY_LIVE=1 npm run test:frameworks -- fastify-startup-cjs "$tarball"
 This uploads the fixture's package inventory and input map, starts Fastify in
 dry-run mode, and checks a signed activation response over loopback HTTP. It
 compares the uploaded build ID with a different local ID, and checks the
-service's verdict in both cases. Use a sandbox site reserved for this fixture
+service's verdict in both cases. The fixture uses `prepare-deploy` with the
+runtime's configured artifact path, and runs `verify-deploy` before sending
+ordinary fixture traffic. Readiness must pass on the matching candidate and
+refuse the different deployment. Use a sandbox site reserved for this fixture
 because each run uploads an app map. Rule delivery and a matching build do not
 establish that this fixture has any generated rules to enforce.
 

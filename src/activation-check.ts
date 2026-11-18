@@ -8,6 +8,15 @@ import type { Config } from './types.js';
 
 export interface ActivationResult { ok: boolean; message: string; summary?: string }
 
+export async function probeActivation(target: string, secret: string, signal: AbortSignal): Promise<Record<string, unknown> | null> {
+  const challenge = await activationChallenge(secret, target);
+  const response = await fetch(target, {
+    method: 'OPTIONS', redirect: 'error', signal, headers: { [ACTIVATION_HEADER]: challenge },
+  });
+  const body = await readBoundedText(response, 16_384);
+  return response.ok ? verifyActivationResponse(secret, challenge, body, response.headers.get(ACTIVATION_HEADER)) : null;
+}
+
 /** Inspect only an explicitly selected running URL. Never discover ports, start, or restart an app. */
 export async function checkActivation(url: string, config: Config, cwd: string, expectedBuildId?: string | null): Promise<ActivationResult> {
   const target = safeRemoteUrl(url);
@@ -23,10 +32,7 @@ export async function checkActivation(url: string, config: Config, cwd: string, 
   let timer: ReturnType<typeof setTimeout> | undefined;
   try {
     const work = async (): Promise<ActivationResult> => {
-      const challenge = await activationChallenge(secret, target);
-      const response = await fetch(target, {method:'OPTIONS',redirect:'error',signal:controller.signal,headers:{[ACTIVATION_HEADER]:challenge}});
-      const body = await readBoundedText(response,16_384);
-      const status = response.ok ? await verifyActivationResponse(secret,challenge,body,response.headers.get(ACTIVATION_HEADER)) : null;
+      const status = await probeActivation(target, secret, controller.signal);
       if (!status || status.siteUuid !== config.siteUuid) return {ok:false,message:'The selected URL did not prove activation for this site. Check the server credential, guard integration and deployed package version.'};
       if (!expectedBuildId || status.buildId !== expectedBuildId) return {ok:false,message:'The guard answered, but its loaded map is absent or different. Let the framework reload, or restart/rebuild/deploy, then check again.'};
       const readiness = ['ready','pending'].includes(String(status.mapRules)) ? status.mapRules : 'unknown';

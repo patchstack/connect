@@ -29,6 +29,7 @@ export const protection: Protection = await createProtection({
   siteUuid: siteUuid.toLowerCase(),
   buildId: deployment?.buildId,
   manifestChecksum: deployment?.manifestChecksum,
+  startupRulesRetry: deployment !== undefined,
   apiKey,
   pulseAuth: apiKey,
   pulseRulesUrl,
