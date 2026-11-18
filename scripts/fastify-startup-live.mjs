@@ -20,6 +20,25 @@ assert.equal(status.siteUuid, deployment.siteUuid);
 assert.equal(status.buildId, deployment.buildId);
 assert.equal(status.matched, expectMatch);
 const { bundle } = JSON.parse(readFileSync('.patchstack/patchstack-rules.json', 'utf8'));
+const scopedRule = process.env.PS_FASTIFY_SCOPE_RULE;
+if (scopedRule) {
+  const outcome = process.env.PS_FASTIFY_SCOPE_EXPECT;
+  const served = bundle.firewall.find(rule => String(rule.id) === scopedRule);
+  const active = protection.rules.request.find(rule => String(rule.id) === scopedRule);
+  if (outcome === 'absent') {
+    assert.equal(served, undefined, 'The scoped lookup should omit the other build’s rule.');
+    assert.equal(active, undefined);
+  } else {
+    assert.ok(served && /^[a-f0-9]{64}$/.test(served.build_scope), 'SaaS did not serve the dedicated build-scoped rule.');
+    assert.equal(served.build_scope === deployment.buildId, outcome === 'block');
+    assert.ok(active, 'The guard did not load the dedicated rule.');
+    assert.equal(active.enforcement === 'dry-run', outcome === 'detect');
+  }
+  process.once('SIGTERM', async () => {
+    await protection.stop();
+    process.exit(0);
+  });
+}
 console.log('Fastify live pilot ' + JSON.stringify({
   matched: status.matched, mapRules: status.mapRules, delivered: bundle.firewall.length,
   scoped: status.rules.scoped, scopedBlocking: status.rules.scopedBlocking,

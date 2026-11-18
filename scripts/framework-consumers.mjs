@@ -191,11 +191,24 @@ const [name, tarball] = process.argv.slice(2);
 assert.ok(Object.hasOwn(fixtures, name) && tarball, `Usage: node scripts/framework-consumers.mjs <${Object.keys(fixtures).join('|')}> <tarball>`);
 const fixture = fixtures[name];
 const live = process.env.PS_FASTIFY_LIVE === '1';
+const localSaas = process.env.PS_FASTIFY_LOCAL_SAAS;
+const fallbackRulesUrl = process.env.PS_FASTIFY_FALLBACK_RULES_URL;
+const scopedRule = process.env.PS_FASTIFY_SCOPE_RULE;
 const siteUuid = process.env.PATCHSTACK_SITE_UUID;
 const apiKey = process.env.PATCHSTACK_API_KEY;
 if (live) {
   assert.ok(fixture.preload && process.platform === 'linux', 'Live mode requires a Linux Fastify startup fixture.');
   assert.ok(siteUuid && apiKey, 'Live mode needs a dedicated sandbox site and API key.');
+}
+for (const endpoint of [localSaas, fallbackRulesUrl].filter(value => value !== undefined)) {
+  assert.ok(live && /^http:\/\/127\.0\.0\.1:[0-9]+\/monitor\/pulse$/.test(endpoint),
+    'The local SaaS endpoint must be an explicit loopback HTTP service.');
+}
+if (scopedRule !== undefined) {
+  assert.ok(localSaas && scopedRule.trim(), 'Scoped enforcement checks require a local SaaS sandbox.');
+}
+if (fallbackRulesUrl !== undefined) {
+  assert.ok(scopedRule, 'The fallback rules service needs a dedicated sandbox rule.');
 }
 const cwd = mkdtempSync(join(tmpdir(), 'ps-framework-'));
 const env = Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith('PATCHSTACK_') && key !== 'NODE_OPTIONS' && !key.startsWith('PS_FASTIFY_')));
@@ -215,10 +228,17 @@ async function check(protectedApp, liveBuild) {
   await new Promise(done => listener.close(done));
   const processEnv = { ...env, PORT: String(port), ORIGIN: `http://127.0.0.1:${port}` };
   if (liveBuild) {
+    const rulesUrl = liveBuild.rulesUrl ?? localSaas;
     Object.assign(processEnv, {
       PS_FASTIFY_LIVE: '1', PS_FASTIFY_EXPECT_MATCH: liveBuild.matched ? '1' : '0',
       PATCHSTACK_SITE_UUID: siteUuid, PATCHSTACK_API_KEY: apiKey,
-      PATCHSTACK_DEPLOYMENT_FILE: liveBuild.file, PATCHSTACK_ENVIRONMENT: 'sandbox', PATCHSTACK_MODE: 'dry-run',
+      PATCHSTACK_DEPLOYMENT_FILE: liveBuild.file, PATCHSTACK_ENVIRONMENT: 'sandbox',
+      PATCHSTACK_MODE: scopedRule ? 'block' : 'dry-run',
+      ...(rulesUrl ? { PATCHSTACK_PULSE_RULES_URL: rulesUrl } : {}),
+      ...(scopedRule ? {
+        PS_FASTIFY_SCOPE_RULE: scopedRule,
+        PS_FASTIFY_SCOPE_EXPECT: liveBuild.scopedOutcome,
+      } : {}),
     });
   }
   const preload = liveBuild ? './host/live.mjs' : fixture.preload;
@@ -230,6 +250,7 @@ async function check(protectedApp, liveBuild) {
     method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ label }),
     signal: AbortSignal.timeout(3000),
   });
+  let scopedCheckCompleted = false;
   try {
     let normal;
     for (let attempt = 0; attempt < (liveBuild ? 350 : 200) && app.exitCode === null; attempt++) {
@@ -258,6 +279,15 @@ async function check(protectedApp, liveBuild) {
       assert.equal(status.source.ok, true);
       assert.equal(status.source.origin, 'api');
       console.log(reported);
+      if (scopedRule) {
+        assert.equal(status.mode, 'block');
+        const response = await post('fixture-block');
+        assert.equal(response.status, liveBuild.scopedOutcome === 'block' ? 403 : 200);
+        const body = await response.json();
+        if (liveBuild.scopedOutcome !== 'block') assert.equal(body.label, 'fixture-block');
+        console.log(`Scoped rule (${liveBuild.scopedOutcome}): HTTP ${response.status}`);
+        scopedCheckCompleted = true;
+      }
       return;
     }
     if (protectedApp) assert.doesNotMatch(result.sample, /fixture-private/);
@@ -291,9 +321,14 @@ async function check(protectedApp, liveBuild) {
   } finally {
     if (app.exitCode === null) {
       const exited = once(app, 'exit');
-      const timer = setTimeout(() => app.kill('SIGKILL'), 3000);
+      const timer = setTimeout(() => app.kill('SIGKILL'), scopedRule ? 8000 : 3000);
       app.kill('SIGTERM');
-      try { await exited; } finally { clearTimeout(timer); }
+      try {
+        const [code] = await exited;
+        if (scopedCheckCompleted) assert.equal(code, 0, 'The guard must drain detections before exiting.');
+      } finally {
+        clearTimeout(timer);
+      }
     }
   }
 }
@@ -335,12 +370,17 @@ export const { errorCodes, LogController } = createGuardedApp;`);
     const deployment = 'host/deployment.json';
     run(process.execPath, [join(packageDir, 'dist/cli.js'), 'prepare-deploy', '--out', deployment], {
       ...env, PATCHSTACK_SITE_UUID: siteUuid, PATCHSTACK_API_KEY: apiKey, PATCHSTACK_ENVIRONMENT: 'sandbox',
+      ...(localSaas ? { PATCHSTACK_ENDPOINT: localSaas + '/manifest' } : {}),
     });
-    await check(true, { file: deployment, matched: true });
+    await check(true, { file: deployment, matched: true, scopedOutcome: 'block' });
     const unmatched = JSON.parse(readFileSync(join(cwd, deployment), 'utf8'));
     unmatched.buildId = (unmatched.buildId[0] === '0' ? '1' : '0') + unmatched.buildId.slice(1);
     put('host/unmatched.json', JSON.stringify(unmatched));
-    await check(true, { file: 'host/unmatched.json', matched: false });
+    const mismatch = { file: 'host/unmatched.json', matched: false };
+    await check(true, { ...mismatch, scopedOutcome: 'absent' });
+    if (fallbackRulesUrl) {
+      await check(true, { ...mismatch, scopedOutcome: 'detect', rulesUrl: fallbackRulesUrl });
+    }
   } else {
     await check(true);
   }
