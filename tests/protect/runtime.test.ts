@@ -218,7 +218,7 @@ describe('egress phase — SSRF', () => {
     const p = await createProtection({ egress: true, mode: 'block' });
     try {
       await expect(globalThis.fetch('http://169.254.169.254/latest/meta-data/')).rejects.toThrow();
-      expect((await (globalThis.fetch as any)('https://api.example.com/')).marker).toBe('stub');
+      expect((await (globalThis.fetch as any)('https://203.0.113.10/')).marker).toBe('stub');
     } finally {
       p.uninstallEgress?.();
       globalThis.fetch = orig;
