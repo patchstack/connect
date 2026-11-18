@@ -514,6 +514,29 @@ The Patchstack Connector is a floating control whose form follows the site's cla
 
 - **Turning the widget off:** run `npx @patchstack/connect widget --remove`, or set `"widget": false` in `.patchstackrc.json`. Only the widget tag stops; the production marker stays, because Patchstack needs it to recognise your live build. `setup` saves `"widget": false` itself when it sets up a new project without `--widget`.
 
+## Host-managed Node applications
+
+For one Patchstack site per Node application process, provision a site and set
+`PATCHSTACK_SITE_UUID` and `PATCHSTACK_API_KEY` in its server environment. Start
+the app from its project directory with the preload installed as part of Connect:
+
+```sh
+node --import @patchstack/connect/register server.js
+```
+
+If the host configures startup through environment variables, add
+`--import=@patchstack/connect/register` to the application's existing
+`NODE_OPTIONS`. Scope it to the running application. The preload requires both
+values, waits for the initial rules lookup using Connect's startup timeout, and
+refreshes rules while the app runs. It uses the existing cache and reporting.
+Set `PATCHSTACK_MODE=dry-run` to observe, or `PATCHSTACK_EGRESS=1` to enable
+outbound screening. Connect defaults to block mode for this integration.
+
+Import `protection` from the same entry point to inspect its `synchronization`
+and `coverage()` or to mount a request adapter. Preloading alone does not attach
+inbound request or response protection. Keep preview and production site
+identities separate when their builds are deployed independently.
+
 ## Programmatic API
 
 ```ts
