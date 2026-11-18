@@ -572,16 +572,19 @@ apps, or app entries that load Fastify before the hook, use the framework's
 plugin integration. Activate either the preload adapter or the in-app adapter
 once per app.
 
-To bind the guard to the map for a deployment, run this from the app's source
-directory with the site UUID and API key set. Set `PATCHSTACK_ENVIRONMENT` to
-`production` or `sandbox` for the deployment tier. Use an existing, separate
-artifact directory per deployment and keep the JSON alongside that build:
+Set the site UUID, server API key, and `PATCHSTACK_ENVIRONMENT` in the host's
+deployment configuration. Give the build step and the app process the same
+`PATCHSTACK_DEPLOYMENT_FILE` path in that release's artifact directory. Run
+the following once per deployment from the app's source directory after
+installing its dependencies:
 
 ```sh
-patchstack-connect prepare-deploy --out ./patchstack-deployment.json
+patchstack-connect prepare-deploy
 ```
 
-Set `PATCHSTACK_DEPLOYMENT_FILE` to that JSON file in the running server. The
+The command uses the configured artifact path. An explicit `--out <file>`
+overrides it. Each release should have its own artifact directory so a
+replacement or rollback can start with that release's metadata. The
 command requires a lockfile and reports the dependency inventory and structural
 input map. It writes only the selected output file. It exits nonzero on
 a failed upload and marks the selected output incomplete until both uploads

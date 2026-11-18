@@ -3,31 +3,32 @@ import { resolve } from 'node:path';
 import { computeManifestChecksum } from './checksum.js';
 import { postManifest } from './client.js';
 import { resolveConfig } from './config.js';
+import type { HostedDeployment } from './deployment-metadata.js';
 import { isCanonicalUuid, isCredential } from './endpoint-policy.js';
 import { runMapDetailed } from './map-command.js';
 import { buildWirePayload } from './normalize.js';
 import { atomicWriteFileSync } from './safe-file.js';
 import { scanLockfile } from './parsers/index.js';
 
-export interface HostedDeployment {
-  siteUuid: string;
-  buildId: string;
-  manifestChecksum: string;
-}
-
 export async function prepareDeploy(out: string | undefined): Promise<number> {
+  const output = out ?? process.env.PATCHSTACK_DEPLOYMENT_FILE;
+  if (!output?.trim()) {
+    console.error('prepare-deploy requires PATCHSTACK_DEPLOYMENT_FILE or --out.');
+    return 1;
+  }
+  const cwd = process.cwd();
+  const file = resolve(cwd, output);
+  // Reusing a path for a failed preparation must not leave the previous build stamped there.
+  atomicWriteFileSync(file, 'null\n', { encoding: 'utf8' });
+
   const envSiteUuid = process.env.PATCHSTACK_SITE_UUID;
   const apiKey = process.env.PATCHSTACK_API_KEY;
-  if (!out?.trim() || !isCanonicalUuid(envSiteUuid) || !isCredential(apiKey)) {
-    console.error('prepare-deploy requires --out, PATCHSTACK_SITE_UUID and PATCHSTACK_API_KEY.');
+  if (!isCanonicalUuid(envSiteUuid) || !isCredential(apiKey)) {
+    console.error('prepare-deploy requires PATCHSTACK_SITE_UUID and PATCHSTACK_API_KEY.');
     return 1;
   }
 
   const siteUuid = envSiteUuid.toLowerCase();
-  const cwd = process.cwd();
-  const file = resolve(cwd, out);
-  // A failed rerun cannot leave a successful stamp for a different build at the selected path.
-  atomicWriteFileSync(file, 'null\n', { encoding: 'utf8' });
   const config = {
     ...(await resolveConfig({ cwd, cliSiteUuid: siteUuid, detectSiteIdentity: true })),
     pulseAuth: apiKey,

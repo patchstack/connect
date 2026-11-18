@@ -1,8 +1,6 @@
-import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { createProtection, type Protection } from '@patchstack/connect/protect';
-import { canonicalBuildId } from './build-id.js';
-import type { HostedDeployment } from './prepare-deploy.js';
+import { readHostedDeployment } from './deployment-metadata.js';
 import { isCanonicalUuid, isCredential, safeRemoteUrl } from './endpoint-policy.js';
 
 const siteUuid = process.env.PATCHSTACK_SITE_UUID;
@@ -20,27 +18,9 @@ if (configuredRulesUrl !== undefined && (!pulseRulesUrl || /[?#]/.test(pulseRule
   throw new Error('PATCHSTACK_PULSE_RULES_URL must be an HTTPS or loopback HTTP base URL without a query or fragment.');
 }
 
-function deploymentForSite(site: string): HostedDeployment | undefined {
-  const file = process.env.PATCHSTACK_DEPLOYMENT_FILE;
-  if (file === undefined) return undefined;
-  let deployment: Partial<HostedDeployment> | null;
-  try {
-    deployment = JSON.parse(readFileSync(file, 'utf8'));
-  } catch {
-    throw new Error('Patchstack could not read PATCHSTACK_DEPLOYMENT_FILE.');
-  }
-  const buildId = canonicalBuildId(deployment?.buildId);
-  const manifestChecksum = deployment?.manifestChecksum;
-  if (
-    deployment?.siteUuid !== site || buildId === null
-    || typeof manifestChecksum !== 'string' || !/^[0-9a-f]{12}$/.test(manifestChecksum)
-  ) {
-    throw new Error('PATCHSTACK_DEPLOYMENT_FILE must contain a completed build for PATCHSTACK_SITE_UUID.');
-  }
-  return { siteUuid: site, buildId, manifestChecksum };
-}
+const deploymentFile = process.env.PATCHSTACK_DEPLOYMENT_FILE;
+const deployment = deploymentFile === undefined ? undefined : readHostedDeployment(deploymentFile, siteUuid.toLowerCase());
 
-const deployment = deploymentForSite(siteUuid.toLowerCase());
 // The configured service has its own transport so screening application egress cannot freeze rule updates.
 const fetchAtStartup = globalThis.fetch.bind(globalThis);
 const serviceFetch: typeof fetch = (input, init) => fetchAtStartup(input, { ...init, redirect: 'error' });

@@ -187,9 +187,9 @@ Usage:
                                                      file; a pre-bundle --upload also stamps the existing
                                                      guard rules file; --follow-symlinks leaves the project dir).
                                                      Uses the app's own TypeScript
-  patchstack-connect prepare-deploy --out <file>      Report dependencies and upload the input map for
-                                                     a host-managed site. Write its deployment metadata
-                                                     for the Node preload. Requires site credentials
+  patchstack-connect prepare-deploy [--out <file>]    Report dependencies and upload the input map for
+                                                     a host-managed site. Write PATCHSTACK_DEPLOYMENT_FILE
+                                                     (or --out). Requires site credentials
   patchstack-connect init   <site-uuid>              Optional: pre-seed .patchstackrc.json
                                                      with an existing site UUID
   patchstack-connect status [options]                Show current configuration and whether the
@@ -2377,7 +2377,14 @@ async function main(): Promise<number> {
   }
 
   setRunCommand(args.command);
-  if (args.command === 'prepare-deploy') return prepareDeploy(getStringFlag(args.flags, 'out'));
+  if (args.command === 'prepare-deploy') {
+    const out = getStringFlag(args.flags, 'out');
+    if (args.flags.has('out') && !out?.trim()) {
+      console.error('--out requires a deployment metadata path.');
+      return 1;
+    }
+    return prepareDeploy(out);
+  }
   if (!KNOWN_COMMANDS.has(args.command)) return runCommand(args);
   let code = 1;
   try {
