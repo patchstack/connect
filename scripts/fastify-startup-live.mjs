@@ -1,6 +1,5 @@
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
-import { installFastifyHook } from './preload.mjs';
 
 assert.equal(process.env.PS_FASTIFY_LIVE, '1');
 assert.equal(process.platform, 'linux');
@@ -43,4 +42,3 @@ console.log('Fastify live pilot ' + JSON.stringify({
   matched: status.matched, mapRules: status.mapRules, delivered: bundle.firewall.length,
   scoped: status.rules.scoped, scopedBlocking: status.rules.scopedBlocking,
 }));
-installFastifyHook(protection);

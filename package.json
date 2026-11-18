@@ -43,6 +43,9 @@
         "default": "./dist/register.js"
       }
     },
+    "./register/fastify": {
+      "import": "./dist/hosted/register-fastify.mjs"
+    },
     "./protect": {
       "workerd": "./dist/protect.edge.js",
       "worker": "./dist/protect.edge.js",

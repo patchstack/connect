@@ -403,6 +403,26 @@ jobs:
       - name: Install and check the real TanStack framework contract
         run: node scripts/tanstack-consumer.mjs --tarball packed/*.tgz
 
+  fastify-startup:
+    name: Fastify startup from the packed artifact
+    needs: pack
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22.x
+      - uses: actions/download-artifact@v8
+        with:
+          name: packed-tarball
+          path: packed
+      - name: Start and screen unmodified Fastify apps
+        run: |
+          set -euo pipefail
+          node scripts/framework-consumers.mjs fastify-startup-esm packed/*.tgz
+          node scripts/framework-consumers.mjs fastify-startup-cjs packed/*.tgz
+
   next-consumers:
     name: Next.js ${{ matrix.next }} (${{ matrix.bundler }}) production integration
     needs: pack
@@ -453,6 +473,7 @@ jobs:
       - production-audit
       - next-consumers
       - tanstack-consumer
+      - fastify-startup
     runs-on: ubuntu-latest
 
     steps:
