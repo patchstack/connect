@@ -1,10 +1,11 @@
 import assert from 'node:assert/strict';
 import { spawn, spawnSync } from 'node:child_process';
 import { once } from 'node:events';
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { copyFileSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { createServer } from 'node:net';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
 
 const output = `({ label: body.label, sample: 'fixture-private' })`;
 const fetchRoute = `async ({ request }) => {
@@ -146,8 +147,11 @@ function fastifyFixture(format) {
   return {
     dependencies: { fastify: '5.12.1' },
     files: { [entry]: `
-${commonJs ? "const { fastify } = require('fastify');" : "import defaultFastify, { fastify } from 'fastify';"}
-${commonJs ? "" : "if (defaultFastify !== fastify) throw new Error('Inconsistent Fastify exports');"}
+${commonJs ? "const defaultFastify = require('fastify'); const { fastify, errorCodes, LogController } = defaultFastify;" : "import defaultFastify, { fastify, errorCodes, LogController } from 'fastify';"}
+if (defaultFastify !== fastify || defaultFastify.errorCodes !== errorCodes || !errorCodes
+  || defaultFastify.LogController !== LogController || typeof LogController !== 'function') {
+  throw new Error('Inconsistent Fastify exports');
+}
 ${commonJs ? "const { Readable } = require('node:stream');" : "import { Readable } from 'node:stream';"}
 const app = fastify();
 let finishStream;
@@ -172,6 +176,14 @@ app.listen({ port: Number(process.env.PORT), host: '127.0.0.1' });
 }
 
 fixtures.fastify = fastifyFixture('cjs');
+for (const format of ['esm', 'cjs']) {
+  fixtures['fastify-startup-' + format] = {
+    ...fastifyFixture(format),
+    rules: 'host/rules.json',
+    preload: './host/preload.mjs',
+  };
+}
+
 // Run against an npm pack artifact on a Unix host. Framework packages are pinned per fixture.
 const [name, tarball] = process.argv.slice(2);
 assert.ok(Object.hasOwn(fixtures, name) && tarball, `Usage: node scripts/framework-consumers.mjs <${Object.keys(fixtures).join('|')}> <tarball>`);
@@ -193,7 +205,8 @@ async function check(protectedApp) {
   const port = listener.address().port;
   await new Promise(done => listener.close(done));
   const processEnv = { ...env, PORT: String(port), ORIGIN: `http://127.0.0.1:${port}` };
-  const app = spawn(process.execPath, fixture.start, { cwd, env: processEnv, stdio: ['ignore', 'pipe', 'pipe'] });
+  const flags = protectedApp && fixture.preload ? ['--import', fixture.preload] : [];
+  const app = spawn(process.execPath, [...flags, ...fixture.start], { cwd, env: processEnv, stdio: ['ignore', 'pipe', 'pipe'] });
   let log = '';
   for (const stream of [app.stdout, app.stderr]) stream.on('data', part => { log += part; });
   const post = label => fetch(processEnv.ORIGIN + '/fixture', {
@@ -253,10 +266,20 @@ try {
   run('npm', ['install', '--no-audit', '--no-fund', '--ignore-scripts']);
   if (fixture.build) run(process.execPath, fixture.build);
   await check(false);
-  const cli = 'node_modules/@patchstack/connect/dist/cli.js';
-  run(process.execPath, [cli, 'protect']);
-  run(process.execPath, [cli, 'protect', '--check']);
-  readFileSync(join(cwd, fixture.rules));
+  const packageDir = 'node_modules/@patchstack/connect';
+  if (fixture.preload) {
+    mkdirSync(join(cwd, 'host'), { recursive: true });
+    copyFileSync(fileURLToPath(new URL('./fastify-startup-preload.mjs', import.meta.url)), join(cwd, fixture.preload));
+    put('host/facade.mjs', `import { createGuardedApp } from './preload.mjs';
+export { createGuardedApp as fastify, createGuardedApp as default, createGuardedApp as 'module.exports' };
+export const { errorCodes, LogController } = createGuardedApp;`);
+    copyFileSync(join(cwd, packageDir, 'dist/protect/templates/fastify-plugin.js'), join(cwd, 'host/fastify-guard.mjs'));
+  } else {
+    const cli = join(packageDir, 'dist/cli.js');
+    run(process.execPath, [cli, 'protect']);
+    run(process.execPath, [cli, 'protect', '--check']);
+    readFileSync(join(cwd, fixture.rules));
+  }
   put(fixture.rules, JSON.stringify({ firewall: [
     { id: 'fixture-request', rule_v2: [{ parameter: 'post.label', match: { type: 'equals', value: 'fixture-block' } }] },
     { id: 'fixture-response', phase: 'response', action: 'redact', when: { path: '/fixture', method: 'POST' },
@@ -266,6 +289,9 @@ try {
   ], whitelists: [], whitelist_keys: {} }));
   if (fixture.build) run(process.execPath, fixture.build);
   await check(true);
+  if (fixture.preload) {
+    for (const [file, source] of Object.entries(fixture.files)) assert.equal(readFileSync(join(cwd, file), 'utf8'), source);
+  }
   console.log(`PASS ${name}: HTTP request screening, normal body parsing and response redaction${fixture.stream ? ' including stream headers' : ''}`);
 } finally {
   rmSync(cwd, { recursive: true, force: true });
