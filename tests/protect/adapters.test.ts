@@ -112,6 +112,14 @@ describe('Express adapter', () => {
     { label: 'express.urlencoded()', imports: "import express from 'express';", parser: 'app.use(express.urlencoded({ extended: true }));' },
     { label: 'body-parser', imports: "import express from 'express';\nimport bodyParser from 'body-parser';", parser: 'app.use(bodyParser.json());' },
     { label: 'a destructured json()', imports: "import express, { json } from 'express';", parser: 'app.use(json());' },
+    { label: 'a path-scoped parser', imports: "import express from 'express';", parser: "app.use('/api', express.json());" },
+    { label: 'a parser after other middleware', imports: "import express from 'express';\nimport cors from 'cors';", parser: 'app.use(cors(), express.json());' },
+    { label: 'a parser followed by other middleware', imports: "import express from 'express';\nimport cors from 'cors';", parser: 'app.use(express.json(), cors());' },
+    {
+      label: 'a multi-line call',
+      imports: "import express from 'express';",
+      parser: "app.use(\n  '/api',\n  express.json({ limit: '1mb', verify: (req, res, buf) => { req.raw = buf.toString(); } }),\n);",
+    },
   ];
   for (const { label, imports, parser } of parserVariants) {
     it(`wires after ${label} (not just express.json)`, () => {
@@ -132,6 +140,39 @@ describe('Express adapter', () => {
       }
     });
   }
+
+  it('leaves a parser that shares its call with a router unwired, since the router would run first', () => {
+    const dir = tmp('ps-express-parser-router-');
+    writeFileSync(path.join(dir, 'package.json'), JSON.stringify({ type: 'module', dependencies: { express: '^4.21.2' } }));
+    const original = "import express from 'express';\nimport router from './routes.js';\nconst app = express();\napp.use('/api', express.json(), router);\n";
+    writeFileSync(path.join(dir, 'server.js'), original);
+    try {
+      runProtect(dir);
+      expect(read(dir, 'server.js')).toBe(original);
+      expect(runVerify(dir).wired).toBe(false);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('asks for the guard to go before middleware registered above it, not for the middleware to move only', () => {
+    const dir = tmp('ps-express-early-middleware-');
+    writeFileSync(path.join(dir, 'package.json'), JSON.stringify({ type: 'module', dependencies: { express: '^4.21.2' } }));
+    writeFileSync(
+      path.join(dir, 'server.js'),
+      "import express from 'express';\nimport { securityHeaders } from './headers.js';\nconst app = express();\napp.use(securityHeaders);\napp.use(express.json());\napp.get('/', (req, res) => res.end());\n",
+    );
+    try {
+      runProtect(dir);
+      const check = runVerify(dir).checks.find((c) => c.label.includes('every route registered after the guard'));
+      expect(check?.ok).toBe(false);
+      expect(check?.hint).toBe(
+        'the guard must be registered before line 5: move `app.use(patchstackMiddleware);` and your body parser above it, or move it below the guard',
+      );
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
 
   it('scaffolds but does not claim full wiring when no JSON body parser is present', () => {
     const dir = tmp('ps-express-no-parser-');
