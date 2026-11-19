@@ -1766,7 +1766,7 @@ export async function createProtection(options = {}) {
     mode,
     devSync: typeof process !== 'undefined' && process.env.PATCHSTACK_DEV_SYNC === '1',
     rules: {request:requestRules.length, response:responseRules.length, egress:egressRules.length,
-      delivered: deliveredRuleCount, builtIn: configuredResponseRules.length + configuredEgressRules.length,
+      delivered: deliveredRuleCount, local: configuredResponseRules.length + configuredEgressRules.length,
       scoped: [...requestRules, ...responseRules, ...egressRules].filter(rule => 'build_scope' in rule).length,
       scopedBlocking: [...requestRules, ...responseRules, ...egressRules].filter(rule => 'build_scope' in rule && ruleMode(rule) === 'block').length},
   });

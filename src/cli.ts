@@ -1674,7 +1674,7 @@ async function runSetup(args: ParsedArgs): Promise<number> {
   if (synced.rules.ok) {
     // Rules are enforced by protection in a server; an app without one has nothing to apply them.
     if (!noServer) report.rules = synced.rules.count;
-    report.done.push(`Live rule lookup succeeded (${synced.rules.count} rules from Patchstack, on top of the guard's built-in rules; not proof of runtime enforcement)`);
+    report.done.push(`Live rule lookup succeeded (${synced.rules.count} ${synced.rules.count === 1 ? 'rule' : 'rules'} from Patchstack${noServer ? '' : ", on top of the guard's own"}; not proof of runtime enforcement)`);
     if (!noServer) {
       if (synced.rules.mapRules === 'ready') {
         report.done.push(`Rules for this map are ready${synced.rules.count === 0 ? ' (no applicable rules)' : ''}`);

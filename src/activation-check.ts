@@ -36,12 +36,14 @@ export async function checkActivation(url: string, config: Config, cwd: string, 
       if (!status || status.siteUuid !== config.siteUuid) return {ok:false,message:'The selected URL did not prove activation for this site. Check the server credential, guard integration and deployed package version.'};
       if (!expectedBuildId || status.buildId !== expectedBuildId) return {ok:false,message:'The guard answered, but its loaded map is absent or different. Let the framework reload, or restart/rebuild/deploy, then check again.'};
       const readiness = ['ready','pending'].includes(String(status.mapRules)) ? status.mapRules : 'unknown';
-      const rules = status.rules as {request?:number;response?:number;delivered?:number;builtIn?:number;scopedBlocking?:number} | undefined;
+      const rules = status.rules as {request?:number;response?:number;egress?:number;delivered?:number;local?:number;scopedBlocking?:number} | undefined;
+      const source = status.source as {ok?:boolean;origin?:string} | undefined;
       const split = `${Number(rules?.request ?? 0)} request / ${Number(rules?.response ?? 0)} response`;
-      const counts = typeof rules?.delivered === 'number' && typeof rules.builtIn === 'number'
-        ? `${rules.delivered} rules from Patchstack + ${rules.builtIn} built into the guard (${split})`
+      const plural = (count: number) => `${count} ${count === 1 ? 'rule' : 'rules'}`;
+      const fetchedFromPatchstack = source?.origin === 'api' || source?.origin === 'cache';
+      const counts = typeof rules?.delivered === 'number' && typeof rules.local === 'number'
+        ? `${plural(rules.delivered)} ${fetchedFromPatchstack ? 'from Patchstack' : 'from its bundled rules file'} + ${rules.local} of the guard's own (${split} / ${Number(rules.egress ?? 0)} outgoing)`
         : `${split} rules`;
-      const source = status.source as {ok?:boolean} | undefined;
       const age = typeof status.lastCheckedAt === 'number' ? ` (${Math.max(0,Math.floor((Date.now()-status.lastCheckedAt)/1000))}s since last success)` : '';
       return {
         ok:true,

@@ -164,7 +164,7 @@ https://api.patchstack.com/monitor/claim?site=…
 When you've connected, say **done**.
 
 #### What Patchstack found
-🔴 High **1** · 🟠 Medium **3** · 🔵 Low **1** · 12 packages outdated · 12 protection rules available
+🔴 High **1** · 🟠 Medium **3** · 🔵 Low **1** · 12 packages outdated · 12 protection rules from Patchstack
 
 **Refresh your app's preview** to see the Patchstack widget.
 

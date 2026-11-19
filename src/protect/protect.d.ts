@@ -21,7 +21,7 @@ export interface SynchronizationStatus {
   source: {ok: boolean; origin: "api" | "cache" | "bundled" | "empty"; reason?: string};
   mode: "block" | "dry-run";
   devSync: boolean;
-  rules: {request: number; response: number; egress: number; delivered: number; builtIn: number; scoped: number; scopedBlocking: number};
+  rules: {request: number; response: number; egress: number; delivered: number; local: number; scoped: number; scopedBlocking: number};
 }
 
 export interface Protection {
