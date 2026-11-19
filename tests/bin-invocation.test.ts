@@ -689,6 +689,36 @@ describe.skipIf(!built)('the packaged bin, invoked as npm invokes it', () => {
       }
     });
 
+    it('status gives the connect link only to a site with no owner, and says whose environment it names', async () => {
+      let state = 'claimable';
+      const server = createServer((req, res) => {
+        req.resume();
+        req.on('end', () => {
+          res.writeHead(200, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify(req.url?.startsWith('/monitor/claim/preview') ? { state } : {}));
+        });
+      });
+      await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+      const { port } = server.address() as AddressInfo;
+      const endpoint = `http://127.0.0.1:${port}/monitor/pulse/manifest`;
+      const dir = freshProject();
+      writeFileSync(path.join(dir, '.patchstackrc.json'), JSON.stringify({ siteUuid: SITE }));
+      try {
+        const unclaimed = await run(dir, endpoint, ['status']);
+        expect(unclaimed).toContain(`Connect link:  http://127.0.0.1:${port}/monitor/claim?site=${SITE}`);
+        expect(unclaimed).toMatch(/Environment: \w+ \(where this command runs, not your live app\)/);
+        expect(unclaimed).not.toContain('Dashboard URL');
+
+        state = 'owned-by-other';
+        const claimed = await run(dir, endpoint, ['status']);
+        expect(claimed).toContain('Connected:     yes, to a Patchstack account');
+        expect(claimed).not.toContain('/monitor/claim?site=');
+      } finally {
+        await new Promise<void>((resolve) => server.close(() => resolve()));
+        rmSync(dir, { recursive: true, force: true });
+      }
+    });
+
     /**
      * The default output is read by people who do not write code. The technical words are still there for
      * whoever needs them, behind --verbose.
@@ -843,7 +873,7 @@ describe.skipIf(!built)('the packaged bin, invoked as npm invokes it', () => {
             // The summary is what sits between its heading and the closing line for the assistant.
             const summary = setup.slice(setup.indexOf('──── Summary ────'), setup.lastIndexOf('\n\nYour reply to the person'));
 
-            expect(summary).toContain("**Refresh your app's preview** to see the Patchstack widget.");
+            expect(summary).toContain("**Reload your app's preview page** to see the Patchstack widget on it.");
             expect(summary).toContain('Your API key is in `.patchstackrc.local.json`: git ignores it, so never share it.');
             expect(summary).toContain(`When you've connected, say **done**.`);
             // Every file setup changed is still listed for the person, in the report above the summary.

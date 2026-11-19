@@ -333,6 +333,9 @@ export async function createProtection(options = {}) {
   const noteRuleSource = (source) => {
     ruleSource = { ...(source ?? { ok: true, origin: ruleSource.origin }) };
     if (!hasLiveSource || typeof onError === 'function' || ruleSource.ok !== false) return;
+    // `next build` loads route modules to prerender them and refuses their network requests. The guard
+    // built there serves no traffic; the running server builds its own and fetches the rules then.
+    if (typeof process !== 'undefined' && process.env?.NEXT_PHASE === 'phase-production-build') return;
     const cause = `${ruleSource.origin}:${ruleSource.reason ?? ''}`;
     if (warnedSources.has(cause)) return;
     warnedSources.add(cause);

@@ -1981,18 +1981,21 @@ async function runStatus(args: ParsedArgs): Promise<number> {
     `Endpoint:    ${config.endpoint}${config.endpoint === DEFAULT_ENDPOINT ? '' : ' (override)'}`,
   );
   console.log(`Timeout:     ${config.timeoutMs}ms`);
-  console.log(`Environment: ${config.environment}`);
+  console.log(`Environment: ${config.environment} (where this command runs, not your live app)`);
   if (config.siteUuid !== null) {
-    console.log(`Dashboard URL: ${buildClaimUrl(config.endpoint, config.siteUuid)}`);
-
     const claimState = await fetchClaimState(config);
     if (claimState !== 'unknown') await recordClaimState(config, config.siteUuid, claimState === 'claimed');
     if (claimState === 'claimed') {
       console.log('Connected:     yes, to a Patchstack account');
-    } else if (claimState === 'unclaimed') {
-      console.log('Connected:     not yet. Open the link above or run `npx @patchstack/connect claim`.');
+      // The claim page is for connecting a site, so a connected one is pointed at the dashboard instead.
+      if (config.endpoint === DEFAULT_ENDPOINT) console.log('Dashboard:     https://app.patchstack.com');
     } else {
-      console.log('Connected:     could not be verified. Not connected yet? Open the link above.');
+      console.log(`Connect link:  ${buildClaimUrl(config.endpoint, config.siteUuid)}`);
+      console.log(
+        claimState === 'unclaimed'
+          ? 'Connected:     not yet. Open the link above or run `npx @patchstack/connect claim`.'
+          : 'Connected:     could not be verified. Not connected yet? Open the link above.',
+      );
     }
 
     switch (await fetchSiteStatus(config)) {

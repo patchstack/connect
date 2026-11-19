@@ -65,6 +65,18 @@ describe('a guard whose rules are not current', () => {
     p.stop();
   });
 
+  it('stays quiet while next build prerenders, where the guard serves no traffic', async () => {
+    rulesService();
+    vi.stubEnv('NEXT_PHASE', 'phase-production-build');
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const p: any = await guard();
+
+    expect(p.ruleSource).toMatchObject({ ok: false });
+    expect(warn.mock.calls.filter(([m]) => /rules are not current/.test(String(m)))).toEqual([]);
+    p.stop();
+    vi.unstubAllEnvs();
+  });
+
   it('leaves it to onError when one is given', async () => {
     rulesService();
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});

@@ -166,7 +166,7 @@ When you've connected, say **done**.
 #### What Patchstack found
 🔴 High **1** · 🟠 Medium **3** · 🔵 Low **1** · 12 packages outdated · 12 protection rules available
 
-**Refresh your app's preview** to see the Patchstack widget.
+**Reload your app's preview page** to see the Patchstack widget on it.
 
 _Patchstack is now part of your install and build. Your API key is in `.patchstackrc.local.json`: git ignores it, so never share it._
 ````
@@ -175,9 +175,9 @@ The parts always come in that order. Fill each from the output, and leave out a 
 
 1. **Mark.** The two-line Patchstack mark in a code block, as in the layout above.
 2. **Headline.** What was checked and found, as the heading. When the output gives no counts, write "Patchstack is now watching your app." Never estimate a count the output did not print.
-3. **What to do now.** The next step from the `Next:` line, as the heading, with its link or command written out in full on its own line. Only that step: the items under `To do` are yours to finish, not the person's. Then: "When you've connected, say **done**." (or "When that's done, say **done**." for any other step).
+3. **What to do now.** The next step from the `Next:` line, as the heading, with its link or command written out in full on its own line. Only that step: the items under `To do` are yours to finish, not the person's. Then: "When you've connected, say **done**." (or "When that's done, say **done**." for any other step). For the deploy step, when the output does not say the build was for production, write only "Say **done** to get the steps for your host." in place of the command and that line.
 4. **What Patchstack found.** The severity counts, outdated packages and protection rules exactly as the output lists them. Leave it out when nothing was found: the headline already says so.
-5. **Notes.** "**Refresh your app's preview** to see the Patchstack widget." when setup added the widget; any line the output marks `ℹ`, except the one about no server.
+5. **Notes.** "**Reload your app's preview page** to see the Patchstack widget on it." when setup added the widget; any line the output marks `ℹ`, except the one about no server.
 6. **What changed.** One line in italics: that Patchstack is now part of the install and build, and where the API key is (git ignores it; never share it).
 
 ### Commands for later
