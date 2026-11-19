@@ -42,7 +42,7 @@ Run commands from the application's package directory. In a hosted workspace, se
 
 ## 4. You're done when
 
-- `npx @patchstack/connect status` prints a site UUID and dashboard URL.
+- `npx @patchstack/connect status` prints a site UUID and its link: to connect it, or to its dashboard once connected.
 - You've opened the dashboard URL in your browser and the site shows in your Patchstack dashboard.
 - `npx @patchstack/connect guide` reports the expected build hooks and the Patchstack Connector, and `npx @patchstack/connect protect --check` confirms the guard's source wiring. A client-only or static project can report runtime protection as not applicable; describe it as dependency monitoring and the Patchstack Connector, not runtime protection. A source check alone does not prove deployed traffic reaches the guard.
 - Your preview shows the widget (refresh it once if it does not). Before the site is attached to your account it shows the "Connect this website" panel.

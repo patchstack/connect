@@ -1949,7 +1949,7 @@ async function runWidget(args: ParsedArgs): Promise<number> {
       console.log(`   ${buildWidgetTag(state.siteUuid)}`);
       break;
   }
-  console.log(`   ${paint('dim', 'Refresh your preview to see it. Your live site gets it with your next deploy.')}`);
+  console.log(`   ${paint('dim', "Reload your app's preview page to see it. Your live site gets it with your next deploy.")}`);
   return 0;
 }
 
@@ -1981,21 +1981,30 @@ async function runStatus(args: ParsedArgs): Promise<number> {
     `Endpoint:    ${config.endpoint}${config.endpoint === DEFAULT_ENDPOINT ? '' : ' (override)'}`,
   );
   console.log(`Timeout:     ${config.timeoutMs}ms`);
-  console.log(`Environment: ${config.environment}`);
+  const describesThisMachine = config.environment !== 'production';
+  console.log(`Environment: ${config.environment}${describesThisMachine ? ' (where this command runs, not your live app)' : ''}`);
   if (config.siteUuid !== null) {
-    console.log(`Dashboard URL: ${buildClaimUrl(config.endpoint, config.siteUuid)}`);
-
-    const claimState = await fetchClaimState(config);
+    const [claimState, siteStatus] = await Promise.all([fetchClaimState(config), fetchSiteStatus(config)]);
     if (claimState !== 'unknown') await recordClaimState(config, config.siteUuid, claimState === 'claimed');
+    const siteLink =
+      config.endpointTrusted !== false && siteStatus !== 'removed' ? buildClaimUrl(config.endpoint, config.siteUuid) : null;
     if (claimState === 'claimed') {
+      if (siteLink !== null) console.log(`Dashboard link: ${siteLink}`);
       console.log('Connected:     yes, to a Patchstack account');
-    } else if (claimState === 'unclaimed') {
-      console.log('Connected:     not yet. Open the link above or run `npx @patchstack/connect claim`.');
     } else {
-      console.log('Connected:     could not be verified. Not connected yet? Open the link above.');
+      if (siteLink !== null) console.log(`Connect link:  ${siteLink}`);
+      if (claimState === 'unclaimed') {
+        console.log(
+          siteLink !== null
+            ? 'Connected:     not yet. Open the link above or run `npx @patchstack/connect claim`.'
+            : 'Connected:     not yet. Run `npx @patchstack/connect claim`.',
+        );
+      } else {
+        console.log(`Connected:     could not be verified.${siteLink !== null ? ' Not connected yet? Open the link above.' : ''}`);
+      }
     }
 
-    switch (await fetchSiteStatus(config)) {
+    switch (siteStatus) {
       case 'active':
         console.log('Site status:   active on Patchstack');
         break;

@@ -54,7 +54,7 @@ describe('the install prompt', () => {
       { installCommand: 'npm install --save @patchstack/connect', siteUuid: 's', claimUrl: 'https://example.com/claim', environment: 'sandbox' },
       { widgetOnPage: true, dashboardUrl: null },
     ).join('\n');
-    expect(summary).toMatch(/Refresh your app's preview\*\* to see the Patchstack widget/);
+    expect(summary).toMatch(/Reload your app's preview page\*\* to see the Patchstack widget on it/);
   });
 
   it('makes the widget part of the install rather than a question for the user', () => {

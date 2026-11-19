@@ -689,6 +689,95 @@ describe.skipIf(!built)('the packaged bin, invoked as npm invokes it', () => {
       }
     });
 
+    describe('status', () => {
+      async function statusServer(answer: { claim: number | string; settings: number }) {
+        const server = createServer((req, res) => {
+          req.resume();
+          req.on('end', () => {
+            if (req.url?.startsWith('/monitor/claim/preview')) {
+              const ok = typeof answer.claim === 'string';
+              res.writeHead(ok ? 200 : (answer.claim as number), { 'Content-Type': 'application/json' });
+              res.end(ok ? JSON.stringify({ state: answer.claim }) : '{}');
+              return;
+            }
+            res.writeHead(answer.settings, { 'Content-Type': 'application/json' });
+            res.end('{}');
+          });
+        });
+        await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+        const { port } = server.address() as AddressInfo;
+        return {
+          origin: `http://127.0.0.1:${port}`,
+          endpoint: `http://127.0.0.1:${port}/monitor/pulse/manifest`,
+          close: () => new Promise<void>((resolve) => server.close(() => resolve())),
+        };
+      }
+
+      async function status(answer: { claim: number | string; settings: number }, extra: NodeJS.ProcessEnv = {}) {
+        const server = await statusServer(answer);
+        const dir = freshProject();
+        writeFileSync(path.join(dir, '.patchstackrc.json'), JSON.stringify({ siteUuid: SITE }));
+        try {
+          return { stdout: await run(dir, server.endpoint, ['status'], extra), link: `${server.origin}/monitor/claim?site=${SITE}` };
+        } finally {
+          await server.close();
+          rmSync(dir, { recursive: true, force: true });
+        }
+      }
+
+      it('gives a site with no owner its connect link', async () => {
+        const { stdout, link } = await status({ claim: 'claimable', settings: 200 });
+        expect(stdout).toContain(`Connect link:  ${link}`);
+        expect(stdout).toContain('Connected:     not yet. Open the link above');
+        expect(stdout).not.toContain('Dashboard');
+      });
+
+      it('gives a connected site the same link, as its dashboard link', async () => {
+        const { stdout, link } = await status({ claim: 'owned-by-other', settings: 200 });
+        expect(stdout).toContain(`Dashboard link: ${link}`);
+        expect(stdout).toContain('Connected:     yes, to a Patchstack account');
+        expect(stdout).not.toContain('Connect link');
+      });
+
+      it('keeps the connect link when the connection could not be checked', async () => {
+        const { stdout, link } = await status({ claim: 500, settings: 500 });
+        expect(stdout).toContain(`Connect link:  ${link}`);
+        expect(stdout).toContain('Connected:     could not be verified. Not connected yet? Open the link above.');
+      });
+
+      it('gives a removed site no link', async () => {
+        const { stdout } = await status({ claim: 500, settings: 404 });
+        expect(stdout).not.toContain('/monitor/claim?site=');
+        expect(stdout).toContain('Connected:     could not be verified.\n');
+        expect(stdout).toContain('Site status:   removed from Patchstack');
+      });
+
+      it('says a local environment is not the live app, and leaves a production one as it is', async () => {
+        const local = await status({ claim: 'claimable', settings: 200 }, { PATCHSTACK_ENVIRONMENT: 'local' });
+        expect(local.stdout).toContain('Environment: local (where this command runs, not your live app)');
+        const production = await status({ claim: 'claimable', settings: 200 }, { PATCHSTACK_ENVIRONMENT: 'production' });
+        expect(production.stdout).toContain('Environment: production\n');
+      });
+
+      it('sends nobody to an endpoint that only a committed file names', async () => {
+        const server = await statusServer({ claim: 'claimable', settings: 200 });
+        const dir = freshProject();
+        writeFileSync(path.join(dir, '.patchstackrc.json'), JSON.stringify({ siteUuid: SITE, endpoint: server.endpoint }));
+        try {
+          const { stdout } = await promisify(execFile)('node', [bin, 'status'], {
+            cwd: dir,
+            env: { PATH: process.env.PATH, HOME: process.env.HOME },
+            encoding: 'utf8',
+          });
+          expect(stdout).not.toContain('/monitor/claim?site=');
+          expect(stdout).toContain('Connected:     could not be verified.\n');
+        } finally {
+          await server.close();
+          rmSync(dir, { recursive: true, force: true });
+        }
+      });
+    });
+
     /**
      * The default output is read by people who do not write code. The technical words are still there for
      * whoever needs them, behind --verbose.
@@ -843,7 +932,7 @@ describe.skipIf(!built)('the packaged bin, invoked as npm invokes it', () => {
             // The summary is what sits between its heading and the closing line for the assistant.
             const summary = setup.slice(setup.indexOf('──── Summary ────'), setup.lastIndexOf('\n\nYour reply to the person'));
 
-            expect(summary).toContain("**Refresh your app's preview** to see the Patchstack widget.");
+            expect(summary).toContain("**Reload your app's preview page** to see the Patchstack widget on it.");
             expect(summary).toContain('Your API key is in `.patchstackrc.local.json`: git ignores it, so never share it.');
             expect(summary).toContain(`When you've connected, say **done**.`);
             // Every file setup changed is still listed for the person, in the report above the summary.

@@ -346,11 +346,17 @@ export function renderSummary(report: StatusReport, progress: Progress, context:
     const rest =
       next !== 'connected' ? '' : !canProtect ? ' to see the details' : vulnerable ? ' to see the details and turn on protection' : ' to turn on protection';
     const lead = next === 'connected' ? 'Connect your Patchstack account' : capitalise(plainNextStepTitle(next, context));
-    const [first] = plainNextStepLines(next, context);
-    const action = first?.startsWith('Open ') === true ? first.slice('Open '.length) : first;
-    // The link goes in a paragraph of its own, so it renders on its own line.
-    lines.push(`#### 👉 ${lead}${rest}`, '', ...(action !== undefined ? [action, ''] : []));
-    lines.push(next === 'connected' ? `When you've connected, say **${NEXT_REPLY}**.` : `When that's done, say **${NEXT_REPLY}**.`, '');
+    lines.push(`#### 👉 ${lead}${rest}`, '');
+    const nextAnswersWithGoLiveSteps = next === 'deployed' && context.environment !== 'production';
+    if (nextAnswersWithGoLiveSteps) {
+      lines.push(`Say **${NEXT_REPLY}** to get the steps for your host.`, '');
+    } else {
+      const [first] = plainNextStepLines(next, context);
+      const action = first?.startsWith('Open ') === true ? first.slice('Open '.length) : first;
+      // The link goes in a paragraph of its own, so it renders on its own line.
+      if (action !== undefined) lines.push(action, '');
+      lines.push(next === 'connected' ? `When you've connected, say **${NEXT_REPLY}**.` : `When that's done, say **${NEXT_REPLY}**.`, '');
+    }
   }
 
   if (canProtect && report.confirmed?.length) {
@@ -378,7 +384,7 @@ export function renderSummary(report: StatusReport, progress: Progress, context:
     lines.push('#### What Patchstack found', parts.join(' · '), '');
   }
 
-  if (options.widgetOnPage) lines.push("**Refresh your app's preview** to see the Patchstack widget.", '');
+  if (options.widgetOnPage) lines.push("**Reload your app's preview page** to see the Patchstack widget on it.", '');
   // A fact about the app, not a step: the ones that matter here are what protection does not cover.
   for (const item of report.missing.filter((entry) => entry.note === true && entry.key !== 'runtime-protection')) {
     lines.push(item.plain?.text ?? item.text, '');

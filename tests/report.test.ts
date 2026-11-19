@@ -201,7 +201,7 @@ describe('renderSummary', () => {
       '#### What Patchstack found',
       '🔴 High **1** · 🟠 Medium **3** · 🔵 Low **1** · 12 packages outdated · 12 protection rules available',
       '',
-      "**Refresh your app's preview** to see the Patchstack widget.",
+      "**Reload your app's preview page** to see the Patchstack widget on it.",
     ]);
   });
 
@@ -225,7 +225,7 @@ describe('renderSummary', () => {
       '',
       `When you've connected, say **done**.`,
       '',
-      "**Refresh your app's preview** to see the Patchstack widget.",
+      "**Reload your app's preview page** to see the Patchstack widget on it.",
       '',
       `_Patchstack is now part of your install and build. Your API key is in \`${SECRET_CONFIG_FILENAME}\`: git ignores it, so never share it._`,
     ]);
@@ -280,6 +280,15 @@ describe('renderSummary', () => {
     ]);
     expect(lines.join('\n')).not.toContain(context.claimUrl);
     expect(renderSummary(report(), notConnected, context, { widgetOnPage: false, dashboardUrl }).join('\n')).not.toContain(dashboardUrl);
+  });
+
+  it('answers the deploy step with the word to say, not a command the person cannot run', () => {
+    const connected = { ...notConnected, connected: true };
+    const text = renderSummary(report({ missing: [] }), connected, context, { widgetOnPage: false, dashboardUrl: null }).join('\n');
+
+    expect(text).toContain('Say **done** to get the steps for your host.');
+    expect(text).not.toContain('go-live');
+    expect(text).not.toContain("When that's done");
   });
 
   it('never states a count the run did not get', () => {
