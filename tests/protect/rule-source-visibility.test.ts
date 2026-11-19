@@ -37,6 +37,7 @@ const guard = (extra: Record<string, unknown> = {}) =>
   createProtection({ siteUuid: SITE, pulseAuth: CREDENTIAL, pulseRulesUrl: URL_OPT, mode: 'block', reportManifest: false, ...extra });
 
 afterEach(() => {
+  vi.unstubAllEnvs();
   vi.useRealTimers();
   vi.unstubAllGlobals();
   vi.restoreAllMocks();
@@ -74,7 +75,6 @@ describe('a guard whose rules are not current', () => {
     expect(p.ruleSource).toMatchObject({ ok: false });
     expect(warn.mock.calls.filter(([m]) => /rules are not current/.test(String(m)))).toEqual([]);
     p.stop();
-    vi.unstubAllEnvs();
   });
 
   it('leaves it to onError when one is given', async () => {

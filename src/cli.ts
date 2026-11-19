@@ -1949,7 +1949,7 @@ async function runWidget(args: ParsedArgs): Promise<number> {
       console.log(`   ${buildWidgetTag(state.siteUuid)}`);
       break;
   }
-  console.log(`   ${paint('dim', 'Refresh your preview to see it. Your live site gets it with your next deploy.')}`);
+  console.log(`   ${paint('dim', "Reload your app's preview page to see it. Your live site gets it with your next deploy.")}`);
   return 0;
 }
 
@@ -1981,24 +1981,33 @@ async function runStatus(args: ParsedArgs): Promise<number> {
     `Endpoint:    ${config.endpoint}${config.endpoint === DEFAULT_ENDPOINT ? '' : ' (override)'}`,
   );
   console.log(`Timeout:     ${config.timeoutMs}ms`);
-  console.log(`Environment: ${config.environment} (where this command runs, not your live app)`);
+  // A production label is the live build's own. Any other is this machine's, which a deployed app does not share.
+  console.log(
+    `Environment: ${config.environment}${config.environment === 'production' ? '' : ' (where this command runs, not your live app)'}`,
+  );
   if (config.siteUuid !== null) {
-    const claimState = await fetchClaimState(config);
+    const [claimState, siteStatus] = await Promise.all([fetchClaimState(config), fetchSiteStatus(config)]);
     if (claimState !== 'unknown') await recordClaimState(config, config.siteUuid, claimState === 'claimed');
+    // A signed-in owner who opens the claim page lands on the site, so one link serves before and after connecting.
+    const link =
+      config.endpointTrusted !== false && siteStatus !== 'removed' ? buildClaimUrl(config.endpoint, config.siteUuid) : null;
     if (claimState === 'claimed') {
+      if (link !== null) console.log(`Dashboard link: ${link}`);
       console.log('Connected:     yes, to a Patchstack account');
-      // The claim page is for connecting a site, so a connected one is pointed at the dashboard instead.
-      if (config.endpoint === DEFAULT_ENDPOINT) console.log('Dashboard:     https://app.patchstack.com');
     } else {
-      console.log(`Connect link:  ${buildClaimUrl(config.endpoint, config.siteUuid)}`);
-      console.log(
-        claimState === 'unclaimed'
-          ? 'Connected:     not yet. Open the link above or run `npx @patchstack/connect claim`.'
-          : 'Connected:     could not be verified. Not connected yet? Open the link above.',
-      );
+      if (link !== null) console.log(`Connect link:  ${link}`);
+      if (claimState === 'unclaimed') {
+        console.log(
+          link !== null
+            ? 'Connected:     not yet. Open the link above or run `npx @patchstack/connect claim`.'
+            : 'Connected:     not yet. Run `npx @patchstack/connect claim`.',
+        );
+      } else {
+        console.log(`Connected:     could not be verified.${link !== null ? ' Not connected yet? Open the link above.' : ''}`);
+      }
     }
 
-    switch (await fetchSiteStatus(config)) {
+    switch (siteStatus) {
       case 'active':
         console.log('Site status:   active on Patchstack');
         break;
