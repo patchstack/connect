@@ -36,12 +36,16 @@ export async function checkActivation(url: string, config: Config, cwd: string, 
       if (!status || status.siteUuid !== config.siteUuid) return {ok:false,message:'The selected URL did not prove activation for this site. Check the server credential, guard integration and deployed package version.'};
       if (!expectedBuildId || status.buildId !== expectedBuildId) return {ok:false,message:'The guard answered, but its loaded map is absent or different. Let the framework reload, or restart/rebuild/deploy, then check again.'};
       const readiness = ['ready','pending'].includes(String(status.mapRules)) ? status.mapRules : 'unknown';
-      const rules = status.rules as {request?:number;response?:number;scopedBlocking?:number} | undefined;
+      const rules = status.rules as {request?:number;response?:number;delivered?:number;builtIn?:number;scopedBlocking?:number} | undefined;
+      const split = `${Number(rules?.request ?? 0)} request / ${Number(rules?.response ?? 0)} response`;
+      const counts = typeof rules?.delivered === 'number' && typeof rules.builtIn === 'number'
+        ? `${rules.delivered} rules from Patchstack + ${rules.builtIn} built into the guard (${split})`
+        : `${split} rules`;
       const source = status.source as {ok?:boolean} | undefined;
       const age = typeof status.lastCheckedAt === 'number' ? ` (${Math.max(0,Math.floor((Date.now()-status.lastCheckedAt)/1000))}s since last success)` : '';
       return {
         ok:true,
-        message:`Guard active at the checked URL with the current map; rule readiness ${readiness}; server map match ${status.matched === true ? 'confirmed' : 'unconfirmed'}; last rule lookup ${source?.ok === true ? 'successful' : 'unconfirmed'}${age}; ${Number(rules?.request ?? 0)} request / ${Number(rules?.response ?? 0)} response rules; ${Number(rules?.scopedBlocking ?? 0)} map-scoped rules in blocking mode${status.devSync ? ' (HMR detect-only hold)' : ''}. This does not prove coverage of other routes or exploit blocking.`,
+        message:`Guard active at the checked URL with the current map; rule readiness ${readiness}; server map match ${status.matched === true ? 'confirmed' : 'unconfirmed'}; last rule lookup ${source?.ok === true ? 'successful' : 'unconfirmed'}${age}; ${counts}; ${Number(rules?.scopedBlocking ?? 0)} rules for this app's own routes in blocking mode${status.devSync ? ' (HMR detect-only hold)' : ''}. This does not prove coverage of other routes or exploit blocking.`,
         summary:`Protection answered at the checked URL with the current app map. Rules: ${readiness}; map match: ${status.matched === true ? 'confirmed' : 'unconfirmed'}; latest rule check: ${source?.ok === true ? 'successful' : 'unconfirmed'}${age}.${status.devSync ? ' Rules for specific inputs only report attacks during hot reload.' : ''} This does not prove blocking or protection on other URLs.`,
       };
     };

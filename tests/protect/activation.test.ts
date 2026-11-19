@@ -75,6 +75,26 @@ it.each(['ready', 'pending', 'unknown'])('keeps %s readiness and enforcement lim
   expect(result.summary).toContain('This does not prove blocking or protection on other URLs.');
 });
 
+it('splits the rule count into rules from Patchstack and rules built into the guard', async () => {
+  const match = [{ parameter: 'get.q', match: { type: 'contains', value: 'attack' } }];
+  const delivered = [{ id: 'synthetic-a', rule_v2: match }, { id: 'synthetic-b', phase: 'response', rule_v2: match }];
+  const p = await createProtection({ pulseAuth: secret, buildId: build, rules: { firewall: delivered }, cache: false, reportDetections: false });
+  try {
+    const { rules } = p.synchronization;
+    expect(rules.delivered).toBe(2);
+    expect(rules.builtIn).toBeGreaterThan(0);
+    expect(rules.request + rules.response + rules.egress).toBe(rules.delivered + rules.builtIn);
+  } finally { await p.stop(); }
+
+  vi.stubGlobal('fetch', async (target: string, init: RequestInit) => activationResponse(new Request(target, init), secret, () => ({
+    siteUuid: site, buildId: build, mapRules: 'ready', source: { ok: true },
+    rules: { request: 6, response: 20, egress: 1, delivered: 17, builtIn: 10, scopedBlocking: 0 },
+  })));
+  const result = await checkActivation(url, config, '.', build);
+  expect(result.message).toContain('17 rules from Patchstack + 10 built into the guard (6 request / 20 response)');
+  expect(result.message).toContain("0 rules for this app's own routes in blocking mode");
+});
+
 it('bounds a transport that ignores abort', async()=>{
   vi.useFakeTimers();vi.stubGlobal('fetch',()=>new Promise(()=>{}));
   const work=checkActivation(url,config,'.',build);
