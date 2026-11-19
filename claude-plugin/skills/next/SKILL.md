@@ -29,6 +29,6 @@ Run the command that matches what the person said, in the project root, and show
 | "What did Patchstack find?", "show me the vulnerabilities" | `npx @patchstack/connect vulns` |
 | "Show my Patchstack summary" | `npx @patchstack/connect summary` |
 
-`next` checks with Patchstack whether the account is connected, so it sends the project's site ID; the others read the project only. None of them starts, builds or deploys the app, and you should not either: deploying is the person's step, and `go-live` prints how to do it on their host.
+`next` checks with Patchstack whether the account is connected, so it sends the project's site ID; the others read the project only, except that `go-live` on a Vercel project adds `.patchstackrc.local.json` to `.vercelignore` so a `vercel` deploy does not upload the key. None of them starts, builds or deploys the app, and you should not either: deploying is the person's step, and `go-live` prints how to do it on their host.
 
 If the project has no `.patchstackrc.json`, Patchstack is not set up here yet: use the `setup` skill.

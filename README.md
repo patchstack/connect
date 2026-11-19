@@ -195,7 +195,9 @@ patchstack-connect vulns                           Show vulnerabilities by sever
                                                    packages, with the link to the details
 patchstack-connect go-live [--host <name>]         Show how to add your API key to your host
                                                    (Vercel, Netlify, Cloudflare, Render, Railway,
-                                                   Fly.io, Heroku, Amplify, Replit, Lovable) and deploy
+                                                   Fly.io, Heroku, Amplify, Replit, Lovable) and deploy.
+                                                   On Vercel it adds .patchstackrc.local.json to
+                                                   .vercelignore
 patchstack-connect widget [--remove]               Add the Patchstack widget to your page, or
                                                    remove the tag Connect added; saved for builds
 patchstack-connect mark-build [--production]       Stamp built HTML with a production flag +
