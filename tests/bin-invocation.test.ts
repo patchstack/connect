@@ -843,7 +843,7 @@ describe.skipIf(!built)('the packaged bin, invoked as npm invokes it', () => {
             // The summary is what sits between its heading and the closing line for the assistant.
             const summary = setup.slice(setup.indexOf('──── Summary ────'), setup.lastIndexOf('\n\nYour reply to the person'));
 
-            expect(summary).toContain("**Refresh your app's preview** to see the Patchstack widget.");
+            expect(summary).toContain("**Reload your app's preview page.** The Patchstack widget appears in a bottom corner of the page.");
             expect(summary).toContain('Your API key is in `.patchstackrc.local.json`: git ignores it, so never share it.');
             expect(summary).toContain(`When you've connected, say **done**.`);
             // Every file setup changed is still listed for the person, in the report above the summary.

@@ -378,7 +378,7 @@ export function renderSummary(report: StatusReport, progress: Progress, context:
     lines.push('#### What Patchstack found', parts.join(' · '), '');
   }
 
-  if (options.widgetOnPage) lines.push("**Refresh your app's preview** to see the Patchstack widget.", '');
+  if (options.widgetOnPage) lines.push("**Reload your app's preview page.** The Patchstack widget appears in a bottom corner of the page.", '');
   // A fact about the app, not a step: the ones that matter here are what protection does not cover.
   for (const item of report.missing.filter((entry) => entry.note === true && entry.key !== 'runtime-protection')) {
     lines.push(item.plain?.text ?? item.text, '');
