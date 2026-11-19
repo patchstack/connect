@@ -1981,29 +1981,26 @@ async function runStatus(args: ParsedArgs): Promise<number> {
     `Endpoint:    ${config.endpoint}${config.endpoint === DEFAULT_ENDPOINT ? '' : ' (override)'}`,
   );
   console.log(`Timeout:     ${config.timeoutMs}ms`);
-  // A production label is the live build's own. Any other is this machine's, which a deployed app does not share.
-  console.log(
-    `Environment: ${config.environment}${config.environment === 'production' ? '' : ' (where this command runs, not your live app)'}`,
-  );
+  const describesThisMachine = config.environment !== 'production';
+  console.log(`Environment: ${config.environment}${describesThisMachine ? ' (where this command runs, not your live app)' : ''}`);
   if (config.siteUuid !== null) {
     const [claimState, siteStatus] = await Promise.all([fetchClaimState(config), fetchSiteStatus(config)]);
     if (claimState !== 'unknown') await recordClaimState(config, config.siteUuid, claimState === 'claimed');
-    // A signed-in owner who opens the claim page lands on the site, so one link serves before and after connecting.
-    const link =
+    const siteLink =
       config.endpointTrusted !== false && siteStatus !== 'removed' ? buildClaimUrl(config.endpoint, config.siteUuid) : null;
     if (claimState === 'claimed') {
-      if (link !== null) console.log(`Dashboard link: ${link}`);
+      if (siteLink !== null) console.log(`Dashboard link: ${siteLink}`);
       console.log('Connected:     yes, to a Patchstack account');
     } else {
-      if (link !== null) console.log(`Connect link:  ${link}`);
+      if (siteLink !== null) console.log(`Connect link:  ${siteLink}`);
       if (claimState === 'unclaimed') {
         console.log(
-          link !== null
+          siteLink !== null
             ? 'Connected:     not yet. Open the link above or run `npx @patchstack/connect claim`.'
             : 'Connected:     not yet. Run `npx @patchstack/connect claim`.',
         );
       } else {
-        console.log(`Connected:     could not be verified.${link !== null ? ' Not connected yet? Open the link above.' : ''}`);
+        console.log(`Connected:     could not be verified.${siteLink !== null ? ' Not connected yet? Open the link above.' : ''}`);
       }
     }
 

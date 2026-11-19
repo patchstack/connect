@@ -347,8 +347,8 @@ export function renderSummary(report: StatusReport, progress: Progress, context:
       next !== 'connected' ? '' : !canProtect ? ' to see the details' : vulnerable ? ' to see the details and turn on protection' : ' to turn on protection';
     const lead = next === 'connected' ? 'Connect your Patchstack account' : capitalise(plainNextStepTitle(next, context));
     lines.push(`#### 👉 ${lead}${rest}`, '');
-    if (next === 'deployed' && context.environment !== 'production') {
-      // The person reads this, not a terminal: `next` answers their "done" with the go-live steps for their host.
+    const nextAnswersWithGoLiveSteps = next === 'deployed' && context.environment !== 'production';
+    if (nextAnswersWithGoLiveSteps) {
       lines.push(`Say **${NEXT_REPLY}** to get the steps for your host.`, '');
     } else {
       const [first] = plainNextStepLines(next, context);
