@@ -159,7 +159,7 @@ function renderConcise(
   if (findings.length > 0) lines.push(...findings);
   if ((report.rules ?? 0) > 0) {
     const rules = report.rules!;
-    lines.push(`   ${paint(ANSI.green, `${rules} protection ${rules === 1 ? 'rule' : 'rules'} available`)}`);
+    lines.push(`   ${paint(ANSI.green, `${rules} protection ${rules === 1 ? 'rule' : 'rules'} from Patchstack`)}`);
   }
   if (findings.length > 0 || (report.rules ?? 0) > 0) lines.push('');
 
@@ -318,7 +318,7 @@ export function renderSummary(report: StatusReport, progress: Progress, context:
   const canProtect = protectionPossible(report);
   context = { ...context, noServer: !canProtect };
 
-  const rules = canProtect && (report.rules ?? 0) > 0 ? `${report.rules} protection ${report.rules === 1 ? 'rule' : 'rules'} available` : null;
+  const rules = canProtect && (report.rules ?? 0) > 0 ? `${report.rules} protection ${report.rules === 1 ? 'rule' : 'rules'} from Patchstack` : null;
   let headline: string;
   if (counted && findings.vulnerable > 0) {
     const vulnerabilities = findings.severity.high + findings.severity.medium + findings.severity.low + findings.severity.unknown;
