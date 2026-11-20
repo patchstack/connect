@@ -42,6 +42,7 @@ import {
 } from './demo.js';
 import {
   SECRET_CONFIG_FILENAME,
+  ensureVercelIgnored,
   credentialInCommittedConfig,
   persistApiKey,
   secretFileIgnored,
@@ -227,7 +228,8 @@ Usage:
                                                      host and deploy: the host is found from project
                                                      files (vercel.json, netlify.toml, fly.toml, ...)
                                                      or named with --host. Never prints the key.
-                                                     Sends nothing; writes nothing
+                                                     Sends nothing. On Vercel it adds
+                                                     .patchstackrc.local.json to .vercelignore
   patchstack-connect widget [--remove]               Add the Patchstack widget to the project's page,
                                                      or take the Connect-added tag out with --remove.
                                                      Saves the choice in .patchstackrc.json so the
@@ -1953,7 +1955,10 @@ async function runWidget(args: ParsedArgs): Promise<number> {
   return 0;
 }
 
-/** How to add the key to this project's host and deploy. Reads project files only; sends nothing. */
+/**
+ * How to add the key to this project's host and deploy. Sends nothing; on Vercel it adds the credential file
+ * to `.vercelignore`, because the Vercel CLI uploads whatever that file does not exclude.
+ */
 async function runGoLive(args: ParsedArgs): Promise<number> {
   const named = getStringFlag(args.flags, 'host');
   let host = null;
@@ -1970,7 +1975,8 @@ async function runGoLive(args: ParsedArgs): Promise<number> {
     console.error(`No ${SECRET_CONFIG_FILENAME} here yet. Run setup first: npx @patchstack/connect setup`);
     return 1;
   }
-  for (const line of renderGoLive(host, { useColor: useColor() })) console.log(line);
+  const vercelIgnore = host === 'vercel' ? await ensureVercelIgnored(process.cwd()) : undefined;
+  for (const line of renderGoLive(host, { useColor: useColor(), vercelIgnore })) console.log(line);
   return 0;
 }
 
