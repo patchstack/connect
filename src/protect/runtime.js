@@ -227,7 +227,11 @@ export async function createProtection(options = {}) {
     const { capture: _evidence, ...forCallback } = detection ?? {};
     notify(
       userOnDetect,
-      { ...forCallback, ...(detection?.rule ? { rule: ruleIdentity(detection.rule) } : {}) },
+      {
+        ...forCallback,
+        ...(typeof forCallback.message === 'string' ? { message: messageForMode(forCallback.message, forCallback.mode) } : {}),
+        ...(detection?.rule ? { rule: ruleIdentity(detection.rule) } : {}),
+      },
       'onDetect',
     );
   };
@@ -1909,7 +1913,16 @@ export async function createProtection(options = {}) {
     fetchGuard() {
       return async (request, ...hostArgs) => {
         const { blocked } = await screenFetchRequest(request, hostArgs);
-        await deliverInRequest(blocked);
+        // A middleware that only screens (Next.js on Vercel) is frozen once the route answers, so a queued
+        // detect-only report would wait for a timer that never runs. Where the host offers `waitUntil`, the
+        // report is handed to it, as `fetch` does; otherwise it is delivered within the request.
+        const keep = detections && (blocked || detections.pending()) ? hostWaitUntil(request, hostArgs) : null;
+        if (keep) {
+          keep(detections.settle());
+          detectPendingSince = null;
+        } else {
+          await deliverInRequest(blocked);
+        }
 
         return blocked;
       };
@@ -3262,9 +3275,16 @@ function blockResponse(result, request) {
   });
 }
 
+// A rule's message is written without knowing the mode it will run under, and the engine's default says
+// "Blocked by". A match that did not block must not say it did.
+function messageForMode(message, mode) {
+  return mode === 'block' ? message : message.replace(/^Blocked by /, 'Matched by ');
+}
+
+// Rules the site adds itself carry no category; they are named as what they are rather than as unknown.
 function defaultOnDetect({ phase, mode, category, rule, message }) {
   const tag = mode === 'block' ? 'BLOCK' : 'DETECT (dry-run)';
-  console.warn(`[patchstack] ${tag} phase=${phase ?? 'request'} category=${category ?? '?'} rule=${rule?.id ?? '?'} ${message ?? ''}`.trim());
+  console.warn(`[patchstack] ${tag} phase=${phase ?? 'request'} category=${category || 'custom'} rule=${rule?.id ?? '?'} ${message ?? ''}`.trim());
 }
 
 /**
