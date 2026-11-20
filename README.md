@@ -110,6 +110,19 @@ you how to proceed. Any of these works:
   Codex CLI asks according to `approval_policy` in `~/.codex/config.toml`: approve the command when it
   asks, or run it yourself.
 
+### If the install stops at `ENOTFOUND registry.npmjs.org`
+
+That error comes from npm, before Connect is downloaded: the workspace cannot reach the npm registry. Some
+coding tools run commands in a sandbox with network access off by default; Codex CLI's `workspace-write`
+sandbox is one. `npm ping` shows whether the registry answers. If it does not:
+
+- In Codex CLI, set `network_access = true` under `[sandbox_workspace_write]` in `~/.codex/config.toml`, or
+  approve the install to run outside the sandbox when Codex asks.
+- Behind a company proxy or registry mirror, check `npm config get registry` and the `proxy` and
+  `https-proxy` settings in the same shell the assistant uses.
+
+Then run the install again.
+
 ### Claude Code plugin
 
 In Claude Code, install the plugin from this repository's marketplace:
