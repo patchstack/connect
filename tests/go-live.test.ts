@@ -3,7 +3,7 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
-import { detectHost, HOST_NAMES, parseHost, renderGoLive, type Host } from '../src/go-live.js';
+import { detectHost, HOST_NAMES, parseHost, renderGoLive, stepsReadKeyFile, type Host } from '../src/go-live.js';
 
 describe('detectHost', () => {
   let cwd: string;
@@ -25,6 +25,7 @@ describe('detectHost', () => {
     ['amplify.yml', 'amplify'],
     ['Procfile', 'heroku'],
     ['.replit', 'replit'],
+    ['.bolt', 'bolt'],
   ] as const)('reads %s as %s', (file, host) => {
     write(file);
     expect(detectHost(cwd, {})).toBe(host);
@@ -73,7 +74,7 @@ describe('parseHost', () => {
 });
 
 describe('renderGoLive', () => {
-  const hosts: Host[] = ['vercel', 'netlify', 'cloudflare-pages', 'cloudflare-workers', 'render', 'railway', 'fly', 'heroku', 'amplify', 'replit', 'lovable'];
+  const hosts: Host[] = ['vercel', 'netlify', 'cloudflare-pages', 'cloudflare-workers', 'render', 'railway', 'fly', 'heroku', 'amplify', 'replit', 'bolt', 'lovable'];
 
   it('gives every host its steps, and never asks to print the key', () => {
     for (const host of hosts) {
@@ -89,7 +90,7 @@ describe('renderGoLive', () => {
       'Go live on Vercel',
       '',
       ' 1. Add your Patchstack key to Vercel',
-      '    Your live app uses it to report its packages and fetch protection rules.',
+      '    Optional. Your live app gets protection rules without it; with the key, what it reports is verified.',
       `    node -p "require('./.patchstackrc.local.json').apiKey" | npx vercel env add PATCHSTACK_API_KEY production --sensitive`,
       '',
       ' 2. Commit your changes',
@@ -104,6 +105,28 @@ describe('renderGoLive', () => {
     const text = renderGoLive('render', { useColor: false }).join('\n');
     expect(text).toContain('Environment, and add PATCHSTACK_API_KEY');
     expect(text).toContain('Use the apiKey value from .patchstackrc.local.json.');
+  });
+
+  it.each(['lovable', 'replit', 'bolt'] as const)('asks for no key in %s, only the publish button', (host) => {
+    const text = renderGoLive(host, { useColor: false }).join('\n');
+
+    expect(text).toContain('There is no key to add.');
+    expect(text).not.toContain('PATCHSTACK_API_KEY');
+    expect(text).not.toMatch(/Secrets|environment variables|apiKey/);
+  });
+
+  it('needs the credential file only for steps that read the key from it', () => {
+    expect(stepsReadKeyFile('vercel')).toBe(true);
+    expect(stepsReadKeyFile('render')).toBe(true);
+    for (const host of ['lovable', 'replit', 'bolt'] as const) expect(stepsReadKeyFile(host), host).toBe(false);
+    expect(stepsReadKeyFile(null)).toBe(false);
+  });
+
+  it('does not tell an unnamed host to add a key', () => {
+    const text = renderGoLive(null, { useColor: false }).join('\n');
+
+    expect(text).toContain('No key is needed.');
+    expect(text).toContain('is optional');
   });
 
   it('lists the hosts to choose from when none was found', () => {

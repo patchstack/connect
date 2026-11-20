@@ -193,9 +193,10 @@ patchstack-connect doctor [--url <live app>]       Check that everything Patchst
                                                    say how to fix each problem
 patchstack-connect vulns                           Show vulnerabilities by severity and outdated
                                                    packages, with the link to the details
-patchstack-connect go-live [--host <name>]         Show how to add your API key to your host
-                                                   (Vercel, Netlify, Cloudflare, Render, Railway,
-                                                   Fly.io, Heroku, Amplify, Replit, Lovable) and deploy
+patchstack-connect go-live [--host <name>]         Show how to deploy on your host (Vercel, Netlify,
+                                                   Cloudflare, Render, Railway, Fly.io, Heroku,
+                                                   Amplify, Replit, Bolt, Lovable). A hosted builder
+                                                   needs no key; elsewhere adding it is optional
 patchstack-connect widget [--remove]               Add the Patchstack widget to your page, or
                                                    remove the tag Connect added; saved for builds
 patchstack-connect mark-build [--production]       Stamp built HTML with a production flag +

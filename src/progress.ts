@@ -153,7 +153,7 @@ export function nextStepLines(
         // A production run is the deploy itself, so there is nothing further to point at.
         ...(context.environment === 'production'
           ? []
-          : ['Already connected? Then commit, set PATCHSTACK_API_KEY on your host, and deploy.']),
+          : ['Already connected? Then commit and deploy. No key is needed.']),
       ];
     case 'synced':
       return ['Run: npx @patchstack/connect scan'];
@@ -163,8 +163,7 @@ export function nextStepLines(
       }
       return [
         'Commit your changes. Never commit .patchstackrc.local.json.',
-        'Set PATCHSTACK_API_KEY (from .patchstackrc.local.json) on your hosting platform.',
-        'Deploy or publish. The live site keeps its old version until you do.',
+        'Deploy or publish. The live site keeps its old version until you do. No key is needed.',
       ];
   }
 }

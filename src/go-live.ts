@@ -1,4 +1,9 @@
-// `go-live`: how to put the project's API key on its host and deploy, for the host this project uses.
+// `go-live`: how to deploy, for the host this project uses, and how to put the project's API key on a host
+// that takes one.
+//
+// The key is optional everywhere. A published app carries a read-only credential in its guard's rules file,
+// which is enough to fetch protection rules. A hosted builder publishes without the key, so its steps never
+// mention one: the person there has never been shown a key and has nothing to paste.
 //
 // The key is never printed. Every command reads it from the git-ignored credential file at the moment it
 // runs, and a host that is set up in its dashboard is told where the value is, so the key does not pass
@@ -22,6 +27,7 @@ export type Host =
   | 'heroku'
   | 'amplify'
   | 'replit'
+  | 'bolt'
   | 'lovable';
 
 export const HOST_NAMES: Record<Host, string> = {
@@ -35,6 +41,7 @@ export const HOST_NAMES: Record<Host, string> = {
   heroku: 'Heroku',
   amplify: 'AWS Amplify',
   replit: 'Replit',
+  bolt: 'Bolt',
   lovable: 'Lovable',
 };
 
@@ -58,6 +65,8 @@ const HOST_ALIASES: Record<string, Host> = {
   aws: 'amplify',
   'aws amplify': 'amplify',
   replit: 'replit',
+  bolt: 'bolt',
+  'bolt.new': 'bolt',
   lovable: 'lovable',
 };
 
@@ -92,6 +101,7 @@ export function detectHost(cwd: string, env: EnvLike = process.env): Host | null
   if (has('amplify.yml')) return 'amplify';
   if (has('Procfile')) return 'heroku';
   if (has('.replit')) return 'replit';
+  if (has('.bolt')) return 'bolt';
 
   const builder = detectHostedBuilder(cwd);
   if (builder === 'lovable') return 'lovable';
@@ -124,7 +134,25 @@ interface HostGuide {
 
 const DASHBOARD_VALUE = 'Use the apiKey value from .patchstackrc.local.json.';
 
-const GUIDES: Record<Exclude<Host, 'lovable'>, HostGuide> = {
+/**
+ * Hosted builders, which publish the app themselves and without the project's key. Each has the one
+ * button its owner presses.
+ */
+const BUILDER_PUBLISH: Record<'lovable' | 'replit' | 'bolt', string> = {
+  lovable: 'Click Publish in Lovable',
+  replit: 'Click Deploy (or Redeploy) in Replit',
+  bolt: 'Click Publish in Bolt',
+};
+
+/**
+ * Whether this host's steps read the key from the credential file. Only then does the file have to exist:
+ * a builder's workspace may not keep it, and its steps never use it.
+ */
+export function stepsReadKeyFile(host: Host | null): boolean {
+  return host !== null && !(host in BUILDER_PUBLISH);
+}
+
+const GUIDES: Record<Exclude<Host, keyof typeof BUILDER_PUBLISH>, HostGuide> = {
   vercel: {
     addKey: { command: `${KEY_PIPE} npx vercel env add PATCHSTACK_API_KEY production --sensitive` },
     deploy: 'Push to your production branch, or run: npx vercel --prod',
@@ -161,10 +189,6 @@ const GUIDES: Record<Exclude<Host, 'lovable'>, HostGuide> = {
     addKey: { steps: 'In the Amplify console, open your app → Environment variables, and add PATCHSTACK_API_KEY.' },
     deploy: 'Push to your production branch',
   },
-  replit: {
-    addKey: { steps: 'In Replit, open Secrets and add PATCHSTACK_API_KEY. Deployments use the same Secrets.' },
-    deploy: 'Click Deploy (or Redeploy)',
-  },
 };
 
 export interface GoLiveOptions {
@@ -190,26 +214,26 @@ export function renderGoLive(host: Host | null, options: GoLiveOptions): string[
       '',
       ...hostMenu().map(({ command, name }) => `  ${paint('cyan', command)}  ${paint('dim', name)}`),
       '',
-      paint('dim', 'Somewhere else? Add PATCHSTACK_API_KEY to its environment variables, then deploy.'),
-      paint('dim', DASHBOARD_VALUE),
+      paint('dim', 'Somewhere else? Deploy as you normally do. No key is needed.'),
+      paint('dim', 'On a host you manage yourself, adding PATCHSTACK_API_KEY to its environment variables is optional.'),
     ];
   }
 
   const name = HOST_NAMES[host];
   const lines: string[] = [paint('bold', `Go live on ${name}`), ''];
 
-  if (host === 'lovable') {
+  if (host in BUILDER_PUBLISH) {
     lines.push(
-      ` ${paint('cyan', '1.')} ${paint('bold', 'Click Publish in Lovable')}`,
-      `    ${paint('dim', 'Lovable publishes without your key, so Patchstack recognises a publish of packages it has already seen.')}`,
-      `    ${paint('dim', 'Changed your packages since? Run npx @patchstack/connect scan in Lovable first.')}`,
+      ` ${paint('cyan', '1.')} ${paint('bold', BUILDER_PUBLISH[host as keyof typeof BUILDER_PUBLISH])}`,
+      `    ${paint('dim', `There is no key to add. ${name} publishes without one, and your app already carries what it needs to get protection rules.`)}`,
+      `    ${paint('dim', `Changed your packages since? Run npx @patchstack/connect scan in ${name} first.`)}`,
     );
     return lines;
   }
 
-  const guide = GUIDES[host];
+  const guide = GUIDES[host as keyof typeof GUIDES];
   lines.push(` ${paint('cyan', '1.')} ${paint('bold', `Add your Patchstack key to ${name}`)}`);
-  lines.push(`    ${paint('dim', 'Your live app uses it to report its packages and fetch protection rules.')}`);
+  lines.push(`    ${paint('dim', 'Optional. Your live app gets protection rules without it; with the key, what it reports is verified.')}`);
   if ('command' in guide.addKey) {
     lines.push(`    ${paint('cyan', guide.addKey.command)}`);
   } else {

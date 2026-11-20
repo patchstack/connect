@@ -15,6 +15,7 @@ allowed-tools:
   - Bash(npx @patchstack/connect go-live --host heroku)
   - Bash(npx @patchstack/connect go-live --host amplify)
   - Bash(npx @patchstack/connect go-live --host replit)
+  - Bash(npx @patchstack/connect go-live --host bolt)
   - Bash(npx @patchstack/connect go-live --host lovable)
 ---
 
@@ -25,7 +26,7 @@ Run the command that matches what the person said, in the project root, and show
 | The person says | Run |
 |---|---|
 | "done", "next", "what now?", "is it connected?" | `npx @patchstack/connect next` |
-| The name of their host, after `next` asked where the app is hosted | `npx @patchstack/connect go-live --host <name>`, with `<name>` one of `vercel`, `netlify`, `cloudflare-pages`, `cloudflare-workers`, `render`, `railway`, `fly`, `heroku`, `amplify`, `replit`, `lovable` |
+| The name of their host, after `next` asked where the app is hosted | `npx @patchstack/connect go-live --host <name>`, with `<name>` one of `vercel`, `netlify`, `cloudflare-pages`, `cloudflare-workers`, `render`, `railway`, `fly`, `heroku`, `amplify`, `replit`, `bolt`, `lovable` |
 | "What did Patchstack find?", "show me the vulnerabilities" | `npx @patchstack/connect vulns` |
 | "Show my Patchstack summary" | `npx @patchstack/connect summary` |
 
