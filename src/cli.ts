@@ -56,7 +56,7 @@ import {
   hasWidgetChoice,
 } from './config.js';
 import { painter, renderBox, renderFindings, renderLogo } from './art.js';
-import { detectHost, HOST_NAMES, parseHost, renderGoLive } from './go-live.js';
+import { detectHost, HOST_NAMES, parseHost, renderGoLive, stepsReadKeyFile } from './go-live.js';
 import { createSiteProject, installedCli, installSelf, isPlainHtmlSite, runInstalledSetup } from './bootstrap.js';
 import {
   buildInjectionSnippet,
@@ -224,11 +224,13 @@ Usage:
                                                      outdated packages, with the link to the
                                                      details. Sends the site UUID to the public
                                                      claim page; writes nothing
-  patchstack-connect go-live [--host <name>]         Show how to add the project's API key to its
-                                                     host and deploy: the host is found from project
-                                                     files (vercel.json, netlify.toml, fly.toml, ...)
-                                                     or named with --host. Never prints the key.
-                                                     Sends nothing. On Vercel it adds
+  patchstack-connect go-live [--host <name>]         Show how to deploy on the project's host. A
+                                                     hosted builder (Lovable, Replit, Bolt) needs no
+                                                     key; elsewhere adding the project's API key is
+                                                     an optional first step. The host is found from
+                                                     project files (vercel.json, netlify.toml,
+                                                     fly.toml, ...) or named with --host. Never
+                                                     prints the key. Sends nothing. On Vercel it adds
                                                      .patchstackrc.local.json to .vercelignore
   patchstack-connect widget [--remove]               Add the Patchstack widget to the project's page,
                                                      or take the Connect-added tag out with --remove.
@@ -1971,7 +1973,7 @@ async function runGoLive(args: ParsedArgs): Promise<number> {
   } else {
     host = detectHost(process.cwd());
   }
-  if (host !== 'lovable' && !existsSync(path.join(process.cwd(), SECRET_CONFIG_FILENAME))) {
+  if (stepsReadKeyFile(host) && !existsSync(path.join(process.cwd(), SECRET_CONFIG_FILENAME))) {
     console.error(`No ${SECRET_CONFIG_FILENAME} here yet. Run setup first: npx @patchstack/connect setup`);
     return 1;
   }
