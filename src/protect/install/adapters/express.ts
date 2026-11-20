@@ -6,11 +6,25 @@ import { findAppInstance } from '../find-app.js';
 import { wireRegister, verifyRegister, type RegisterSpec } from '../register.js';
 import type { Adapter } from '../types.js';
 
+// Balanced parentheses up to three levels deep, so a parser's options (`verify: (req, res, buf) => ...`)
+// and the arguments around it are read as whole arguments and never run past the `app.use(` call.
+const NESTED = '\\((?:[^()]|\\((?:[^()]|\\([^()]*\\))*\\))*\\)';
+const BALANCED = `(?:[^()]|${NESTED})*`;
+const CALL = `[A-Za-z_$][\\w$]*(?:\\.[A-Za-z_$][\\w$]*)*\\(${BALANCED}\\)`;
+
 // A body parser that populates req.body, in any of the shapes AI builders emit: express.json() /
 // express.urlencoded(), body-parser's bodyParser.json() / .urlencoded(), an aliased parser
 // (any `x.json(` / `x.urlencoded(`), or a destructured `json(` / `urlencoded(`.
+//
+// The parser may follow a mount path or other middleware in the same call, and the call may span lines.
+// Only call expressions (`cors()`) may follow it: a bare identifier or inline handler after the parser can
+// be a router the parser feeds, which the guard cannot be registered after. Matched from the start of the
+// text, so callers pass the source from the line being asked about onwards.
 const bodyParserRe = (appVar: string) =>
-  new RegExp(`^\\s*${appVar}\\.use\\(\\s*(?:[A-Za-z_$][\\w$]*\\.)?(?:json|urlencoded)\\(`, 'm');
+  new RegExp(
+    `^\\s*${appVar}\\.use\\(\\s*(?:${BALANCED},\\s*)?(?:[A-Za-z_$][\\w$]*\\.)?(?:json|urlencoded)\\(${BALANCED}\\)` +
+      `(?:\\s*,\\s*${CALL})*\\s*,?\\s*\\)`,
+  );
 
 const SPEC: RegisterSpec = {
   appRe: /(?:const|let|var)\s+([A-Za-z_$][\w$]*)\s*=\s*express\(\)/,
@@ -22,7 +36,9 @@ const SPEC: RegisterSpec = {
   callAfter: bodyParserRe,
   requireCallAfter: true,
   label: 'Express app',
-  manualHint: 'add `app.use(patchstackMiddleware)` after your body parser (express.json/urlencoded or body-parser) and before the routes',
+  manualHint:
+    'add `app.use(patchstackMiddleware)` after your body parser (express.json/urlencoded or body-parser) and before the routes; ' +
+    'if the parser and a router share one `app.use(...)` call, give the parser its own `app.use` above the guard',
 };
 
 export const expressAdapter: Adapter = {
