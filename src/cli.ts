@@ -1951,7 +1951,7 @@ async function runWidget(args: ParsedArgs): Promise<number> {
       console.log(`   ${buildWidgetTag(state.siteUuid)}`);
       break;
   }
-  console.log(`   ${paint('dim', 'Refresh your preview to see it. Your live site gets it with your next deploy.')}`);
+  console.log(`   ${paint('dim', 'Reload your app\'s preview page to see it in a bottom corner of the page. Your live site gets it with your next deploy.')}`);
   return 0;
 }
 
