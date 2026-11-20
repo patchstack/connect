@@ -11,7 +11,7 @@
 
 import { existsSync, readFileSync } from 'node:fs';
 import path from 'node:path';
-import { painter } from './art.js';
+import { painter, type Paint } from './art.js';
 import { detectHostedBuilder } from './environment.js';
 import { detectHostingPlatform } from './hosting.js';
 import type { EnvLike } from './stack.js';
@@ -154,7 +154,7 @@ export function stepsReadKeyFile(host: Host | null): boolean {
 
 const GUIDES: Record<Exclude<Host, keyof typeof BUILDER_PUBLISH>, HostGuide> = {
   vercel: {
-    addKey: { command: `${KEY_PIPE} npx vercel env add PATCHSTACK_API_KEY production --sensitive` },
+    addKey: { command: `${KEY_PIPE} npx vercel env add PATCHSTACK_API_KEY --environment production --sensitive` },
     deploy: 'Push to your production branch, or run: npx vercel --prod',
   },
   netlify: {
@@ -193,7 +193,14 @@ const GUIDES: Record<Exclude<Host, keyof typeof BUILDER_PUBLISH>, HostGuide> = {
 
 export interface GoLiveOptions {
   useColor: boolean;
+  /**
+   * What `go-live` found after making `.vercelignore` cover the credential file. Absent when the caller
+   * did not write it (`next` only reads), and then the Vercel steps ask the person to add the line.
+   */
+  vercelIgnore?: { ignored: boolean; reason?: string };
 }
+
+const VERCEL_IGNORE_ENTRY = '.patchstackrc.local.json';
 
 /** One `--host` command per host, padded to line up. Cloudflare Workers is reached as `--host workers`. */
 function hostMenu(): Array<{ command: string; name: string }> {
@@ -247,5 +254,16 @@ export function renderGoLive(host: Host | null, options: GoLiveOptions): string[
     ` ${paint('cyan', '3.')} ${paint('bold', 'Deploy')}`,
     `    ${guide.deploy}`,
   );
+  if (host === 'vercel') lines.push(`    ${vercelIgnoreLine(options, paint)}`);
   return lines;
+}
+
+/** The Vercel CLI uploads the project folder, so the credential file has to be in `.vercelignore`. */
+function vercelIgnoreLine(options: GoLiveOptions, paint: Paint): string {
+  const result = options.vercelIgnore;
+  if (result?.ignored === true) {
+    return paint('dim', `.vercelignore lists ${VERCEL_IGNORE_ENTRY}, so npx vercel does not upload your key.`);
+  }
+  const why = result?.reason !== undefined ? ` (${result.reason})` : '';
+  return paint('yellow', `Before running npx vercel, add ${VERCEL_IGNORE_ENTRY} to .vercelignore${why}. The Vercel CLI does not read .gitignore.`);
 }

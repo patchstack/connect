@@ -350,25 +350,31 @@ async function writeAtomicFile(target: string, content: string, mode: number): P
 }
 
 /**
- * Add a line to the project's `.gitignore` if it is not already covered, and report whether it now is.
+ * Add a line to the project's `.gitignore` (or another ignore file in the same syntax) if it is not
+ * already covered, and report whether it now is.
  *
  * Deliberately conservative about the file: it appends one entry and never rewrites or reorders what is
- * there. A missing `.gitignore` is created, because a project without one is exactly the project that
- * would commit this.
+ * there. A missing file is created, because a project without one is exactly the project that would
+ * commit (or upload) this.
  *
  * Not conservative about the ANSWER. Every failure — unreadable file, unwritable file, an entry that is
  * there but negated further down — comes back as `ignored: false` with a reason, because the caller's next
  * line is either an assurance or a warning and it has to be the right one.
  */
-export async function ensureIgnored(cwd: string, entry: string, label = 'Patchstack credential — never commit this'): Promise<{ ignored: boolean; reason?: string }> {
-  const target = path.join(cwd, '.gitignore');
+export async function ensureIgnored(
+  cwd: string,
+  entry: string,
+  label = 'Patchstack credential — never commit this',
+  file = '.gitignore',
+): Promise<{ ignored: boolean; reason?: string }> {
+  const target = path.join(cwd, file);
   let existing = '';
   try {
     existing = await readFile(target, 'utf8');
   } catch (err) {
     const code = (err as NodeJS.ErrnoException).code;
     if (code !== 'ENOENT') {
-      return { ignored: false, reason: `.gitignore could not be read (${code ?? 'unknown error'})` };
+      return { ignored: false, reason: `${file} could not be read (${code ?? 'unknown error'})` };
     }
   }
 
@@ -381,7 +387,7 @@ export async function ensureIgnored(cwd: string, entry: string, label = 'Patchst
   } catch (err) {
     const code = (err as NodeJS.ErrnoException).code;
 
-    return { ignored: false, reason: `.gitignore could not be written (${code ?? 'unknown error'})` };
+    return { ignored: false, reason: `${file} could not be written (${code ?? 'unknown error'})` };
   }
 
   // Read back rather than assume. The write can succeed and still not produce coverage — a symlink into a
@@ -390,12 +396,23 @@ export async function ensureIgnored(cwd: string, entry: string, label = 'Patchst
     const written = await readFile(target, 'utf8');
     if (ignoresEntry(written, entry)) return { ignored: true };
 
-    return { ignored: false, reason: '.gitignore does not cover the file after writing it' };
+    return { ignored: false, reason: `${file} does not cover the file after writing it` };
   } catch (err) {
     const code = (err as NodeJS.ErrnoException).code;
 
-    return { ignored: false, reason: `.gitignore could not be read back (${code ?? 'unknown error'})` };
+    return { ignored: false, reason: `${file} could not be read back (${code ?? 'unknown error'})` };
   }
+}
+
+/**
+ * Keep the credential file out of a `vercel` CLI deploy.
+ *
+ * The Vercel CLI uploads the project folder and reads `.vercelignore`, not `.gitignore`, and its built-in
+ * ignore list does not cover this file — so without the entry, `vercel --prod` ships the API key with the
+ * deployment's source.
+ */
+export async function ensureVercelIgnored(cwd: string): Promise<{ ignored: boolean; reason?: string }> {
+  return ensureIgnored(cwd, SECRET_FILENAME, 'Patchstack credential — never upload this', '.vercelignore');
 }
 
 /**

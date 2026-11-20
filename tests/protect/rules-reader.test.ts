@@ -350,3 +350,52 @@ describe('delivering a block report on a host that passes no execution context a
     await protection.stop();
   });
 });
+
+// A Next.js middleware calls `fetchGuard` with the request alone, and on Vercel the function is frozen
+// once the route answers: a detect-only report queued for a later flush would never be sent.
+describe('a detect-only report from fetchGuard on a host with waitUntil', () => {
+  const key = Symbol.for('@vercel/request-context');
+  afterEach(() => {
+    delete (globalThis as Record<symbol, unknown>)[key];
+  });
+
+  it('is handed to the host and delivered, without waiting for a later request', async () => {
+    const cwd = mkdtempSync(join(tmpdir(), 'ps-reader-'));
+    dirs.push(cwd);
+    vi.stubEnv('PATCHSTACK_API_KEY', '');
+    vi.stubEnv('PATCHSTACK_PULSE_AUTH', '');
+    vi.stubEnv('PATCHSTACK_MODE', '');
+    const calls: string[] = [];
+    vi.stubGlobal('fetch', vi.fn(async (url: string) => {
+      calls.push(String(url));
+      if (String(url).endsWith('/token')) return Response.json({ access_token: 'reader-token', expires_in: 3600 });
+      if (String(url).includes('/detections/')) return new Response('{}', { status: 202 });
+      return Response.json({ firewall: [{ id: 'live-rule', phase: 'request', action: 'block', rule_v2: [{ parameter: 'get.q', match: { type: 'contains', value: 'live-attack' } }] }], whitelists: [], whitelist_keys: {}, enforcement: 'dry-run' });
+    }));
+    const lines: string[] = [];
+    vi.spyOn(console, 'warn').mockImplementation((line: string) => { lines.push(line); });
+    const protection: any = await createProtection({
+      siteUuid: '550e8400-e29b-41d4-a716-446655440000',
+      pulseRulesUrl: 'https://x.test/monitor/pulse',
+      cwd,
+      cacheDir: join(cwd, '.patchstack'),
+      rules: { firewall: [], whitelists: [], whitelist_keys: {}, _patchstack: { rules_reader: READER } } as never,
+      reportDetections: true,
+    });
+    const kept: Promise<unknown>[] = [];
+    (globalThis as Record<symbol, unknown>)[key] = { get: () => ({ waitUntil: (work: Promise<unknown>) => { kept.push(work); } }) };
+
+    expect(await protection.fetchGuard()(new Request('https://app.test/search?q=live-attack'))).toBeNull();
+    expect(kept).toHaveLength(1);
+    await Promise.all(kept);
+    expect(calls.some((url) => url.includes('/detections/'))).toBe(true);
+
+    // The log line says what happened: a match that did not block, from a rule with no category.
+    const line = lines.find((l) => l.includes('rule=live-rule'));
+    expect(line).toContain('DETECT (dry-run)');
+    expect(line).toContain('category=custom');
+    expect(line).toContain('Matched by Patchstack WAF rule: live-rule');
+    expect(line).not.toContain('Blocked');
+    await protection.stop();
+  });
+});

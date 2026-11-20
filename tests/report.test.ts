@@ -201,7 +201,7 @@ describe('renderSummary', () => {
       '#### What Patchstack found',
       '🔴 High **1** · 🟠 Medium **3** · 🔵 Low **1** · 12 packages outdated · 12 protection rules available',
       '',
-      "**Refresh your app's preview** to see the Patchstack widget.",
+      "**Reload your app's preview page.** The Patchstack widget appears in a bottom corner of the page.",
     ]);
   });
 
@@ -225,7 +225,7 @@ describe('renderSummary', () => {
       '',
       `When you've connected, say **done**.`,
       '',
-      "**Refresh your app's preview** to see the Patchstack widget.",
+      "**Reload your app's preview page.** The Patchstack widget appears in a bottom corner of the page.",
       '',
       `_Patchstack is now part of your install and build. Your API key is in \`${SECRET_CONFIG_FILENAME}\`: git ignores it, so never share it._`,
     ]);

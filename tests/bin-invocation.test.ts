@@ -843,7 +843,7 @@ describe.skipIf(!built)('the packaged bin, invoked as npm invokes it', () => {
             // The summary is what sits between its heading and the closing line for the assistant.
             const summary = setup.slice(setup.indexOf('──── Summary ────'), setup.lastIndexOf('\n\nYour reply to the person'));
 
-            expect(summary).toContain("**Refresh your app's preview** to see the Patchstack widget.");
+            expect(summary).toContain("**Reload your app's preview page.** The Patchstack widget appears in a bottom corner of the page.");
             expect(summary).toContain('Your API key is in `.patchstackrc.local.json`: git ignores it, so never share it.');
             expect(summary).toContain(`When you've connected, say **done**.`);
             // Every file setup changed is still listed for the person, in the report above the summary.
@@ -1069,6 +1069,26 @@ describe('the first thing a person sees', () => {
 
   it('keeps the full command reference behind --help', () => {
     expect(run(['--help']).stdout).toContain('Usage:');
+  });
+
+  it('adds the key file to .vercelignore when it prints the Vercel steps, once', () => {
+    const project = mkdtempSync(path.join(tmpdir(), 'ps-bin-go-live-'));
+    try {
+      writeFileSync(path.join(project, '.patchstackrc.local.json'), '{}\n');
+      for (let i = 0; i < 2; i += 1) {
+        const result = run(['go-live', '--host', 'vercel'], project);
+        expect(result.status).toBe(0);
+        expect(result.stdout).toContain('.vercelignore lists .patchstackrc.local.json');
+      }
+      const lines = readFileSync(path.join(project, '.vercelignore'), 'utf8').split('\n');
+      expect(lines.filter((line) => line === '.patchstackrc.local.json')).toHaveLength(1);
+
+      const other = run(['go-live', '--host', 'netlify'], project);
+      expect(other.status).toBe(0);
+      expect(other.stdout).not.toContain('.vercelignore');
+    } finally {
+      rmSync(project, { recursive: true, force: true });
+    }
   });
 
   it('prints only the checklist from guide, and the full reference with --full', () => {

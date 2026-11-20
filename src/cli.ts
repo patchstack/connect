@@ -42,6 +42,7 @@ import {
 } from './demo.js';
 import {
   SECRET_CONFIG_FILENAME,
+  ensureVercelIgnored,
   credentialInCommittedConfig,
   persistApiKey,
   secretFileIgnored,
@@ -229,7 +230,8 @@ Usage:
                                                      an optional first step. The host is found from
                                                      project files (vercel.json, netlify.toml,
                                                      fly.toml, ...) or named with --host. Never
-                                                     prints the key. Sends nothing; writes nothing
+                                                     prints the key. Sends nothing. On Vercel it adds
+                                                     .patchstackrc.local.json to .vercelignore
   patchstack-connect widget [--remove]               Add the Patchstack widget to the project's page,
                                                      or take the Connect-added tag out with --remove.
                                                      Saves the choice in .patchstackrc.json so the
@@ -1951,11 +1953,14 @@ async function runWidget(args: ParsedArgs): Promise<number> {
       console.log(`   ${buildWidgetTag(state.siteUuid)}`);
       break;
   }
-  console.log(`   ${paint('dim', 'Refresh your preview to see it. Your live site gets it with your next deploy.')}`);
+  console.log(`   ${paint('dim', 'Reload your app\'s preview page to see it in a bottom corner of the page. Your live site gets it with your next deploy.')}`);
   return 0;
 }
 
-/** How to add the key to this project's host and deploy. Reads project files only; sends nothing. */
+/**
+ * How to add the key to this project's host and deploy. Sends nothing; on Vercel it adds the credential file
+ * to `.vercelignore`, because the Vercel CLI uploads whatever that file does not exclude.
+ */
 async function runGoLive(args: ParsedArgs): Promise<number> {
   const named = getStringFlag(args.flags, 'host');
   let host = null;
@@ -1972,7 +1977,8 @@ async function runGoLive(args: ParsedArgs): Promise<number> {
     console.error(`No ${SECRET_CONFIG_FILENAME} here yet. Run setup first: npx @patchstack/connect setup`);
     return 1;
   }
-  for (const line of renderGoLive(host, { useColor: useColor() })) console.log(line);
+  const vercelIgnore = host === 'vercel' ? await ensureVercelIgnored(process.cwd()) : undefined;
+  for (const line of renderGoLive(host, { useColor: useColor(), vercelIgnore })) console.log(line);
   return 0;
 }
 

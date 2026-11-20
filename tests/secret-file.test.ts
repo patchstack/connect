@@ -2,7 +2,7 @@ import { describe, it, expect, afterEach } from 'vitest';
 import { mkdtempSync, writeFileSync, readFileSync, statSync, chmodSync, rmSync, mkdirSync, symlinkSync, lstatSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { persistApiKey, persistSiteUuid, secretFileIgnored, SECRET_CONFIG_FILENAME } from '../src/config.js';
+import { ensureVercelIgnored, persistApiKey, persistSiteUuid, secretFileIgnored, SECRET_CONFIG_FILENAME } from '../src/config.js';
 
 /**
  * Whether the credential file is really ignored, and whether we say so only when it is.
@@ -165,5 +165,44 @@ describe('checking the ignore state on its own', () => {
     await persistApiKey(cwd, KEY);
 
     expect((await secretFileIgnored(cwd)).ignored).toBe(true);
+  });
+});
+
+describe('keeping the credential out of a Vercel CLI upload', () => {
+  it('creates .vercelignore with the entry', async () => {
+    const cwd = project();
+    expect(await ensureVercelIgnored(cwd)).toEqual({ ignored: true });
+    const lines = readFileSync(join(cwd, '.vercelignore'), 'utf8').split('\n').map((l) => l.trim());
+    expect(lines).toContain(SECRET_CONFIG_FILENAME);
+  });
+
+  it('appends to an existing .vercelignore without touching what is there, and never twice', async () => {
+    const cwd = project({ '.vercelignore': 'node_modules\n/build' });
+    await ensureVercelIgnored(cwd);
+    await ensureVercelIgnored(cwd);
+    const text = readFileSync(join(cwd, '.vercelignore'), 'utf8');
+    expect(text.startsWith('node_modules\n/build\n')).toBe(true);
+    expect(text.split('\n').filter((l) => l.trim() === SECRET_CONFIG_FILENAME)).toHaveLength(1);
+  });
+
+  it('leaves a .vercelignore that already lists the file alone', async () => {
+    const original = `/${SECRET_CONFIG_FILENAME}\n`;
+    const cwd = project({ '.vercelignore': original });
+    expect(await ensureVercelIgnored(cwd)).toEqual({ ignored: true });
+    expect(readFileSync(join(cwd, '.vercelignore'), 'utf8')).toBe(original);
+  });
+
+  it('does not touch .gitignore', async () => {
+    const cwd = project({ '.gitignore': 'node_modules\n' });
+    await ensureVercelIgnored(cwd);
+    expect(readFileSync(join(cwd, '.gitignore'), 'utf8')).toBe('node_modules\n');
+  });
+
+  it('names .vercelignore when it cannot write it', async () => {
+    const cwd = project();
+    mkdirSync(join(cwd, '.vercelignore'));
+    const result = await ensureVercelIgnored(cwd);
+    expect(result.ignored).toBe(false);
+    expect(result.reason).toMatch(/^\.vercelignore could not be/);
   });
 });

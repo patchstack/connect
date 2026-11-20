@@ -91,14 +91,33 @@ describe('renderGoLive', () => {
       '',
       ' 1. Add your Patchstack key to Vercel',
       '    Optional. Your live app gets protection rules without it; with the key, what it reports is verified.',
-      `    node -p "require('./.patchstackrc.local.json').apiKey" | npx vercel env add PATCHSTACK_API_KEY production --sensitive`,
+      `    node -p "require('./.patchstackrc.local.json').apiKey" | npx vercel env add PATCHSTACK_API_KEY --environment production --sensitive`,
       '',
       ' 2. Commit your changes',
       '    Never commit .patchstackrc.local.json. It holds the key.',
       '',
       ' 3. Deploy',
       '    Push to your production branch, or run: npx vercel --prod',
+      '    Before running npx vercel, add .patchstackrc.local.json to .vercelignore. The Vercel CLI does not read .gitignore.',
     ]);
+  });
+
+  it('says .vercelignore covers the key file once go-live has made sure of it', () => {
+    const lines = renderGoLive('vercel', { useColor: false, vercelIgnore: { ignored: true } });
+    expect(lines.at(-1)).toBe('    .vercelignore lists .patchstackrc.local.json, so npx vercel does not upload your key.');
+  });
+
+  it('asks for the .vercelignore line, with the reason, when go-live could not add it', () => {
+    const lines = renderGoLive('vercel', { useColor: false, vercelIgnore: { ignored: false, reason: '.vercelignore could not be written (EACCES)' } });
+    expect(lines.at(-1)).toBe(
+      '    Before running npx vercel, add .patchstackrc.local.json to .vercelignore (.vercelignore could not be written (EACCES)). The Vercel CLI does not read .gitignore.',
+    );
+  });
+
+  it('mentions .vercelignore only for Vercel', () => {
+    for (const host of hosts.filter((h) => h !== 'vercel')) {
+      expect(renderGoLive(host, { useColor: false }).join('\n'), host).not.toContain('.vercelignore');
+    }
   });
 
   it('points a dashboard host at the value instead of printing it', () => {
