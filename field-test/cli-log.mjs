@@ -24,7 +24,7 @@ case "$*" in
   *) exec ${q(realNpx)} "$@" ;;
 esac
 log=${q(logDir)}
-n=$(date +%s%N)
+n=$(${q(process.execPath)} -p 'String(Date.now()).padStart(15, "0")')-$$
 printf '%s\\n' "$PWD" "$@" > "$log/$n.args"
 ${q(realNpx)} "$@" > >(tee "$log/$n.out") 2> >(tee "$log/$n.err" >&2)
 status=$?
