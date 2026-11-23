@@ -953,8 +953,9 @@ async function runScan(
     return 0;
   }
 
-  const checked = `Checked ${plural(stats.uniqueNames, 'package', 'packages')}`;
-  report.checked = stats.uniqueNames;
+  // Name@version entries, the count the dashboard shows for the same manifest.
+  const checked = `Checked ${plural(payload.packages.length, 'package', 'packages')}`;
+  report.checked = payload.packages.length;
   if (response.stored) {
     report.done.unshift(checked);
     say(`Stored manifest #${response.manifest_id} (checksum ${response.checksum}).`);
