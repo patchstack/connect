@@ -192,17 +192,21 @@ describe('renderSummary', () => {
       ...LOGO,
       '### 🛡️ Checked 89 packages: 5 vulnerabilities in 3 packages (highest severity: high)',
       '',
-      '#### 👉 Connect your Patchstack account to see the details and turn on protection',
+      '#### 👉 Connect your Patchstack account to see the details and protect your live app from common attacks, secret leaks and future vulnerabilities',
       '',
       context.claimUrl,
       '',
-      `When you've connected, say **done**.`,
+      `When you've connected, say **done**, and we'll get your live app protected.`,
       '',
       '#### What Patchstack found',
       '🔴 High **1** · 🟠 Medium **3** · 🔵 Low **1** · 12 packages outdated · 12 protection rules available',
       '',
       "**Reload your app's preview page.** The Patchstack widget appears in a bottom corner of the page.",
     ]);
+    const clean = summary({ vulnerable: 0, outdated: 0, severity: { high: 0, medium: 0, low: 0, unknown: 0 } });
+    expect(renderSummary(report({ findings: clean }), notConnected, context, { widgetOnPage: false, dashboardUrl: null })).toContain(
+      '#### 👉 Connect your Patchstack account to protect your live app from common attacks, secret leaks and future vulnerabilities',
+    );
   });
 
   it('gives a browser-only app with nothing found one path: the link, then the word to say', () => {
