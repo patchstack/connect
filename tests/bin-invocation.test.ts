@@ -485,6 +485,22 @@ describe.skipIf(!built)('the packaged bin, invoked as npm invokes it', () => {
       }
     });
 
+    it('counts the package versions it sent, as the dashboard does, not the package names', async () => {
+      const server = await acceptingServer();
+      const dir = freshProject();
+      try {
+        const stdout = await scan(dir, server.endpoint, {}, ['--verbose']);
+
+        const [, versions, names] = stdout.match(/Found (\d+) package versions across (\d+) packages/) ?? [];
+        expect(Number(versions)).toBeGreaterThan(Number(names));
+        expect(stdout).toContain(`Checked ${versions} packages`);
+        expect(stdout).not.toContain(`Checked ${names} packages`);
+      } finally {
+        await server.close();
+        rmSync(dir, { recursive: true, force: true });
+      }
+    });
+
     it('marks the local sync done and names connecting as the one next step', async () => {
       const server = await acceptingServer();
       const dir = freshProject();
