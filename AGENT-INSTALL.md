@@ -89,7 +89,7 @@ Every command at a glance — what it does, whether it reads your source, what i
 | `next` | Say where the project stands and the one thing to do now: connect the account (with the link), or go live (with the same steps `go-live` prints, or asking where the app is hosted when the project does not say). Answers the "done" the summary ends on. | Reads the project files `guide` and `go-live` read | The connected note in `.patchstackrc.json`, when it changed | The site UUID, to the public claim page that says whether it is connected (skipped once `.patchstackrc.json` records that it is) |
 | `doctor [--url <live app>]` | Check that everything Patchstack needs works, and print each problem with its fix: the install, the site, the account, the guard's wiring, its rules file, the read-only rules credential, the map link, the build steps, and whether the published app fetches its rules. A problem only the app's owner can fix (connecting the account, publishing) is marked as theirs. Exits 1 when it finds a problem. | Reads the project files `guide` and `protect --check` read | Nothing | The site UUID, to the public claim page that says whether it is connected (skipped once `.patchstackrc.json` records that it is); the read-only rules credential from the guard's rules file, and the site key when this machine holds one, each once to `monitor/pulse/token`, to check Patchstack accepts them; one GET with that token to `monitor/pulse/sync-status/<your site uuid>`, which answers only when the published app (read-only credential) and a key-holding copy last fetched rules, and how many (doctor never fetches rules itself, which would be recorded as a fetch); with `--url`, two GET requests to that address: its page, and the same page with a test attack in a `file` parameter, which another firewall in front of the app may also flag |
 | `vulns` | Show what Patchstack found in this project's packages: vulnerabilities by severity and outdated packages, as counts, with the link that shows the details. Package names are shown in the dashboard once the site is connected. | No | Nothing | The site UUID, to the public claim page that returns the counts |
-| `go-live [--host <name>]` | Show how to add the project's API key to its host and deploy, in three steps. The host is read from project files (`vercel.json`, `netlify.toml`, `wrangler.toml`, `fly.toml`, `render.yaml`, `railway.json`, `amplify.yml`, `Procfile`, `.replit`, a Lovable project's packages) or named with `--host`. The commands it prints read the key from `.patchstackrc.local.json` as they run; it never prints the key. | Reads those project files only | Nothing | Nothing |
+| `go-live [--host <name>]` | Show how to deploy on the project's host. In a hosted builder (Lovable, Replit, Bolt) that is one step, the builder's own publish button, and no key is involved. On a host the person manages it is three steps: add the project's API key, commit, deploy. Adding the key is optional there: the live app gets protection rules without it, and with it what the app reports is verified. The host is read from project files (`vercel.json`, `netlify.toml`, `wrangler.toml`, `fly.toml`, `render.yaml`, `railway.json`, `amplify.yml`, `Procfile`, `.replit`, `.bolt`, a Lovable project's packages) or named with `--host`. The commands it prints read the key from `.patchstackrc.local.json` as they run; it never prints the key. | Reads those project files only | On Vercel only, a `.vercelignore` entry for `.patchstackrc.local.json` (the file is created if missing): the Vercel CLI uploads the project folder and does not read `.gitignore` | Nothing |
 | `widget [--remove]` | Add the Patchstack Connector widget tag to the root page (in a workspace repo, the app package's root page), or take the tag Connect added out with `--remove` (a tag added by hand is left alone). Saves the choice as `"widget"` in `.patchstackrc.json`, which `scan` and `mark-build` follow; `setup --widget` saves the same choice. | Reads the root page to find where the tag goes | `.patchstackrc.json`; the widget `<script>` tag in the root HTML shell or framework root | Nothing |
 | `init <site-uuid>` | Optional: pre-seed `.patchstackrc.json` with an existing UUID. | No | `.patchstackrc.json` only | Nothing |
 | `mark-build` | Ensure the widget tag in built pages, and — **on a production build only** — stamp the live-site flag + build fingerprint. A local or preview build is stamped with neither, and has a stale marker removed; `--production` forces it for a build published by hand. Run as a `postbuild` step. | No | Build output only (`dist/ build/ out/ .output/public/ _site/`) — never source | The same manifest `scan` sent, plus one word for what it did with the marker — and only for a site already registered |
@@ -157,16 +157,16 @@ When setup is finished, the person reads one short message, not a transcript of 
 
 ### 🛡️ Checked 69 packages: 5 vulnerabilities in 3 packages (highest severity: high)
 
-#### 👉 Connect your Patchstack account to see the details and turn on protection
+#### 👉 Connect your Patchstack account to see the details and protect your live app from common attacks, secret leaks and future vulnerabilities
 
 https://api.patchstack.com/monitor/claim?site=…
 
-When you've connected, say **done**.
+When you've connected, say **done**, and we'll get your live app protected.
 
 #### What Patchstack found
-🔴 High **1** · 🟠 Medium **3** · 🔵 Low **1** · 12 packages outdated · 12 protection rules available
+🔴 High **1** · 🟠 Medium **3** · 🔵 Low **1** · 12 packages outdated · 12 protection rules from Patchstack
 
-**Reload your app's preview page** to see the Patchstack widget on it.
+**Reload your app's preview page.** The Patchstack widget appears in a bottom corner of the page.
 
 _Patchstack is now part of your install and build. Your API key is in `.patchstackrc.local.json`: git ignores it, so never share it._
 ````
@@ -175,9 +175,9 @@ The parts always come in that order. Fill each from the output, and leave out a 
 
 1. **Mark.** The two-line Patchstack mark in a code block, as in the layout above.
 2. **Headline.** What was checked and found, as the heading. When the output gives no counts, write "Patchstack is now watching your app." Never estimate a count the output did not print.
-3. **What to do now.** The next step from the `Next:` line, as the heading, with its link or command written out in full on its own line. Only that step: the items under `To do` are yours to finish, not the person's. Then: "When you've connected, say **done**." (or "When that's done, say **done**." for any other step). When the `Next:` step's command is `npx @patchstack/connect go-live`, write "Say **done** to get the steps for your host." instead of both the command and "When that's done, say **done**."
+3. **What to do now.** The next step from the `Next:` line, as the heading, with its link or command written out in full on its own line. Only that step: the items under `To do` are yours to finish, not the person's. Then: "When you've connected, say **done**, and we'll get your live app protected." ("When you've connected, say **done**." when setup found no server;  "When that's done, say **done**." for any other step). When the `Next:` step's command is `npx @patchstack/connect go-live`, write "Say **done** to get the steps for your host." instead of both the command and "When that's done, say **done**."
 4. **What Patchstack found.** The severity counts, outdated packages and protection rules exactly as the output lists them. Leave it out when nothing was found: the headline already says so.
-5. **Notes.** "**Reload your app's preview page** to see the Patchstack widget on it." when setup added the widget; any line the output marks `ℹ`, except the one about no server.
+5. **Notes.** "**Reload your app's preview page.** The Patchstack widget appears in a bottom corner of the page." when setup added the widget; any line the output marks `ℹ`, except the one about no server.
 6. **What changed.** One line in italics: that Patchstack is now part of the install and build, and where the API key is (git ignores it; never share it).
 
 ### Commands for later
@@ -191,13 +191,13 @@ When the person asks for any of these after setup, run the command and pass on w
 | "Check that my account is connected" / "Is it connected?" / "show me the link again" | `npx @patchstack/connect status` | The link, and whether the site is connected to an account |
 | "Add the Patchstack widget to my app" / "Add the widget" | `npx @patchstack/connect widget` | Adds the Patchstack widget to the page and saves the choice |
 | "Remove the widget" | `npx @patchstack/connect widget --remove` | Takes out the tag Connect added; a hand-added tag is left alone |
-| The name of their host, after `next` asks where the app is hosted ("Vercel", "Netlify", …) | `npx @patchstack/connect go-live --host <name>` | The three steps for that host |
-| "Help me put my app live" / "How do I go live?" / "set up my host" | `npx @patchstack/connect go-live` | Three steps for the project's host: add the key, commit, deploy |
+| The name of their host, after `next` asks where the app is hosted ("Vercel", "Netlify", …) | `npx @patchstack/connect go-live --host <name>` | The steps for that host |
+| "Help me put my app live" / "How do I go live?" / "set up my host" | `npx @patchstack/connect go-live` | The steps for the project's host. In a hosted builder, the one publish button and no key |
 | "What is left to do?" | `npx @patchstack/connect guide` | The four steps and the next one |
 | "Show my Patchstack summary" / "Show me the summary again" | `npx @patchstack/connect summary` | The summary the last setup wrote, from `.patchstack/summary.md`. Sends nothing; writes nothing |
 | "Check my packages again" | `npx @patchstack/connect scan` | A fresh check of the project's packages |
 
-Say only what the output says. Do not explain why setup could not finish a part, and do not add steps the output did not print. Never ask the person to copy their API key into a builder's settings or secrets: in an app that runs in the browser, a key saved there can end up in the published page. Never offer to wire protection in by hand when the output says no server was found. `go-live` prints the steps for the person's host when they are ready.
+Say only what the output says. Do not explain why setup could not finish a part, and do not add steps the output did not print. Never ask the person for an API key or a token, and never ask them to copy one into a builder's settings or secrets. Setup creates the project's credential itself and never shows it, so the person has none to give, and none is needed to publish: the published app carries a read-only credential for its protection rules. In an app that runs in the browser, a key saved in the builder's settings can also end up in the published page. Never offer to wire protection in by hand when the output says no server was found. `go-live` prints the steps for the person's host when they are ready.
 
 If a later `scan` says the project's API key is missing or was not accepted, run `login` as in "Recovering a lost credential — `login`". Do not ask the person for the key.
 
@@ -218,12 +218,14 @@ Only when the person asks you to publish the site. Start with `npx @patchstack/c
   ```
 
   A preview deploy runs without the prefix.
-- **A deploy that builds on the host** (`vercel --prod`, or any git-connected Netlify or Vercel site) labels production by itself, but the host never receives `.patchstackrc.local.json`. Before the first production deploy, put the key in the host's production settings, read straight from the file so it is never printed:
+- **A deploy that builds on the host** (`vercel --prod`, or any git-connected Netlify or Vercel site) labels production by itself, but the host must not receive `.patchstackrc.local.json`. Before the first production deploy, put the key in the host's production settings, read straight from the file so it is never printed:
 
   ```
-  node -p "require('./.patchstackrc.local.json').apiKey" | npx vercel env add PATCHSTACK_API_KEY production --sensitive
+  node -p "require('./.patchstackrc.local.json').apiKey" | npx vercel env add PATCHSTACK_API_KEY --environment production --sensitive
   npx netlify env:set PATCHSTACK_API_KEY "$(node -p "require('./.patchstackrc.local.json').apiKey")" --context production --secret
   ```
+
+  `vercel --prod` uploads the project folder, and the Vercel CLI reads `.vercelignore`, not `.gitignore`. `go-live` on a Vercel project adds `.patchstackrc.local.json` to `.vercelignore`; if it says it could not, add the line yourself before deploying.
 
   An app with a server needs this for runtime protection: the guard fetches its rules with the key. Without it the deploy is still recognised as long as the packages have not changed since the last scan, but nothing is protected. Never put the key in a committed file, in a public variable (`NEXT_PUBLIC_*`, `VITE_*`), or in your reply.
 - **A host that builds the site itself but is not named under "How each environment is labelled"** — ChatGPT Sites (`*.chatgpt.site`, published from Codex) is one — gives Patchstack nothing that says "production", so its builds report `local` and the live site is never recognised as deployed. In that host's environment settings for the published site, set two variables: `PATCHSTACK_API_KEY`, read from `.patchstackrc.local.json` as above, and `PATCHSTACK_ENVIRONMENT=production`. Set the label only where the published build reads it, never in a committed file, and not in settings a preview or the local dev server also reads. Then publish again: the deployed site keeps serving the build from before setup until it is rebuilt.
@@ -770,6 +772,11 @@ would have stopped while it is still in dry-run. Two separate paths, with differ
   `protect --check` still accepts as the guard it wrote. Any other change to the file makes it a custom
   guard, which the check cannot vouch for.
 
+  **In automated tests**, the guard has no switch that removes it. Run the tests with
+  `PATCHSTACK_MODE=dry-run`, so it blocks nothing, and `PATCHSTACK_TELEMETRY=off`, so it reports nothing.
+  Keep `app.use(patchstackMiddleware)` unconditional: `protect --check` counts only a guard registered in
+  the app's own scope, so registering it inside an `if` reads as unprotected.
+
   `protection.detectionReporting` names the current state locally, so a guard that is not reporting says
   which reason applies: `on`, `disabled-by-config`, `disabled-by-telemetry-opt-out`, `not-enrolled`,
   `no-managed-rules`, or `unavailable-no-credential`.
@@ -1071,7 +1078,7 @@ Use this when the project **already has a site** but its credential is gone or r
 
 ### In a hosted builder
 
-In Lovable, Replit, Bolt and similar builders, `login` is the fix. In a Lovable or Replit project the CLI's missing-key and rejected-key messages say so. Elsewhere they also name `PATCHSTACK_API_KEY`: that is for CI and for hosts the person deploys to themselves, not for a builder's workspace.
+In Lovable, Replit, Bolt and similar builders, `login` is the fix. In a Lovable or Replit project the CLI's missing-key and rejected-key messages say so. Elsewhere they also name `PATCHSTACK_API_KEY`: that is for CI and for hosts the person deploys to themselves, not for a builder's workspace. Publishing from a builder needs no key at all, and `go-live` there says so.
 
 - Do not ask the person for the key, do not open the builder's secrets or environment settings for it, and do not tell them to create or copy one in the Patchstack dashboard. Setup never shows the key, so the person has none to give you; `login` writes a new one.
 - If a `PATCHSTACK_API_KEY` secret was already added in the workspace, ask the person to remove it first. It is read before `.patchstackrc.local.json`, so a wrong value keeps being used after `login`.
@@ -1139,7 +1146,7 @@ Remove only the pieces that are actually present — check for each first. If no
 4. **Remove the hooks from `package.json` scripts.** If a hook was chained (e.g. `"postbuild": "existing-command && patchstack-connect mark-build"`), remove only the `patchstack-connect …` part and keep the rest; if removal leaves a script empty, delete the key.
 5. **Signal Patchstack that the package is being removed**: run `npx @patchstack/connect uninstall` (while the package is still installed and `.patchstackrc.json` still exists). If the site was never claimed, this deletes its anonymous record on Patchstack; if the site is claimed, it is only flagged — the record stays until its owner removes it in the dashboard. A failed signal must not stop the uninstall; continue with the remaining steps.
 6. **Uninstall the package** with the manager matching the lockfile: `npm uninstall` / `pnpm remove` / `yarn remove` / `bun remove` `@patchstack/connect`. Don't hand-edit `node_modules` or the lockfile.
-7. **Delete `.patchstackrc.json` and `.patchstackrc.local.json`** (the second holds the API key and is git-ignored, so it is present locally even when the repo shows nothing), remove the `.gitignore` entry setup added for it, and remove `PATCHSTACK_SITE_UUID`, `PATCHSTACK_API_KEY` (and public-prefixed variants like `NEXT_PUBLIC_PATCHSTACK_SITE_UUID`) from env files and CI variables.
+7. **Delete `.patchstackrc.json` and `.patchstackrc.local.json`** (the second holds the API key and is git-ignored, so it is present locally even when the repo shows nothing), remove the `.gitignore` entry setup added for it (and the `.vercelignore` entry `go-live` added on Vercel), and remove `PATCHSTACK_SITE_UUID`, `PATCHSTACK_API_KEY` (and public-prefixed variants like `NEXT_PUBLIC_PATCHSTACK_SITE_UUID`) from env files and CI variables.
 8. **Commit** the changes. Reporting stops immediately. On HTML shells the `window.__PATCHSTACK_PROD__` flag that `mark-build` stamped on production builds lives only in build output — the next build simply won't contain it (rebuild if build output is committed). On JSX roots and Astro layouts `scan` wrote the same marker into source; remove that managed `#region patchstack` block (or the hand-pasted equivalent) with the widget tag in step 2.
 
 The `uninstall` signal is the only account-side effect local removal can have: it deletes an *unclaimed* (anonymous) record and merely flags a *claimed* one. A claimed site keeps using a site slot until its owner removes it in the dashboard at https://app.patchstack.com — end your report by telling the user this, alongside the site UUID from step 1. Never attempt to authenticate or remove a claimed site on the user's behalf.

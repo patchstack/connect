@@ -40,17 +40,36 @@ const routeRegistration = (appVar: string) =>
  * Route lines that come before `guardIndex`, if any.
  *
  * Both prefixed and bare router mounts count. An identifier passed to `app.use` can be a router, so it
- * cannot safely be treated as a non-terminating middleware merely because the prefix is absent.
+ * cannot safely be treated as a non-terminating middleware merely because the prefix is absent. A
+ * statement that matches `anchor` (a path-scoped body parser, `app.use('/api', express.json())`) is not a
+ * route: it registers no handler.
  */
-export function routesBefore(source: string, appVar: string, guardIndex: number): number[] {
+export function routesBefore(source: string, appVar: string, guardIndex: number, anchor?: RegExp): number[] {
   if (guardIndex < 0) return [];
   const pattern = routeRegistration(appVar);
+  const lines = source.split('\n');
 
-  return source
-    .split('\n')
+  return lines
     .map((line, index) => ({ line, index }))
-    .filter(({ line, index }) => index < guardIndex && pattern.test(line))
+    .filter(({ line, index }) => index < guardIndex && pattern.test(line) && !(anchor && anchoredAt(lines, index, anchor)))
     .map(({ index }) => index + 1); // 1-based, for a message a person reads
+}
+
+/** How far below a statement's first line an anchor may still be matched: one `app.use(...)` call. */
+const ANCHOR_SPAN = 40;
+
+/**
+ * Does the statement starting on line `index` match `anchor`? Read from that line onwards, so a call that
+ * spans several lines is matched whole; the anchor itself decides where the call ends.
+ */
+function anchoredAt(lines: string[], index: number, anchor: RegExp): boolean {
+  return anchor.test(lines.slice(index, index + ANCHOR_SPAN).join('\n'));
+}
+
+/** Where a route or middleware sits above the guard: the same advice is right for both. */
+function earlyRouteAdvice(lines: number[], call: string): string {
+  const one = lines.length === 1;
+  return `the guard must be registered before line${one ? '' : 's'} ${lines.join(', ')}: move \`${call}\` and your body parser above ${one ? 'it' : 'them'}, or move ${one ? 'it' : 'them'} below the guard`;
 }
 
 export interface RegisterSpec {
@@ -161,7 +180,7 @@ function wiringState(
   );
   const appIndex = maskedLines.findIndex((line) => spec.appRe.test(line));
   const anchor = spec.callAfter ? spec.callAfter(appVar) : null;
-  const anchorIndex = anchor ? maskedLines.reduce((last, line, index) => anchor.test(line) ? index : last, -1) : -1;
+  const anchorIndex = anchor ? maskedLines.reduce((last, _line, index) => anchoredAt(maskedLines, index, anchor) ? index : last, -1) : -1;
 
   return {
     importAtTopLevel: importIndex !== -1 && isTopLevelLine(code, importIndex),
@@ -285,7 +304,7 @@ export function wireRegister(cwd: string, opts: WireOptions, spec: RegisterSpec)
   if (
     spec.requireCallAfter &&
     requiredAnchor &&
-    !sourceLines.some((line, index) => index > sourceAppIdx && requiredAnchor.test(line))
+    !sourceLines.some((_line, index) => index > sourceAppIdx && anchoredAt(sourceLines, index, requiredAnchor))
   ) {
     log(`${entry.relPath} body-parser anchor not found — scaffolded guard; ${spec.manualHint}`);
     return { ok: true, changed };
@@ -313,7 +332,7 @@ export function wireRegister(cwd: string, opts: WireOptions, spec: RegisterSpec)
   if (appIdx !== -1 && !state.callInAppScope) {
     const preferred = spec.callAfter?.(entry.appVar);
     const preferredIdx = preferred
-      ? lines.reduce((last, line, index) => index > appIdx && preferred.test(line)
+      ? lines.reduce((last, _line, index) => index > appIdx && anchoredAt(lines, index, preferred)
         && inSameBlockAfter(lines.join('\n'), appIdx, index) ? index : last, -1)
       : -1;
     const callIdx = preferredIdx === -1 ? appIdx : preferredIdx;
@@ -346,12 +365,11 @@ export function wireRegister(cwd: string, opts: WireOptions, spec: RegisterSpec)
   // the guard, only by moving the route.
   if (spec.callAfter) {
     const guardIndex = lines.findIndex((line) => line.includes(spec.call(entry.appVar)));
-    const early = routesBefore(patched, entry.appVar, guardIndex);
+    const early = routesBefore(patched, entry.appVar, guardIndex, spec.callAfter(entry.appVar));
     if (early.length > 0) {
       log(
-        `${entry.relPath}: ${early.length} route${early.length === 1 ? '' : 's'} registered before the guard ` +
-          `(line${early.length === 1 ? '' : 's'} ${early.join(', ')}) — those are not screened. ` +
-          'Move them below the guard, or move your body parser above them.',
+        `${entry.relPath}: ${early.length} route or middleware registration${early.length === 1 ? '' : 's'} run before the guard ` +
+          `and ${early.length === 1 ? 'is' : 'are'} not screened — ${earlyRouteAdvice(early, spec.call(entry.appVar).trim())}.`,
       );
     }
   }
@@ -405,7 +423,7 @@ function serverIsGuarded(
   const state = wiringState(source, spec, server.appVar, server.relPath, { cwd, guardDir });
   if (!state.importAtTopLevel || !state.callInAppScope || !state.ordered) return false;
 
-  return !spec.callAfter || routesBefore(source, server.appVar, state.callIndex).length === 0;
+  return !spec.callAfter || routesBefore(source, server.appVar, state.callIndex, spec.callAfter(server.appVar)).length === 0;
 }
 
 export function verifyRegister(cwd: string, spec: RegisterSpec): VerifyResult {
@@ -423,7 +441,7 @@ export function verifyRegister(cwd: string, spec: RegisterSpec): VerifyResult {
   // "After the parser" was the only ordering checked, and it is only half the question. A route registered
   // above the guard is served without it, so reporting the app fully wired would name protection that this
   // route does not have.
-  const early = spec.callAfter && entry ? routesBefore(entrySource, entry.appVar, state.callIndex) : [];
+  const early = spec.callAfter && entry ? routesBefore(entrySource, entry.appVar, state.callIndex, spec.callAfter(entry.appVar)) : [];
   const noEarlyRoutes = early.length === 0;
 
   // A project can start more than one server, and a guard on one is not a guard on the other. Each is asked
@@ -457,7 +475,7 @@ export function verifyRegister(cwd: string, spec: RegisterSpec): VerifyResult {
               ok: noEarlyRoutes,
               hint: noEarlyRoutes
                 ? 'nothing to do'
-                : `move the route${early.length === 1 ? '' : 's'} on line${early.length === 1 ? '' : 's'} ${early.join(', ')} below the guard, or move your body parser above them`,
+                : earlyRouteAdvice(early, entry ? spec.call(entry.appVar).trim() : ''),
             },
           ]
         : []),

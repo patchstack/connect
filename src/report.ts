@@ -159,7 +159,7 @@ function renderConcise(
   if (findings.length > 0) lines.push(...findings);
   if ((report.rules ?? 0) > 0) {
     const rules = report.rules!;
-    lines.push(`   ${paint(ANSI.green, `${rules} protection ${rules === 1 ? 'rule' : 'rules'} available`)}`);
+    lines.push(`   ${paint(ANSI.green, `${rules} protection ${rules === 1 ? 'rule' : 'rules'} from Patchstack`)}`);
   }
   if (findings.length > 0 || (report.rules ?? 0) > 0) lines.push('');
 
@@ -318,7 +318,7 @@ export function renderSummary(report: StatusReport, progress: Progress, context:
   const canProtect = protectionPossible(report);
   context = { ...context, noServer: !canProtect };
 
-  const rules = canProtect && (report.rules ?? 0) > 0 ? `${report.rules} protection ${report.rules === 1 ? 'rule' : 'rules'} available` : null;
+  const rules = canProtect && (report.rules ?? 0) > 0 ? `${report.rules} protection ${report.rules === 1 ? 'rule' : 'rules'} from Patchstack` : null;
   let headline: string;
   if (counted && findings.vulnerable > 0) {
     const vulnerabilities = findings.severity.high + findings.severity.medium + findings.severity.low + findings.severity.unknown;
@@ -344,7 +344,7 @@ export function renderSummary(report: StatusReport, progress: Progress, context:
   if (next !== null) {
     const vulnerable = (findings?.vulnerable ?? 0) > 0;
     const rest =
-      next !== 'connected' ? '' : !canProtect ? ' to see the details' : vulnerable ? ' to see the details and turn on protection' : ' to turn on protection';
+      next !== 'connected' ? '' : !canProtect ? ' to see the details' : vulnerable ? ` to see the details and ${PROTECTS}` : ` to ${PROTECTS}`;
     const lead = next === 'connected' ? 'Connect your Patchstack account' : capitalise(plainNextStepTitle(next, context));
     lines.push(`#### 👉 ${lead}${rest}`, '');
     const nextAnswersWithGoLiveSteps = next === 'deployed' && context.environment !== 'production';
@@ -355,7 +355,9 @@ export function renderSummary(report: StatusReport, progress: Progress, context:
       const action = first?.startsWith('Open ') === true ? first.slice('Open '.length) : first;
       // The link goes in a paragraph of its own, so it renders on its own line.
       if (action !== undefined) lines.push(action, '');
-      lines.push(next === 'connected' ? `When you've connected, say **${NEXT_REPLY}**.` : `When that's done, say **${NEXT_REPLY}**.`, '');
+      // Protection runs where the app is deployed, so connecting leads on to going live; with no server there is nothing to protect.
+      const connected = canProtect ? `When you've connected, say **${NEXT_REPLY}**, and we'll get your live app protected.` : `When you've connected, say **${NEXT_REPLY}**.`;
+      lines.push(next === 'connected' ? connected : `When that's done, say **${NEXT_REPLY}**.`, '');
     }
   }
 
@@ -384,7 +386,7 @@ export function renderSummary(report: StatusReport, progress: Progress, context:
     lines.push('#### What Patchstack found', parts.join(' · '), '');
   }
 
-  if (options.widgetOnPage) lines.push("**Reload your app's preview page** to see the Patchstack widget on it.", '');
+  if (options.widgetOnPage) lines.push("**Reload your app's preview page.** The Patchstack widget appears in a bottom corner of the page.", '');
   // A fact about the app, not a step: the ones that matter here are what protection does not cover.
   for (const item of report.missing.filter((entry) => entry.note === true && entry.key !== 'runtime-protection')) {
     lines.push(item.plain?.text ?? item.text, '');
@@ -404,6 +406,9 @@ export function renderSummary(report: StatusReport, progress: Progress, context:
   if (lines[lines.length - 1] === '') lines.pop();
   return lines;
 }
+
+/** What connecting turns on, in the summary's next step: the guard's hardening, secret-exposure and live vulnerability rules. */
+const PROTECTS = 'protect your live app from common attacks, secret leaks and future vulnerabilities';
 
 /** What the person can ask, in a later conversation, to see this summary again. AGENT-INSTALL.md lists it. */
 export const SUMMARY_AGAIN = 'Show my Patchstack summary';

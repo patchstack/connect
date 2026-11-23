@@ -42,6 +42,7 @@ import {
 } from './demo.js';
 import {
   SECRET_CONFIG_FILENAME,
+  ensureVercelIgnored,
   credentialInCommittedConfig,
   persistApiKey,
   secretFileIgnored,
@@ -55,7 +56,7 @@ import {
   hasWidgetChoice,
 } from './config.js';
 import { painter, renderBox, renderFindings, renderLogo } from './art.js';
-import { detectHost, HOST_NAMES, parseHost, renderGoLive } from './go-live.js';
+import { detectHost, HOST_NAMES, parseHost, renderGoLive, stepsReadKeyFile } from './go-live.js';
 import { createSiteProject, installedCli, installSelf, isPlainHtmlSite, runInstalledSetup } from './bootstrap.js';
 import {
   buildInjectionSnippet,
@@ -223,11 +224,14 @@ Usage:
                                                      outdated packages, with the link to the
                                                      details. Sends the site UUID to the public
                                                      claim page; writes nothing
-  patchstack-connect go-live [--host <name>]         Show how to add the project's API key to its
-                                                     host and deploy: the host is found from project
-                                                     files (vercel.json, netlify.toml, fly.toml, ...)
-                                                     or named with --host. Never prints the key.
-                                                     Sends nothing; writes nothing
+  patchstack-connect go-live [--host <name>]         Show how to deploy on the project's host. A
+                                                     hosted builder (Lovable, Replit, Bolt) needs no
+                                                     key; elsewhere adding the project's API key is
+                                                     an optional first step. The host is found from
+                                                     project files (vercel.json, netlify.toml,
+                                                     fly.toml, ...) or named with --host. Never
+                                                     prints the key. Sends nothing. On Vercel it adds
+                                                     .patchstackrc.local.json to .vercelignore
   patchstack-connect widget [--remove]               Add the Patchstack widget to the project's page,
                                                      or take the Connect-added tag out with --remove.
                                                      Saves the choice in .patchstackrc.json so the
@@ -1674,7 +1678,7 @@ async function runSetup(args: ParsedArgs): Promise<number> {
   if (synced.rules.ok) {
     // Rules are enforced by protection in a server; an app without one has nothing to apply them.
     if (!noServer) report.rules = synced.rules.count;
-    report.done.push(`Live rule lookup succeeded (${synced.rules.count} delivered rules; not proof of runtime enforcement)`);
+    report.done.push(`Live rule lookup succeeded (${synced.rules.count} ${synced.rules.count === 1 ? 'rule' : 'rules'} from Patchstack${noServer ? '' : ", on top of the guard's own"}; not proof of runtime enforcement)`);
     if (!noServer) {
       if (synced.rules.mapRules === 'ready') {
         report.done.push(`Rules for this map are ready${synced.rules.count === 0 ? ' (no applicable rules)' : ''}`);
@@ -1949,11 +1953,14 @@ async function runWidget(args: ParsedArgs): Promise<number> {
       console.log(`   ${buildWidgetTag(state.siteUuid)}`);
       break;
   }
-  console.log(`   ${paint('dim', "Reload your app's preview page to see it. Your live site gets it with your next deploy.")}`);
+  console.log(`   ${paint('dim', 'Reload your app\'s preview page to see it in a bottom corner of the page. Your live site gets it with your next deploy.')}`);
   return 0;
 }
 
-/** How to add the key to this project's host and deploy. Reads project files only; sends nothing. */
+/**
+ * How to add the key to this project's host and deploy. Sends nothing; on Vercel it adds the credential file
+ * to `.vercelignore`, because the Vercel CLI uploads whatever that file does not exclude.
+ */
 async function runGoLive(args: ParsedArgs): Promise<number> {
   const named = getStringFlag(args.flags, 'host');
   let host = null;
@@ -1966,11 +1973,12 @@ async function runGoLive(args: ParsedArgs): Promise<number> {
   } else {
     host = detectHost(process.cwd());
   }
-  if (host !== 'lovable' && !existsSync(path.join(process.cwd(), SECRET_CONFIG_FILENAME))) {
+  if (stepsReadKeyFile(host) && !existsSync(path.join(process.cwd(), SECRET_CONFIG_FILENAME))) {
     console.error(`No ${SECRET_CONFIG_FILENAME} here yet. Run setup first: npx @patchstack/connect setup`);
     return 1;
   }
-  for (const line of renderGoLive(host, { useColor: useColor() })) console.log(line);
+  const vercelIgnore = host === 'vercel' ? await ensureVercelIgnored(process.cwd()) : undefined;
+  for (const line of renderGoLive(host, { useColor: useColor(), vercelIgnore })) console.log(line);
   return 0;
 }
 

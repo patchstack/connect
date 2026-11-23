@@ -43,7 +43,7 @@ describe('progress checklist', () => {
   it('gives the claim link and command for connecting', () => {
     expect(nextStepLines('connected', context)).toEqual([
       `Open ${context.claimUrl}`,
-      'Already connected? Then commit, set PATCHSTACK_API_KEY on your host, and deploy.',
+      'Already connected? Then commit and deploy. No key is needed.',
     ]);
     expect(nextStepLines('connected', { ...context, claimUrl: null })[0]).toBe('Run: npx @patchstack/connect claim');
   });

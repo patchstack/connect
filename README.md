@@ -110,6 +110,19 @@ you how to proceed. Any of these works:
   Codex CLI asks according to `approval_policy` in `~/.codex/config.toml`: approve the command when it
   asks, or run it yourself.
 
+### If the install stops at `ENOTFOUND registry.npmjs.org`
+
+That error comes from npm, before Connect is downloaded: the workspace cannot reach the npm registry. Some
+coding tools run commands in a sandbox with network access off by default; Codex CLI's `workspace-write`
+sandbox is one. `npm ping` shows whether the registry answers. If it does not:
+
+- In Codex CLI, set `network_access = true` under `[sandbox_workspace_write]` in `~/.codex/config.toml`, or
+  approve the install to run outside the sandbox when Codex asks.
+- Behind a company proxy or registry mirror, check `npm config get registry` and the `proxy` and
+  `https-proxy` settings in the same shell the assistant uses.
+
+Then run the install again.
+
 ### Claude Code plugin
 
 In Claude Code, install the plugin from this repository's marketplace:
@@ -147,7 +160,7 @@ That's it. `setup` adds `@patchstack/connect` to the project when it is missing 
 
 If the server is already running, let the framework reload and check what it actually loaded: `patchstack-connect protect --check --runtime-url https://your-preview.example/api/contact` (loopback HTTP also works). You can supply the same `--runtime-url` to `setup`. This sends one signed, read-only OPTIONS challenge to that explicit URL, without sending the API key or following redirects. The response proves that a guard on that route loaded the current map, and reports its rule-readiness state and active rule counts. It does not prove other routes are covered or that an exploit is blocked. Both CLI and server need the site's server-side credential; `{ activationCheck: false }` disables the responder. If the guard cannot answer or carries an old map, restart/rebuild/deploy and check again. Setup never starts, builds or deploys your app.
 
-Scaffolded guards refresh rules on a timer and on requests: once the rules are older than the refresh interval a request waits for the fetch, and every 30 seconds before that a serving guard re-checks in the background without holding any request, so a host that freezes between requests, or runs many copies of the app, picks up a rule change. Request-triggered refresh waits at most 2500ms by default, shares concurrent work, backs off after failures, and keeps last-known-good policy when offline. It never scans source or reports a manifest in the request path. A request with the header `x-patchstack-sync` runs that refresh straight away, at most once per 15 seconds; Patchstack sends one to the live site after its rules change. Hand-wired guards can configure `requestRefreshMs` (defaults to `refreshMs`, or zero when polling is disabled) and `requestRefreshTimeoutMs` (50–3000ms), or set the former to zero to opt out. `protection.synchronization` exposes the loaded identity, last successful lookup time, source health, readiness and scoped-rule blocking counts without a network call. Rule refresh does not change the loaded map identity.
+Scaffolded guards refresh rules on a timer and on requests: once the rules are older than the refresh interval a request waits for the fetch, and every 30 seconds before that a serving guard re-checks in the background without holding any request, so a host that freezes between requests, or runs many copies of the app, picks up a rule change. Request-triggered refresh waits at most 2500ms by default, shares concurrent work, backs off after failures, and keeps last-known-good policy when offline. It never scans source or reports a manifest in the request path. A request with the header `x-patchstack-sync` runs that refresh straight away, at most once per 15 seconds; Patchstack sends one to the live site after its rules change. Hand-wired guards can configure `requestRefreshMs` (defaults to `refreshMs`, or zero when polling is disabled) and `requestRefreshTimeoutMs` (50–3000ms), or set the former to zero to opt out. `protection.synchronization` exposes the loaded identity, last successful lookup time, source health, readiness, rule counts and scoped-rule blocking counts without a network call. Rule refresh does not change the loaded map identity.
 
 The authenticated rules response may include `X-Patchstack-Map-Rules: pending | ready` alongside `X-Patchstack-Build-Match` and `X-Patchstack-Build-ID`, including on a `304`. Readiness applies only when the response confirms the exact map identity requested. An absent or unrecognized readiness value means **unknown**, not ready. The ETag identifies the delivered policy, not map-generation completion. Broad and hardening rules remain usable while map-specific rules are pending.
 
@@ -193,9 +206,12 @@ patchstack-connect doctor [--url <live app>]       Check that everything Patchst
                                                    say how to fix each problem
 patchstack-connect vulns                           Show vulnerabilities by severity and outdated
                                                    packages, with the link to the details
-patchstack-connect go-live [--host <name>]         Show how to add your API key to your host
-                                                   (Vercel, Netlify, Cloudflare, Render, Railway,
-                                                   Fly.io, Heroku, Amplify, Replit, Lovable) and deploy
+patchstack-connect go-live [--host <name>]         Show how to deploy on your host (Vercel, Netlify,
+                                                   Cloudflare, Render, Railway, Fly.io, Heroku,
+                                                   Amplify, Replit, Bolt, Lovable). A hosted builder
+                                                   needs no key; elsewhere adding it is optional.
+                                                   On Vercel it adds .patchstackrc.local.json to
+                                                   .vercelignore
 patchstack-connect widget [--remove]               Add the Patchstack widget to your page, or
                                                    remove the tag Connect added; saved for builds
 patchstack-connect mark-build [--production]       Stamp built HTML with a production flag +

@@ -2,6 +2,7 @@ import { afterEach, expect, it, vi } from 'vitest';
 import { ACTIVATION_HEADER, activationChallenge, activationResponse, verifyActivationResponse } from '../../src/protect/activation.js';
 import { createProtection } from '../../src/protect/runtime.js';
 import { checkActivation } from '../../src/activation-check.js';
+import { DEFAULT_EGRESS_RULES, DEFAULT_RESPONSE_RULES } from '../../src/protect/defaults.js';
 import type { Config } from '../../src/types.js';
 
 const secret='synthetic-activation-secret-1234';
@@ -73,6 +74,41 @@ it.each(['ready', 'pending', 'unknown'])('keeps %s readiness and enforcement lim
   expect(result.summary).toContain(`Rules: ${mapRules}; map match: unconfirmed; latest rule check: unconfirmed`);
   expect(result.summary).toContain('only report attacks during hot reload');
   expect(result.summary).toContain('This does not prove blocking or protection on other URLs.');
+});
+
+it('counts rules from Patchstack apart from the guard\'s own, and the two add up to the phase split', async () => {
+  const match = [{ parameter: 'get.q', match: { type: 'contains', value: 'attack' } }];
+  const delivered = [{ id: 'synthetic-a', rule_v2: match }, { id: 'synthetic-b', phase: 'response', rule_v2: match }];
+  const p = await createProtection({ pulseAuth: secret, buildId: build, rules: { firewall: delivered }, cache: false, reportDetections: false });
+  try {
+    const { rules } = p.synchronization;
+    expect(rules.delivered).toBe(2);
+    expect(rules.local).toBe(DEFAULT_RESPONSE_RULES.length + DEFAULT_EGRESS_RULES.length);
+    expect(rules.request + rules.response + rules.egress).toBe(rules.delivered + rules.local);
+  } finally { await p.stop(); }
+});
+
+async function checkedWith(status: Record<string, unknown>): Promise<string> {
+  vi.stubGlobal('fetch', async (target: string, init: RequestInit) => activationResponse(new Request(target, init), secret, () => ({
+    siteUuid: site, buildId: build, mapRules: 'ready', ...status,
+  })));
+  return (await checkActivation(url, config, '.', build)).message;
+}
+
+it('names where the rules came from, with a split that adds up', async () => {
+  const counts = { request: 6, response: 20, egress: 2, delivered: 17, local: 11, scopedBlocking: 0 };
+  expect(await checkedWith({ source: { ok: true, origin: 'api' }, rules: counts }))
+    .toContain("17 rules from Patchstack + 11 of the guard's own (6 request / 20 response / 2 outgoing)");
+  expect(await checkedWith({ source: { ok: false, origin: 'bundled' }, rules: counts }))
+    .toContain("17 rules from its bundled rules file + 11 of the guard's own");
+  expect(await checkedWith({ source: { ok: true, origin: 'api' }, rules: { ...counts, delivered: 1 } }))
+    .toContain('1 rule from Patchstack');
+});
+
+it('keeps the phase split alone for a guard that does not report where its rules came from', async () => {
+  const message = await checkedWith({ source: { ok: true, origin: 'api' }, rules: { request: 6, response: 20, scopedBlocking: 0 } });
+  expect(message).toContain('; 6 request / 20 response rules;');
+  expect(message).not.toContain('from Patchstack');
 });
 
 it('bounds a transport that ignores abort', async()=>{
