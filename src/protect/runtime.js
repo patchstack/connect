@@ -337,6 +337,8 @@ export async function createProtection(options = {}) {
   const noteRuleSource = (source) => {
     ruleSource = { ...(source ?? { ok: true, origin: ruleSource.origin }) };
     if (!hasLiveSource || typeof onError === 'function' || ruleSource.ok !== false) return;
+    const prerenderingInNextBuild = typeof process !== 'undefined' && process.env?.NEXT_PHASE === 'phase-production-build';
+    if (prerenderingInNextBuild) return;
     const cause = `${ruleSource.origin}:${ruleSource.reason ?? ''}`;
     if (warnedSources.has(cause)) return;
     warnedSources.add(cause);

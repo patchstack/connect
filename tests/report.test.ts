@@ -286,6 +286,15 @@ describe('renderSummary', () => {
     expect(renderSummary(report(), notConnected, context, { widgetOnPage: false, dashboardUrl }).join('\n')).not.toContain(dashboardUrl);
   });
 
+  it('answers the deploy step with the word to say, not a command the person cannot run', () => {
+    const connected = { ...notConnected, connected: true };
+    const text = renderSummary(report({ missing: [] }), connected, context, { widgetOnPage: false, dashboardUrl: null }).join('\n');
+
+    expect(text).toContain('Say **done** to get the steps for your host.');
+    expect(text).not.toContain('go-live');
+    expect(text).not.toContain("When that's done");
+  });
+
   it('never states a count the run did not get', () => {
     const lines = renderSummary(report({ findings: null, rules: 12 }), notConnected, context, { widgetOnPage: false, dashboardUrl: null });
     expect(lines[5]).toBe('### 🛡️ Checked 89 packages, now watching them');

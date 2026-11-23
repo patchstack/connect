@@ -346,13 +346,19 @@ export function renderSummary(report: StatusReport, progress: Progress, context:
     const rest =
       next !== 'connected' ? '' : !canProtect ? ' to see the details' : vulnerable ? ` to see the details and ${PROTECTS}` : ` to ${PROTECTS}`;
     const lead = next === 'connected' ? 'Connect your Patchstack account' : capitalise(plainNextStepTitle(next, context));
-    const [first] = plainNextStepLines(next, context);
-    const action = first?.startsWith('Open ') === true ? first.slice('Open '.length) : first;
-    // The link goes in a paragraph of its own, so it renders on its own line.
-    lines.push(`#### 👉 ${lead}${rest}`, '', ...(action !== undefined ? [action, ''] : []));
-    // Protection runs where the app is deployed, so connecting leads on to going live; with no server there is nothing to protect.
-    const connected = canProtect ? `When you've connected, say **${NEXT_REPLY}**, and we'll get your live app protected.` : `When you've connected, say **${NEXT_REPLY}**.`;
-    lines.push(next === 'connected' ? connected : `When that's done, say **${NEXT_REPLY}**.`, '');
+    lines.push(`#### 👉 ${lead}${rest}`, '');
+    const nextAnswersWithGoLiveSteps = next === 'deployed' && context.environment !== 'production';
+    if (nextAnswersWithGoLiveSteps) {
+      lines.push(`Say **${NEXT_REPLY}** to get the steps for your host.`, '');
+    } else {
+      const [first] = plainNextStepLines(next, context);
+      const action = first?.startsWith('Open ') === true ? first.slice('Open '.length) : first;
+      // The link goes in a paragraph of its own, so it renders on its own line.
+      if (action !== undefined) lines.push(action, '');
+      // Protection runs where the app is deployed, so connecting leads on to going live; with no server there is nothing to protect.
+      const connected = canProtect ? `When you've connected, say **${NEXT_REPLY}**, and we'll get your live app protected.` : `When you've connected, say **${NEXT_REPLY}**.`;
+      lines.push(next === 'connected' ? connected : `When that's done, say **${NEXT_REPLY}**.`, '');
+    }
   }
 
   if (canProtect && report.confirmed?.length) {
