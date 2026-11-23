@@ -10,6 +10,16 @@
 import { spawn } from 'node:child_process';
 import { META_OPEN } from './persona.mjs';
 
+// Variables the host machine sets about itself or its user. An agent reads its environment while it
+// decides whether to trust an install, so these tell it who is running the test and that it is one.
+const HOST_IDENTITY = /^AMP_|EMAIL|^GIT_(?:AUTHOR|COMMITTER)_/;
+
+/** The runner's environment without host identity, plus the pinned endpoint and `extraEnv`. */
+export function agentEnv(endpoint, extraEnv = {}) {
+  const env = Object.fromEntries(Object.entries(process.env).filter(([name]) => !HOST_IDENTITY.test(name)));
+  return { ...env, PATCHSTACK_ENDPOINT: endpoint, ...extraEnv };
+}
+
 /**
  * Run `agentCmd`, giving it `promptText` on stdin, and collect what it said.
  *
@@ -23,7 +33,7 @@ import { META_OPEN } from './persona.mjs';
  * skipped the composer, and the next such caller would pass a persona whose OTHER handling — the
  * substitutions — had also been skipped. The composer is the one place that decides what an agent sees.
  */
-export function runAgent(agentCmd, promptText, fixtureDir, endpoint, timeoutMs) {
+export function runAgent(agentCmd, promptText, fixtureDir, endpoint, timeoutMs, extraEnv = {}) {
   if (typeof promptText !== 'string' || promptText.length === 0) {
     throw new Error('runAgent: refusing to run with an empty prompt — an agent given nothing produces a refusal that looks like a finding.');
   }
@@ -37,7 +47,7 @@ export function runAgent(agentCmd, promptText, fixtureDir, endpoint, timeoutMs) 
   return new Promise((resolve) => {
     const child = spawn('sh', ['-c', agentCmd], {
       cwd: fixtureDir,
-      env: { ...process.env, PATCHSTACK_ENDPOINT: endpoint },
+      env: agentEnv(endpoint, extraEnv),
       stdio: ['pipe', 'pipe', 'pipe'],
       detached: process.platform !== 'win32',
     });
