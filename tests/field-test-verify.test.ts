@@ -3,6 +3,7 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { verify } from '../field-test/verify.mjs';
+import { writeFindings } from '../field-test/findings.mjs';
 
 const uuid = '550e8400-e29b-41d4-a716-446655440000';
 const endpoint = 'http://127.0.0.1:12345/monitor/pulse/manifest';
@@ -128,5 +129,46 @@ describe('field-test install evidence', () => {
     write('.patchstackrc.json', '{}');
     expect(score('Installed the dependency.').refused).toBe(false);
     expect(score('I refuse to continue.').refused).toBe(true);
+  });
+});
+
+describe('field-test app profiles', () => {
+  const profile = (overrides: object) => ({ shell: 'index.html', notApplicable: [], installExpected: true, ...overrides });
+
+  it('reads the widget from the template shell and leaves n/a checks out of the score', () => {
+    mkdirSync(path.join(dir, '_includes'));
+    write('_includes/base.njk', readFileSync(path.join(dir, 'index.html'), 'utf8'));
+    write('index.html', '<html></html>');
+    editPackage((pkg) => { pkg.scripts.dev = 'changed'; });
+    const result = verify(dir, mock, summaryMessage, baselineScripts, profile({ shell: '_includes/base.njk', notApplicable: ['devScriptsPreserved'] }));
+    expect(result.checks.widgetInstalled.pass).toBe(true);
+    expect(result.checks.devScriptsPreserved).toMatchObject({ pass: false, notApplicable: true });
+    expect(result.total).toBe(Object.keys(result.checks).length - 1);
+  });
+
+  it('scores an app Connect does not support on leaving it alone', () => {
+    const flask = profile({ installExpected: false, notApplicable: ['installed', 'provisioned'] });
+    expect(verify(dir, mock, '', baselineScripts, flask).checks.installAvoided.pass).toBe(false);
+    rmSync(path.join(dir, 'node_modules'), { recursive: true });
+    write('package.json', '{}');
+    mock.requests = [];
+    const declined = verify(dir, mock, 'Connect supports JavaScript apps only.', baselineScripts, flask);
+    expect(declined.checks.installAvoided.pass).toBe(true);
+    expect(declined.audited).toBe(true);
+    expect(verify(dir, mock, '', baselineScripts).checks.installAvoided).toBeUndefined();
+  });
+
+  it('writes one finding per failed applicable check plus the friction the agent reported', () => {
+    write('index.html', '<html></html>');
+    editPackage((pkg) => { pkg.scripts.dev = 'changed'; });
+    const verdict = verify(dir, mock, summaryMessage, baselineScripts, profile({ notApplicable: ['devScriptsPreserved'] }));
+    const report = `3. HESITATIONS\nThe setup output did not say which file to edit.\n4. UX FRICTION\nNone.\n5. USER MESSAGE\nDone.`;
+    const findings = writeFindings({ template: 'static-html', appClass: 'A', persona: 'standard', verdict, agentOutput: report, cliCommands: [{ args: ['patchstack-connect', 'setup'], status: 0 }], roundDir: dir });
+    expect(findings.map((finding: any) => finding.signature).sort()).toEqual([
+      'check:widgetInstalled:static-html', 'check:widgetTokenMatches:static-html', 'report:agent-hesitation:static-html:standard',
+    ]);
+    expect(findings.find((finding: any) => finding.type === 'agent-hesitation').actual).toBe('The setup output did not say which file to edit.');
+    const lines = readFileSync(path.join(dir, 'findings.jsonl'), 'utf8').trim().split('\n').map((line) => JSON.parse(line));
+    expect(lines).toEqual(findings);
   });
 });

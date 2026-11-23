@@ -7,6 +7,10 @@
 //   bun-managed vibe-platform export. Exercises the node_modules-walk path.
 // - vite-npm: same app, plain npm project with package-lock.json.
 // - express-npm: an HTTP server with a static HTML shell and an existing build command.
+// - static-html: a folder of pages with no package manager or server.
+// - cdn-script: a page that loads its JavaScript from a CDN <script>, with no package manager.
+// - eleventy-npm: a static site generator; JavaScript runs only in the build, the output is HTML.
+// - flask: a Python web app with server-side templates and no JavaScript project.
 import { execSync } from 'node:child_process';
 import { mkdirSync, rmSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
@@ -68,7 +72,46 @@ export default defineConfig(({ mode }) => ({
 }));
 `;
 
-export const TEMPLATES = ['lovable-bun', 'vite-npm', 'express-npm'];
+/**
+ * What each template stands for and how a run against it is scored.
+ * - appClass: the app class in the field-test app matrix (README, "App classes").
+ * - shell: the file a widget tag belongs in, relative to the fixture.
+ * - notApplicable: checks that cannot apply to this kind of app, reported as n/a and left out of the total.
+ * - installExpected: whether a correct run installs the package. When false, a round that never unpacked
+ *   it is still conclusive.
+ */
+export const TEMPLATE_INFO = {
+  'lovable-bun': { appClass: 'C', label: 'React/Vite SPA, bun-managed', shell: 'index.html', notApplicable: [], installExpected: true },
+  'vite-npm': { appClass: 'C', label: 'React/Vite SPA, npm', shell: 'index.html', notApplicable: [], installExpected: true },
+  'express-npm': { appClass: 'F', label: 'Express server', shell: 'index.html', notApplicable: [], installExpected: true },
+  'static-html': { appClass: 'A', label: 'static HTML, no JavaScript project', shell: 'index.html', notApplicable: ['devScriptsPreserved'], installExpected: true },
+  'cdn-script': { appClass: 'B', label: 'browser JavaScript from a CDN, no package manager', shell: 'index.html', notApplicable: ['devScriptsPreserved'], installExpected: true },
+  'eleventy-npm': { appClass: 'D', label: 'Eleventy, JavaScript only at build time', shell: '_includes/base.njk', notApplicable: [], installExpected: true },
+  flask: {
+    appClass: 'H', label: 'Python Flask app, not JavaScript', shell: 'templates/index.html', installExpected: false,
+    notApplicable: ['installed', 'provisioned', 'provisionedOnce', 'hooksWired', 'dependencyScanWired', 'devScriptsPreserved',
+      'widgetInstalled', 'widgetTokenMatches', 'protectionVerified', 'claimUrlSurfaced', 'summaryPassedOn'],
+  },
+};
+
+export const TEMPLATES = Object.keys(TEMPLATE_INFO);
+
+const NON_NODE_TEMPLATES = {
+  'static-html': {
+    'index.html': '<!doctype html>\n<html><head><title>Todo</title><link rel="stylesheet" href="style.css"></head><body><h1>Todo</h1><ul id="list"></ul></body></html>\n',
+    'about.html': '<!doctype html>\n<html><head><title>About</title></head><body><h1>About</h1></body></html>\n',
+    'style.css': 'body { font-family: sans-serif; }\n',
+  },
+  'cdn-script': {
+    'index.html': '<!doctype html>\n<html><head><title>Todo</title></head><body><h1>Todo</h1><button id="add">Add</button>\n<script src="https://cdn.jsdelivr.net/npm/canvas-confetti@1.9.3/dist/confetti.browser.min.js"></script>\n<script src="app.js"></script></body></html>\n',
+    'app.js': "document.getElementById('add').addEventListener('click', () => confetti());\n",
+  },
+  flask: {
+    'app.py': 'from flask import Flask, render_template\n\napp = Flask(__name__)\n\n\n@app.route("/")\ndef index():\n    return render_template("index.html")\n',
+    'requirements.txt': 'flask\n',
+    'templates/index.html': '<!doctype html>\n<html><head><title>Todo</title></head><body><h1>Todo</h1></body></html>\n',
+  },
+};
 
 export function makeFixture(dir, template = 'lovable-bun') {
   if (!TEMPLATES.includes(template)) {
@@ -76,6 +119,29 @@ export function makeFixture(dir, template = 'lovable-bun') {
   }
 
   rmSync(dir, { recursive: true, force: true });
+  mkdirSync(dir, { recursive: true });
+
+  if (NON_NODE_TEMPLATES[template]) {
+    for (const [file, text] of Object.entries(NON_NODE_TEMPLATES[template])) {
+      mkdirSync(path.dirname(path.join(dir, file)), { recursive: true });
+      writeFileSync(path.join(dir, file), text);
+    }
+    return dir;
+  }
+
+  if (template === 'eleventy-npm') {
+    writeFileSync(path.join(dir, 'package.json'), JSON.stringify({
+      name: 'field-test-blog', private: true, version: '0.0.0',
+      scripts: { build: 'eleventy', dev: 'eleventy --serve' },
+      devDependencies: { '@11ty/eleventy': '^3.0.0' },
+    }, null, 2) + '\n');
+    mkdirSync(path.join(dir, '_includes'));
+    writeFileSync(path.join(dir, '_includes', 'base.njk'), '<!doctype html>\n<html><head><title>{{ title }}</title></head><body>\n{{ content | safe }}\n</body></html>\n');
+    writeFileSync(path.join(dir, 'index.md'), '---\nlayout: base.njk\ntitle: Recipe Glow\n---\n# Recipe Glow\n');
+    execSync('npm install --no-audit --no-fund', { cwd: dir, stdio: 'pipe' });
+    return dir;
+  }
+
   mkdirSync(path.join(dir, 'src'), { recursive: true });
 
   const pkg = template === 'express-npm' ? {

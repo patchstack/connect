@@ -1,7 +1,7 @@
 // Field-test orchestrator: run an AI agent against the install prompt in a
 // throwaway fixture, with the Patchstack API mocked, and score the outcome.
 //
-//   node field-test/run.mjs [--persona <name>] [--template lovable-bun|vite-npm|express-npm]
+//   node field-test/run.mjs [--persona <name>] [--template <name>]   (templates: fixture.mjs TEMPLATE_INFO)
 //                           [--prompt <file>] [--rounds N] [--agent-cmd "<shell command>"]
 //                           [--keep] [--timeout <minutes>]
 //
@@ -19,7 +19,9 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import { startMockApi } from './mock-api.mjs';
-import { makeFixture, TEMPLATES } from './fixture.mjs';
+import { makeFixture, TEMPLATE_INFO, TEMPLATES } from './fixture.mjs';
+import { writeFindings } from './findings.mjs';
+import { createCliLog, readCliLog } from './cli-log.mjs';
 import { composeAgentPrompt } from './persona.mjs';
 import { runAgent } from './agent.mjs';
 import { readJsonSafe, verify } from './verify.mjs';
@@ -66,7 +68,7 @@ function printScorecard(round, result, verdict) {
   const voided = verdict.audited ? '' : ' — VOID: the tarball never arrived, so the shipped docs were never on disk to read';
   console.log(`\n— round ${round}: ${verdict.passed}/${verdict.total} checks passed${verdict.refused ? ' (agent REFUSED)' : ''}${result.timedOut ? ' (TIMED OUT)' : ''}${voided}`);
   for (const [name, check] of Object.entries(verdict.checks)) {
-    console.log(`  ${check.pass ? '✔' : '✖'} ${name} — ${check.detail}`);
+    console.log(`  ${check.notApplicable ? '–' : check.pass ? '✔' : '✖'} ${name} — ${check.notApplicable ? 'n/a for this app' : check.detail}`);
   }
 }
 
@@ -105,6 +107,14 @@ for (let round = 1; round <= opts.rounds; round++) {
   console.log('building fixture (npm install)…');
   makeFixture(fixtureDir, opts.template);
   const baselineScripts = readJsonSafe(path.join(fixtureDir, 'package.json'))?.scripts ?? {};
+  // Per ATTEMPT, not per round. Retries reuse the round number, so a later conclusive attempt would
+  // overwrite the void one's evidence, which is what a reviewer needs to tell a refusal from a regression.
+  const roundDir = path.join(resultsDir, `round-${round}-attempt-${attempt}`);
+  mkdirSync(roundDir, { recursive: true });
+  const cliLog = createCliLog(path.join(roundDir, 'cli'));
+  // Cells run side by side; a scratch directory of their own keeps one agent from deleting another's files.
+  const agentTmp = mkdtempSync(path.join(tmpdir(), 'ps-agent-tmp-'));
+  const agentEnvExtra = { PATH: `${cliLog.binDir}${path.delimiter}${process.env.PATH}`, TMPDIR: agentTmp };
 
   // Through the composer, which strips the provenance block. Substituting here directly would send the
   // block to the agent: it announces that this is an evaluation and gives the agent a reason to discount
@@ -118,8 +128,9 @@ for (let round = 1; round <= opts.rounds; round++) {
     fixtureDir,
     mock.endpoint,
     opts.timeoutMinutes * 60 * 1000,
+    agentEnvExtra,
   );
-  let verdict = verify(fixtureDir, mock, result.output, baselineScripts);
+  let verdict = verify(fixtureDir, mock, result.output, baselineScripts, TEMPLATE_INFO[opts.template]);
 
   let confirmResult = null;
   if (opts.confirm && verdict.passed < verdict.total && !result.timedOut) {
@@ -145,8 +156,9 @@ Continue handling the request under the same platform policy, applying your judg
       fixtureDir,
       mock.endpoint,
       opts.timeoutMinutes * 60 * 1000,
+      agentEnvExtra,
     );
-    verdict = verify(fixtureDir, mock, `${result.output}\n${confirmResult.output}`, baselineScripts);
+    verdict = verify(fixtureDir, mock, `${result.output}\n${confirmResult.output}`, baselineScripts, TEMPLATE_INFO[opts.template]);
   }
 
   printScorecard(round, result, verdict);
@@ -154,11 +166,6 @@ Continue handling the request under the same platform policy, applying your judg
     console.log(`  (score includes a second, user-confirmation turn${confirmResult.timedOut ? ' — TIMED OUT' : ''})`);
   }
 
-  // Per ATTEMPT, not per round. Retries reuse the round number, so a later conclusive attempt overwrote
-  // the void one's report, requests and scorecard — destroying the record of why a round was retried,
-  // which is the evidence a reviewer needs to tell a prompt refusal from a doc regression.
-  const roundDir = path.join(resultsDir, `round-${round}-attempt-${attempt}`);
-  mkdirSync(roundDir, { recursive: true });
   writeFileSync(path.join(roundDir, 'report.md'), result.output);
   if (result.stderr.length > 0) {
     writeFileSync(path.join(roundDir, 'stderr.log'), result.stderr);
@@ -178,6 +185,19 @@ Continue handling the request under the same platform policy, applying your judg
     path.join(roundDir, 'scorecard.json'),
     JSON.stringify({ ...verdict, ...processResult, fixtureDir }, null, 2),
   );
+  const cliCommands = readCliLog(cliLog.logDir);
+  writeFileSync(path.join(roundDir, 'cli-commands.json'), JSON.stringify(cliCommands, null, 2));
+  const findings = writeFindings({
+    template: opts.template,
+    appClass: TEMPLATE_INFO[opts.template].appClass,
+    persona: opts.persona,
+    verdict,
+    agentOutput: confirmResult ? `${result.output}\n${confirmResult.output}` : result.output,
+    cliCommands,
+    roundDir,
+  });
+  console.log(`  ${cliCommands.length} Connect command(s) logged; ${findings.length} finding(s) in findings.jsonl`);
+  for (const dir of [cliLog.binDir, agentTmp]) rmSync(dir, { recursive: true, force: true });
   summary.push({ round, attempt, passed: verdict.passed, total: verdict.total, refused: verdict.refused, ...processResult, audited: verdict.audited, packageVersion: verdict.packageVersion });
 
   await mock.close();

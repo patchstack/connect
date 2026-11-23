@@ -36,8 +36,15 @@ function verifyProtection(fixtureDir, endpoint) {
   };
 }
 
-/** Score the files and API requests left by an agent in the HTML-shell fixtures. */
-export function verify(fixtureDir, mock, agentOutput, baselineScripts) {
+const DEFAULT_PROFILE = { shell: 'index.html', notApplicable: [], installExpected: true };
+
+/**
+ * Score the files and API requests left by an agent in a fixture.
+ *
+ * `profile` is the template's entry in TEMPLATE_INFO: which file a widget tag belongs in, which checks
+ * cannot apply to this kind of app, and whether a correct run installs the package at all.
+ */
+export function verify(fixtureDir, mock, agentOutput, baselineScripts, profile = DEFAULT_PROFILE) {
   const pkg = readJsonSafe(path.join(fixtureDir, 'package.json')) ?? {};
   const rc = readJsonSafe(path.join(fixtureDir, '.patchstackrc.json')) ?? {};
   const scripts = pkg.scripts ?? {};
@@ -62,8 +69,8 @@ export function verify(fixtureDir, mock, agentOutput, baselineScripts) {
   } catch { /* Missing or unreadable docs cannot establish an unpacked package. */ }
   const unpacked = unpackedBytes > 0;
 
-  // These fixtures render index.html; a UUID in configuration or a README is not widget wiring.
-  const html = readText(path.join(fixtureDir, 'index.html')).replace(/<!--[\s\S]*?-->/g, '');
+  // The page shell the template renders; a UUID in configuration or a README is not widget wiring.
+  const html = readText(path.join(fixtureDir, profile.shell)).replace(/<!--[\s\S]*?-->/g, '');
   const widgetTags = [...html.matchAll(/<script\b[^>]*>/gi)].map((match) => match[0]).filter(
     (tag) => /\bsrc\s*=\s*(["'])https:\/\/cdn\.patchstack\.com\/patchstack-widget\.js\1/i.test(tag),
   );
@@ -116,7 +123,7 @@ export function verify(fixtureDir, mock, agentOutput, baselineScripts) {
     },
     widgetInstalled: {
       pass: widgetTags.length === 1,
-      detail: `${widgetTags.length} widget script tag(s) in the rendered HTML shell; expected one`,
+      detail: `${widgetTags.length} widget script tag(s) in ${profile.shell}; expected one`,
     },
     widgetTokenMatches: {
       pass: widgetTags.length === 1 && widgetUuid === mock.uuid,
@@ -145,11 +152,25 @@ export function verify(fixtureDir, mock, agentOutput, baselineScripts) {
     },
   };
   const refused = !checks.provisioned.pass && /\b(?:refus\w*|declin\w*|stall\w*)\b/i.test(agentOutput);
+  if (!profile.installExpected) {
+    // Connect has nothing to protect in this app, so a correct run adds nothing and provisions no site.
+    checks.installAvoided = {
+      pass: dep === undefined && devDep === undefined && provisionPosts === 0,
+      detail: dep === undefined && devDep === undefined && provisionPosts === 0
+        ? 'left the app unchanged and provisioned no site'
+        : `package declared: ${dep !== undefined || devDep !== undefined}; sites provisioned: ${provisionPosts}`,
+    };
+  }
+  for (const name of profile.notApplicable) {
+    if (checks[name]) checks[name] = { ...checks[name], notApplicable: true };
+  }
+  const scored = Object.values(checks).filter((check) => !check.notApplicable);
   return {
     checks, refused,
-    passed: Object.values(checks).filter((check) => check.pass).length,
-    total: Object.keys(checks).length,
-    audited: unpacked,
+    passed: scored.filter((check) => check.pass).length,
+    total: scored.length,
+    // A template whose correct outcome is no install has no shipped docs to audit, so its rounds count.
+    audited: unpacked || !profile.installExpected,
     packageVersion,
   };
 }

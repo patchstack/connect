@@ -115,6 +115,7 @@ the agent from starting and leave the round void.
 
 - **The Patchstack API is mocked.** Each run starts a local mock and pins it via the `PATCHSTACK_ENDPOINT` env var on the agent process. Env pinning survives anything the agent does to project files and reads as platform plumbing. (Earlier versions planted the override in `.patchstackrc.json`; every agent flagged that file as the #1 trust concern, and one deleted it and provisioned a real production site. Don't regress this.)
 - **The agent runs with permissions skipped** (`--dangerously-skip-permissions`; the codex and gemini matrix agents use their equivalent bypass/yolo flags) in a temp-dir fixture, because headless runs can't answer permission prompts. It can run arbitrary commands. Supervise runs; don't run on a machine where that's unacceptable.
+- **The agent does not see who is running it.** Its environment is the runner's minus host identity (`AMP_*`, anything with `EMAIL`, Git author and committer). Agents read their environment while deciding whether to trust an install, and an email there tells them it is a test. Each attempt also gets its own `TMPDIR`, so cells can run side by side.
 - One run ≈ 3–6 minutes and ~30–50k agent tokens.
 
 ## Usage
@@ -143,6 +144,9 @@ node field-test/run.mjs --persona hostile --rounds 3
 # Test a prompt variant without touching prompt.txt
 node field-test/run.mjs --prompt /tmp/prompt-v3.txt
 
+# The bare request a person types, with no authorisations or flags spelled out
+node field-test/run.mjs --prompt field-test/prompts/one-liner.txt --template static-html
+
 # Different agent CLI
 node field-test/run.mjs --agent-cmd "claude -p --dangerously-skip-permissions --model opus"
 
@@ -155,7 +159,7 @@ grep -c 'field-test:meta' /tmp/captured.txt   # must be 0
 node field-test/run.mjs --agent-cmd "node '$PWD/field-test/stub-compliant.mjs'"
 ```
 
-Flags: `--persona <name>` (any `personas/<name>.md`), `--template lovable-bun|vite-npm|express-npm`, `--prompt <file>`, `--rounds N`, `--agent-cmd "<cmd>"`, `--keep` (don't delete the fixture), `--timeout <minutes>`, `--confirm` (see below), `--confirm-reply <file>` (override the confirmation text).
+Flags: `--persona <name>` (any `personas/<name>.md`), `--template <name>` (see "App matrix" below), `--prompt <file>`, `--rounds N`, `--agent-cmd "<cmd>"`, `--keep` (don't delete the fixture), `--timeout <minutes>`, `--confirm` (see below), `--confirm-reply <file>` (override the confirmation text).
 
 ### `--confirm` — legacy two-turn prompt experiments
 
@@ -229,9 +233,24 @@ These are trusted local commands, executed with the runner's permissions. Quote 
 
 A green cell requires all requested rounds, successful agent exits, no timeouts, and no void attempts. A successful retry can supply documentation evidence without erasing a failed prompt attempt. Empty or incomplete results cannot pass.
 
+## App matrix
+
+Each template is a small synthetic app of one kind. Its entry in `TEMPLATE_INFO` in `fixture.mjs` names the file its widget tag belongs in, the checks that cannot apply to that kind of app, and whether a correct run installs Connect at all.
+
+| Template | Class | App | Correct outcome |
+|---|---|---|---|
+| `lovable-bun`, `vite-npm` | C | Vite single-page app (bun, npm) | Full install |
+| `express-npm` | F | Express server | Full install with runtime guard |
+| `static-html` | A | Static HTML, no `package.json` | Install; dev-script check n/a |
+| `cdn-script` | B | Browser JavaScript from a CDN, no package manager | Install; dev-script check n/a |
+| `eleventy-npm` | D | Eleventy: JavaScript only at build time | Install; widget in `_includes/base.njk` |
+| `flask` | H | Python Flask app | Leave the app unchanged and say why |
+
+Not-applicable checks print as `–` and are left out of the total.
+
 ## What gets scored
 
-Each round prints a scorecard. The scorer checks resulting files and runs the installed CLI's source-only `protect --check`; it does not start the app or establish deployed protection. All current templates render `index.html`, so widget checks deliberately inspect that shell:
+Each round prints a scorecard. The scorer checks resulting files and runs the installed CLI's source-only `protect --check`; it does not start the app or establish deployed protection. Widget checks inspect the shell file the template names:
 
 | Check | Meaning |
 |---|---|
@@ -242,13 +261,17 @@ Each round prints a scorecard. The scorer checks resulting files and runs the in
 | `dependencyScanWired` | `postinstall` contains the dependency scan |
 | `devScriptsPreserved` | Development scripts match the fixture before the agent ran |
 | `sandboxNotPersisted` | No sandbox override in config, package scripts, or shared/production env files |
-| `widgetInstalled` | Exactly one widget script tag in the fixture's rendered `index.html` |
+| `widgetInstalled` | Exactly one widget script tag in the template's shell file |
 | `widgetTokenMatches` | The widget tag itself carries the mock site UUID |
 | `protectionVerified` | The installed `protect --check` succeeds and reports wired or explicitly not applicable |
 | `claimUrlSurfaced` | Agent output includes the mock dashboard URL for the correct site |
 | `noProductionLeak` | No production claim URL in agent output; this does not establish network isolation |
+| `installAvoided` | Only for apps Connect does not support: no dependency declared and no site provisioned |
 
-Everything is saved under `field-test/results/<timestamp>-<persona>/` (gitignored): the agent's full report (`report.md` — read HESITATIONS and UX FRICTION, that's where the insight is), the mock's request log, and per-round scorecards.
+Everything is saved under `field-test/results/<timestamp>-<persona>/` (gitignored): the agent's full report (`report.md` — read HESITATIONS and UX FRICTION, that's where the insight is), the mock's request log, and per-round scorecards. Each attempt also keeps:
+
+- `cli/` and `cli-commands.json`: every `npx` command that mentions Connect, with its working directory, output and exit code. A wrapper first on the agent's PATH records them; package.json hooks do not pass through it.
+- `findings.jsonl`: one JSON object per line, one per failed applicable check (`signature` `check:<check>:<template>`, with `owner` `connect` or `prompt`) and one per non-empty HESITATIONS or UX FRICTION section (`report:<type>:<template>:<persona>`). Fields: `signature`, `title`, `stage`, `check`, `type`, `owner`, `app_class`, `template`, `persona`, `actual`, `commands`, `evidence` (paths relative to the attempt directory). Merge across runs by `signature` before deciding what to fix.
 
 ## The improve-and-retest loop
 
