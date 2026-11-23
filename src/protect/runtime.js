@@ -456,11 +456,13 @@ export async function createProtection(options = {}) {
   let engine;
   let responseRuleSet;
   let egressRuleSet;
+  let deliveredRuleCount = 0;
 
   // Split the delivered ruleset by phase (default "request"), merging phase defaults +
   // per-call overrides. Detection is fully rule-driven — nothing hardcoded.
   const applyBundle = (delivered) => {
     const incoming = delivered.firewall ?? [];
+    deliveredRuleCount = incoming.length;
     requestRules = byPhase(incoming, 'request');
     responseRules = [...configuredResponseRules, ...byPhase(incoming, 'response')];
     screenCap = responseScreenCap(responseRules);
@@ -1768,6 +1770,7 @@ export async function createProtection(options = {}) {
     mode,
     devSync: typeof process !== 'undefined' && process.env.PATCHSTACK_DEV_SYNC === '1',
     rules: {request:requestRules.length, response:responseRules.length, egress:egressRules.length,
+      delivered: deliveredRuleCount, local: configuredResponseRules.length + configuredEgressRules.length,
       scoped: [...requestRules, ...responseRules, ...egressRules].filter(rule => 'build_scope' in rule).length,
       scopedBlocking: [...requestRules, ...responseRules, ...egressRules].filter(rule => 'build_scope' in rule && ruleMode(rule) === 'block').length},
   });

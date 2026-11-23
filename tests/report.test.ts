@@ -89,7 +89,7 @@ describe('renderStatus concise', () => {
       '   Low      ███████░░░░░░░░░░░░░  1',
       '',
       '   12 packages are outdated',
-      '   12 protection rules available',
+      '   12 protection rules from Patchstack',
       '',
       'More  npx @patchstack/connect vulns  vulnerability details',
     ]);
@@ -199,7 +199,7 @@ describe('renderSummary', () => {
       `When you've connected, say **done**, and we'll get your live app protected.`,
       '',
       '#### What Patchstack found',
-      '🔴 High **1** · 🟠 Medium **3** · 🔵 Low **1** · 12 packages outdated · 12 protection rules available',
+      '🔴 High **1** · 🟠 Medium **3** · 🔵 Low **1** · 12 packages outdated · 12 protection rules from Patchstack',
       '',
       "**Reload your app's preview page.** The Patchstack widget appears in a bottom corner of the page.",
     ]);
@@ -289,7 +289,7 @@ describe('renderSummary', () => {
   it('never states a count the run did not get', () => {
     const lines = renderSummary(report({ findings: null, rules: 12 }), notConnected, context, { widgetOnPage: false, dashboardUrl: null });
     expect(lines[5]).toBe('### 🛡️ Checked 89 packages, now watching them');
-    expect(lines[7]).toBe('12 protection rules available.');
+    expect(lines[7]).toBe('12 protection rules from Patchstack.');
   });
 
   it('ends on the word AGENT-INSTALL.md maps to next, and the doc still maps the summary for later', () => {
