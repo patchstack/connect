@@ -139,6 +139,9 @@ const DETECTION_STALE_MS = 10_000;
 const BACKGROUND_CHECK_MS = 30_000;
 
 export async function createProtection(options = {}) {
+  // Read before anything else is: the switch exists for an incident, where the guard itself may be what
+  // has to stop, so nothing of it runs once the switch is set.
+  if (switchedOffInEnvironment()) return switchedOffProtection(options);
   // A copy of the runtime cache entry (`{ bundle, etag, … }`) passed as `rules` is read as the bundle it holds.
   if (options.rules && !Array.isArray(options.rules) && !Array.isArray(options.rules.firewall)
     && options.rules.bundle && Array.isArray(options.rules.bundle.firewall)) {
@@ -2299,6 +2302,63 @@ function accessorOf(obj, name) {
 /** The error Node raises for a header operation once the head has gone. */
 function headersSentError(verb) {
   return Object.assign(new Error(`Cannot ${verb} headers after they are sent to the client`), { code: 'ERR_HTTP_HEADERS_SENT' });
+}
+
+/** Whether `PATCHSTACK_MODE=off` is set where this process runs. Read once per guard, when it is created. */
+function switchedOffInEnvironment() {
+  return typeof process !== 'undefined' && process.env?.PATCHSTACK_MODE === 'off';
+}
+
+const SWITCHED_OFF_SAID = Symbol.for('patchstack.connect.switched-off-said');
+
+/**
+ * The guard an app gets while `PATCHSTACK_MODE=off`: every method is there, so the code that calls it
+ * runs unchanged, and none of them screens, reports or reaches the network. Requests go to the app as
+ * they came, responses leave as the app made them, and `fetch` and `node:http` are left as they were.
+ */
+function switchedOffProtection(options) {
+  const building = process.env?.NEXT_PHASE === 'phase-production-build';
+  if (!building && !globalThis[SWITCHED_OFF_SAID]) {
+    // Once per process, however many copies of the guard a bundler makes.
+    globalThis[SWITCHED_OFF_SAID] = true;
+    console.warn(
+      '[patchstack] PATCHSTACK_MODE=off is set in this environment, so the guard is switched off: ' +
+        'requests, responses and outbound calls are not screened, and nothing is reported. Remove PATCHSTACK_MODE to switch it back on.',
+    );
+  }
+
+  const source = { ok: false, origin: 'empty', reason: 'switched off by PATCHSTACK_MODE' };
+  const passOn = (_req, _res, next) => next();
+
+  return {
+    mode: 'off',
+    rules: { request: [], response: [], egress: [] },
+    coverage: () => ({ skipped: {} }),
+    screenResponse: async (response) => response,
+    screenNodeResponse() {},
+    fetchGuard: () => async () => null,
+    fetch: (handler) => handler,
+    express: () => passOn,
+    node: () => passOn,
+    stop: () => Promise.resolve(),
+    stopRefresh: () => Promise.resolve(),
+    ruleSource: { ...source },
+    synchronization: {
+      siteUuid: options.siteUuid ?? null,
+      buildId: null,
+      matched: false,
+      mapRules: 'unknown',
+      etag: null,
+      lastCheckedAt: null,
+      source: { ...source },
+      mode: 'off',
+      devSync: false,
+      rules: { request: 0, response: 0, egress: 0, delivered: 0, local: 0, scoped: 0, scopedBlocking: 0 },
+    },
+    detectionReporting: 'disabled-by-config',
+    detectionHealth: undefined,
+    blockLogHealth: undefined,
+  };
 }
 
 /**

@@ -364,7 +364,7 @@ Environment:
   PATCHSTACK_ENDPOINT     API endpoint (default: https://api.patchstack.com/monitor/pulse/manifest)
   PATCHSTACK_TIMEOUT_MS   Request timeout in ms (default: 30000; a scan that needs longer saves what worked to .patchstackrc.json)
   PATCHSTACK_ENVIRONMENT  Manifest label: production, sandbox or local. Unset, the build platform's own tier or branch name decides; a developer machine reports local.
-  PATCHSTACK_MODE         (protect) Runtime guard mode: block (default) | dry-run
+  PATCHSTACK_MODE         (protect) Runtime guard mode: block (default) | dry-run | off (screens nothing; applied on restart)
   PATCHSTACK_ROUTE_WAF    (protect) Set to 1 to also screen every request at the route level (opt-in)
 
 Precedence, site UUID and settings: CLI flag > environment variable > .patchstackrc.json (committed).

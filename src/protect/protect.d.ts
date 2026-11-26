@@ -19,7 +19,7 @@ export interface SynchronizationStatus {
   etag: string | null;
   lastCheckedAt: number | null;
   source: {ok: boolean; origin: "api" | "cache" | "bundled" | "empty"; reason?: string};
-  mode: "block" | "dry-run";
+  mode: "block" | "dry-run" | "off";
   devSync: boolean;
   rules: {request: number; response: number; egress: number; delivered: number; local: number; scoped: number; scopedBlocking: number};
 }
@@ -27,7 +27,12 @@ export interface SynchronizationStatus {
 export interface Protection {
   /** Snapshot of the loaded guard and its last rule resolution, not proof of whole-app coverage. */
   readonly synchronization: SynchronizationStatus;
-  mode: "block" | "dry-run";
+  /**
+   * `off` only while `PATCHSTACK_MODE=off` is set in the environment: the guard screens nothing, reports
+   * nothing and reaches no network. It is read when the guard is created, so it takes a restart to set
+   * or clear, and it cannot be chosen on the platform or passed as an option.
+   */
+  mode: "block" | "dry-run" | "off";
   /** Active rules split by phase. */
   rules: { request: unknown[]; response: unknown[]; egress: unknown[] };
   /** (request, ...hostArgs) => Response (403 when blocked) | null (allow / dry-run). Request phase only.

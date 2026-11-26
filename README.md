@@ -548,6 +548,11 @@ refreshes rules while the app runs. It uses the existing cache and reporting.
 Set `PATCHSTACK_MODE=dry-run` to observe, or `PATCHSTACK_EGRESS=1` to enable
 outbound screening. Connect defaults to block mode for this integration.
 
+`PATCHSTACK_MODE=off` switches the guard off for any integration: nothing is
+screened, fetched or reported, and the app's log says so once at start. It is
+read when the app starts, so setting or clearing it takes a restart and no code
+change. An app with it set is not protected.
+
 Import `protection` from the same entry point to inspect its `synchronization`
 and `coverage()` or to mount a request adapter. Preloading alone does not attach
 inbound request or response protection. Keep preview and production site

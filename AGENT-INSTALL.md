@@ -772,8 +772,14 @@ would have stopped while it is still in dry-run. Two separate paths, with differ
   `protect --check` still accepts as the guard it wrote. Any other change to the file makes it a custom
   guard, which the check cannot vouch for.
 
-  **In automated tests**, the guard has no switch that removes it. Run the tests with
-  `PATCHSTACK_MODE=dry-run`, so it blocks nothing, and `PATCHSTACK_TELEMETRY=off`, so it reports nothing.
+  **In automated tests**, run the tests with `PATCHSTACK_MODE=dry-run`, so the guard blocks nothing, and
+  `PATCHSTACK_TELEMETRY=off`, so it reports nothing.
+
+  **`PATCHSTACK_MODE=off` switches the guard off.** With it set, requests, responses and outbound calls
+  are not screened, no rules are fetched and nothing is reported; the app's log says so once at start.
+  It is read when the app starts, so it is set or cleared with a restart and no code change. It is for
+  the person running the app to use during an incident. Do not set it as part of an install, or to make
+  a test or a check pass: an app with it set is not protected.
   Keep `app.use(patchstackMiddleware)` unconditional: `protect --check` counts only a guard registered in
   the app's own scope, so registering it inside an `if` reads as unprotected.
 
