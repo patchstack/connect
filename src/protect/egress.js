@@ -44,6 +44,25 @@ function readableDestination(input, init) {
   }
 }
 
+// Whether the body a fetch call carries can be read again after the call is made: a string, bytes, form
+// fields or a blob given in `init`, or no body at all. A stream is read once, and a caller's own Request
+// gives its body up to whichever Request is built from it.
+function bodyCanBeSentAgain(input, init) {
+  const body = init?.body;
+  if (body !== undefined && body !== null) {
+    return (
+      typeof body === 'string' ||
+      body instanceof URLSearchParams ||
+      body instanceof ArrayBuffer ||
+      ArrayBuffer.isView(body) ||
+      (typeof Blob === 'function' && body instanceof Blob) ||
+      (typeof FormData === 'function' && body instanceof FormData)
+    );
+  }
+  if (input === null || typeof input !== 'object' || input instanceof URL) return true;
+  return input.body === undefined || input.body === null;
+}
+
 // Asks every screen, so each one reports its own refusal, then answers whether any refused.
 function anyRefuses(screens, url, host, method) {
   let refused = false;
@@ -138,14 +157,16 @@ export async function installEgressGuard({ shouldBlock, onBlock, onSkip, dnsScre
     const MAX_REDIRECTS = 20;
     const MAX_REPLAY_BODY_BYTES = 1024 * 1024;
 
-    const captureReplayBody = (request) => {
+    // Reads a request body into memory, up to the replay limit. `own` reads the body of a Request this
+    // guard built for itself and never sends; otherwise a clone is read, because the Request is on its way out.
+    const captureReplayBody = (request, own = false) => {
       if (request.method === 'GET' || request.method === 'HEAD' || !request.body) {
         return { result: Promise.resolve({ body: undefined, tooLarge: false }), cancel() {} };
       }
 
       let reader;
       try {
-        reader = request.clone().body?.getReader();
+        reader = (own ? request : request.clone()).body?.getReader();
       } catch {
         reader = null;
       }
@@ -216,6 +237,23 @@ export async function installEgressGuard({ shouldBlock, onBlock, onSkip, dnsScre
     };
 
     const guarded = async (input, init) => {
+      const callerRedirect = (init && init.redirect) || (input && input.redirect) || 'follow';
+
+      // Caller manages redirects itself (manual/error) → screen once, and the call goes on exactly as it
+      // came. The destination is read off the arguments rather than off a Request built from them:
+      // building one takes the body of a caller's Request, and that Request is the one to send.
+      if (callerRedirect !== 'follow') {
+        const destination = readableDestination(input, init);
+        if (destination) {
+          await screenUrl(destination.url, destination.method);
+          return originalFetch(input, init);
+        }
+      }
+
+      // Decided before a Request is built from the arguments, which is what takes a body that cannot be
+      // read twice.
+      const sendAsItCame = bodyCanBeSentAgain(input, init);
+
       let cur;
       try {
         cur = new Request(input, { ...(init || {}), redirect: 'manual' });
@@ -228,23 +266,37 @@ export async function installEgressGuard({ shouldBlock, onBlock, onSkip, dnsScre
         else for (const each of registry.screens) each.skip('unrecognised-request', {});
         return originalFetch(input, init);
       }
-      const callerRedirect = (init && init.redirect) || (input && input.redirect) || 'follow';
-
       let url = cur.url;
       let method = cur.method;
       await screenUrl(url, method);
 
-      // Caller manages redirects itself (manual/error) → screen once, hand back the raw response.
+      // A caller managing redirects whose destination could only be read through a Request.
       if (callerRedirect !== 'follow') return originalFetch(input, init);
 
       // Otherwise follow redirects ourselves so EVERY hop is screened. Native `follow` re-resolves
       // internally and would let a 3xx to an internal address slip past the initial check — SSRF via
-      // an open redirect. Capture a bounded clone concurrently with the first request: most calls never
-      // redirect, so their first byte must not wait for a complete request body, while 307/308 still have
-      // a replayable body when it is small enough to retain.
+      // an open redirect.
+      //
+      // The first hop goes out as the caller wrote it whenever its body can be read again, so whatever
+      // sits under this guard (a framework's own fetch, an APM agent) is handed the call it would have
+      // been handed without the guard. `cur` then only holds a copy of the body for a 307/308, read if
+      // one arrives. A body that can be read once travels in `cur`, with a bounded clone captured
+      // alongside the first request: most calls never redirect, so their first byte must not wait for a
+      // complete request body.
       const headers = new Headers(cur.headers);
       const signal = cur.signal;
-      const replay = captureReplayBody(cur);
+      let retained;
+      const replay = sendAsItCame
+        ? {
+            get result() {
+              retained ??= captureReplayBody(cur, true);
+              return retained.result;
+            },
+            cancel() {
+              retained?.cancel();
+            },
+          }
+        : captureReplayBody(cur);
       // Every hop is sent with the caller's own options (a dispatcher, keepalive, referrer policy, …).
       // Only what this loop owns per hop is replaced; the body is consumed by the first hop's Request.
       const { body: _callerBody, ...callerOptions } = init || {};
@@ -254,9 +306,11 @@ export async function installEgressGuard({ shouldBlock, onBlock, onSkip, dnsScre
         let resp;
         try {
           resp =
-            hop === 0
-              ? await originalFetch(cur, { ...callerOptions, redirect: 'manual' })
-              : await originalFetch(url, { ...callerOptions, method, headers, body, redirect: 'manual', signal });
+            hop > 0
+              ? await originalFetch(url, { ...callerOptions, method, headers, body, redirect: 'manual', signal })
+              : sendAsItCame
+                ? await originalFetch(input, { ...(init || {}), redirect: 'manual' })
+                : await originalFetch(cur, { ...callerOptions, redirect: 'manual' });
         } catch (error) {
           replay.cancel();
           throw error;
