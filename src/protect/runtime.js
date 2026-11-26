@@ -448,6 +448,23 @@ export async function createProtection(options = {}) {
   // Mode is mutable so a Patchstack for JavaScript refresh can flip dry-run ↔ block when SaaS enables production.
   // Precedence: PATCHSTACK_MODE env (local override) > API enforcement > options.mode > dry-run.
   let mode = resolveMode(options, bundle);
+  // Said once per pairing, in the app's own log: a mode set in the environment wins over the one chosen
+  // on the platform, and nothing on the platform shows that it did.
+  const warnedModeOverrides = new Set();
+  const noteModeOverride = (delivered) => {
+    const local = typeof process !== 'undefined' ? process.env?.PATCHSTACK_MODE : undefined;
+    const chosen = delivered?.enforcement;
+    if ((local !== 'block' && local !== 'dry-run') || (chosen !== 'block' && chosen !== 'dry-run') || local === chosen) return;
+    if (typeof process !== 'undefined' && process.env?.NEXT_PHASE === 'phase-production-build') return;
+    const pairing = `${local}>${chosen}`;
+    if (warnedModeOverrides.has(pairing)) return;
+    warnedModeOverrides.add(pairing);
+    console.warn(
+      `[patchstack] PATCHSTACK_MODE=${local} is set in this environment, so the guard runs in ${local}. ` +
+        `The mode chosen in the Patchstack dashboard (${chosen}) is not applied. Remove PATCHSTACK_MODE to follow the dashboard.`,
+    );
+  };
+  noteModeOverride(bundle);
   // Rule-derived runtime state. Held in `let` bindings the guard methods below close over, so a
   // refresh (see the loop near the end) can hot-swap the engines by reassigning them — the
   // egress interception and the protection object itself stay in place, no re-install.
@@ -2148,6 +2165,7 @@ export async function createProtection(options = {}) {
     synchronization = next.synchronization ?? null;
     if (next.source?.ok) lastCheckedAt = Date.now();
     mode = resolveMode(options, next);
+    noteModeOverride(next);
     applyBundle(next);
     noteRuleSource(next.source);
     if (next.source?.ok !== false) recovery?.stop();
