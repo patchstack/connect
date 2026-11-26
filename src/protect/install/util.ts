@@ -66,6 +66,24 @@ export function hasResolvableCredential(
   return false;
 }
 
+/**
+ * The env file in this project that sets a Patchstack credential, if one does.
+ *
+ * A file like this is loaded by the app's framework when the app starts, not by this command, so a key
+ * that lives only there is in the running app's environment and absent from this one. Only whether it
+ * is set is read; the value is not.
+ */
+export function envFileNamingCredential(cwd: string): string | null {
+  for (const file of ['.env.production.local', '.env.local', '.env.production', '.env']) {
+    try {
+      if (/^[ \t]*(?:export[ \t]+)?PATCHSTACK_(?:API_KEY|PULSE_AUTH)[ \t]*=[ \t]*\S/m.test(read(join(cwd, file)))) return file;
+    } catch {
+      // Absent or unreadable — the next candidate.
+    }
+  }
+  return null;
+}
+
 const SITE_UUID_PLACEHOLDER = '__PATCHSTACK_SITE_UUID__';
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 

@@ -13,7 +13,7 @@ import { join } from 'node:path';
 
 import { reportingState, explainReportingState } from '../reporting-state.js';
 import type { VerifyCheck } from './types.js';
-import { read, hasResolvableCredential, isSiteUuid, findSiteUuidUp } from './util.js';
+import { read, hasResolvableCredential, envFileNamingCredential, isSiteUuid, findSiteUuidUp } from './util.js';
 
 /**
  * The site identity the guard would run with, resolved the way the guard resolves it.
@@ -100,6 +100,19 @@ export function reportingChecks(cwd: string, env: Record<string, string | undefi
         "your own (`no-managed-rules`). Read `protection.detectionReporting` in the running app for the " +
         'settled answer. This also only judges the environment it ran in — a deployment may set an ' +
         'opt-out this machine cannot see.',
+    });
+  } else if (state === 'unavailable-no-credential' && envFileNamingCredential(cwd) !== null) {
+    // No credential in this command's environment, and one in a file the app's framework loads at
+    // start. Calling reporting off would describe this command, not the app.
+    const file = envFileNamingCredential(cwd);
+    checks.push({
+      group: 'reporting',
+      label: `detection reporting cannot be judged from here (the key is set in ${file}, which this command does not load)`,
+      ok: true,
+      unverifiable: true,
+      hint:
+        `an app whose framework loads ${file} has the key and reports; one that does not load it has no ` +
+        'key and reports nothing. Read `protection.detectionReporting` in the running app for the settled answer.',
     });
   } else {
     // Decided before the rule origin mattered, so this is the state, not a guess. Said in the label

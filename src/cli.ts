@@ -2201,6 +2201,15 @@ async function runMarkBuild(args: ParsedArgs): Promise<number> {
 
   const buildDirOptions = { framework: stack?.framework ?? null, buildScript: readBuildScript(cwd) };
   const dir = resolveBuildDir(cwd, getStringFlag(args.flags, 'dir'), buildDirOptions);
+  if (dir === null && stack?.framework === 'next' && existsSync(path.join(cwd, '.next'))) {
+    // A Next.js build that is not a static export writes `.next/`, which holds no page files to mark:
+    // its documents are produced per request. Said as that, not as a directory that could not be found.
+    console.warn('mark-build: found .next/, a server-rendered Next.js build with no HTML files to mark.');
+    console.warn('mark-build: run `npx @patchstack/connect guide` to see what your main layout needs.');
+    await reportBuildStamp(reported, wirePayload, 'no-pages');
+    return 0;
+  }
+
   if (dir === null) {
     // Loud, and specific: this runs as a postbuild hook whose output scrolls past, and a build that
     // finished with nothing stamped is exactly what a published site with no production marker looks
@@ -2503,15 +2512,28 @@ async function runCommand(args: ParsedArgs): Promise<number> {
   }
 }
 
+/**
+ * Ends the process with `code`.
+ *
+ * On Windows the process is left to end on its own once its work is done, because exiting while a
+ * network connection is still closing aborts Node there with an assertion that reads as a crash. The
+ * timer is the backstop for anything that would keep it alive, and does not itself keep it alive.
+ */
+function finish(code: number): void {
+  if (process.platform !== 'win32') process.exit(code);
+  process.exitCode = code;
+  setTimeout(() => process.exit(code), 3000).unref();
+}
+
 main()
-  .then((code) => process.exit(code))
+  .then((code) => finish(code))
   .catch((err: unknown) => {
     if (err instanceof PatchstackError) {
       const plain = plainErrorMessage(err);
       console.error(`${plain ?? err.message} (${err.code})`);
       if (plain !== null && verbose) console.error(`Detail: ${err.message}`);
-      process.exit(1);
+      return finish(1);
     }
     console.error('Unexpected error:', err);
-    process.exit(2);
+    finish(2);
   });

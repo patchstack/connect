@@ -53,6 +53,31 @@ describe.skipIf(!built)('the packaged bin, invoked as npm invokes it', () => {
     }
   }
 
+  it('says a Next.js server build has no pages to mark, rather than that no build was found', () => {
+    const dir = mkdtempSync(path.join(tmpdir(), 'ps-next-mark-'));
+    try {
+      writeFileSync(path.join(dir, 'package.json'), JSON.stringify({ name: 'probe', version: '1.0.0', dependencies: { next: '16.0.0' } }));
+      writeFileSync(
+        path.join(dir, 'package-lock.json'),
+        JSON.stringify({
+          name: 'probe',
+          version: '1.0.0',
+          lockfileVersion: 3,
+          packages: { '': { name: 'probe', version: '1.0.0', dependencies: { next: '16.0.0' } }, 'node_modules/next': { version: '16.0.0' } },
+        }),
+      );
+      mkdirSync(path.join(dir, '.next'));
+
+      const result = spawnSync(process.execPath, [bin, 'mark-build'], { cwd: dir, encoding: 'utf8' });
+
+      expect(result.status).toBe(0);
+      expect(result.stderr).toContain('found .next/, a server-rendered Next.js build');
+      expect(result.stderr).not.toContain('no build output directory found');
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   it('prints its help through a symlinked path', () => {
     const { stdout } = runThroughSymlink(['--help']);
 
