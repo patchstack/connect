@@ -45,6 +45,30 @@ const find = (checks: ReturnType<typeof reportingChecks>, fragment: string) => {
   return hit!;
 };
 
+describe('a key that lives in an env file', () => {
+  it('is not called missing, because the app loads that file and this command does not', () => {
+    const dir = project({ siteUuid: UUID });
+    writeFileSync(join(dir, '.env'), 'OTHER=1\nPATCHSTACK_API_KEY=example-not-a-key\n');
+
+    const checks = reportingChecks(dir, {});
+    const reporting = find(checks, 'cannot be judged from here');
+
+    expect(reporting.ok).toBe(true);
+    expect(reporting.unverifiable).toBe(true);
+    expect(reporting.label).toContain('.env');
+    // The file is named; what it holds is not.
+    expect(JSON.stringify(checks)).not.toContain('example-not-a-key');
+    expect(checks.some((c) => c.label.includes('reporting is off'))).toBe(false);
+  });
+
+  it('still says there is no credential when the env file only mentions the name', () => {
+    const dir = project({ siteUuid: UUID });
+    writeFileSync(join(dir, '.env'), '# PATCHSTACK_API_KEY=\nPATCHSTACK_API_KEY=\n');
+
+    expect(find(reportingChecks(dir, {}), 'reporting is off').label).toContain('unavailable-no-credential');
+  });
+});
+
 describe('what it can answer', () => {
   it('says an app is not enrolled, and what that costs', () => {
     const checks = reportingChecks(project(), {});

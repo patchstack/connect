@@ -9,7 +9,30 @@ import type { PackageEntry } from '../types.js';
  * their absence from a parsed set says nothing about staleness. Returns []
  * when package.json is missing or unreadable (nothing to validate against).
  */
+/**
+ * A dependency package.json declares. `aliasOf` is the package an npm alias (`"zod4": "npm:zod@^4"`)
+ * installs: the lockfile and the installed tree name it by its own name, not by the key it is declared
+ * under, so either name in a source means the dependency is there.
+ */
+export interface DeclaredDependency {
+  name: string;
+  aliasOf?: string;
+}
+
+/** The package an `npm:` alias specifier installs, or null for any other specifier. */
+function aliasTarget(spec: unknown): string | null {
+  if (typeof spec !== 'string' || !spec.startsWith('npm:')) return null;
+  const target = spec.slice('npm:'.length);
+  const versionAt = target.lastIndexOf('@');
+  const name = versionAt > 0 ? target.slice(0, versionAt) : target;
+  return name.length > 0 ? name : null;
+}
+
 export async function readDeclaredDependencyNames(cwd: string): Promise<string[]> {
+  return (await readDeclaredDependencies(cwd)).map((dependency) => dependency.name);
+}
+
+export async function readDeclaredDependencies(cwd: string): Promise<DeclaredDependency[]> {
   let raw: string;
   try {
     raw = await readFile(path.join(cwd, 'package.json'), 'utf8');
@@ -27,7 +50,7 @@ export async function readDeclaredDependencyNames(cwd: string): Promise<string[]
     return [];
   }
 
-  const names = new Set<string>();
+  const declared = new Map<string, DeclaredDependency>();
   // `optionalDependencies` included: they are installed when the platform supports them, they can be
   // vulnerable, and leaving them out meant a lockfile that omitted one still read as complete.
   for (const group of ['dependencies', 'devDependencies', 'optionalDependencies'] as const) {
@@ -39,11 +62,12 @@ export async function readDeclaredDependencyNames(cwd: string): Promise<string[]
       if (typeof spec === 'string' && /^(file|link|workspace|portal):/.test(spec)) {
         continue;
       }
-      names.add(name);
+      const aliasOf = aliasTarget(spec);
+      declared.set(name, aliasOf !== null && aliasOf !== name ? { name, aliasOf } : { name });
     }
   }
 
-  return [...names];
+  return [...declared.values()];
 }
 
 /**
@@ -52,9 +76,12 @@ export async function readDeclaredDependencyNames(cwd: string): Promise<string[]
  * e.g. `npm install` planted a package-lock.json once and the platform's
  * native package manager (bun on Lovable) never updates it again.
  */
-export function missingDependencies(declared: string[], packages: PackageEntry[]): string[] {
+export function missingDependencies(declared: Array<string | DeclaredDependency>, packages: PackageEntry[]): string[] {
   const present = new Set(packages.map((entry) => entry.name));
-  return declared.filter((name) => !present.has(name));
+  return declared
+    .map((dependency) => (typeof dependency === 'string' ? { name: dependency } : dependency))
+    .filter(({ name, aliasOf }: DeclaredDependency) => !present.has(name) && !(aliasOf !== undefined && present.has(aliasOf)))
+    .map(({ name }) => name);
 }
 
 /**

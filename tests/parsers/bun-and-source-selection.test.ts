@@ -5,7 +5,7 @@ import { join } from 'node:path';
 import { parseBunLockfile } from '../../src/parsers/bun.js';
 import { walkNodeModules } from '../../src/parsers/node_modules.js';
 import { scanLockfile } from '../../src/parsers/index.js';
-import { disagreements, readDeclaredDependencyNames } from '../../src/parsers/consistency.js';
+import { disagreements, missingDependencies, readDeclaredDependencies, readDeclaredDependencyNames } from '../../src/parsers/consistency.js';
 import { extractName } from '../../src/parsers/yarn.js';
 
 /**
@@ -265,6 +265,24 @@ describe('what counts as a declared dependency', () => {
     });
 
     expect((await readDeclaredDependencyNames(cwd)).sort()).toEqual(['a', 'b']);
+  });
+
+  it('finds an npm alias under the name of the package it installs', async () => {
+    // "zod4": "npm:zod@^4" is installed and locked as `zod`, so a list that names `zod` has it.
+    const cwd = project({
+      'package.json': JSON.stringify({
+        name: 'probe',
+        dependencies: { zod4: 'npm:zod@^4.4.3', scoped: 'npm:@scope/real@1.0.0', a: '^1.0.0' },
+      }),
+    });
+    const declared = await readDeclaredDependencies(cwd);
+
+    expect(declared).toEqual([{ name: 'zod4', aliasOf: 'zod' }, { name: 'scoped', aliasOf: '@scope/real' }, { name: 'a' }]);
+    const entry = (name: string) => ({ name, version: '1.0.0' });
+    expect(missingDependencies(declared, [entry('zod'), entry('@scope/real'), entry('a')])).toEqual([]);
+    // A source that lists the alias under its declared key has it too.
+    expect(missingDependencies(declared, [entry('zod4'), entry('scoped'), entry('a')])).toEqual([]);
+    expect(missingDependencies(declared, [entry('a')])).toEqual(['zod4', 'scoped']);
   });
 
   it('still excludes a non-registry specifier', async () => {

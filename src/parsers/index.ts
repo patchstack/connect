@@ -1,7 +1,7 @@
 import { access } from 'node:fs/promises';
 import path from 'node:path';
 import { PatchstackError, type Manifest, type PackageEntry } from '../types.js';
-import { disagreements, missingDependencies, readDeclaredDependencyNames } from './consistency.js';
+import { disagreements, missingDependencies, readDeclaredDependencies, type DeclaredDependency } from './consistency.js';
 import { parseBunLockfile } from './bun.js';
 import { parseNpmLockfile } from './npm.js';
 import { walkNodeModules } from './node_modules.js';
@@ -87,7 +87,7 @@ export async function scanLockfile(cwd: string): Promise<Manifest> {
   // package-lock.json once on a bun-managed platform (Lovable), and the native
   // dependency flow never updates it again. Trusting it would freeze the
   // manifest and the build fingerprint while the real dependency set drifts.
-  const declared = await readDeclaredDependencyNames(cwd);
+  const declared = await readDeclaredDependencies(cwd);
   const warnings: string[] = [];
   let firstParsed: { packages: PackageEntry[]; filename: string } | null = null;
   // The installed tree, if some lockfile already routed us to it (a `bun.lockb` cannot be read, so it
@@ -192,7 +192,7 @@ function manifestWith(packages: PackageEntry[], warnings: string[]): Manifest {
 function otherCompleteSources(
   all: Array<{ packages: PackageEntry[]; filename: string }>,
   current: { filename: string },
-  declared: string[],
+  declared: DeclaredDependency[],
 ): Array<{ packages: PackageEntry[]; filename: string }> {
   return all.filter(
     (source) => source.filename !== current.filename && missingDependencies(declared, source.packages).length === 0,
