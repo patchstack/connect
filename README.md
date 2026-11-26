@@ -123,6 +123,17 @@ sandbox is one. `npm ping` shows whether the registry answers. If it does not:
 
 Then run the install again.
 
+### If the install stops at `ERESOLVE`
+
+That error also comes from npm, and it is about packages the project already had: two of them ask for
+versions of a third that cannot both be met. `@patchstack/connect` declares no peer dependencies, so it
+is not one of the two; adding any package makes npm check the whole tree again, which is when an existing
+conflict surfaces.
+
+- Fix the conflict the message names, then run the install again, or
+- install with `npm install --legacy-peer-deps @patchstack/connect`, which adds the package and leaves
+  the project's peer dependencies as they were.
+
 ### Claude Code plugin
 
 In Claude Code, install the plugin from this repository's marketplace:
@@ -471,6 +482,20 @@ For DigitalOcean App Platform or Droplets, set the tier explicitly in the enviro
 | Local development | Leave unset, or set `PATCHSTACK_ENVIRONMENT=local` |
 
 In App Platform, make the variable available at build time (`BUILD_TIME` or `RUN_AND_BUILD_TIME`); a runtime-only setting cannot label the prebuild scan or stamp built HTML. Docker builds must pass it into the build steps that run Connect. DigitalOcean's documented app URL and ID variables identify an app, not its deployment tier; `NODE_ENV=production` also does not distinguish a local optimized build from a deployment. See [DigitalOcean environment configuration](https://docs.digitalocean.com/products/app-platform/how-to/use-environment-variables/).
+
+The same holds for any server you deploy to yourself (a VPS, a bare-metal host, your own container
+platform): nothing there tells Connect which build is the production one, so a build on it reports
+`local`. Set the tier in the deploy script, before the install and the build:
+
+```bash
+export PATCHSTACK_ENVIRONMENT=production
+export PATCHSTACK_API_KEY=…   # from a secret store, not from the script
+npm ci
+npm run build
+```
+
+Set it only in the script that builds what goes live. A production label on a build that is not the one
+being served leaves the dashboard waiting to see that build on the live site.
 
 An explicit `PATCHSTACK_ENVIRONMENT` overrides `.patchstackrc.json`, and the file's `environment` overrides automatic detection. When production keeps reporting sandbox after deployment, remove a workspace-only override from the committed config and from the production build environment, then rebuild and deploy. Apply sandbox overrides only to preview processes or preview deployment settings.
 
