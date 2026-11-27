@@ -22,6 +22,33 @@ export function reportTrigger(env: EnvLike = process.env): ReportTrigger {
   return 'other';
 }
 
+/** The coding agents Connect can recognise from the environment of the commands they run. */
+export type CodingAgent = 'amp' | 'claude' | 'codex' | 'copilot' | 'cursor' | 'gemini' | 'opencode';
+
+/**
+ * The coding agent this CLI runs under, read from the variables agents set on the commands they start,
+ * or null when none is recognised. Only the agent's name leaves the machine, never a variable's value.
+ *
+ * Order matters where agents set each other's markers: Amp also sets `CLAUDECODE`, so it is checked
+ * before Claude Code. A child process inherits these variables, so this says an agent started the
+ * process tree, not that nobody is watching.
+ */
+export function codingAgent(env: EnvLike = process.env): CodingAgent | null {
+  const set = (name: string): boolean => {
+    const value = env[name];
+    return value !== undefined && value !== '' && value !== '0' && value.toLowerCase() !== 'false';
+  };
+
+  if (env.AGENT === 'amp' || set('AMP_CURRENT_THREAD_ID')) return 'amp';
+  if (set('CODEX_THREAD_ID') || set('CODEX_CI') || set('CODEX_SANDBOX')) return 'codex';
+  if (set('GEMINI_CLI')) return 'gemini';
+  if (set('COPILOT_CLI') || set('COPILOT_AGENT_SESSION_ID')) return 'copilot';
+  if (set('OPENCODE')) return 'opencode';
+  if (set('CLAUDECODE') || set('CLAUDE_CODE')) return 'claude';
+  if (set('CURSOR_AGENT')) return 'cursor';
+  return null;
+}
+
 let runCommand: string | null = null;
 
 /** The CLI command this process runs, named on each request so the site's activity log can show it. */
@@ -30,14 +57,17 @@ export function setRunCommand(command: string | null): void {
 }
 
 /**
- * Headers every request from the CLI carries: the client, the command that sent it and what started
- * that command (an install, a build, or something else). Names only — never arguments or values.
+ * Headers every request from the CLI carries: the client, the command that sent it, what started that
+ * command (an install, a build, or something else) and the coding agent running it, when one is
+ * recognised. Names only — never arguments or values.
  */
 export function connectHeaders(env: EnvLike = process.env): Record<string, string> {
+  const agent = codingAgent(env);
   return {
     'User-Agent': '@patchstack/connect',
     ...(runCommand !== null ? { 'X-Patchstack-Command': runCommand } : {}),
     'X-Patchstack-Trigger': reportTrigger(env),
+    ...(agent !== null ? { 'X-Patchstack-Agent': agent } : {}),
   };
 }
 

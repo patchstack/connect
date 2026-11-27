@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 
 import { buildManifestBody } from '../src/client.js';
-import { reportTrigger } from '../src/report-context.js';
+import { codingAgent, connectHeaders, reportTrigger } from '../src/report-context.js';
 import type { Config } from '../src/types.js';
 
 const config = {
@@ -37,5 +37,34 @@ describe('buildManifestBody report context', () => {
 
   it('always sends a trigger, even when nothing names one', () => {
     expect(buildManifestBody(config, payload, {}).trigger).toBe('other');
+  });
+});
+
+describe('codingAgent', () => {
+  it('names the agent from the variable it sets on the commands it runs', () => {
+    expect(codingAgent({ CLAUDECODE: '1' })).toBe('claude');
+    expect(codingAgent({ CODEX_THREAD_ID: 'thread' })).toBe('codex');
+    expect(codingAgent({ CODEX_CI: '1' })).toBe('codex');
+    expect(codingAgent({ CURSOR_AGENT: '1' })).toBe('cursor');
+    expect(codingAgent({ GEMINI_CLI: '1' })).toBe('gemini');
+  });
+
+  it('reads Amp as Amp although it also sets the Claude Code marker', () => {
+    expect(codingAgent({ AGENT: 'amp', CLAUDECODE: '1' })).toBe('amp');
+  });
+
+  it('reads Codex inside a Claude Code terminal as Codex, the agent that ran the command', () => {
+    expect(codingAgent({ CLAUDECODE: '1', CODEX_CI: '1' })).toBe('codex');
+  });
+
+  it('names no agent for a person in a plain terminal or a switched-off marker', () => {
+    expect(codingAgent({})).toBeNull();
+    expect(codingAgent({ CLAUDECODE: '0', CURSOR_AGENT: '' })).toBeNull();
+    expect(codingAgent({ CURSOR_TRACE_ID: 'trace' })).toBeNull();
+  });
+
+  it('sends the agent name, and only when one is recognised', () => {
+    expect(connectHeaders({ CLAUDECODE: '1' })['X-Patchstack-Agent']).toBe('claude');
+    expect(connectHeaders({})).not.toHaveProperty('X-Patchstack-Agent');
   });
 });
